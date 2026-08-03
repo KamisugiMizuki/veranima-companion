@@ -43,7 +43,7 @@
       "fears": [
         "恐惧/回避（注入系统 prompt），如：打雷"
       ],
-      "daydream": "走神话题池倾向（注入系统 prompt），如：想云的变化、楼下猫的生活",
+      "daydream": "走神话题池倾向（存档：当前版本不注入系统 prompt，建议并入 personality），如：想云的变化、楼下猫的生活",
       "taboos": "禁忌话题（注入系统 prompt）：它自己不喜欢聊的",
       "relationship_expectation": "关系期许（注入系统 prompt，可选），如：想成为可靠的倾听者"
     }
