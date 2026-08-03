@@ -33,7 +33,11 @@ cp config/config.example.yaml config/config.yaml
 #   下载 Qwen3-8B GGUF（ModelScope Qwen/Qwen3-8B-GGUF），放入 LM Studio 模型库
 #   bash scripts/run_lmstudio.sh
 
-# 3. 运行
+# 3. 角色卡（默认使用内置卡，可选自定义）
+cp config/character.example.json config/character.json
+# 编辑 config/character.json 自定义角色形象；模板与字段说明见 docs/CHARACTER_TEMPLATE.md
+
+# 4. 运行
 .venv/Scripts/python -m veranima.cli
 ```
 
