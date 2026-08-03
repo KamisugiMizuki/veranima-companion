@@ -1,0 +1,28 @@
+# SearXNG 配置（veranima 本地搜索服务）
+# 文档: https://docs.searxng.org/admin/settings/settings.html
+
+use_default_settings: true
+
+server:
+  # 原容器生成的密钥（保留）
+  secret_key: "0rZiubQoVUhU8RofaiF0drOXpiqXPqHz"
+  # 监听所有接口（容器内），宿主机端口映射由 docker 负责
+  bind_address: "0.0.0.0"
+  # 本地单用户服务：关闭速率限制（JSON API 频繁调用不会触发限速）
+  limiter: false
+  # 图片代理（搜索结果图片经 searxng 转发，避免直连外网图源）
+  image_proxy: true
+
+search:
+  # 启用 JSON 格式（veranima 通过 /search?format=json 调用）
+  formats:
+    - html
+    - json
+  # 默认搜索结果语言：简体中文
+  language: "zh-CN"
+
+# 引擎：使用默认引擎集（google/bing 等，容器内实测均可访问）
+# 如需禁用某引擎，取消注释并按需修改：
+# engines:
+#   - name: google
+#     disabled: false

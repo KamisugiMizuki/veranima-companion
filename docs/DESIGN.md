@@ -204,6 +204,7 @@ Neo4j、Milvus/Qdrant、PostgreSQL、Redis、Celery、Elasticsearch、Drools、P
 | bandits→bayesianbandits | 风格参数学习（多臂老虎机） | MIT | 原 bandits 库在 Python 3.14 无 wheel 且不兼容 numpy 2.x，改用 bayesianbandits 1.4.0 |
 | transitions | 状态机（可选，手写亦可） | MIT | |
 | character-card-spec-v3 | 角色卡格式（仅格式参考） | MIT | 兼容 CCv3，不抄 SillyTavern 代码（AGPL） |
+| SearXNG（Docker） | 本地联网搜索（JSON API） | AGPL-3.0 | `127.0.0.1:8080/search?format=json`；配置 `config/searxng-settings.yml`，部署 `scripts/setup_searxng.sh`；引擎风控（CAPTCHA）为常态，google/bing 可用 |
 
 **参考实现（只借鉴设计，不集成）**
 
