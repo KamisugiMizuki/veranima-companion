@@ -1,5 +1,5 @@
 #!/bin/bash
-# LM Studio 模型加载脚本（显存友好配置）
+# LM Studio 模型加载/卸载脚本（显存友好配置 + 游戏模式）
 #
 # 目标：与游戏共存（16GB 显存 → 模型占 ~9.2GB，剩 ~7GB 给游戏）
 # 参数实测（2026-08）：
@@ -11,6 +11,9 @@
 # 用法：
 #   bash scripts/run_lmstudio.sh            # 加载 qwen3-8b（16K，推荐）
 #   bash scripts/run_lmstudio.sh 32768      # 自定义 context
+#   bash scripts/run_lmstudio.sh off        # 游戏模式：卸载模型释放显存（~2.3GB）
+# 游戏前卸载、游戏后加载即可无缝切换——agent 状态在 SQLite，模型无状态不丢对话。
+#
 # 需先启动 LM Studio 服务（lms server start 已在脚本内处理）
 
 LMS="$HOME/.lmstudio/bin/lms.exe"
@@ -20,6 +23,15 @@ CTX="${1:-16384}"
 if [ ! -f "$LMS" ]; then
     echo "lms CLI 不存在: $LMS"
     exit 1
+fi
+
+# 游戏模式：卸载
+if [ "$1" = "off" ]; then
+    echo "==> 卸载模型（显存将释放到 ~2.3GB）"
+    "$LMS" unload --all 2>&1 | tail -1
+    nvidia-smi --query-gpu=memory.used --format=csv,noheader
+    echo "==> 可以开始游戏了。结束后运行：bash scripts/run_lmstudio.sh"
+    exit 0
 fi
 
 echo "==> 确保 LM Studio 服务器运行"
