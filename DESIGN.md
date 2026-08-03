@@ -168,5 +168,5 @@ Neo4j、Milvus/Qdrant、PostgreSQL、Redis、Celery、Elasticsearch、Drools、P
 ## 11. 待定事项
 
 - **部署形态**：本地常驻 vs 云服务器+API（决策依赖聊天软件选择；本地优势=隐私好/无额外成本，云优势=随时在线/电脑可关机）
-- 用户模型：默认单用户
-- LLM 选择细节（Qwen3 量化档位 vs API）
+- **用户模型**：✅ 单用户 1v1 私聊（已确认；不考虑群聊/多会话，记忆系统无需 scope 分割设计）
+- LLM 选择细节（Qwen3-8B Q4 已确认，如需升级 14B 为配置级改动）
