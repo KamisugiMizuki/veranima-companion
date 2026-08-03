@@ -78,10 +78,24 @@ class AgentState:
             "精力一般，正常回应" if self.energy > 40 else
             "有些疲惫，回应从简，可以坦诚表达累"
         )
+        # 关系阶段（依恋度驱动）：初识→熟悉→亲密→稳定，说话方式不同
+        stage, stage_desc = self.relationship_stage()
         return (
             f"【当前状态】情绪：{self.mood}；{energy_desc}。"
             f"依恋度：{self.attachment:.2f}（0=初识，1=亲密）。"
+            f"【关系阶段】{stage}：{stage_desc}"
         )
+
+    def relationship_stage(self) -> tuple[str, str]:
+        """依恋度 → 关系阶段与语气指导（DESIGN.md 第 6 节）。"""
+        a = self.attachment
+        if a < 0.2:
+            return "初识期", "礼貌克制，回应得体，不过分亲近；主要听用户讲"
+        if a < 0.5:
+            return "熟悉期", "自然放松，可以开轻松的玩笑，有自己的观点和小偏好；偶尔主动分享生活细节"
+        if a < 0.8:
+            return "亲密期", "默契自然，说话随意，可以调侃；主动分享更多生活细节，关心用户日常"
+        return "稳定相伴期", "自然如常，安静陪伴；不必刻意表现亲密，稳稳地在就行"
 
     def summary(self) -> dict:
         return {
