@@ -155,5 +155,6 @@
 ## 运行时说明
 
 - 角色卡最终以 JSON 形式存储（`character.json`），Markdown 模板仅用于编辑
+- **可直接填写复制的 JSON 模板见 [character.template.json](./character.template.json)**，字段与本文档各章节一一对应；已标注哪些字段注入系统 prompt、哪些仅存档
 - 系统 prompt 注入顺序：身份认知（固定）→ 核心人格 → 语言风格 → 虚拟身份 → 癖好/禁忌 → 当前状态（精力/情绪/关系阶段）
 - 更换角色卡不影响记忆与状态数据；用户可随时换卡或微调
