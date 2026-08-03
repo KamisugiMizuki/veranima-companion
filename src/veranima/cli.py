@@ -32,17 +32,17 @@ def main() -> int:
         logging.info("no character card found, using builtin default")
 
     # 记忆
-    memory_cfg = {**cfg.get("memory", {}), "host": cfg.get("llm", {}).get("host", "http://localhost:11434")}
+    memory_cfg = {**cfg.get("memory", {}), "host": cfg.get("llm", {}).get("base_url", "http://localhost:1234/v1")}
     db_path = resolve_path(memory_cfg, "db_path") or "data/veranima.db"
     memory = MemoryStore(db_path=db_path, config=memory_cfg)
 
     # LLM
     llm = LLMClient(cfg.get("llm", {}))
     if not llm.is_available():
-        print(f"无法连接 Ollama（{cfg.get('llm', {}).get('host', 'http://localhost:11434')}）。请先启动：ollama serve")
+        print(f"无法连接 LLM 服务（{cfg.get('llm', {}).get('base_url', 'http://localhost:1234/v1')}）。请先启动 LM Studio 并开启本地服务器。")
         return 1
     if not llm.ensure_model():
-        print("模型未就绪，请先导入：ollama create qwen3:8b -f Modelfile")
+        print(f"模型 {cfg.get('llm', {}).get('model', '?')} 未加载，请在 LM Studio 中加载后重试")
         return 1
 
     # Agent

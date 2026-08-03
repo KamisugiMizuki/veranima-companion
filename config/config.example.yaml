@@ -1,10 +1,10 @@
 # Veranima 默认配置模板
 # 复制为 config.yaml 使用（config.yaml 不入库）；留空值使用代码内默认。
 
-# LLM（Ollama）
+# LLM（OpenAI 兼容：LM Studio）
 llm:
-  host: "http://localhost:11434"
-  model: "qwen3:8b"
+  base_url: "http://localhost:12345/v1"   # LM Studio 本地服务器
+  model: "qwen3-8b"                       # LM Studio 加载的模型（ModelScope 下载的 GGUF，见 DESIGN.md）
   temperature: 0.8
   max_tokens: 1024
   # 低精力时的简短回复配置

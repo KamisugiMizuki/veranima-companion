@@ -68,7 +68,9 @@ class SentenceTransformersProvider:
             device = "cpu"
         logger.info("loading sentence-transformers model from %s (device=%s)", model_path, device)
         self._model = SentenceTransformer(model_path, device=device)
-        self.dim = self._model.get_sentence_embedding_dimension()
+        # sentence-transformers 5.x 新 API；兼容旧名
+        getter = getattr(self._model, "get_embedding_dimension", None) or self._model.get_sentence_embedding_dimension
+        self.dim = getter()
         logger.info("embedding model loaded, dim=%s", self.dim)
 
     def embed(self, texts: list[str]) -> list[list[float]]:

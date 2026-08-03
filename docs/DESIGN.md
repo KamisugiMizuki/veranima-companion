@@ -180,7 +180,7 @@ Neo4j、Milvus/Qdrant、PostgreSQL、Redis、Celery、Elasticsearch、Drools、P
 | Python（FastAPI 或 CLI） | 主实现语言 |
 | SQLite | 记忆/事实/承诺/状态存储 |
 | sqlite-vec 或 Chroma | 向量检索（模糊回忆） |
-| Qwen3-8B Q4（Ollama） | 对话生成（已确认；显存 ~5GB，与游戏共存无压力，可随时升 14B） |
+| Qwen3-8B Q4（LM Studio 加载） | 对话生成（已确认；显存 ~5GB，与游戏共存无压力，可随时升 14B） |
 | bge-m3 embedding | 本地向量化 |
 | APScheduler | 遗忘衰减/定时问候/月报 |
 | TTS（~~Qwen3-TTS~~） | ~~语音陪伴增量~~：已降级为"大概率不实现"，不列入路线图 |
@@ -193,7 +193,8 @@ Neo4j、Milvus/Qdrant、PostgreSQL、Redis、Celery、Elasticsearch、Drools、P
 
 | 依赖 | 用途 | 协议 | 备注 |
 |---|---|---|---|
-| ollama-python | LLM 接入（Qwen3-8B） | MIT | 官方 SDK |
+| ~~ollama-python~~ → httpx 直调 | LLM 接入（OpenAI 兼容接口） | — | 运行时改为 **LM Studio**（已装，`localhost:12345/v1`），httpx 直调，不依赖 ollama-python |
+| Qwen3-8B Q4_K_M（ModelScope GGUF） | 对话生成 | Apache-2.0 | `Qwen/Qwen3-8B-GGUF` 下载 → 拷入 LM Studio 模型库加载（key: `qwen3-8b`） |
 | sqlite-vec | 向量检索 | Apache-2.0 | SQLite 扩展 |
 | rich | CLI 界面 | MIT | |
 | python-prompt-toolkit | CLI 交互 | BSD-3 | |
@@ -231,4 +232,4 @@ Neo4j、Milvus/Qdrant、PostgreSQL、Redis、Celery、Elasticsearch、Drools、P
 - **部署形态**：✅ 本地部署（全链路本地，数据不出机器）
 - **用户模型**：✅ 单用户 1v1 私聊（不考虑群聊/多会话，记忆系统无需 scope 分割设计）
 - **接入平台**：✅ NapCatQQ（OneBot v11 协议 WebSocket；仅指定 QQ 号白名单；实现阶段写 OneBot adapter）
-- **LLM**：✅ Qwen3-8B Q4（Ollama；如需升级 14B 为配置级改动）
+- **LLM**：✅ Qwen3-8B Q4（LM Studio 加载，ModelScope 下载 GGUF；如需升级 14B 为配置级改动）
