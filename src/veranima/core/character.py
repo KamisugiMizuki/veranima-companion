@@ -66,7 +66,10 @@ class CharacterCard:
                 veranima=ver,
             )
         else:
-            # 纯 veranima 自定义 JSON
+            # 纯 veranima 自定义 JSON（兼容 extensions.veranima 嵌套与顶层 veranima 两种写法）
+            ext = raw.get("extensions", {}) or {}
+            ver = ext.get("veranima") or raw.get("veranima") or {}
+            tones = ver.get("tones") or raw.get("tones") or ["中性", "平静", "温柔"]
             card = cls(
                 name=raw.get("name") or "Veranima",
                 description=raw.get("description") or "",
@@ -74,9 +77,9 @@ class CharacterCard:
                 scenario=raw.get("scenario") or "",
                 first_mes=raw.get("first_mes") or "",
                 mes_example=raw.get("mes_example") or "",
-                tones=raw.get("tones") or ["中性", "平静", "温柔"],
-                veranima=raw.get("veranima") or {k: v for k, v in raw.items()
-                                                 if k not in ("name", "description", "personality", "scenario", "first_mes", "mes_example", "tones")},
+                tones=tones,
+                veranima=ver or {k: v for k, v in raw.items()
+                                 if k not in ("name", "description", "personality", "scenario", "first_mes", "mes_example", "tones", "extensions")},
             )
         logger.info("character card loaded: %s (from %s)", card.name, source)
         return card
@@ -93,10 +96,36 @@ class CharacterCard:
             parts.append(f"【性格细节】{self.personality}")
         if self.scenario:
             parts.append(f"【背景设定】{self.scenario}")
-        # veranima 专属字段
-        for key in ("虚拟身份背景", "居住设定", "生活状态", "语言风格", "癖好", "禁忌话题", "价值观底线", "关系期许"):
-            if v.get(key):
-                parts.append(f"【{key}】{v[key]}")
+        # veranima 专属字段（兼容模板中文键与 JSON 英文键）
+        # 英文键优先，中文键兜底（CHARACTER_TEMPLATE.md 的 YAML 用中文键）
+        v = self.veranima
+        vkey = {
+            "虚拟身份背景": ["virtual_background"],
+            "居住设定": ["virtual_life", "living_setup"],
+            "生活状态": ["daily_state", "life_state"],
+            "语言风格": ["sentence_style", "fillers", "emoji_usage", "rhetoric"],
+            "癖好": ["quirks", "hobbies"],
+            "禁忌话题": ["taboos"],
+            "恐惧/回避": ["fears", "恐惧"],
+            "价值观底线": ["values"],
+            "关系期许": ["relationship_expectation"],
+        }
+        for label, keys in vkey.items():
+            if label == "语言风格":
+                # 聚合多个语言细节字段（句长/语气词/表情/修辞）
+                subs = []
+                for k in keys:
+                    val = v.get(k)
+                    if val:
+                        subs.append(val if isinstance(val, str) else "、".join(str(x) for x in val))
+                if subs:
+                    parts.append(f"【{label}】{'；'.join(subs)}")
+                continue
+            for k in keys:
+                val = v.get(k)
+                if val:
+                    parts.append(f"【{label}】{val if isinstance(val, str) else '、'.join(str(x) for x in val)}")
+                    break
         if self.tones:
             parts.append(f"【语气标签】可用语气：{'/'.join(self.tones)}。")
         if self.mes_example:
