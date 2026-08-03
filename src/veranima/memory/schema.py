@@ -51,10 +51,10 @@ CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
     INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
 END;
 
--- 向量表（sqlite-vec）
+-- 记忆向量（cosine 度量：distance = 1 - 余弦相似度，recall 直接 1-distance 即相似度）
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_vec USING vec0(
     memory_id INTEGER PRIMARY KEY,
-    embedding float[{dim}]
+    embedding float[{dim}] distance_metric=cosine
 );
 """
 
@@ -76,5 +76,15 @@ def init_db(db_path: str | Path, dim: int = EMBEDDING_DIM) -> sqlite3.Connection
         # 扩展不可用时向量检索降级（FTS5 仍可用）
         pass
     con.executescript(SCHEMA.format(dim=dim))
+    # 迁移：旧版 memory_vec 为默认 L2 度量（distance≠余弦），重建为 cosine
+    # （MVP1 阶段向量可重新嵌入；DROP 仅丢向量，记忆内容仍在 memories 表）
+    try:
+        sql = con.execute("SELECT sql FROM sqlite_master WHERE name='memory_vec'").fetchone()[0]
+        if "distance_metric=cosine" not in sql:
+            con.execute("DROP TABLE memory_vec")
+            con.executescript(SCHEMA.format(dim=dim))
+            logger.warning("memory_vec rebuilt with cosine metric (old L2 dropped)")
+    except Exception as e:
+        logger.warning("memory_vec migration check failed: %s", e)
     con.commit()
     return con

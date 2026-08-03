@@ -116,10 +116,15 @@ class Agent:
         self._history.append({"role": "assistant", "content": reply})
         self.state.on_assistant_message()
 
-        # 7. 事件记忆提取（延迟整理简化版：每 4 轮提取一次情节记忆）
+        # 7. 定期触发遗忘衰减（每 10 轮；MVP1 简化：无后台调度器，随对话驱动）
+        if self.state.total_messages % 10 == 0:
+            result = self.memory.decay()
+            logger.info("memory decay applied: updated=%s faded=%s", result.get("updated", 0), result.get("faded", 0))
+
+        # 8. 事件记忆提取（延迟整理简化版：每 4 轮提取一次情节记忆）
         self._maybe_extract_events(user_text)
 
-        # 8. 主动发言（低概率，MVP1 简化）
+        # 9. 主动发言（低概率，MVP1 简化）
         proactive_msg = ""
         if random.random() < float(self.config.get("chat", {}).get("proactive_message_prob", 0.1)):
             proactive_msg = self._try_proactive()
@@ -166,27 +171,34 @@ class Agent:
         return msg
 
     def _maybe_extract_events(self, user_text: str) -> None:
-        """每 4 轮对话提取一次情节记忆（简化：规则提取重要信号，不调 LLM）。
+        """规则提取记忆（MVP1 简化，每条消息检查；MVP2 替换为 LLM 事件卡片提取）。
 
-        MVP1 用规则近似：包含强烈情感词或明确"记住"诉求时入库 episodic。
-        MVP2 替换为 LLM 事件卡片提取。
+        - 强信号（记住/生日/纪念/重要…）→ episodic（情节，0.8）
+        - 偏好事实（我喜欢/我是/我的…）→ semantic（长期事实，0.7）
         """
-        if self.state.total_messages % 4 != 0:
-            return
-        importance = 0.5
-        signals = ["记住", "今天", "生日", "纪念", "难过", "开心", "重要", "烦", "累", "辞职", "考试", "工作"]
-        if any(s in user_text for s in signals):
-            importance = 0.8
-        if importance >= 0.8:
+        strong = ["记住", "生日", "纪念", "重要", "考试", "辞职", "生病", "难忘"]
+        prefer = ["我特别喜欢", "我很喜欢", "我特别", "我最爱", "我最喜欢", "我喜欢", "我讨厌", "我害怕",
+                  "我是", "我的", "我住在", "我在", "我养", "我爱"]
+        if any(s in user_text for s in strong):
             entry = self.memory.store(
                 "episodic",
-                f"{user_text[:100]}",
-                importance=importance,
+                user_text[:100],
+                importance=0.8,
                 confidence=0.6,
                 provenance="auto-extract",
                 category="event",
             )
             logger.info("episodic extracted: #%s", entry.id)
+        elif any(s in user_text for s in prefer):
+            entry = self.memory.store(
+                "semantic",
+                user_text[:100],
+                importance=0.7,
+                confidence=0.5,
+                provenance="auto-extract",
+                category="preference",
+            )
+            logger.info("semantic extracted: #%s", entry.id)
 
     def _try_proactive(self) -> str:
         """低精力/随机时刻的主动发言（MVP1 简化：时间问候类）。返回消息或空串。"""

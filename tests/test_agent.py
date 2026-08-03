@@ -103,3 +103,30 @@ def test_start_greeting_without_llm(agent):
     a = Agent(card=card, memory=memory, llm=FakeLLM(error=LLMUnavailableError("down")), state=AgentState(), config={})
     opening = a.start()
     assert opening  # 初遇开场白或时间问候
+
+
+def test_extract_events_preference(agent):
+    """'我特别喜欢X' 等偏好表达 → semantic 层记忆。"""
+    card, memory = agent
+    a = Agent(card=card, memory=memory, llm=FakeLLM(), state=AgentState(), config={})
+    a.handle("我特别喜欢下雨天，下雨的时候心情会变好")
+    sem = memory.list_layer("semantic")
+    assert any("下雨天" in e.content for e in sem)
+
+
+def test_extract_events_strong(agent):
+    """'记住' 诉求 → episodic 层记忆。"""
+    card, memory = agent
+    a = Agent(card=card, memory=memory, llm=FakeLLM(), state=AgentState(), config={})
+    a.handle("记住：我的生日是3月14日")
+    eps = memory.list_layer("episodic")
+    assert any("生日" in e.content for e in eps)
+
+
+def test_extract_events_plain_no_duplicate(agent):
+    """普通闲聊（无信号词）不产生记忆，也不把消息本身当记忆。"""
+    card, memory = agent
+    a = Agent(card=card, memory=memory, llm=FakeLLM(), state=AgentState(), config={})
+    a.handle("今天天气不错")
+    assert len(memory.list_layer("semantic")) == 0
+    assert len(memory.list_layer("episodic")) == 0
