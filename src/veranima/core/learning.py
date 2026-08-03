@@ -71,6 +71,7 @@ class FeedbackSignal:
     correction: bool = False        # 用户纠正
     user_asked: bool = False        # 用户提了问（需要详细回答）
     topic_continuation: bool = False  # 用户延续了 agent 的话题（粗略：消息里含上一轮关键词）
+    delay: float = 0.0              # 用户读完上一条回复后到本条消息的间隔（秒）
 
     @property
     def reward(self) -> float:
@@ -84,10 +85,15 @@ class FeedbackSignal:
             r -= 0.8
         if self.user_asked:
             r += 0.2  # 用户想聊，倾向详细
+        # 延迟信号：读得久（>30s）说明回复有内容值得思考；秒回长回复说明没读完
+        if self.delay > 30:
+            r += 0.1
+        if self.delay < 3 and self.reply_len > 300:
+            r -= 0.2
         return max(-1.0, min(1.0, r))
 
 
-def extract_feedback(user_text: str, reply: str, prev_reply: str = "") -> FeedbackSignal:
+def extract_feedback(user_text: str, reply: str, prev_reply: str = "", delay: float = 0.0) -> FeedbackSignal:
     """从一轮对话提取隐式反馈信号（纯规则）。"""
     s = FeedbackSignal(
         user_len=len(user_text),
@@ -96,6 +102,7 @@ def extract_feedback(user_text: str, reply: str, prev_reply: str = "") -> Feedba
         negative=any(w in user_text for w in NEGATIVE_WORDS),
         correction=any(w in user_text for w in CORRECTION_WORDS),
         user_asked=("?" in user_text or "？" in user_text or "吗" in user_text or "什么" in user_text),
+        delay=delay,
     )
     # 话题延续：用户消息包含上一轮回复中的任意双字词（粗略信号）
     if prev_reply:

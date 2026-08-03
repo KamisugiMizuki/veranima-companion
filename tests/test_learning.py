@@ -40,6 +40,15 @@ def test_extract_feedback_topic_continuation():
     assert s.topic_continuation
 
 
+def test_extract_feedback_delay_signal():
+    # 读得久（>30s）→ 正奖励
+    s = extract_feedback("嗯", "回复", delay=45)
+    assert s.reward > 0
+    # 秒回长回复 → 负奖励
+    s2 = extract_feedback("嗯", "回" * 400, delay=1)
+    assert s2.reward < 0
+
+
 # ---------- 风格参数学习 ----------
 
 def test_observe_changes_params():

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import random
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -47,6 +48,7 @@ class Agent:
         self.state = state or AgentState()
         self.config = config or {}
         self._history: list[dict] = []
+        self._last_reply_ts: float | None = None  # 上一条回复时间（延迟信号用）
 
         # MVP2 学习组件（持久化到 data/，随对话更新）
         root = self.config.get("root", ".")
@@ -161,7 +163,9 @@ class Agent:
 
         # 8.5 MVP2 学习：隐式反馈 → 风格参数 + 语言镜像 + 承诺识别
         prev_reply = self._history[-3]["content"] if len(self._history) >= 3 else ""
-        sig = extract_feedback(user_text, reply, prev_reply)
+        delay = (time.time() - self._last_reply_ts) if self._last_reply_ts else 0.0
+        sig = extract_feedback(user_text, reply, prev_reply, delay=delay)
+        self._last_reply_ts = time.time()
         self.style.observe(sig)
         self.mirror.observe(user_text)
         self.promises.record(user_text)
