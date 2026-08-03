@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 环境与密钥
+.env
+.env.*
+
+# 运行时数据（程序运行时自动创建，不提交）
+data/
+
+# 本地实际配置（模板入库，本地配置不入库）
+config.yaml
+config.local.yaml
+
+# 日志
+logs/
+*.log
+
+# 模型权重与大型资源
+*.gguf
+*.safetensors
+data/models/
+
+# 编辑器 / 系统文件
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Hermes 本地状态
+.hermes/
