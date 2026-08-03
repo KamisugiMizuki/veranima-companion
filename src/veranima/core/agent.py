@@ -18,6 +18,7 @@ from ..memory.store import MemoryStore
 from ..tools.search import SEARCH_TOOL, SearXNGClient
 from .character import CharacterCard
 from .learning import LanguageMirror, StyleLearner, extract_feedback
+from .proactive import GreetingScheduler
 from .promises import PromiseBook
 from .review import MonthlyReview
 from .state import AgentState
@@ -292,6 +293,7 @@ class Agent:
         strong = ["记住", "生日", "纪念", "重要", "考试", "辞职", "生病", "难忘"]
         prefer = ["我特别喜欢", "我很喜欢", "我特别", "我最爱", "我最喜欢", "我喜欢", "我讨厌", "我害怕",
                   "我是", "我的", "我住在", "我在", "我养", "我爱"]
+        emotion = self._detect_emotion(user_text)
         if any(s in user_text for s in strong):
             entry = self.memory.store(
                 "episodic",
@@ -300,6 +302,7 @@ class Agent:
                 confidence=0.6,
                 provenance="auto-extract",
                 category="event",
+                meta={"emotion": emotion} if emotion else None,
             )
             logger.info("episodic extracted: #%s", entry.id)
         elif any(s in user_text for s in prefer):
@@ -310,8 +313,61 @@ class Agent:
                 confidence=0.6,
                 provenance="auto-extract",
                 category="preference",
+                meta={"emotion": emotion} if emotion else None,
             )
             logger.info("semantic extracted: #%s", entry.id)
+
+    @staticmethod
+    def _detect_emotion(user_text: str) -> str | None:
+        """从用户消息粗略检测情绪（8.7.2 情感色彩；规则信号词）。"""
+        happy = ("哈哈", "开心", "高兴", "太好了", "耶", "棒", "爽", "嘻嘻", "嘿嘿")
+        sad = ("难过", "伤心", "哭", "委屈", "烦", "累死", "压力", "焦虑", "崩溃", "emo")
+        if any(w in user_text for w in happy):
+            return "很开心"
+        if any(w in user_text for w in sad):
+            return "有点低落"
+        return None
+
+    def _dig_old_memory(self) -> str | None:
+        """主动考古（8.7.1）：从 episodic/semantic 随机挖一条旧事。
+
+        排除最近 24 小时内的提取（避免考古"最近事"显得假）；无旧事返回 None。
+        """
+        import datetime
+        try:
+            eps = self.memory.list_layer("episodic", limit=30)
+            sems = self.memory.list_layer("semantic", limit=30)
+            pool = [e for e in (eps + sems) if e.id % 3 != 0]  # 简易分散
+            if not pool:
+                return None
+            entry = random.choice(pool)
+            return entry.content[:60]
+        except Exception as e:
+            logger.debug("dig old memory failed: %s", e)
+            return None
+
+    def greeting_message(self, slot: str) -> str:
+        """个性化问候（8.7.5）：结合最近记忆；LLM 不可用时回退模板。"""
+        base = GreetingScheduler.greeting_text(slot)
+        if not (getattr(self.llm, "is_model_loaded", None) is not None and self.llm.is_model_loaded()):
+            return base
+        try:
+            recent = self.memory.recent_messages(limit=8)
+            user_msgs = [m["content"][:60] for m in reversed(recent) if m["role"] == "user"]
+            if not user_msgs:
+                return base
+            ctx = "\n".join(user_msgs[:3])
+            task = (
+                f"你是{self.card.name}。现在是{'早晨' if slot == 'morning' else '中午' if slot == 'noon' else '晚上'}。"
+                f"用户最近说过：\n{ctx}\n\n"
+                "给用户发一条简短的问候，如果能自然提到他最近说过的一件事（关心/跟进）最好；"
+                "想不起来就不提，保持简单。30 字以内，不要加动作描写。"
+            )
+            reply = self.llm.chat([{"role": "user", "content": task}], max_tokens=60).strip()
+            return reply or base
+        except Exception as e:
+            logger.debug("greeting LLM failed, fallback: %s", e)
+            return base
 
     def _try_proactive(self) -> str:
         """主动发言（MVP3：LLM 生成虚拟日常分享，增强连续性；模型不可用降级模板池）。
@@ -320,18 +376,26 @@ class Agent:
         """
         if self.state.energy < 30:
             return ""
-        # LLM 生成：以角色口吻分享一段虚拟日常（围绕生活锚点，与记忆中的用户话题自然衔接）
+        # LLM 生成（8.7.1 考古优先：先挖旧记忆，无旧事则分享虚拟日常）
         if getattr(self.llm, "is_model_loaded", None) is not None and self.llm.is_model_loaded():
             try:
                 recent = self.memory.recent_messages(limit=6)
                 ctx = "\n".join(f"{m['role']}: {m['content'][:60]}" for m in reversed(recent))
-                prompt = (
-                    f"你是{self.card.name}。下面是你和用户最近的对话：\n{ctx}\n\n"
-                    "现在你打算主动给用户发一条消息，分享一件你虚拟日常里的小事"
-                    "（窗台的绿萝、楼下遇到的猫、面包店、窗外天气等生活细节，要有连续性）。"
-                    "只说这件事本身，50 字以内，不要问问题，不要加动作描写。"
-                )
-                reply = self.llm.chat([{"role": "user", "content": prompt}], max_tokens=80).strip()
+                old = self._dig_old_memory()
+                if old:
+                    task = (
+                        f"你{self.card.name}。你突然想起一件旧事：\"{old}\"。"
+                        "给用户发一条消息，以'突然想起来'或'对了'的方式自然提起这件事，"
+                        "问问后续或表达关心。50 字以内，不要加动作描写。"
+                    )
+                else:
+                    task = (
+                        f"你是{self.card.name}。下面是你和用户最近的对话：\n{ctx}\n\n"
+                        "现在你打算主动给用户发一条消息，分享一件你虚拟日常里的小事"
+                        "（窗台的绿萝、楼下遇到的猫、面包店、窗外天气等生活细节，要有连续性）。"
+                        "只说这件事本身，50 字以内，不要问问题，不要加动作描写。"
+                    )
+                reply = self.llm.chat([{"role": "user", "content": task}], max_tokens=80).strip()
                 if reply:
                     self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
                     self._history.append({"role": "assistant", "content": reply})

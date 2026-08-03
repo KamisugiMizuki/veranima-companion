@@ -41,14 +41,14 @@ def build_system_prompt(
             joined = joined[:budget] + "…"
         parts.append(label + "\n" + joined)
 
-    # semantic + episodic：检索注入
+    # semantic + episodic：检索注入（8.7.2 记得感分级：按 strength 措辞）
     query_hint = _latest_query(memory)
     if query_hint:
         for layer, label in (("semantic", LAYER_LABELS["semantic"]), ("episodic", LAYER_LABELS["episodic"])):
             entries = memory.recall(query_hint, top_k=5, layer=layer)
             if not entries:
                 continue
-            texts = [f"- {e.content}" for e in entries if e.strength >= 0.3]
+            texts = [format_memory_line(e) for e in entries if e.strength >= 0.3]
             if not texts:
                 continue
             joined = "\n".join(texts)
@@ -70,6 +70,27 @@ def build_system_prompt(
             parts.append(block)
 
     return "\n".join(parts)
+
+
+def format_memory_line(entry) -> str:
+    """记忆行格式化（8.7.2）：按 strength 分级措辞 + 情感色彩。
+
+    - strength ≥0.7：我记得你……
+    - 0.4~0.7：我好像记得……
+    - <0.4：我隐约记得……
+    - meta.emotion 存在时附加（"你提起时听起来很开心"）
+    """
+    if entry.strength >= 0.7:
+        verb = "我记得"
+    elif entry.strength >= 0.4:
+        verb = "我好像记得"
+    else:
+        verb = "我隐约记得"
+    line = f"- {verb}：{entry.content}"
+    emotion = (entry.meta or {}).get("emotion")
+    if emotion:
+        line += f"（你提起时听起来{emotion}）"
+    return line
 
 
 def _latest_query(memory: MemoryStore) -> str:

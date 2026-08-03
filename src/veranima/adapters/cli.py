@@ -76,7 +76,8 @@ class CLIAdapter:
         """定时问候 + 节庆纪念检查（幂等：每日去重）。"""
         slot = self.greeter.due_greeting()
         if slot:
-            msg = self.greeter.greeting_text(slot)
+            # 8.7.5 个性化问候（结合最近记忆；LLM 不可用回退模板）
+            msg = self.agent.greeting_message(slot)
             self.console.print(f"[dim cyan]{self.agent.card.name}（主动）[/]：{msg}")
             self.agent.memory.store_message("assistant", msg, self.agent.state.energy, self.agent.state.mood)
         occasion = self.occasion.due_occasion(self.agent.memory)

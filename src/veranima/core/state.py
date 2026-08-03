@@ -76,7 +76,7 @@ class AgentState:
         energy_desc = (
             "精力充沛，主动热情" if self.energy > 70 else
             "精力一般，正常回应" if self.energy > 40 else
-            "有些疲惫，回应从简，可以坦诚表达累"
+            "有些疲惫，回应从简，可以坦诚表达累；可以自然带一点疲惫的小动作（如打个哈欠、揉揉眼睛），自然就好，不要每句都带"
         )
         # 关系阶段（依恋度驱动）：初识→熟悉→亲密→稳定，说话方式不同
         stage, stage_desc = self.relationship_stage()
