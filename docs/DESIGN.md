@@ -34,6 +34,7 @@ Agent 的形象由一份**角色卡（character card）**定义，不写死在�
   2. 用户给一段描述/关键词，由 LLM 按模板自动生成完整角色卡，生成后用户可修改
 - 运行时加载角色卡，注入系统 prompt；更换角色卡 = 更换形象，核心机制不变
 - 模板见 [CHARACTER_TEMPLATE.md](./CHARACTER_TEMPLATE.md)（含字段取值域、填写原则与示例卡）
+- **格式兼容 Character Card V3**（MIT spec，SillyTavern 生态事实标准）：标准字段（name/description/personality/scenario/first_mes）+ `extensions` 字段存放 veranima 专属数据（虚拟身份背景、癖好、价值观底线、reply_tones 等），可直接导入 Chub.ai 等生态角色卡
 
 ### 2.1 核心人格（相对固定，变化极慢）
 
@@ -185,6 +186,35 @@ Neo4j、Milvus/Qdrant、PostgreSQL、Redis、Celery、Elasticsearch、Drools、P
 | TTS（~~Qwen3-TTS~~） | ~~语音陪伴增量~~：已降级为"大概率不实现"，不列入路线图 |
 
 全部本地化，单进程可跑，隐私天然好。
+
+### 外部依赖清单（2026-08 调研确认）
+
+**直接取用（协议干净）**
+
+| 依赖 | 用途 | 协议 | 备注 |
+|---|---|---|---|
+| ollama-python | LLM 接入（Qwen3-8B） | MIT | 官方 SDK |
+| sqlite-vec | 向量检索 | Apache-2.0 | SQLite 扩展 |
+| rich | CLI 界面 | MIT | |
+| python-prompt-toolkit | CLI 交互 | BSD-3 | |
+| aiocqhttp | OneBot v11 接入（NapCatQQ） | MIT | 嵌 adapter 用，不上 nonebot2 全家桶 |
+| bandits | 风格参数学习（多臂老虎机） | Apache-2.0 | |
+| transitions | 状态机（可选，手写亦可） | MIT | |
+| character-card-spec-v3 | 角色卡格式（仅格式参考） | MIT | 兼容 CCv3，不抄 SillyTavern 代码（AGPL） |
+
+**参考实现（只借鉴设计，不集成）**
+
+- YourMemory：艾宾浩斯遗忘曲线实现思路（**无 LICENSE，禁抄代码**）
+- guardrails-ai：过滤/护栏思路
+- mem0 / letta / cognee / Sakura：记忆系统设计参考
+
+**自研（核心差异化）**
+
+- 五层记忆存储与检索（SQLite + sqlite-vec + FTS5，参考 mem0/memanto 设计）
+- 遗忘衰减 + curator 定期整理
+- 人格演化参数管理（bandits 负责学习部分）
+- 主动发言调度（APScheduler + 自写决策）
+- 虚拟日常/微功能
 
 ---
 
