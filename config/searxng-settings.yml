@@ -1,5 +1,10 @@
 # SearXNG 配置（veranima 本地搜索服务）
 # 文档: https://docs.searxng.org/admin/settings/settings.html
+#
+# 注意：
+# 1. 镜像默认配置中几乎所有引擎均为 disabled/inactive，必须显式启用
+# 2. 国内直连部署（无代理）：实测容器内可达 baidu/360search，google/bing/qwant 不可达（httpx 连接超时）
+# 3. 如需 google/bing，给容器配代理（HTTP_PROXY=host.docker.internal:7890）后启用
 
 use_default_settings: true
 
@@ -21,8 +26,38 @@ search:
   # 默认搜索结果语言：简体中文
   language: "zh-CN"
 
-# 引擎：使用默认引擎集（google/bing 等，容器内实测均可访问）
-# 如需禁用某引擎，取消注释并按需修改：
-# engines:
-#   - name: google
-#     disabled: false
+outgoing:
+  # 引擎请求超时（默认 3.0s 对国内网络太短，实测容器内连接需数秒）
+  request_timeout: 10.0
+
+# 引擎配置（覆盖默认集）
+engines:
+  # --- 启用国内可用引擎（容器内实测可达）---
+  - name: baidu
+    disabled: false
+  - name: 360search
+    disabled: false
+
+  # --- 禁用不可达/不可用引擎（容器内实测 httpx 连接超时或加载失败）---
+  # - google/bing/qwant：容器内连接超时（直连被墙）；如需使用配置代理后启用
+  # - ahmia/torch：引擎加载失败（依赖缺失）
+  # - wikidata：数据中心 IP 被 Wikidata 403 风控
+  # - startpage：CAPTCHA 悬挂 3600s，本地场景无恢复价值
+  # - google cse：无 API key 必然超时
+  - name: google
+    disabled: true
+  - name: bing
+    disabled: true
+  - name: qwant
+    disabled: true
+  - name: ahmia
+    disabled: true
+  - name: torch
+    disabled: true
+  - name: wikidata
+    disabled: true
+  - name: startpage
+    disabled: true
+  - name: google cse
+    disabled: true
+# duckduckgo/brave 保留：偶发可用（CAPTCHA 时自动 suspended），可轮换补充结果
