@@ -58,7 +58,7 @@ def test_handle_llm_unavailable_returns_wakeup(agent, tmp_path):
     """模型未加载（游戏模式 off）：前置检查拦截，返回唤醒文案，不发请求不触发自动重载。"""
     card, memory = agent
     llm = FakeLLM(error=LLMUnavailableError("model not loaded"), loaded=False)
-    a = Agent(card=card, memory=memory, llm=llm, state=AgentState(), config={})
+    a = Agent(card=card, memory=memory, llm=llm, state=AgentState(), config={"chat": {"proactive_message_prob": 0.0}})
     r = a.handle("在吗？")
     assert "还没醒" in r.reply
     assert "run_lmstudio" in r.reply
@@ -69,9 +69,9 @@ def test_handle_llm_unavailable_returns_wakeup(agent, tmp_path):
 
 
 def test_handle_model_loaded_but_chat_fails(agent):
-    """模型已加载但生成异常：异常分类兜底。"""
+    """模型已加载但生成异常：异常分类兜底。（proactive 关掉，避免随机触发影响断言）"""
     card, memory = agent
-    a = Agent(card=card, memory=memory, llm=FakeLLM(error=LLMUnavailableError("server hiccup"), loaded=True), state=AgentState(), config={})
+    a = Agent(card=card, memory=memory, llm=FakeLLM(error=LLMUnavailableError("server hiccup"), loaded=True), state=AgentState(), config={"chat": {"proactive_message_prob": 0.0}})
     r = a.handle("在吗？")
     assert "还没醒" in r.reply
     assert a.llm.calls == 1
