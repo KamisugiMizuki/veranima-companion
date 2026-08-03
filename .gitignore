@@ -22,6 +22,9 @@ data/
 config.yaml
 config.local.yaml
 
+# 角色卡素材（各张设计好的角色卡，不入库；运行时卡在 config/character.json）
+char_cards/
+
 # 日志
 logs/
 *.log
