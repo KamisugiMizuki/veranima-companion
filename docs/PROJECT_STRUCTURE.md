@@ -58,6 +58,7 @@ veranima-companion/
   - pip 一律走清华源：`-i https://pypi.tuna.tsinghua.edu.cn/simple`
   - 新增依赖时优先检查系统 3.14 是否已有（`"/c/Program Files/Python314/python.exe" -m pip list`），已有则不重复安装
   - 新装包验证：`.venv/Scripts/python.exe -c "import <包名>"`
+  - **判断环境以 `import` 实测为准，不看 `pip list`**：本机 site-packages 存在过时 dist-info，`pip list` 会显示旧版本（如 torch 显示 2.5.1+cu121 而实际 import 是 2.11.0+cu130），以此判断版本会得出错误结论
 
 ## 3. 模块划分原则（src/veranima/）
 
