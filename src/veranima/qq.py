@@ -2,8 +2,8 @@
 """Veranima QQ 入口：python -m veranima.qq（NapCatQQ OneBot v11）。
 
 前置：NapCatQQ 运行中，并配置"反向 WebSocket 客户端"连接
-ws://<qq.ws_host>:<qq.ws_port>/ws（aiocqhttp 默认监听 127.0.0.1:8080）。
-白名单 qq.allowed_qq 必填（1v1 私聊，只填你的 QQ 号）。
+ws://<qq.ws_host>:<qq.ws_port>/ws（默认监听 127.0.0.1:8099；8080 被本机
+SearXNG 占用，勿用）。白名单 qq.allowed_qq 必填（1v1 私聊，只填你的 QQ 号）。
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ def main() -> int:
         )
 
     host = qq_cfg.get("ws_host", "127.0.0.1")
-    port = int(qq_cfg.get("ws_port", 8080))
+    port = int(qq_cfg.get("ws_port", 8099))
     adapter = QQAdapter(
         agent,
         ws_host=host,

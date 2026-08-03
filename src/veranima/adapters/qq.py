@@ -64,7 +64,7 @@ class QQAdapter:
         agent: Agent,
         *,
         ws_host: str = "127.0.0.1",
-        ws_port: int = 8080,
+        ws_port: int = 8099,
         access_token: str = "",
         allowed_qq: list[str] | list[int] | tuple = (),
         proactive: bool = True,

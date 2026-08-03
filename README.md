@@ -41,7 +41,8 @@ cp config/config.example.yaml config/config.yaml
 
 ```bash
 # 1. 登录 NapCatQQ（或任意 OneBot v11 实现），配置"反向 WebSocket 客户端"
-#    连接 ws://127.0.0.1:8080/ws（与 config.yaml 的 qq.ws_host/ws_port 对应）
+#    连接 ws://127.0.0.1:8099/ws（与 config.yaml 的 qq.ws_host/ws_port 对应；
+#    默认 8099 是因为本机 8080 被 SearXNG 占用）
 # 2. config/config.yaml 的 [qq] 段：
 #    enabled: true
 #    allowed_qq: [你的QQ号]      # 白名单必填（1v1 私聊），空 = 拒绝所有消息
