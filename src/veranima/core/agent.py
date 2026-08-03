@@ -9,7 +9,7 @@ import logging
 import random
 from dataclasses import dataclass, field
 
-from ..llm.client import LLMClient
+from ..llm.client import LLMClient, LLMUnavailableError
 from ..llm.prompts import build_system_prompt
 from ..memory.store import MemoryStore
 from .character import CharacterCard
@@ -85,6 +85,16 @@ class Agent:
         messages.extend(self._history[-self.config.get("chat", {}).get("history_max_messages", 20):])
         messages.append({"role": "user", "content": user_text})
 
+        # 4.5 模型加载前置检查：未加载则唤醒提示，不发请求
+        # （LM Studio 收到请求会自动重载模型、瞬间吃回显存，游戏模式下必须避免）
+        check = getattr(self.llm, "is_model_loaded", None)
+        if check is not None and not check():
+            reply = "（我好像还没醒过来……模型没在运行。跑一下 bash scripts/run_lmstudio.sh 叫醒我？）"
+            self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
+            self._history.append({"role": "assistant", "content": reply})
+            self.state.on_assistant_message()
+            return TurnResult(reply=reply, energy=self.state.energy, mood=self.state.mood)
+
         # 5. 生成（低精力时限短）
         low_energy = self.state.energy < 40
         try:
@@ -92,6 +102,10 @@ class Agent:
                 messages,
                 max_tokens=self.llm.low_energy_max_tokens if low_energy else None,
             )
+        except LLMUnavailableError as e:
+            # 模型未加载/服务不可用（游戏模式 off）：角色化唤醒提示，不冒充"卡了"
+            logger.warning("LLM unavailable during turn: %s", e)
+            reply = "（我好像还没醒过来……模型没在运行。跑一下 bash scripts/run_lmstudio.sh 叫醒我？）"
         except Exception as e:
             logger.error("chat failed: %s", e)
             reply = "（我这边有点卡……让我缓一下，你再说一遍？）"

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -13,8 +14,17 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
+class LLMUnavailableError(RuntimeError):
+    """LLM 服务不可用：连接失败 / 模型未加载（游戏模式 off 时典型）。"""
+
+
+class LLMError(RuntimeError):
+    """LLM 服务在线但生成失败。"""
+
+
 class LLMClient:
     def __init__(self, config: dict):
+        self.config = config
         self.base_url = config.get("base_url", "http://localhost:1234/v1")
         self.model = config.get("model", "qwen3:8b")
         self.temperature = config.get("temperature", 0.8)
@@ -23,7 +33,10 @@ class LLMClient:
         self._timeout = config.get("timeout", 120.0)
 
     def chat(self, messages: list[dict], *, max_tokens: int | None = None, temperature: float | None = None) -> str:
-        """单次对话生成。messages: [{'role','content'}, ...]"""
+        """单次对话生成。messages: [{'role','content'}, ...]
+
+        错误分类：连接失败/模型未加载 → LLMUnavailableError；在线但生成失败 → LLMError。
+        """
         payload = {
             "model": self.model,
             "messages": messages,
@@ -37,9 +50,21 @@ class LLMClient:
                 resp.raise_for_status()
                 data = resp.json()
             return data["choices"][0]["message"]["content"].strip()
+        except LLMUnavailableError:
+            raise
+        except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout) as e:
+            logger.error("LLM unavailable: %s", e)
+            raise LLMUnavailableError(str(e)) from e
+        except httpx.HTTPStatusError as e:
+            # 4xx/5xx：LM Studio 模型未加载时返回 400/404
+            if e.response.status_code in (400, 404, 422):
+                logger.error("LLM model not loaded or bad request: %s", e.response.text[:200])
+                raise LLMUnavailableError(f"model not loaded: {e.response.status_code}") from e
+            logger.error("LLM server error: %s", e)
+            raise LLMError(str(e)) from e
         except Exception as e:
             logger.error("LLM chat failed: %s", e)
-            raise
+            raise LLMError(str(e)) from e
 
     def is_available(self) -> bool:
         try:
@@ -48,6 +73,24 @@ class LLMClient:
             return resp.status_code == 200
         except Exception:
             return False
+
+    def is_model_loaded(self) -> bool:
+        """检测配置的模型是否已实际加载（LM Studio 专用：lms ps 查询）。
+
+        /v1/models 在模型卸载后仍列出全部模型（无 loaded 状态），不可靠；
+        且 LM Studio 收到未加载模型的 chat 请求会自动重载（瞬间吃回显存）。
+        游戏模式下必须先查 lms ps，未加载则不应发请求。
+        """
+        lms = self.config.get("lms_path", str(Path.home() / ".lmstudio" / "bin" / "lms.exe"))
+        if not Path(lms).exists():
+            return False
+        try:
+            import subprocess
+            r = subprocess.run([lms, "ps"], capture_output=True, text=True, timeout=15)
+            return self.model in (r.stdout or "")
+        except Exception as e:
+            logger.warning("lms ps check failed: %s", e)
+            return True  # 查询失败时放行，交给 chat 异常处理
 
     def ensure_model(self) -> bool:
         """检查配置的模型是否已加载；未加载时列出可用模型。"""
