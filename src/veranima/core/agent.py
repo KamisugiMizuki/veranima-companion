@@ -1,6 +1,7 @@
 """对话引擎：消息 → 状态 → 记忆 → prompt → LLM → 回复 → 存储。
 
 MVP1 范围：人格（角色卡）+ 状态机 + 五层记忆（存/取/遗忘）+ 本地 LLM 对话。
+MVP2 范围：隐式反馈学习 + 风格参数（bandits+EMA）+ 语言镜像 + 承诺机制 + curator 整理。
 """
 
 from __future__ import annotations
@@ -8,11 +9,14 @@ from __future__ import annotations
 import logging
 import random
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from ..llm.client import LLMClient, LLMUnavailableError
 from ..llm.prompts import build_system_prompt
 from ..memory.store import MemoryStore
 from .character import CharacterCard
+from .learning import LanguageMirror, StyleLearner, extract_feedback
+from .promises import PromiseBook
 from .state import AgentState
 
 logger = logging.getLogger(__name__)
@@ -44,6 +48,31 @@ class Agent:
         self.config = config or {}
         self._history: list[dict] = []
 
+        # MVP2 学习组件（持久化到 data/，随对话更新）
+        root = self.config.get("root", ".")
+        self.style = StyleLearner(persist_path=str(Path(root) / "data" / "style.json"))
+        self.mirror = LanguageMirror(persist_path=str(Path(root) / "data" / "mirror.json"))
+        self.style.load()
+        self.mirror.load()
+        self.promises = PromiseBook(memory)
+
+    # ---------- MVP2 状态 ----------
+
+    def learning_summary(self) -> dict:
+        """学习状态摘要（/style 命令与 /status 用）。"""
+        return {
+            "params": self.style.params.snapshot(),
+            "steps": self.style._steps,
+            "mirror_top": self.mirror.stats()["top"],
+            "open_promises": len(self.promises.open_promises()),
+        }
+
+    def reset_style(self) -> dict:
+        """reset --style：回滚风格参数与镜像（核心人格不受影响）。"""
+        self.style.reset()
+        self.mirror.reset()
+        return self.learning_summary()
+
     # ---------- 公开接口 ----------
 
     def start(self) -> str:
@@ -72,12 +101,18 @@ class Agent:
         # 2. 零开销摄入：消息立即入库（FTS5 同步索引）
         self.memory.store_message("user", user_text, self.state.energy, self.state.mood)
 
-        # 3. 记忆检索（预算内注入）
+        # 3. 记忆检索（预算内注入）+ MVP2 附加块（风格/镜像/承诺）
+        query_hint = user_text
         system = build_system_prompt(
             self.card, self.state, self.memory,
             core_profile_budget=self.config.get("memory", {}).get("core_profile_budget", 1200),
             section_budget=self.config.get("memory", {}).get("section_budget", 1600),
             session_budget=self.config.get("memory", {}).get("session_budget", 600),
+            extra_blocks=[
+                self.style.params.to_prompt_block(),
+                self.mirror.to_prompt_block(),
+                self.promises.to_prompt_block(query_hint=query_hint),
+            ],
         )
 
         # 4. 组装对话（历史 + 当前）
@@ -123,6 +158,20 @@ class Agent:
 
         # 8. 事件记忆提取（延迟整理简化版：每 4 轮提取一次情节记忆）
         self._maybe_extract_events(user_text)
+
+        # 8.5 MVP2 学习：隐式反馈 → 风格参数 + 语言镜像 + 承诺识别
+        prev_reply = self._history[-3]["content"] if len(self._history) >= 3 else ""
+        sig = extract_feedback(user_text, reply, prev_reply)
+        self.style.observe(sig)
+        self.mirror.observe(user_text)
+        self.promises.record(user_text)
+        # curator 整理（每 8 轮）+ 持久化（每 20 轮）
+        if self.state.total_messages % 8 == 0:
+            result = self.memory.curate()
+            logger.info("curator: %s", result.get("ops"))
+        if self.state.total_messages % 20 == 0:
+            self.style.save()
+            self.mirror.save()
 
         # 9. 主动发言（低概率，MVP1 简化）
         proactive_msg = ""
@@ -194,7 +243,7 @@ class Agent:
                 "semantic",
                 user_text[:100],
                 importance=0.7,
-                confidence=0.5,
+                confidence=0.6,
                 provenance="auto-extract",
                 category="preference",
             )

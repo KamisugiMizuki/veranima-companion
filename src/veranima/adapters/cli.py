@@ -14,8 +14,10 @@ logger = logging.getLogger(__name__)
 
 HELP_TEXT = """/help       显示帮助
 /status     查看当前状态（精力/情绪/依恋度/记忆量）
-/forget <词> 删除包含该词的所有记忆（隐私擦除）
+/style      查看学习到的风格参数与语言镜像
+/reset --style  回滚风格参数（核心人格不受影响）
 /memory     查看记忆统计
+/forget <词> 删除包含该词的所有记忆（隐私擦除）
 /quit       退出
 直接输入内容即对话"""
 
@@ -67,6 +69,23 @@ class CLIAdapter:
         elif op == "/memory":
             counts = self.agent.memory.curate().get("counts", {})
             c.print("记忆分布：" + "  ".join(f"{k}={v}" for k, v in counts.items()))
+        elif op == "/style":
+            ls = self.agent.learning_summary()
+            params = ls["params"]
+            c.print(
+                f"风格参数（{ls['steps']} 轮学习）："
+                f"长度 {params['reply_length']:.2f} | 正式度 {params['formality']:.2f} | "
+                f"幽默 {params['humor']:.2f} | 话题跟随 {params['topic_follow']:.2f}"
+            )
+            if ls["mirror_top"]:
+                c.print("用户高频词：" + " ".join(f"{w}×{n}" for w, n in list(ls["mirror_top"].items())[:6]))
+            c.print(f"未兑现承诺：{ls['open_promises']} 条")
+        elif op == "/reset":
+            if arg == "--style":
+                ls = self.agent.reset_style()
+                c.print(f"风格已回滚为默认（{ls['steps']} 轮学习清零）。核心人格不受影响。")
+            else:
+                c.print("用法：/reset --style  （回滚学习到的风格参数与语言镜像）")
         elif op == "/forget":
             if not arg:
                 c.print("用法：/forget <关键词>")

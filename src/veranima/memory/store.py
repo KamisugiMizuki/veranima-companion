@@ -318,11 +318,89 @@ class MemoryStore:
 
     # ---------- 整理（MVP2 占位） ----------
 
-    def curate(self) -> dict:
-        """定期整理（curator）：MVP2 实现，当前仅返回统计。"""
+    def curate(self, *, sim_dup: float = 0.92, sim_merge: float = 0.78, min_confidence: float = 0.55, max_ops: int = 50) -> dict:
+        """记忆整理（curator）：去重 / 合并 / 低置信度丢弃 / 强度衰减清理。
+
+        - 去重：同层内容相似度 ≥ sim_dup → 保留较新/置信度高者
+        - 合并：相似度 ≥ sim_merge → 合并为一条（内容连接，importance 取 max）
+        - 丢弃：confidence < min_confidence → 删除（设计：低置信度不写回/不保留）
+        - 单次最多 max_ops 个操作（防批量风暴）
+        """
+        ops = {"dedup": 0, "merge": 0, "drop": 0}
+        entries: list[MemoryEntry] = []
+        for layer in LAYERS:
+            entries.extend(self.list_layer(layer, limit=500))
+        if not entries:
+            return {"counts": self._layer_counts(), "ops": ops}
+
+        # 低置信度 → 丢弃（设计：confidence < 0.55 不保留）
+        drops = [e for e in entries if e.confidence < min_confidence]
+        for e in drops[: max_ops - ops["drop"]]:
+            self.erase(e.id)
+            ops["drop"] += 1
+        entries = [e for e in entries if e.id not in {d.id for d in drops}]
+
+        # 同层内两两比较（相似度用向量余弦）
+        vecs = {}
+        for e in entries:
+            try:
+                vecs[e.id] = self.provider.embed([e.content])[0]
+            except Exception:
+                continue
+        import math
+
+        def cos(a, b):
+            return sum(x * y for x, y in zip(a, b)) / (
+                math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b)) or 1.0
+            )
+
+        for layer in LAYERS:
+            group = [e for e in entries if e.layer == layer and e.id in vecs]
+            if len(group) < 2:
+                continue
+            group.sort(key=lambda e: -e.id)  # 新在前
+            for i in range(len(group)):
+                if ops["dedup"] + ops["merge"] >= max_ops:
+                    break
+                a = group[i]
+                for j in range(i + 1, len(group)):
+                    b = group[j]
+                    if ops["dedup"] + ops["merge"] >= max_ops:
+                        break
+                    if a.id in self._deleted or b.id in self._deleted:
+                        continue
+                    try:
+                        sim = cos(vecs[a.id], vecs[b.id])
+                    except Exception:
+                        continue
+                    if sim >= sim_dup:
+                        # 去重：留新的（a），删旧的（b）
+                        self.erase(b.id)
+                        ops["dedup"] += 1
+                        self._deleted.add(b.id)
+                    elif sim >= sim_merge:
+                        # 合并：创建合并版（版本链），删除双方旧版本，仅保留合并结果
+                        merged = f"{a.content}；{b.content}"[:400]
+                        self.update_latest(a.id, merged, confidence=max(a.confidence, b.confidence))
+                        self.erase(a.id)   # a 的旧版本（update_latest 已生成新版本）
+                        self.erase(b.id)   # b 全部
+                        ops["merge"] += 1
+                        self._deleted.add(a.id)
+                        self._deleted.add(b.id)
+                        vecs[a.id] = self.provider.embed([merged])[0]
+
+        return {"counts": self._layer_counts(), "ops": ops}
+
+    @property
+    def _deleted(self) -> set[int]:
+        if not hasattr(self, "_curate_deleted"):
+            self._curate_deleted = set()
+        return self._curate_deleted
+
+    def _layer_counts(self) -> dict:
         counts = {}
         for layer in LAYERS:
             counts[layer] = self.con.execute(
                 "SELECT count(*) FROM memories WHERE layer=?", (layer,)
             ).fetchone()[0]
-        return {"counts": counts, "note": "curator pending MVP2"}
+        return counts

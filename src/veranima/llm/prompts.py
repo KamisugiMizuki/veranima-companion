@@ -23,8 +23,9 @@ def build_system_prompt(
     core_profile_budget: int = 1200,
     section_budget: int = 1600,
     session_budget: int = 600,
+    extra_blocks: list[str] | None = None,
 ) -> str:
-    """按预算组装系统 prompt。记忆按层注入，超出预算截断。"""
+    """按预算组装系统 prompt。记忆按层注入，超出预算截断。extra_blocks 为附加块（学习参数/镜像/承诺）。"""
     parts = [card.to_system_prompt()]
     parts.append(state.to_prompt_block())
 
@@ -62,6 +63,11 @@ def build_system_prompt(
         if len(joined) > session_budget:
             joined = joined[:session_budget] + "…"
         parts.append("【本次会话】\n" + joined)
+
+    # 附加块（MVP2：风格参数 / 语言镜像 / 承诺提醒）
+    for block in (extra_blocks or []):
+        if block:
+            parts.append(block)
 
     return "\n".join(parts)
 
