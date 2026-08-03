@@ -180,7 +180,7 @@ Neo4j、Milvus/Qdrant、PostgreSQL、Redis、Celery、Elasticsearch、Drools、P
 | Python（FastAPI 或 CLI） | 主实现语言 |
 | SQLite | 记忆/事实/承诺/状态存储 |
 | sqlite-vec 或 Chroma | 向量检索（模糊回忆） |
-| Qwen3-8B Q4（LM Studio 加载） | 对话生成（已确认；显存 ~5GB，与游戏共存无压力，可随时升 14B） |
+| Qwen3-8B Q4（LM Studio 加载） | 对话生成（已确认；显存 ~9.2GB 总占用，与游戏共存） |
 | bge-m3 embedding | 本地向量化 |
 | APScheduler | 遗忘衰减/定时问候/月报 |
 | TTS（~~Qwen3-TTS~~） | ~~语音陪伴增量~~：已降级为"大概率不实现"，不列入路线图 |
@@ -188,7 +188,6 @@ Neo4j、Milvus/Qdrant、PostgreSQL、Redis、Celery、Elasticsearch、Drools、P
 全部本地化，单进程可跑，隐私天然好。
 
 ### 外部依赖清单（2026-08 调研确认）
-
 **直接取用（协议干净）**
 
 | 依赖 | 用途 | 协议 | 备注 |
@@ -216,6 +215,19 @@ Neo4j、Milvus/Qdrant、PostgreSQL、Redis、Celery、Elasticsearch、Drools、P
 - 人格演化参数管理（bandits 负责学习部分）
 - 主动发言调度（APScheduler + 自写决策）
 - 虚拟日常/微功能
+
+### LLM 运行时参数（LM Studio，实测 2026-08）
+
+加载命令（已固化到 `scripts/run_lmstudio.sh`）：
+
+```bash
+lms load qwen3-8b -c 16384 --parallel 1
+```
+
+- **context 16384**：与游戏共存的关键参数。实测 160K → 13.9GB（不可游戏）；32K → 11.6GB；16K → 9.2GB（剩 ~7GB 给游戏）。16K 对陪伴对话足够（实际 prompt 仅几百 token）
+- **parallel 1**：单并行槽，避免多 slot 预分配 KV cache
+- Cache Quantization（Q8_0/Q4_0）：LM Studio GUI 可设，压缩 KV cache 精度，**无需换模型**；16K 下收益小（KV 仅 ~1.2GB），暂不启用
+- 游戏时如显存仍紧张，可进一步降 context（8K 也够用）
 
 ---
 
