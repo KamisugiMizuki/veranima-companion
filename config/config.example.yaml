@@ -1,0 +1,46 @@
+# Veranima 默认配置模板
+# 复制为 config.yaml 使用（config.yaml 不入库）；留空值使用代码内默认。
+
+# LLM（Ollama）
+llm:
+  host: "http://localhost:11434"
+  model: "qwen3:8b"
+  temperature: 0.8
+  max_tokens: 1024
+  # 低精力时的简短回复配置
+  low_energy_max_tokens: 256
+
+# 角色卡（CCv3 兼容 JSON；留空则用内置示例卡）
+character_card: "config/character.json"
+
+# 记忆
+memory:
+  db_path: "data/veranima.db"
+  embedding_model: "local:data/models/bge-m3"   # ModelScope 下载的本地模型；或 ollama:bge-m3
+  recall_top_k: 5
+  recall_threshold: 0.3
+  core_profile_budget: 1200             # 字符预算
+  section_budget: 1600
+  session_budget: 600
+  # 遗忘衰减
+  decay_enabled: true
+  decay_interval_minutes: 60            # 后台衰减任务间隔
+  importance_base_s: 2592000            # 重要性=0.5 时半衰期（秒，默认30天）
+
+# 状态
+state:
+  energy_max: 100
+  energy_decay_per_minute: 0.02         # 每分钟衰减
+  energy_recover_per_message: 3.0       # 每条消息恢复
+  attachment_growth: 0.05               # 每轮依恋度增长
+
+# 对话
+chat:
+  history_max_messages: 20              # 注入的近期对话条数
+  curator_turns: 8                      # 每 N 轮触发整理（MVP2）
+  proactive_message_prob: 0.1           # 每轮主动发言概率（MVP1 简化）
+
+# CLI
+cli:
+  prompt_style: "rich"                  # rich / plain
+  user_name: "你"

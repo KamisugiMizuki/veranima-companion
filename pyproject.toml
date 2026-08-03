@@ -1,0 +1,23 @@
+[project]
+name = "veranima-companion"
+version = "0.1.0"
+description = "一个给予用户真实感的情感陪伴 agent：固定人格 + 长期记忆与遗忘 + 学习式自我修改"
+requires-python = ">=3.11"
+dependencies = [
+    "ollama>=0.6",
+    "aiocqhttp>=1.4",
+    "bayesianbandits>=1.4",
+    "rich>=13",
+    "prompt-toolkit>=3.0",
+    "APScheduler>=3.10",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
