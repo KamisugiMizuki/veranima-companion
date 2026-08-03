@@ -1,14 +1,21 @@
 # Veranima 默认配置模板
 # 复制为 config.yaml 使用（config.yaml 不入库）；留空值使用代码内默认。
+#
+# LLM 三种模式（任一即可，无需搭本地环境）：
+#   1. 远程 API：填 base_url + api_key + model（DeepSeek/通义/硅基流动等 OpenAI 兼容服务）
+#   2. 本地 LM Studio：base_url=http://localhost:12345/v1，api_key 留空，需加载模型
+#   3. 本地 Ollama：base_url=http://localhost:11434/v1，api_key 留空
 
-# LLM（OpenAI 兼容：LM Studio）
+# LLM（OpenAI 兼容）
 llm:
-  base_url: "http://localhost:12345/v1"   # LM Studio 本地服务器
-  model: "qwen3-8b"                       # LM Studio 加载的模型（ModelScope 下载的 GGUF，见 DESIGN.md）
+  base_url: "http://localhost:12345/v1"   # 远程 API 示例：https://api.deepseek.com/v1
+  model: "qwen3-8b"                       # 远程 API 示例：deepseek-chat / qwen-plus
+  api_key: ""                             # 远程 API 填 key；本地 LM Studio/Ollama 留空
   temperature: 0.8
   max_tokens: 1024
   # 低精力时的简短回复配置
   low_energy_max_tokens: 256
+  timeout: 120
 
 # 角色卡（CCv3 兼容 JSON；留空则用内置示例卡）
 character_card: "config/character.json"
@@ -16,7 +23,11 @@ character_card: "config/character.json"
 # 记忆
 memory:
   db_path: "data/veranima.db"
-  embedding_model: "local:data/models/bge-m3"   # ModelScope 下载的本地模型；或 ollama:bge-m3
+  # embedding 三种模式：
+  #   local:data/models/bge-m3  → 本地模型（ModelScope 下载，隐私最好）
+  #   openai:bge-m3              → API embedding（复用 llm 的 base_url/api_key）
+  #   ollama:bge-m3              → Ollama embedding
+  embedding_model: "local:data/models/bge-m3"
   recall_top_k: 5
   recall_threshold: 0.3
   core_profile_budget: 1200             # 字符预算

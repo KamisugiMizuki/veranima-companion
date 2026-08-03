@@ -1,12 +1,12 @@
-"""Embedding provider：fastembed（本地 ONNX）或 Ollama embedding。
-
-优先 fastembed；若模型缺失/加载失败，回退 ollama（模型名以 "ollama:" 前缀配置）。
-"""
+"""Embedding provider：本地 sentence-transformers / OpenAI 兼容 API / Ollama / fastembed。"""
 
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Protocol
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -78,16 +78,54 @@ class SentenceTransformersProvider:
         return [v.tolist() for v in vecs]
 
 
-def make_provider(config: dict) -> EmbeddingProvider:
+class OpenAIEmbedProvider:
+    """OpenAI 兼容 embeddings API（/v1/embeddings）。
+
+    远程 API（DeepSeek/通义/硅基流动等）或本地 LM Studio 均可；
+    base_url/api_key 复用 llm 段配置。模型名如 'bge-m3'（LM Studio）/ 'text-embedding-v4'（通义）。
+    """
+
+    def __init__(self, base_url: str, api_key: str = "", model: str = "bge-m3", dim: int = 1024):
+        self.base_url = base_url
+        self.api_key = api_key
+        self.model = model
+        self.dim = dim
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+        payload = {"model": self.model, "input": texts}
+        with httpx.Client(timeout=120) as client:
+            resp = client.post(f"{self.base_url}/embeddings", json=payload, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+        # 按 index 排序，保证与输入顺序一致
+        items = sorted(data["data"], key=lambda d: d.get("index", 0))
+        return [list(d["embedding"]) for d in items]
+
+
+def make_provider(config: dict, llm_config: dict | None = None) -> EmbeddingProvider:
     """按配置构造 provider。
 
     - 'local:<path>'：本地 sentence-transformers（ModelScope 下载）
-    - 'BAAI/bge-m3' 等：fastembed（HF 下载，慎用）
+    - 'openai:<model>'：OpenAI 兼容 /v1/embeddings（复用 llm 段 base_url/api_key）
     - 'ollama:<model>'：Ollama embedding
+    - 'BAAI/bge-m3' 等：fastembed（HF 下载，慎用）
     """
+    llm_config = llm_config or {}
     spec = config.get("embedding_model", "")
     if spec.startswith("local:"):
-        return SentenceTransformersProvider(spec.split(":", 1)[1])
+        path = spec.split(":", 1)[1]
+        if Path(path).exists():
+            return SentenceTransformersProvider(path)
+        # 本地模型缺失（他人 clone 场景）：尝试 API 模式，无则清晰报错
+        if llm_config.get("api_key") or llm_config.get("base_url"):
+            logger.warning("local embedding model %s missing, falling back to openai-compatible API", path)
+            return OpenAIEmbedProvider(llm_config.get("base_url", ""), llm_config.get("api_key", ""))
+        raise RuntimeError(
+            f"embedding 本地模型不存在: {path}。请下载（ModelScope BAAI/bge-m3）或配置 openai:<model> 使用 API。"
+        )
+    if spec.startswith("openai:"):
+        return OpenAIEmbedProvider(llm_config.get("base_url", ""), llm_config.get("api_key", ""), spec.split(":", 1)[1])
     if spec.startswith("ollama:"):
         return OllamaEmbedProvider(config.get("host", "http://localhost:11434"), spec.split(":", 1)[1])
     try:

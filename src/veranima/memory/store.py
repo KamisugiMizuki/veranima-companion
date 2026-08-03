@@ -51,9 +51,11 @@ class MemoryStore:
         db_path: str = "data/veranima.db",
         config: dict | None = None,
         provider: EmbeddingProvider | None = None,
+        llm_config: dict | None = None,
     ):
         self.config = config or {}
-        self.provider = provider or make_provider(self.config)
+        self.llm_config = llm_config or {}
+        self.provider = provider or make_provider(self.config, self.llm_config)
         self.con = init_db(db_path, dim=self.provider.dim)
         self._vec_ok = self._check_vec()
 

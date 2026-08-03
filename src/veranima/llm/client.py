@@ -27,10 +27,14 @@ class LLMClient:
         self.config = config
         self.base_url = config.get("base_url", "http://localhost:1234/v1")
         self.model = config.get("model", "qwen3:8b")
+        self.api_key = config.get("api_key", "")
         self.temperature = config.get("temperature", 0.8)
         self.max_tokens = config.get("max_tokens", 1024)
         self.low_energy_max_tokens = config.get("low_energy_max_tokens", 256)
         self._timeout = config.get("timeout", 120.0)
+
+    def _headers(self) -> dict:
+        return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
 
     def chat(self, messages: list[dict], *, max_tokens: int | None = None, temperature: float | None = None) -> str:
         """单次对话生成。messages: [{'role','content'}, ...]
@@ -46,7 +50,7 @@ class LLMClient:
         }
         try:
             with httpx.Client(timeout=self._timeout) as client:
-                resp = client.post(f"{self.base_url}/chat/completions", json=payload)
+                resp = client.post(f"{self.base_url}/chat/completions", json=payload, headers=self._headers())
                 resp.raise_for_status()
                 data = resp.json()
             return data["choices"][0]["message"]["content"].strip()
@@ -75,15 +79,19 @@ class LLMClient:
             return False
 
     def is_model_loaded(self) -> bool:
-        """检测配置的模型是否已实际加载（LM Studio 专用：lms ps 查询）。
+        """检测配置的模型是否已实际加载（LM Studio 本地模式专用：lms ps 查询）。
 
         /v1/models 在模型卸载后仍列出全部模型（无 loaded 状态），不可靠；
         且 LM Studio 收到未加载模型的 chat 请求会自动重载（瞬间吃回显存）。
         游戏模式下必须先查 lms ps，未加载则不应发请求。
+
+        远程 API 模式（配置了 api_key）或无本地 lms：视为始终可用，放行交给 chat 异常处理。
         """
+        if self.api_key:
+            return True  # 远程 API：无"加载"概念
         lms = self.config.get("lms_path", str(Path.home() / ".lmstudio" / "bin" / "lms.exe"))
         if not Path(lms).exists():
-            return False
+            return True  # 非 LM Studio 本地模式（如 Ollama 或其他兼容服务）：放行
         try:
             import subprocess
             r = subprocess.run([lms, "ps"], capture_output=True, text=True, timeout=15)

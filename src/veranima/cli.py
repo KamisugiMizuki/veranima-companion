@@ -32,9 +32,10 @@ def main() -> int:
         logging.info("no character card found, using builtin default")
 
     # 记忆
-    memory_cfg = {**cfg.get("memory", {}), "host": cfg.get("llm", {}).get("base_url", "http://localhost:1234/v1")}
+    llm_cfg = cfg.get("llm", {})
+    memory_cfg = {**cfg.get("memory", {}), "host": llm_cfg.get("base_url", "http://localhost:12345/v1")}
     db_path = resolve_path(memory_cfg, "db_path") or "data/veranima.db"
-    memory = MemoryStore(db_path=db_path, config=memory_cfg)
+    memory = MemoryStore(db_path=db_path, config=memory_cfg, llm_config=llm_cfg)
 
     # LLM
     llm = LLMClient(cfg.get("llm", {}))

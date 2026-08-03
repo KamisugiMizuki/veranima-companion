@@ -14,8 +14,29 @@
 
 ## 技术栈
 
-Python + SQLite(sqlite-vec/FTS5) + Qwen3-8B(Ollama) + bge-m3 embedding + APScheduler
+Python + SQLite(sqlite-vec/FTS5) + Qwen3-8B + bge-m3 embedding
+
+## 快速开始
+
+```bash
+# 1. 环境（Python 3.11+）
+python -m venv .venv
+.venv/Scripts/pip install -e .
+
+# 2. 配置（二选一）
+#   方式 A：远程 API（无需本地模型环境）
+cp config/config.example.yaml config/config.yaml
+# 编辑 config.yaml：llm.base_url / llm.api_key / llm.model（如 DeepSeek/通义）
+# 并把 memory.embedding_model 改为 openai:<你的embedding模型>
+
+#   方式 B：本地 LM Studio
+#   下载 Qwen3-8B GGUF（ModelScope Qwen/Qwen3-8B-GGUF），放入 LM Studio 模型库
+#   bash scripts/run_lmstudio.sh
+
+# 3. 运行
+.venv/Scripts/python -m veranima.cli
+```
 
 ## 状态
 
-方案已收敛，未开工。实现按 MVP1（人格 + 状态机 + 五层记忆 + 本地 LLM 对话 + CLI）开始。
+MVP1 完成（人格 + 状态机 + 五层记忆 + 本地/远程 LLM 对话 + CLI）。
