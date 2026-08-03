@@ -44,6 +44,21 @@ veranima-companion/
 | `config/` | 配置模板 | 只放模板（`*.example.*`），实际配置生成到 `data/` 或本地，不入库 |
 | `data/` | 运行时数据 | SQLite 库、向量索引、日志、导出、模型缓存；**全部 gitignore，由程序自动创建** |
 
+## 2.1 虚拟环境（venv）规范
+
+- **位置**：`.venv/`（gitignore 已覆盖）
+- **Python 版本**：3.14（系统 `C:\Program Files\Python314\python.exe`）
+- **创建方式**（已建，重建命令）：
+  ```bash
+  "/c/Program Files/Python314/python.exe" -m venv --system-site-packages .venv
+  ```
+  `--system-site-packages` 复用系统 Python 3.14 已装的大包（torch/sqlite-vec/fastembed/rich/APScheduler 等），不重复下载；venv 内只需安装 venv 专属小包
+- **必守规则**：
+  - 任何使用本项目 venv 的命令**必须先 `unset PYTHONPATH`**（hermes 的 venv 会经 PYTHONPATH 污染本项目环境，导致 DLL 不兼容）
+  - pip 一律走清华源：`-i https://pypi.tuna.tsinghua.edu.cn/simple`
+  - 新增依赖时优先检查系统 3.14 是否已有（`"/c/Program Files/Python314/python.exe" -m pip list`），已有则不重复安装
+  - 新装包验证：`.venv/Scripts/python.exe -c "import <包名>"`
+
 ## 3. 模块划分原则（src/veranima/）
 
 - 按 DESIGN.md 的功能章节对应建包：`memory/`、`core/`（人格+状态+学习）、`llm/`、`adapters/`

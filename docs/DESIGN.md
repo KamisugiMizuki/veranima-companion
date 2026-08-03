@@ -198,7 +198,7 @@ Neo4j、Milvus/Qdrant、PostgreSQL、Redis、Celery、Elasticsearch、Drools、P
 | rich | CLI 界面 | MIT | |
 | python-prompt-toolkit | CLI 交互 | BSD-3 | |
 | aiocqhttp | OneBot v11 接入（NapCatQQ） | MIT | 嵌 adapter 用，不上 nonebot2 全家桶 |
-| bandits | 风格参数学习（多臂老虎机） | Apache-2.0 | |
+| bandits→bayesianbandits | 风格参数学习（多臂老虎机） | MIT | 原 bandits 库在 Python 3.14 无 wheel 且不兼容 numpy 2.x，改用 bayesianbandits 1.4.0 |
 | transitions | 状态机（可选，手写亦可） | MIT | |
 | character-card-spec-v3 | 角色卡格式（仅格式参考） | MIT | 兼容 CCv3，不抄 SillyTavern 代码（AGPL） |
 
