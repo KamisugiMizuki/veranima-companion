@@ -33,7 +33,11 @@ def main() -> int:
 
     # 记忆
     llm_cfg = cfg.get("llm", {})
-    memory_cfg = {**cfg.get("memory", {}), "host": llm_cfg.get("base_url", "http://localhost:12345/v1")}
+    memory_cfg = {
+        **cfg.get("memory", {}),
+        "host": llm_cfg.get("base_url", "http://localhost:12345/v1"),
+        "root": cfg.get("root", str(Path.cwd())),
+    }
     db_path = resolve_path(memory_cfg, "db_path") or "data/veranima.db"
     memory = MemoryStore(db_path=db_path, config=memory_cfg, llm_config=llm_cfg)
 

@@ -110,9 +110,24 @@ def make_provider(config: dict, llm_config: dict | None = None) -> EmbeddingProv
     - 'openai:<model>'：OpenAI 兼容 /v1/embeddings（复用 llm 段 base_url/api_key）
     - 'ollama:<model>'：Ollama embedding
     - 'BAAI/bge-m3' 等：fastembed（HF 下载，慎用）
+    - 空/缺失：自动尝试 root/data/models/bge-m3 → ollama → 清晰报错
     """
     llm_config = llm_config or {}
-    spec = config.get("embedding_model", "")
+    spec = (config.get("embedding_model") or "").strip()
+
+    if not spec:
+        # 配置缺省：尝试项目内本地模型（root 由 cli.py 注入），再 ollama，最后清晰报错
+        root = config.get("root") or config.get("project_root") or "."
+        local_default = Path(root) / "data" / "models" / "bge-m3"
+        if local_default.exists():
+            logger.info("embedding_model 未配置，自动使用 %s", local_default)
+            return SentenceTransformersProvider(str(local_default))
+        if llm_config.get("api_key") or llm_config.get("base_url"):
+            logger.warning("embedding_model 未配置且无本地模型，回退 OpenAI 兼容 API")
+            return OpenAIEmbedProvider(llm_config.get("base_url", ""), llm_config.get("api_key", ""))
+        logger.warning("embedding_model 未配置且无本地模型，回退 Ollama embedding")
+        return OllamaEmbedProvider(config.get("host", "http://localhost:11434"), "bge-m3")
+
     if spec.startswith("local:"):
         path = spec.split(":", 1)[1]
         if Path(path).exists():
