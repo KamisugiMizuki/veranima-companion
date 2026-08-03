@@ -36,8 +36,11 @@ def test_rational_card_not_polluted():
 
 
 def test_communication_style_injected():
-    """小V 卡的 communication_style 注入 prompt。"""
-    card = CharacterCard.from_file("config/character.json")
+    """communication_style 字段注入 prompt（机制验证，不依赖运行时卡内容）。"""
+    card = CharacterCard(
+        name="测试卡",
+        veranima={"communication_style": "先回应情绪，再展开内容；固定生活锚点（窗台的绿萝）"},
+    )
     sp = card.to_system_prompt()
     assert "【沟通风格】" in sp
     assert "绿萝" in sp
