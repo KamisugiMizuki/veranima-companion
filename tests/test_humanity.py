@@ -113,6 +113,35 @@ def test_extract_emotion_detected(agent):
     assert any((e.meta or {}).get("emotion") == "很开心" for e in sem)
 
 
+# ---------- 8.7.4 离线思考（迟来的回应） ----------
+
+def test_late_reply_uses_last_user_msg(agent):
+    agent.memory.store_message("user", "下周要去面试了，有点紧张", 80, "平静")
+    llm = agent.llm
+    msg = agent.late_reply()
+    assert llm.calls == 1
+    assert "面试" in llm.last_prompt  # 最近一条用户消息进了生成 prompt
+    assert msg
+
+
+def test_late_reply_fallback_without_llm(agent):
+    agent.llm = FakeLLM()
+    agent.llm.is_model_loaded = lambda: False
+    msg = agent.late_reply()
+    assert msg  # 模板池降级
+
+
+def test_late_reply_low_energy_skip(agent):
+    agent.state.energy = 10
+    assert agent.late_reply() == ""
+
+
+def test_late_reply_stored_to_memory(agent):
+    agent.late_reply()
+    recent = agent.memory.recent_messages(limit=3)
+    assert any(m["role"] == "assistant" for m in recent)
+
+
 # ---------- 8.7.5 个性化问候 ----------
 
 def test_greeting_uses_recent_context(agent):

@@ -27,10 +27,6 @@ class CLIAdapter:
     def __init__(self, agent: Agent, console: Console | None = None):
         self.agent = agent
         self.console = console or Console()
-        # MVP3 主动触发状态（定时问候 + 节庆纪念，每日去重）
-        from ..core.proactive import GreetingScheduler, OccasionChecker
-        self.greeter = GreetingScheduler()
-        self.occasion = OccasionChecker()
 
     def run(self) -> None:
         c = self.console
@@ -73,18 +69,9 @@ class CLIAdapter:
             sys.exit(1)
 
     def _tick_proactive(self) -> None:
-        """定时问候 + 节庆纪念检查（幂等：每日去重）。"""
-        slot = self.greeter.due_greeting()
-        if slot:
-            # 8.7.5 个性化问候（结合最近记忆；LLM 不可用回退模板）
-            msg = self.agent.greeting_message(slot)
+        """定时问候 + 节庆纪念检查（复用 agent.tick_proactive，每日去重）。"""
+        for msg in self.agent.tick_proactive():
             self.console.print(f"[dim cyan]{self.agent.card.name}（主动）[/]：{msg}")
-            self.agent.memory.store_message("assistant", msg, self.agent.state.energy, self.agent.state.mood)
-        occasion = self.occasion.due_occasion(self.agent.memory)
-        if occasion:
-            msg = self.occasion.occasion_reaction(occasion, self.agent.card.name)
-            self.console.print(f"[dim cyan]{self.agent.card.name}（主动）[/]：{msg}")
-            self.agent.memory.store_message("assistant", msg, self.agent.state.energy, self.agent.state.mood)
 
     def _dispatch(self, cmd: str) -> None:
         c = self.console

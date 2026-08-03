@@ -7,7 +7,7 @@
 - 核心框架：✅ 已确认（源自 structure_design.md，经可行性评估修正）
 - 运行形态：✅ 已定 —— 先 CLI 验证整体跑通，之后以 **NapCatQQ** 接入（OneBot 协议，WebSocket 对接），仅**指定 QQ 帐号**与 bot 1v1 私聊（adapter 层做 QQ 号白名单过滤）
 - 部署形态：✅ 已定 —— **本地部署**（NapCatQQ 与本项目均跑在本机，全链路本地，数据不出机器）
-- 实现状态：⏸ 未开工，方案已收敛，等待开工
+- 实现状态：✅ MVP1~3 已完成；**NapCatQQ 接入已完成（2026-08，OneBot v11 反向 WebSocket + QQ 号白名单 + 主动消息 + 8.7.4 离线思考）**；8.6 图像能力未实现
 
 ---
 
@@ -276,11 +276,12 @@ Agent 的形象由一份**角色卡（character card）**定义，不写死在�
 - 角色卡 `personality` 从抽象形容词改为**行为习惯式**描述（"习惯在句尾带'呢'""回应前先重复用户关键词"）——具体指令比抽象标签对 LLM 更有效
 - 模板（CHARACTER_TEMPLATE.md）同步更新规范：personality 字段必须包含至少 2 条可观察行为习惯
 
-### 8.7.4 离线思考（异步感，设计 —— 待 NapCatQQ 接入时实现）
+### 8.7.4 离线思考（异步感，已实现 2026-08）
 
 - 对话静默 N 分钟后，bot 主动发一条"迟来的回应"（"刚才你说到的那本书，我查了一下……"）
 - 实现思路：对话时间戳 + 定时器 → 记忆检索 + LLM 生成 → OneBot 主动消息
 - CLI 场景不实现（用户可能只是离开，主动消息=打扰）；仅 QQ 形态启用，且低概率触发
+- 实现（2026-08）：`Agent.late_reply()` 生成"迟来的回应"（结合最近用户消息；低精力/模型未加载不触发）；`adapters/qq.OfflineThinkTimer` 做静默窗口判定（默认 30 分钟 + 0.3 概率，触发后需再静默满一个窗口，防刷屏）；配置 `qq.offline_think.*`
 
 ### 8.7.5 问候仪式感增强（已实现）
 
@@ -324,7 +325,7 @@ Neo4j、Milvus/Qdrant、PostgreSQL、Redis、Celery、Elasticsearch、Drools、P
 | sqlite-vec | 向量检索 | Apache-2.0 | SQLite 扩展 |
 | rich | CLI 界面 | MIT | |
 | python-prompt-toolkit | CLI 交互 | BSD-3 | |
-| aiocqhttp | OneBot v11 接入（NapCatQQ） | MIT | 嵌 adapter 用，不上 nonebot2 全家桶 |
+| aiocqhttp | OneBot v11 接入（NapCatQQ，已实现） | MIT | 嵌 adapter 用，不上 nonebot2 全家桶；反向 WebSocket（bot 监听 /ws，NapCat 作 WS 客户端连入） |
 | bandits→bayesianbandits | 风格参数学习（多臂老虎机） | MIT | 原 bandits 库在 Python 3.14 无 wheel 且不兼容 numpy 2.x，改用 bayesianbandits 1.4.0 |
 | transitions | 状态机（可选，手写亦可） | MIT | |
 | character-card-spec-v3 | 角色卡格式（仅格式参考） | MIT | 兼容 CCv3，不抄 SillyTavern 代码（AGPL） |
@@ -365,6 +366,7 @@ lms load qwen3-8b -c 16384 --parallel 1
 2. **MVP2**：隐式反馈 + 风格参数学习 + 语言镜像 + 承诺机制
 3. **MVP3**：月度回顾、视觉素材（TTS 已剔除，大概率不实现）
 4. **联网搜索（独立于 MVP 分期）**：SearXNG 基础设施已就绪（2026-08），agent 接入（方案 A 工具调用，见 8.5 节）随功能迭代逐步实现
+5. **NapCatQQ 接入（2026-08 完成）**：OneBot v11 反向 WebSocket（aiocqhttp），QQ 号白名单 1v1 私聊，定时问候/节庆/离线思考主动消息；入口 `python -m veranima.qq`，配置见 `qq` 段
 
 ---
 

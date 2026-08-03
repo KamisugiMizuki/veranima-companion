@@ -78,3 +78,65 @@ def test_occasion_reaction_birthday():
     r = OccasionChecker.occasion_reaction("今天好像是你的特别日子：我的生日是3月14日")
     assert "生日" in r
     assert "谢谢你" in r
+
+
+# ---------- Agent.tick_proactive（问候 + 节庆接线） ----------
+
+class FakeLLM:
+    def __init__(self, reply="早呀"):
+        self.reply = reply
+        self.calls = 0
+
+    def chat(self, messages, **kw):
+        self.calls += 1
+        return self.reply
+
+    def is_model_loaded(self):
+        return True
+
+    low_energy_max_tokens = 256
+
+
+@pytest.fixture
+def agent(tmp_path):
+    from veranima.core.agent import Agent
+    from veranima.core.character import CharacterCard
+    from veranima.core.state import AgentState
+
+    card = CharacterCard(name="小V", description="测试", personality="温柔")
+    return Agent(
+        card=card,
+        memory=MemoryStore(db_path=str(tmp_path / "t.db"), config={}, provider=FakeEmbed()),
+        llm=FakeLLM(),
+        state=AgentState(),
+        config={},
+    )
+
+
+def test_tick_proactive_morning_greeting(agent):
+    agent.memory.store_message("user", "昨天面试通过了", 80, "开心")
+    msgs = agent.tick_proactive(now=datetime.datetime(2026, 8, 3, 8, 0))
+    assert len(msgs) == 1
+    assert agent.llm.calls == 1  # 有最近上下文 → 个性化问候走 LLM
+    # 已入档 memory（recent_messages 正序，最新在末尾）
+    recent = agent.memory.recent_messages(limit=3)
+    assert recent[-1]["role"] == "assistant"
+
+
+def test_tick_proactive_holiday(agent):
+    """1月1日 15:00（非问候窗口）：只触发节日，不触发问候。"""
+    msgs = agent.tick_proactive(now=datetime.datetime(2026, 1, 1, 15, 0))
+    assert len(msgs) == 1
+    assert "元旦" in msgs[0]
+
+
+def test_tick_proactive_idempotent(agent):
+    """同日同段不重复触发（每日去重）。"""
+    now = datetime.datetime(2026, 8, 3, 8, 0)
+    assert len(agent.tick_proactive(now=now)) == 1
+    assert agent.tick_proactive(now=now) == []
+
+
+def test_tick_proactive_no_trigger_off_window(agent):
+    """非问候窗口 + 无节日：返回空。"""
+    assert agent.tick_proactive(now=datetime.datetime(2026, 8, 3, 15, 0)) == []

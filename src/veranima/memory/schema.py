@@ -69,9 +69,12 @@ def init_db(db_path: str | Path, dim: int = EMBEDDING_DIM, provider=None) -> sql
     """
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(str(db_path))
+    # check_same_thread=False：QQ 形态下 agent.handle 在 to_thread 工作线程执行，
+    # 后台主动线程也会访问连接；连接自带内部锁，配合 WAL + busy_timeout 串行安全
+    con = sqlite3.connect(str(db_path), check_same_thread=False)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA busy_timeout=5000")
     con.execute("PRAGMA foreign_keys=ON")
     # 加载 sqlite-vec 扩展
     con.enable_load_extension(True)

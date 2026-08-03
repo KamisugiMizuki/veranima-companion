@@ -18,7 +18,7 @@ from ..memory.store import MemoryStore
 from ..tools.search import SEARCH_TOOL, SearXNGClient
 from .character import CharacterCard
 from .learning import LanguageMirror, StyleLearner, extract_feedback
-from .proactive import GreetingScheduler
+from .proactive import GreetingScheduler, OccasionChecker
 from .promises import PromiseBook
 from .review import MonthlyReview
 from .state import AgentState
@@ -60,6 +60,10 @@ class Agent:
         self.style.load()
         self.mirror.load()
         self.promises = PromiseBook(memory)
+
+        # 主动触发（定时问候 + 节庆纪念；CLI 与 QQ adapter 共用 tick_proactive）
+        self.greeter = GreetingScheduler()
+        self.occasion = OccasionChecker()
 
         # 联网搜索（DESIGN.md 8.5 方案 A：工具调用；默认关闭，config 开启）
         search_cfg = self.config.get("search", {})
@@ -226,7 +230,80 @@ class Agent:
             "memory_counts": self.memory.curate().get("counts", {}),
         }
 
+    def tick_proactive(self, now=None) -> list[str]:
+        """定时问候 + 节庆纪念检查（每日去重）。
+
+        返回本次应发送的主动消息列表（已入档 memory）；adapter（CLI/QQ）
+        负责展示/发送。供后台 tick 线程调用，幂等。``now`` 注入便于测试。
+        """
+        msgs: list[str] = []
+        slot = self.greeter.due_greeting(now=now)
+        if slot:
+            # 8.7.5 个性化问候（结合最近记忆；LLM 不可用回退模板）
+            msg = self.greeting_message(slot)
+            self.memory.store_message("assistant", msg, self.state.energy, self.state.mood)
+            msgs.append(msg)
+        occasion = self.occasion.due_occasion(self.memory, now=now)
+        if occasion:
+            msg = self.occasion.occasion_reaction(occasion, self.card.name)
+            self.memory.store_message("assistant", msg, self.state.energy, self.state.mood)
+            msgs.append(msg)
+        return msgs
+
+    def late_reply(self) -> str:
+        """8.7.4 离线思考：静默一段时间后，针对之前话题发一条"迟来的回应"。
+
+        仅 QQ 形态启用（CLI 不调用——用户可能只是离开，主动消息=打扰）。
+        返回空串表示本次不触发；成功则已入档 memory 并追加历史。
+        """
+        if self.state.energy < 30:
+            return ""
+        if getattr(self.llm, "is_model_loaded", None) is not None and self.llm.is_model_loaded():
+            try:
+                recent = self.memory.recent_messages(limit=8)
+                user_msgs = [m["content"][:80] for m in reversed(recent) if m["role"] == "user"]
+                if user_msgs:
+                    last = user_msgs[0]
+                    task = (
+                        f"用户之前说过：\"{last}\"，但你当时没有回应完，"
+                        "现在想补一条迟来的回应。自然提起这件事，补充想法或表达关心。"
+                        "40 字以内，不要问问题，不要加动作描写。"
+                    )
+                    reply = self._short_task(task, max_tokens=512)
+                    if reply:
+                        self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
+                        self._history.append({"role": "assistant", "content": reply})
+                        return reply
+            except Exception as e:
+                logger.debug("late reply LLM failed, fallback to template: %s", e)
+        # 降级：模板池
+        pool = [
+            "（想起刚才的事）你之前说的那件事，我后来想了想，觉得你说得有道理。",
+            "刚在发呆，突然想到你之前说的话。没事，就是想告诉你我在听。",
+        ]
+        msg = random.choice(pool)
+        self.memory.store_message("assistant", msg, self.state.energy, self.state.mood)
+        self._history.append({"role": "assistant", "content": msg})
+        return msg
+
     # ---------- 内部 ----------
+
+    def _short_task(self, task: str, max_tokens: int = 512) -> str:
+        """短任务生成：带完整 system prompt（角色锚定）。
+
+        实测（2026-08，qwen3-8b）：thinking 模型对裸 user prompt 的短任务
+        会把全部 token 预算耗在 reasoning 上（≤80 token 必空；512 也常跑偏），
+        带完整 system prompt 后 thinking 收敛、输出正常角色化回复。
+        空/异常由调用方回退模板。
+        """
+        system = build_system_prompt(self.card, self.state, self.memory)
+        return self.llm.chat(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": task},
+            ],
+            max_tokens=max_tokens,
+        )
 
     def _time_greeting(self) -> str:
         import datetime
@@ -358,13 +435,12 @@ class Agent:
                 return base
             ctx = "\n".join(user_msgs[:3])
             task = (
-                f"你是{self.card.name}。现在是{'早晨' if slot == 'morning' else '中午' if slot == 'noon' else '晚上'}。"
+                f"现在是{'早晨' if slot == 'morning' else '中午' if slot == 'noon' else '晚上'}。"
                 f"用户最近说过：\n{ctx}\n\n"
                 "给用户发一条简短的问候，如果能自然提到他最近说过的一件事（关心/跟进）最好；"
                 "想不起来就不提，保持简单。30 字以内，不要加动作描写。"
             )
-            reply = self.llm.chat([{"role": "user", "content": task}], max_tokens=60).strip()
-            return reply or base
+            return self._short_task(task, max_tokens=512) or base
         except Exception as e:
             logger.debug("greeting LLM failed, fallback: %s", e)
             return base
@@ -384,18 +460,18 @@ class Agent:
                 old = self._dig_old_memory()
                 if old:
                     task = (
-                        f"你{self.card.name}。你突然想起一件旧事：\"{old}\"。"
+                        f"你突然想起一件旧事：\"{old}\"。"
                         "给用户发一条消息，以'突然想起来'或'对了'的方式自然提起这件事，"
                         "问问后续或表达关心。50 字以内，不要加动作描写。"
                     )
                 else:
                     task = (
-                        f"你是{self.card.name}。下面是你和用户最近的对话：\n{ctx}\n\n"
+                        f"下面是你和用户最近的对话：\n{ctx}\n\n"
                         "现在你打算主动给用户发一条消息，分享一件你虚拟日常里的小事"
                         "（窗台的绿萝、楼下遇到的猫、面包店、窗外天气等生活细节，要有连续性）。"
                         "只说这件事本身，50 字以内，不要问问题，不要加动作描写。"
                     )
-                reply = self.llm.chat([{"role": "user", "content": task}], max_tokens=80).strip()
+                reply = self._short_task(task, max_tokens=512)
                 if reply:
                     self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
                     self._history.append({"role": "assistant", "content": reply})

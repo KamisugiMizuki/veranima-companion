@@ -40,9 +40,16 @@ class LLMClient:
         """单次对话生成。messages: [{'role','content'}, ...]
 
         错误分类：连接失败/模型未加载 → LLMUnavailableError；在线但生成失败 → LLMError。
+        空 content 也抛 LLMError（Qwen3 thinking 模型：短任务预算可能全被 reasoning 吃掉，
+        返回空串会让调用方发出空回复；统一由调用方兜底）。
         """
         msg = self.chat_raw(messages, max_tokens=max_tokens, temperature=temperature)
-        return (msg.get("content") or "").strip()
+        content = (msg.get("content") or "").strip()
+        if not content:
+            reasoning = msg.get("reasoning_content") or ""
+            logger.warning("LLM returned empty content (reasoning %d chars)", len(reasoning))
+            raise LLMError("empty completion: token budget consumed by thinking")
+        return content
 
     def chat_raw(self, messages: list[dict], *, max_tokens: int | None = None,
                  temperature: float | None = None, tools: list[dict] | None = None) -> dict:

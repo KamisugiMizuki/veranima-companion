@@ -37,6 +37,20 @@ cp config/config.example.yaml config/config.yaml
 .venv/Scripts/python -m veranima.cli
 ```
 
+## QQ 接入（NapCatQQ，OneBot v11）
+
+```bash
+# 1. 登录 NapCatQQ（或任意 OneBot v11 实现），配置"反向 WebSocket 客户端"
+#    连接 ws://127.0.0.1:8080/ws（与 config.yaml 的 qq.ws_host/ws_port 对应）
+# 2. config/config.yaml 的 [qq] 段：
+#    enabled: true
+#    allowed_qq: [你的QQ号]      # 白名单必填（1v1 私聊），空 = 拒绝所有消息
+# 3. 启动
+.venv/Scripts/python -m veranima.qq
+```
+
+QQ 形态额外启用：定时问候/节庆纪念主动消息、8.7.4 离线思考（静默 30 分钟后低概率"迟来的回应"，可配置）。
+
 ## 状态
 
-MVP1 完成（人格 + 状态机 + 五层记忆 + 本地/远程 LLM 对话 + CLI）。
+MVP1~MVP3 完成（人格 + 状态机 + 五层记忆 + 本地/远程 LLM 对话 + CLI + 联网搜索 + NapCatQQ 接入）。8.6 表情包/图像能力未实现（见 DESIGN.md）。
