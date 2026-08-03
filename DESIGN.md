@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 核心框架：✅ 已确认（源自 structure_design.md，经可行性评估修正）
-- 运行形态：✅ 已定 —— 先 CLI 验证整体跑通，功能成型后再选聊天软件接入（Telegram 为当前首要候选：长轮询免公网、bot 可主动推送、发图/语音原生支持）
+- 运行形态：✅ 已定 —— 先 CLI 验证整体跑通，之后以 **NapCatQQ** 接入（OneBot 协议，WebSocket 对接），仅**指定 QQ 帐号**与 bot 1v1 私聊（adapter 层做 QQ 号白名单过滤）
 - 部署形态：❓ 待定（本地常驻 vs 云服务器），决策依赖聊天软件选择，MVP 阶段本地即可
 - 实现状态：⏸ 未开工，方案协商中
 
@@ -169,4 +169,5 @@ Neo4j、Milvus/Qdrant、PostgreSQL、Redis、Celery、Elasticsearch、Drools、P
 
 - **部署形态**：本地常驻 vs 云服务器+API（决策依赖聊天软件选择；本地优势=隐私好/无额外成本，云优势=随时在线/电脑可关机）
 - **用户模型**：✅ 单用户 1v1 私聊（已确认；不考虑群聊/多会话，记忆系统无需 scope 分割设计）
+- **接入平台**：✅ NapCatQQ（已确认，OneBot v11 协议 WebSocket；仅指定 QQ 号白名单；实现阶段写 OneBot adapter）
 - LLM 选择细节（Qwen3-8B Q4 已确认，如需升级 14B 为配置级改动）
