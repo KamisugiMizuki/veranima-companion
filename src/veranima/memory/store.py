@@ -56,7 +56,7 @@ class MemoryStore:
         self.config = config or {}
         self.llm_config = llm_config or {}
         self.provider = provider or make_provider(self.config, self.llm_config)
-        self.con = init_db(db_path, dim=self.provider.dim)
+        self.con = init_db(db_path, dim=self.provider.dim, provider=self.provider)
         self._vec_ok = self._check_vec()
 
     def _check_vec(self) -> bool:

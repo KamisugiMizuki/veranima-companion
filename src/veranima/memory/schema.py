@@ -1,7 +1,10 @@
 """记忆系统 SQLite schema：五层记忆 + 消息（零开销摄入）+ FTS5 + 向量表。"""
 
+import logging
 import sqlite3
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # 五层记忆（DESIGN.md 3 节）
 LAYERS = ("core_profile", "semantic", "episodic", "procedural", "session")
@@ -59,8 +62,11 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memory_vec USING vec0(
 """
 
 
-def init_db(db_path: str | Path, dim: int = EMBEDDING_DIM) -> sqlite3.Connection:
-    """初始化数据库并返回连接（启用外键/扩展加载）。dim 为向量维度。"""
+def init_db(db_path: str | Path, dim: int = EMBEDDING_DIM, provider=None) -> sqlite3.Connection:
+    """初始化数据库并返回连接（启用外键/扩展加载）。dim 为向量维度。
+
+    provider 用于迁移时重新嵌入旧记忆（旧库 L2 → cosine 重建后补向量）。
+    """
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(str(db_path))
@@ -76,14 +82,29 @@ def init_db(db_path: str | Path, dim: int = EMBEDDING_DIM) -> sqlite3.Connection
         # 扩展不可用时向量检索降级（FTS5 仍可用）
         pass
     con.executescript(SCHEMA.format(dim=dim))
-    # 迁移：旧版 memory_vec 为默认 L2 度量（distance≠余弦），重建为 cosine
-    # （MVP1 阶段向量可重新嵌入；DROP 仅丢向量，记忆内容仍在 memories 表）
+    # 迁移：旧版 memory_vec 为默认 L2 度量（distance≠余弦），重建为 cosine 并重新嵌入
     try:
         sql = con.execute("SELECT sql FROM sqlite_master WHERE name='memory_vec'").fetchone()[0]
         if "distance_metric=cosine" not in sql:
             con.execute("DROP TABLE memory_vec")
             con.executescript(SCHEMA.format(dim=dim))
             logger.warning("memory_vec rebuilt with cosine metric (old L2 dropped)")
+            if provider is not None:
+                rows = con.execute("SELECT id, content FROM memories WHERE content != ''").fetchall()
+                import json
+                reembedded = 0
+                for r in rows:
+                    try:
+                        vec = provider.embed([r["content"]])[0]
+                        con.execute(
+                            "INSERT INTO memory_vec(memory_id, embedding) VALUES (?,?)",
+                            (r["id"], json.dumps(vec)),
+                        )
+                        reembedded += 1
+                    except Exception:
+                        continue
+                con.commit()
+                logger.info("re-embedded %s memories after migration", reembedded)
     except Exception as e:
         logger.warning("memory_vec migration check failed: %s", e)
     con.commit()
