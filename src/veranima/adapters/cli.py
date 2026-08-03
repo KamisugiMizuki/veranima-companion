@@ -16,6 +16,7 @@ HELP_TEXT = """/help       显示帮助
 /status     查看当前状态（精力/情绪/依恋度/记忆量）
 /style      查看学习到的风格参数与语言镜像
 /reset --style  回滚风格参数（核心人格不受影响）
+/review     生成"我们一起走过的日子"回顾
 /memory     查看记忆统计
 /forget <词> 删除包含该词的所有记忆（隐私擦除）
 /quit       退出
@@ -26,13 +27,31 @@ class CLIAdapter:
     def __init__(self, agent: Agent, console: Console | None = None):
         self.agent = agent
         self.console = console or Console()
+        # MVP3 主动触发状态（定时问候 + 节庆纪念，每日去重）
+        from ..core.proactive import GreetingScheduler, OccasionChecker
+        self.greeter = GreetingScheduler()
+        self.occasion = OccasionChecker()
 
     def run(self) -> None:
         c = self.console
         c.print(f"[bold cyan]Veranima[/] — 情感陪伴 agent（Ctrl+C 或 /quit 退出）")
+        # MVP3 主动触发：后台线程每分钟检查定时问候与节庆纪念
+        import threading
+        stop = threading.Event()
+
+        def _proactive_loop():
+            while not stop.wait(60):
+                try:
+                    self._tick_proactive()
+                except Exception:
+                    logger.exception("proactive tick failed")
+
+        threading.Thread(target=_proactive_loop, daemon=True).start()
         try:
             opening = self.agent.start()
             c.print(f"[cyan]{self.agent.card.name}[/]：{opening}")
+            # 启动时也检查一次节庆（例如当天是纪念日）
+            self._tick_proactive()
             while True:
                 try:
                     line = input("> ").strip()
@@ -52,6 +71,19 @@ class CLIAdapter:
             c.print(f"[red]运行时错误：{e}[/]")
             logger.exception("CLI crashed")
             sys.exit(1)
+
+    def _tick_proactive(self) -> None:
+        """定时问候 + 节庆纪念检查（幂等：每日去重）。"""
+        slot = self.greeter.due_greeting()
+        if slot:
+            msg = self.greeter.greeting_text(slot)
+            self.console.print(f"[dim cyan]{self.agent.card.name}（主动）[/]：{msg}")
+            self.agent.memory.store_message("assistant", msg, self.agent.state.energy, self.agent.state.mood)
+        occasion = self.occasion.due_occasion(self.agent.memory)
+        if occasion:
+            msg = self.occasion.occasion_reaction(occasion, self.agent.card.name)
+            self.console.print(f"[dim cyan]{self.agent.card.name}（主动）[/]：{msg}")
+            self.agent.memory.store_message("assistant", msg, self.agent.state.energy, self.agent.state.mood)
 
     def _dispatch(self, cmd: str) -> None:
         c = self.console
@@ -80,6 +112,10 @@ class CLIAdapter:
             if ls["mirror_top"]:
                 c.print("用户高频词：" + " ".join(f"{w}×{n}" for w, n in list(ls["mirror_top"].items())[:6]))
             c.print(f"未兑现承诺：{ls['open_promises']} 条")
+        elif op == "/review":
+            c.print("（小V 在想……）")
+            text = self.agent.monthly_review()
+            c.print(text)
         elif op == "/reset":
             if arg == "--style":
                 ls = self.agent.reset_style()

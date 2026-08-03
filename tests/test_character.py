@@ -16,7 +16,8 @@ def test_identity_block_has_no_role_content():
 
 def test_identity_block_keeps_hard_constraints():
     """系统级硬约束必须保留。"""
-    for kw in ["不得声称自己是真实人类", "不要以问句结尾", "不要编造具体可被追问的外部事实"]:
+    for kw in ["不得声称自己是真实人类", "不要以问句结尾", "不要编造具体可被追问的外部事实",
+               "温和拒绝并说明理由"]:
         assert kw in IDENTITY_BLOCK
 
 

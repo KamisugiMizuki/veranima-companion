@@ -86,15 +86,15 @@ def test_handle_llm_generic_error_returns_fallback(agent):
 
 
 def test_handle_proactive_does_not_need_llm(agent):
-    """主动发言是模板池，LLM 失败时仍可正常触发（不调 LLM）。"""
+    """主动发言在 LLM 失败时降级模板池，仍可正常触发（不崩溃）。"""
     card, memory = agent
     llm = FakeLLM(error=LLMUnavailableError("down"))
     a = Agent(card=card, memory=memory, llm=llm, state=AgentState(), config={"chat": {"proactive_message_prob": 1.0}})
     r = a.handle("在吗？")
-    # 主动发言触发且为模板消息
+    # 主动发言触发且为模板消息（LLM 生成失败 → 降级模板）
     assert r.proactive
     assert r.proactive_msg
-    assert llm.calls == 1  # 只有对话生成调了 LLM，主动发言没有
+    assert llm.calls == 2  # 对话生成 1 次 + 主动发言尝试 1 次（失败降级）
 
 
 def test_start_greeting_without_llm(agent):

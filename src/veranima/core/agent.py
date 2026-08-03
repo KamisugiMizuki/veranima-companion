@@ -15,9 +15,11 @@ from pathlib import Path
 from ..llm.client import LLMClient, LLMUnavailableError
 from ..llm.prompts import build_system_prompt
 from ..memory.store import MemoryStore
+from ..tools.search import SEARCH_TOOL, SearXNGClient
 from .character import CharacterCard
 from .learning import LanguageMirror, StyleLearner, extract_feedback
 from .promises import PromiseBook
+from .review import MonthlyReview
 from .state import AgentState
 
 logger = logging.getLogger(__name__)
@@ -58,6 +60,14 @@ class Agent:
         self.mirror.load()
         self.promises = PromiseBook(memory)
 
+        # 联网搜索（DESIGN.md 8.5 方案 A：工具调用；默认关闭，config 开启）
+        search_cfg = self.config.get("search", {})
+        self.search_enabled = bool(search_cfg.get("enabled", False))
+        self.search = SearXNGClient(
+            base_url=search_cfg.get("base_url", "http://127.0.0.1:8080"),
+            max_results=int(search_cfg.get("max_results", 4)),
+        )
+
     # ---------- MVP2 状态 ----------
 
     def learning_summary(self) -> dict:
@@ -74,6 +84,14 @@ class Agent:
         self.style.reset()
         self.mirror.reset()
         return self.learning_summary()
+
+    def monthly_review(self) -> str:
+        """月度回顾：检索记忆 → LLM 生成"我们一起走过的日子"。"""
+        review = MonthlyReview(self.memory, llm=self.llm)
+        text = review.generate(name=self.card.name)
+        # 回顾本身也作为一条 assistant 消息入档
+        self.memory.store_message("assistant", text, self.state.energy, self.state.mood)
+        return text
 
     # ---------- 公开接口 ----------
 
@@ -132,13 +150,16 @@ class Agent:
             self.state.on_assistant_message()
             return TurnResult(reply=reply, energy=self.state.energy, mood=self.state.mood)
 
-        # 5. 生成（低精力时限短）
+        # 5. 生成（低精力时限短；联网搜索开启时走工具调用链路）
         low_energy = self.state.energy < 40
         try:
-            reply = self.llm.chat(
-                messages,
-                max_tokens=self.llm.low_energy_max_tokens if low_energy else None,
-            )
+            if self.search_enabled:
+                reply = self._chat_with_search(messages, low_energy)
+            else:
+                reply = self.llm.chat(
+                    messages,
+                    max_tokens=self.llm.low_energy_max_tokens if low_energy else None,
+                )
         except LLMUnavailableError as e:
             # 模型未加载/服务不可用（游戏模式 off）：角色化唤醒提示，不冒充"卡了"
             logger.warning("LLM unavailable during turn: %s", e)
@@ -223,6 +244,45 @@ class Agent:
         self._history.append({"role": "assistant", "content": msg})
         return msg
 
+    def _chat_with_search(self, messages: list[dict], low_energy: bool) -> str:
+        """工具调用链路：带 search_web 工具 → 模型自主决定是否搜索 → 结果回填 → 最终回复。
+
+        约束：单轮最多 1 次搜索（设计 8.5 节）；搜索失败降级为直接回复。
+        """
+        import json
+        max_tokens = self.llm.low_energy_max_tokens if low_energy else None
+        msg = self.llm.chat_raw(messages, max_tokens=max_tokens, tools=[SEARCH_TOOL])
+        content = (msg.get("content") or "").strip()
+        tool_calls = msg.get("tool_calls") or []
+        if not tool_calls:
+            return content
+        # 执行 search_web（最多 1 个）
+        messages.append({"role": "assistant", "content": content or None, "tool_calls": tool_calls})
+        executed = False
+        for tc in tool_calls[:1]:
+            fn = tc.get("function", {})
+            if fn.get("name") != "search_web":
+                continue
+            try:
+                query = json.loads(fn.get("arguments") or "{}").get("query", "")
+            except Exception:
+                query = ""
+            if not query:
+                continue
+            logger.info("search_web: %s", query)
+            results = self.search.search(query)
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.get("id", "call_1"),
+                "content": self.search.format_results(results),
+            })
+            executed = True
+        if not executed:
+            return content
+        # 第二轮：基于搜索结果生成最终回复
+        final = self.llm.chat_raw(messages, max_tokens=max_tokens)
+        return (final.get("content") or "").strip()
+
     def _maybe_extract_events(self, user_text: str) -> None:
         """规则提取记忆（MVP1 简化，每条消息检查；MVP2 替换为 LLM 事件卡片提取）。
 
@@ -254,9 +314,31 @@ class Agent:
             logger.info("semantic extracted: #%s", entry.id)
 
     def _try_proactive(self) -> str:
-        """低精力/随机时刻的主动发言（MVP1 简化：时间问候类）。返回消息或空串。"""
+        """主动发言（MVP3：LLM 生成虚拟日常分享，增强连续性；模型不可用降级模板池）。
+
+        前置：模型加载检查（不触发 LM Studio 自动重载）。低精力不触发。
+        """
         if self.state.energy < 30:
             return ""
+        # LLM 生成：以角色口吻分享一段虚拟日常（围绕生活锚点，与记忆中的用户话题自然衔接）
+        if getattr(self.llm, "is_model_loaded", None) is not None and self.llm.is_model_loaded():
+            try:
+                recent = self.memory.recent_messages(limit=6)
+                ctx = "\n".join(f"{m['role']}: {m['content'][:60]}" for m in reversed(recent))
+                prompt = (
+                    f"你是{self.card.name}。下面是你和用户最近的对话：\n{ctx}\n\n"
+                    "现在你打算主动给用户发一条消息，分享一件你虚拟日常里的小事"
+                    "（窗台的绿萝、楼下遇到的猫、面包店、窗外天气等生活细节，要有连续性）。"
+                    "只说这件事本身，50 字以内，不要问问题，不要加动作描写。"
+                )
+                reply = self.llm.chat([{"role": "user", "content": prompt}], max_tokens=80).strip()
+                if reply:
+                    self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
+                    self._history.append({"role": "assistant", "content": reply})
+                    return reply
+            except Exception as e:
+                logger.debug("proactive LLM failed, fallback to template: %s", e)
+        # 降级：模板池（MVP1 简化）
         pool = [
             "（想起一件事）对了，你上次说的那件事后来怎么样了？",
             "今天有看到什么有意思的东西吗？",

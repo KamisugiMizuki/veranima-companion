@@ -316,6 +316,22 @@ class MemoryStore:
         self.con.commit()
         return len(ids)
 
+    def stats(self) -> dict:
+        """消息与记忆统计（/status 与月度回顾用）。"""
+        messages = self.con.execute("SELECT count(*) FROM messages").fetchone()[0]
+        by_role = dict(
+            self.con.execute("SELECT role, count(*) FROM messages GROUP BY role").fetchall()
+        )
+        memories = {layer: 0 for layer in LAYERS}
+        for row in self.con.execute("SELECT layer, count(*) FROM memories GROUP BY layer").fetchall():
+            memories[row["layer"]] = row[1]
+        return {
+            "messages": messages,
+            "user_messages": by_role.get("user", 0),
+            "assistant_messages": by_role.get("assistant", 0),
+            "memories": memories,
+        }
+
     # ---------- 整理（MVP2 占位） ----------
 
     def curate(self, *, sim_dup: float = 0.92, sim_merge: float = 0.78, min_confidence: float = 0.55, max_ops: int = 50) -> dict:

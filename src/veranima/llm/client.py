@@ -41,6 +41,12 @@ class LLMClient:
 
         错误分类：连接失败/模型未加载 → LLMUnavailableError；在线但生成失败 → LLMError。
         """
+        msg = self.chat_raw(messages, max_tokens=max_tokens, temperature=temperature)
+        return (msg.get("content") or "").strip()
+
+    def chat_raw(self, messages: list[dict], *, max_tokens: int | None = None,
+                 temperature: float | None = None, tools: list[dict] | None = None) -> dict:
+        """对话生成（完整 message 返回，含 tool_calls）。tools 为 OpenAI 格式工具定义。"""
         payload = {
             "model": self.model,
             "messages": messages,
@@ -48,12 +54,14 @@ class LLMClient:
             "max_tokens": max_tokens or self.max_tokens,
             "stream": False,
         }
+        if tools:
+            payload["tools"] = tools
         try:
             with httpx.Client(timeout=self._timeout) as client:
                 resp = client.post(f"{self.base_url}/chat/completions", json=payload, headers=self._headers())
                 resp.raise_for_status()
                 data = resp.json()
-            return data["choices"][0]["message"]["content"].strip()
+            return data["choices"][0]["message"]
         except LLMUnavailableError:
             raise
         except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout) as e:
