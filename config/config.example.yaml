@@ -9,10 +9,12 @@
 # LLM（OpenAI 兼容）
 llm:
   base_url: "http://localhost:12345/v1"   # 远程 API 示例：https://api.deepseek.com/v1
-  model: "qwen3-8b"                       # 远程 API 示例：deepseek-chat / qwen-plus
+  model: "qwen3.5-9b-uncensored-hauhaucs-aggressive@q4_k_m"  # 多模态（支持图像输入）；远程 API 示例：deepseek-chat / qwen-plus
   api_key: ""                             # 远程 API 填 key；本地 LM Studio/Ollama 留空
   temperature: 0.8
-  max_tokens: 1024
+  # thinking 模型 reasoning 长：qwen3.5 实测思考可达 1600+ chars，
+  # 1024 会被推理吃光导致空回复，需留足预算
+  max_tokens: 2048
   # 低精力时的简短回复配置
   low_energy_max_tokens: 256
   timeout: 120

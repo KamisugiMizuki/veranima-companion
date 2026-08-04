@@ -7,7 +7,7 @@
 - 核心框架：✅ 已确认（源自 structure_design.md，经可行性评估修正）
 - 运行形态：✅ 已定 —— 先 CLI 验证整体跑通，之后以 **NapCatQQ** 接入（OneBot 协议，WebSocket 对接），仅**指定 QQ 帐号**与 bot 1v1 私聊（adapter 层做 QQ 号白名单过滤）
 - 部署形态：✅ 已定 —— **本地部署**（NapCatQQ 与本项目均跑在本机，全链路本地，数据不出机器）
-- 实现状态：✅ MVP1~3 已完成；**NapCatQQ 接入已完成（2026-08，OneBot v11 反向 WebSocket + QQ 号白名单 + 主动消息 + 8.7.4 离线思考）**；8.6 图像能力未实现
+- 实现状态：✅ MVP1~3 已完成；**NapCatQQ 接入已完成（2026-08，OneBot v11 反向 WebSocket + QQ 号白名单 + 主动消息 + 8.7.4 离线思考）**；**8.6 图像输入已实现（2026-08，qwen3.5-9b 多模态，QQ 图片 → data URL → LLM 直接看图）**；8.6.3 表情包输出未实现
 
 ---
 

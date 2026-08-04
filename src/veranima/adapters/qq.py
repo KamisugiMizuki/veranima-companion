@@ -17,6 +17,8 @@ import random
 import threading
 import time
 
+import httpx
+
 from aiocqhttp import CQHttp, Event, Message
 
 from ..core.agent import Agent
@@ -142,23 +144,25 @@ class QQAdapter:
             await self._handle_private(event)
 
     async def _handle_private(self, event: Event) -> None:
-        """私聊消息：白名单过滤 → 文本提取 → 串行 handle → 回复（主动消息延迟）。"""
+        """私聊消息：白名单过滤 → 文本/图片提取 → 串行 handle → 回复（主动消息延迟）。"""
         uid = str(event.get("user_id", ""))
         if uid not in self.allowed:
             logger.info("ignored private message from non-whitelist qq=%s", uid)
             return
         text = self._plain_text(event)
-        if not text:
-            logger.info("no plain text in message from qq=%s, skipped", uid)
+        # 8.6.2 图像输入：提取图片段 → 下载 → data URL（失败降级，不阻塞对话）
+        images = await self._collect_images(event)
+        if not text and not images:
+            logger.info("no text/image in message from qq=%s, skipped", uid)
             return
-        logger.info("qq=%s >> %s", uid, text[:80])
+        logger.info("qq=%s >> %s (images=%d)", uid, text[:80], len(images))
         # 用户又说话了 → 对话恢复，旧的延迟主动消息作废（不插话）
         if self._pending_proactive:
             logger.info("pending proactive discarded (user active again): %s", self._pending_proactive[:60])
             self._pending_proactive = None
         # 串行处理：agent 内部状态（历史/记忆/学习）有顺序依赖，禁止并发写
         async with self._lock:
-            result = await asyncio.to_thread(self.agent.handle, text)
+            result = await asyncio.to_thread(self.agent.handle, text, images)
         self._last_user_activity = time.time()
         if result.reply:
             await self.bot.send(event, result.reply)
@@ -174,11 +178,55 @@ class QQAdapter:
 
     @staticmethod
     def _plain_text(event: Event) -> str:
-        """提取消息纯文本（CQ 码剥离；8.6 图像能力未实现，图片段被忽略）。"""
+        """提取消息纯文本（CQ 码剥离；图片段单独走 _collect_images）。"""
         msg = event.get("message", "")
         if isinstance(msg, Message):
             return msg.extract_plain_text().strip()
         return str(msg).strip()
+
+    async def _collect_images(self, event: Event) -> list[str]:
+        """8.6.2 图像输入：提取消息中的图片段并下载为 data URL。
+
+        返回 data URL 列表（data:image/*;base64,...）；下载失败/无图片段返回 []。
+        """
+        msg = event.get("message", "")
+        if not isinstance(msg, Message):
+            return []
+        urls = []
+        for seg in msg:
+            if seg.get("type") != "image":
+                continue
+            data = seg.get("data") or {}
+            url = data.get("url") or ""
+            # 只认 http(s) url；file 只是本地文件名（如 ab.png），不是可下载地址
+            if url.startswith(("http://", "https://")):
+                urls.append(url)
+        if not urls:
+            return []
+        results = await asyncio.gather(
+            *(asyncio.to_thread(self._download_image_data_url, u) for u in urls)
+        )
+        ok = [r for r in results if r]
+        if len(ok) < len(urls):
+            logger.warning("image download failed: %d/%d images dropped", len(urls) - len(ok), len(urls))
+        return ok
+
+    @staticmethod
+    def _download_image_data_url(url: str) -> str | None:
+        """下载图片为 data URL（httpx，同步跑在线程池）。失败返回 None（降级纯文本）。"""
+        try:
+            with httpx.Client(timeout=15) as client:
+                resp = client.get(url)
+                resp.raise_for_status()
+            ctype = resp.headers.get("content-type", "image/jpeg")
+            if not ctype.startswith("image/"):
+                return None
+            import base64
+            b64 = base64.b64encode(resp.content).decode()
+            return f"data:{ctype};base64,{b64}"
+        except Exception as e:
+            logger.debug("image download failed (%s): %s", url[:80], e)
+            return None
 
     # ---------- 运行 ----------
 

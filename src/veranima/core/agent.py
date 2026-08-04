@@ -113,21 +113,31 @@ class Agent:
         # 非首次：按时间段问候
         return self._time_greeting()
 
-    def handle(self, user_text: str) -> TurnResult:
-        """处理一条用户消息，返回回复。"""
+    def handle(self, user_text: str, images: list[str] | None = None) -> TurnResult:
+        """处理一条用户消息，返回回复。
+
+        images: 图片 data URL 列表（如 data:image/png;base64,...），
+        多模态模型直接看图（DESIGN 8.6.2）；纯文本时传 None/[]。
+        图片会以 OpenAI 多模态 content 数组形式进当前轮 LLM 请求；
+        记忆/历史用 [图片] 占位（避免 base64 撑爆上下文与 FTS5）。
+        """
         user_text = user_text.strip()
-        if not user_text:
+        images = images or []
+        if not user_text and not images:
             return TurnResult(reply="", energy=self.state.energy, mood=self.state.mood)
+
+        # 记忆/历史占位文本（图片不直接入库，防 base64 膨胀）
+        store_text = user_text + (" [图片]" * len(images)) if images else user_text
 
         # 1. 状态推进 + 用户反馈
         self.state.tick(self.config.get("state", {}).get("energy_decay_per_minute", 0.02))
         self.state.on_user_message(recover_per_message=self.config.get("state", {}).get("energy_recover_per_message", 3.0))
 
         # 2. 零开销摄入：消息立即入库（FTS5 同步索引）
-        self.memory.store_message("user", user_text, self.state.energy, self.state.mood)
+        self.memory.store_message("user", store_text, self.state.energy, self.state.mood)
 
         # 3. 记忆检索（预算内注入）+ MVP2 附加块（风格/镜像/承诺）
-        query_hint = user_text
+        query_hint = user_text or "图片"
         system = build_system_prompt(
             self.card, self.state, self.memory,
             core_profile_budget=self.config.get("memory", {}).get("core_profile_budget", 1200),
@@ -140,10 +150,15 @@ class Agent:
             ],
         )
 
-        # 4. 组装对话（历史 + 当前）
+        # 4. 组装对话（历史 + 当前）；当前轮含图时用多模态 content 数组
         messages = [{"role": "system", "content": system}]
         messages.extend(self._history[-self.config.get("chat", {}).get("history_max_messages", 20):])
-        messages.append({"role": "user", "content": user_text})
+        if images:
+            content: list[dict] = [{"type": "text", "text": user_text or "（用户发了一张图片）"}]
+            content.extend({"type": "image_url", "image_url": {"url": u}} for u in images)
+            messages.append({"role": "user", "content": content})
+        else:
+            messages.append({"role": "user", "content": user_text})
 
         # 4.5 模型加载前置检查：未加载则唤醒提示，不发请求
         # （LM Studio 收到请求会自动重载模型、瞬间吃回显存，游戏模式下必须避免）
@@ -175,7 +190,7 @@ class Agent:
 
         # 6. 回复入库 + 历史更新
         self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
-        self._history.append({"role": "user", "content": user_text})
+        self._history.append({"role": "user", "content": store_text})
         self._history.append({"role": "assistant", "content": reply})
         self.state.on_assistant_message()
 

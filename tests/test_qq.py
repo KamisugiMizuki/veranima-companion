@@ -120,8 +120,8 @@ def test_plain_text_from_raw_string():
 
 
 def test_image_only_message_skipped(adapter, agent):
-    """纯图片消息（无文本）：跳过，不调用 handle。"""
-    def fail(text):
+    """纯图片消息但无可下载 url（file 只是本地名）：跳过，不调用 handle。"""
+    def fail(text, images=None):
         raise AssertionError("agent.handle must not be called")
 
     agent.handle = fail
@@ -131,11 +131,45 @@ def test_image_only_message_skipped(adapter, agent):
     assert adapter.bot.sent == []
 
 
+def test_image_message_with_url_passed_to_handle(adapter, agent, monkeypatch):
+    """带 http url 的图片消息：下载为 data URL 传给 handle（8.6.2）。"""
+    monkeypatch.setattr(
+        QQAdapter, "_download_image_data_url",
+        staticmethod(lambda url: "data:image/png;base64,QUJD"),
+    )
+    seen = {}
+
+    def spy(text, images=None):
+        seen["text"] = text
+        seen["images"] = images
+        return TurnResult(reply="看到了", energy=80, mood="平静")
+
+    agent.handle = spy
+    run(adapter._handle_private(
+        {"user_id": 10001, "message_type": "private",
+         "message": Message("[CQ:image,file=a.png,url=http://127.0.0.1:8099/img/1.png]看看这张")}
+    ))
+    assert seen["text"] == "看看这张"
+    assert seen["images"] == ["data:image/png;base64,QUJD"]
+    assert adapter.bot.sent == [("send", "看到了")]
+
+
+def test_image_download_failure_falls_back_to_text(adapter, agent, monkeypatch):
+    """图片下载失败：降级为纯文本对话，不阻塞（8.6.4 边界）。"""
+    monkeypatch.setattr(QQAdapter, "_download_image_data_url", staticmethod(lambda url: None))
+    agent.handle = lambda text, images=None: TurnResult(reply="文字也能聊", energy=80, mood="平静")
+    run(adapter._handle_private(
+        {"user_id": 10001, "message_type": "private",
+         "message": Message("[CQ:image,file=a.png,url=http://127.0.0.1:8099/img/x.png]你好")}
+    ))
+    assert adapter.bot.sent == [("send", "文字也能聊")]
+
+
 # ---------- 消息管线 ----------
 
 def test_proactive_msg_deferred_not_sent_immediately(adapter, agent):
     """主动消息不立即发送：进 pending，等待对话静默（防双连发）。"""
-    agent.handle = lambda text: TurnResult(
+    agent.handle = lambda text, images=None: TurnResult(
         reply="普通回复", proactive_msg="（主动）对了，你上次说的事",
         energy=80, mood="平静",
     )
@@ -174,7 +208,7 @@ def test_pending_proactive_not_flushed_before_silence(adapter, agent):
 def test_pending_proactive_discarded_on_new_user_message(adapter, agent):
     """用户又发消息：旧 pending 作废，不插话。"""
     adapter._pending_proactive = "（主动）旧话题"
-    agent.handle = lambda text: TurnResult(reply="新回复", energy=80, mood="平静")
+    agent.handle = lambda text, images=None: TurnResult(reply="新回复", energy=80, mood="平静")
     run(adapter._handle_private({"user_id": 10001, "message_type": "private", "message": "hi"}))
     assert adapter.bot.sent == [("send", "新回复")]
     assert adapter._pending_proactive is None  # 作废
@@ -182,7 +216,7 @@ def test_pending_proactive_discarded_on_new_user_message(adapter, agent):
 
 def test_empty_reply_not_sent(adapter, agent):
     """回复为空（空白输入）不发送。"""
-    agent.handle = lambda text: TurnResult(reply="", energy=80, mood="平静")
+    agent.handle = lambda text, images=None: TurnResult(reply="", energy=80, mood="平静")
     run(adapter._handle_private({"user_id": 10001, "message_type": "private", "message": "hi"}))
     assert adapter.bot.sent == []
 
@@ -193,7 +227,7 @@ def test_messages_serialized(adapter, agent):
     active = []
     seen = []
 
-    def slow_handle(text):
+    def slow_handle(text, images=None):
         active.append(1)
         assert len(active) == 1, "handle 并发调用！"
         import time

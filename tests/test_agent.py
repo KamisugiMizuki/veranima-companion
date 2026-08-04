@@ -30,9 +30,11 @@ class FakeLLM:
         self.reply = reply
         self.loaded = loaded
         self.calls = 0
+        self.last_messages: list | None = None
 
     def chat(self, messages, **kw):
         self.calls += 1
+        self.last_messages = messages
         if self.error:
             raise self.error
         return self.reply
@@ -130,3 +132,43 @@ def test_extract_events_plain_no_duplicate(agent):
     a.handle("今天天气不错")
     assert len(memory.list_layer("semantic")) == 0
     assert len(memory.list_layer("episodic")) == 0
+
+
+# ---------- 8.6 多模态图像输入 ----------
+
+def test_handle_with_images_uses_multimodal_content(agent):
+    """带图消息：user content 组装为多模态数组（text + image_url）。"""
+    card, memory = agent
+    llm = FakeLLM()
+    a = Agent(card=card, memory=memory, llm=llm, state=AgentState(), config={"chat": {"proactive_message_prob": 0.0}})
+    img = "data:image/png;base64,AAAA"
+    r = a.handle("看看这张图", [img])
+    assert r.reply
+    user_msg = llm.last_messages[-1]
+    assert isinstance(user_msg["content"], list)
+    assert user_msg["content"][0] == {"type": "text", "text": "看看这张图"}
+    assert user_msg["content"][1] == {"type": "image_url", "image_url": {"url": img}}
+
+
+def test_handle_image_only_message(agent):
+    """纯图片消息（无文本）：仍处理，text 用占位。"""
+    card, memory = agent
+    llm = FakeLLM()
+    a = Agent(card=card, memory=memory, llm=llm, state=AgentState(), config={"chat": {"proactive_message_prob": 0.0}})
+    r = a.handle("", ["data:image/jpeg;base64,BBBB"])
+    assert r.reply
+    user_msg = llm.last_messages[-1]
+    assert user_msg["content"][0]["type"] == "text"
+    # 记忆用 [图片] 占位（不存 base64）
+    recent = memory.recent_messages(limit=2)
+    assert "[图片]" in recent[0]["content"]
+
+
+def test_handle_no_text_no_images_empty(agent):
+    """空文本 + 无图：返回空 TurnResult，不发请求。"""
+    card, memory = agent
+    llm = FakeLLM()
+    a = Agent(card=card, memory=memory, llm=llm, state=AgentState(), config={})
+    r = a.handle("")
+    assert r.reply == ""
+    assert llm.calls == 0
