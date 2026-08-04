@@ -1,0 +1,2 @@
+# 批处理文件必须 CRLF 行尾（cmd 解析器要求；LF 会导致命令错位）
+*.bat text eol=crlf

@@ -32,6 +32,7 @@ cp config/config.example.yaml config/config.yaml
 #   方式 B：本地 LM Studio
 #   下载 Qwen3-8B GGUF（ModelScope Qwen/Qwen3-8B-GGUF），放入 LM Studio 模型库
 #   bash scripts/run_lmstudio.sh
+#   （Windows 下也可运行 run_lmstudio.bat：菜单选 1 加载 / 2 卸载）
 
 # 3. 角色卡（默认使用内置卡，可选自定义）
 cp config/character.example.json config/character.json
