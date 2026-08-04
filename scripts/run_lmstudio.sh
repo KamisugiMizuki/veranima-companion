@@ -27,23 +27,41 @@ if [ ! -f "$LMS" ]; then
     exit 1
 fi
 
-# 游戏模式：卸载
+# 游戏模式：卸载（幂等：未加载时提示退出）
 if [ "$1" = "off" ]; then
+    if ! "$LMS" ps | grep -q "$MODEL"; then
+        echo "当前没有已加载的模型（$MODEL），无需卸载。"
+        exit 0
+    fi
     echo "==> 卸载模型（显存将释放到 ~2.3GB）"
-    "$LMS" unload --all 2>&1 | tail -1
+    if ! "$LMS" unload --all; then
+        echo "[错误] 模型卸载失败，请检查 LM Studio 状态后重试。"
+        exit 1
+    fi
     nvidia-smi --query-gpu=memory.used --format=csv,noheader
     echo "==> 可以开始游戏了。结束后运行：bash scripts/run_lmstudio.sh"
+    exit 0
+fi
+
+echo "==> 检查当前加载状态"
+if "$LMS" ps | grep -q "$MODEL"; then
+    echo "模型已在运行，无需重复加载。当前实例："
+    "$LMS" ps | grep "$MODEL"
+    echo "提示：如需强制重载（改参数），先跑 off 再加载。"
     exit 0
 fi
 
 echo "==> 确保 LM Studio 服务器运行"
 "$LMS" server start >/dev/null 2>&1 || true
 
-echo "==> 卸载旧实例"
+echo "==> 清理其他实例"
 "$LMS" unload --all 2>&1 | tail -1
 
 echo "==> 加载 $MODEL (context=$CTX, parallel=1)"
-"$LMS" load "$MODEL" -c "$CTX" --parallel 1 -y 2>&1 | tail -1
+if ! "$LMS" load "$MODEL" -c "$CTX" --parallel 1 -y; then
+    echo "[错误] 模型加载失败，请检查 LM Studio 状态后重试。"
+    exit 1
+fi
 
 echo "==> 当前实例"
 "$LMS" ps | grep -E "IDENT|$MODEL"
