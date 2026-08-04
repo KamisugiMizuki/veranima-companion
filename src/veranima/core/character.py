@@ -115,6 +115,7 @@ class CharacterCard:
             "价值观底线": ["values"],
             "关系期许": ["relationship_expectation"],
             "初始好感": ["initial_affection"],
+            "身体设定": ["body_setting", "physical_setting"],
         }
         for label, keys in vkey.items():
             if label == "语言风格":

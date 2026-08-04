@@ -61,3 +61,26 @@ def test_communication_style_injected():
     sp = card.to_system_prompt()
     assert "【沟通风格】" in sp
     assert "绿萝" in sp
+
+
+def test_body_setting_injected():
+    """body_setting 字段注入 prompt（机制验证，不依赖运行时卡内容）。"""
+    card = CharacterCard(
+        name="测试卡",
+        veranima={"body_setting": "体质特殊：性兴奋时阴蒂膨胀至长15cm、直径4cm，敏感度提高"},
+    )
+    sp = card.to_system_prompt()
+    assert "【身体设定】" in sp
+    assert "15cm" in sp
+    assert "直径4cm" in sp
+
+
+def test_initial_affection_injected():
+    """initial_affection 字段注入 prompt（机制验证）。"""
+    card = CharacterCard(
+        name="测试卡",
+        veranima={"initial_affection": "对用户怀有超出普通朋友的初始好感与性吸引力，言行带着暧昧底色"},
+    )
+    sp = card.to_system_prompt()
+    assert "【初始好感】" in sp
+    assert "性吸引力" in sp
