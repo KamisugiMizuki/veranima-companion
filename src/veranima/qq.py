@@ -46,10 +46,14 @@ def main() -> int:
         offline = OfflineThinkTimer(
             silence_minutes=int(think_cfg.get("silence_minutes", 30)),
             probability=float(think_cfg.get("probability", 0.3)),
+            max_per_day=int(think_cfg.get("max_per_day", 2)),
         )
 
     host = qq_cfg.get("ws_host", "127.0.0.1")
     port = int(qq_cfg.get("ws_port", 8099))
+    # 静默时段：默认 23:00-08:00 不主动发任何消息（问候/离线思考）
+    qh = qq_cfg.get("quiet_hours", [23, 8])
+    quiet_hours = (int(qh[0]), int(qh[1])) if qh else None
     adapter = QQAdapter(
         agent,
         ws_host=host,
@@ -58,6 +62,7 @@ def main() -> int:
         allowed_qq=allowed,
         proactive=bool(qq_cfg.get("proactive", True)),
         offline_think=offline,
+        quiet_hours=quiet_hours,
     )
     print(f"Veranima QQ 已启动（白名单: {', '.join(map(str, allowed))}）")
     print(f"监听 ws://{host}:{port}/ws —— 请在 NapCatQQ 配置反向 WebSocket 客户端连接此地址")

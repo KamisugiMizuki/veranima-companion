@@ -125,10 +125,34 @@ def test_late_reply_uses_last_user_msg(agent):
 
 
 def test_late_reply_fallback_without_llm(agent):
+    agent.memory.store_message("user", "下周要去面试了", 80, "平静")
     agent.llm = FakeLLM()
     agent.llm.is_model_loaded = lambda: False
     msg = agent.late_reply()
     assert msg  # 模板池降级
+
+
+def test_late_reply_skips_when_conversation_closed(agent):
+    """最后一条是 assistant（对话已闭合/已回应完）→ 不触发迟来回应。"""
+    agent.memory.store_message("user", "下周要去面试了", 80, "平静")
+    agent.memory.store_message("assistant", "加油，你肯定可以的", 80, "平静")
+    llm = agent.llm
+    assert agent.late_reply() == ""
+    assert llm.calls == 0  # 不消耗 LLM 调用
+
+
+def test_late_reply_fallback_template_dedup(agent):
+    """模板降级：最近已出现过的模板不重复发（防同一条连发刷屏）。"""
+    agent.memory.store_message("user", "下周要去面试了", 80, "平静")
+    agent.llm = FakeLLM()
+    agent.llm.is_model_loaded = lambda: False
+    first = agent.late_reply()
+    assert first
+    # 再补一条 user 消息使对话重新未闭合，再触发：不得与上一条相同
+    agent.memory.store_message("user", "还有个问题想问", 80, "平静")
+    second = agent.late_reply()
+    assert second
+    assert second != first
 
 
 def test_late_reply_low_energy_skip(agent):
@@ -137,6 +161,7 @@ def test_late_reply_low_energy_skip(agent):
 
 
 def test_late_reply_stored_to_memory(agent):
+    agent.memory.store_message("user", "下周要去面试了", 80, "平静")
     agent.late_reply()
     recent = agent.memory.recent_messages(limit=3)
     assert any(m["role"] == "assistant" for m in recent)

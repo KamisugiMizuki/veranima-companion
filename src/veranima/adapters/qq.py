@@ -35,25 +35,52 @@ class OfflineThinkTimer:
         self,
         silence_minutes: int = 30,
         probability: float = 0.3,
+        max_per_day: int = 2,
         rand: random.Random | None = None,
     ):
         self.silence_minutes = max(1, int(silence_minutes))
         self.probability = max(0.0, min(1.0, probability))
+        self.max_per_day = max(0, int(max_per_day))  # 0 = 不限
         self._rand = rand or random.Random()
-        self._fired_at: float | None = None  # 上次触发时间（None = 未触发过）
+        self._last_check_at: float | None = None  # 上次掷骰时间（窗口内只掷一次）
+        self._day: str | None = None         # 当前计数日（YYYY-MM-DD）
+        self._day_count: int = 0             # 当日已触发次数
 
     def due(self, now: float, last_activity: float | None) -> bool:
-        """静默超过 N 分钟且本窗口未触发 → 掷骰决定是否触发。"""
+        """静默超过 N 分钟且本窗口未触发 → 掷骰决定是否触发。
+
+        每个静默窗口只掷一次骰（`_last_check_at` 窗口去重），
+        否则 60s tick 会在窗口内掷 30 次骰、概率闸门形同虚设
+        （2026-08-04 修复：0.3 概率实际 ≈100% 每 30 分钟必发）。
+
+        每日上限：同一天触发次数达到 max_per_day 后不再触发
+        （2026-08 修复：防止用户入睡后整夜反复轰炸）。
+        """
         if last_activity is None:
             return False
         if now - last_activity < self.silence_minutes * 60:
             return False
-        if self._fired_at is not None and now - self._fired_at < self.silence_minutes * 60:
-            return False  # 本窗口已触发过，再静默满一个窗口才可能再触发
+        # 窗口内只判定一次（无论是否触发，满一个窗口才重新掷骰）
+        if self._last_check_at is not None and now - self._last_check_at < self.silence_minutes * 60:
+            return False
+        self._last_check_at = now
+        if self.max_per_day > 0:
+            day = self._day_of(now)
+            if day != self._day:
+                self._day = day
+                self._day_count = 0
+            if self._day_count >= self.max_per_day:
+                return False  # 当日额度已用完
         if self._rand.random() >= self.probability:
             return False
-        self._fired_at = now
+        if self.max_per_day > 0:
+            self._day_count += 1
         return True
+
+    @staticmethod
+    def _day_of(now: float) -> str:
+        import datetime
+        return datetime.datetime.fromtimestamp(now).strftime("%Y-%m-%d")
 
 
 class QQAdapter:
@@ -70,6 +97,7 @@ class QQAdapter:
         proactive: bool = True,
         offline_think: OfflineThinkTimer | None = None,
         tick_interval: float = 60.0,
+        quiet_hours: tuple[int, int] | None = (23, 8),
     ):
         self.agent = agent
         self.ws_host = ws_host
@@ -78,6 +106,7 @@ class QQAdapter:
         self.proactive = proactive
         self.offline = offline_think or OfflineThinkTimer()
         self._tick_interval = tick_interval
+        self.quiet_hours = quiet_hours  # (开始小时, 结束小时)；None = 不限制
         self._lock = asyncio.Lock()
         self._last_user_activity: float | None = None
         self.bot = CQHttp(access_token=access_token or None, message_class=Message)
@@ -147,17 +176,34 @@ class QQAdapter:
             return
         while not stop.is_set():
             try:
-                if self.proactive:
-                    for msg in self.agent.tick_proactive():
-                        self._send_to_all(loop, msg)
-                if self.offline is not None:
-                    self._tick_offline_think(loop)
+                if self._in_quiet_hours():
+                    # 静默时段（如 23:00-08:00）：问候/节庆/离线思考一律不主动发
+                    logger.debug("in quiet hours, proactive tick skipped")
+                else:
+                    if self.proactive:
+                        for msg in self.agent.tick_proactive():
+                            self._send_to_all(loop, msg)
+                    if self.offline is not None:
+                        self._tick_offline_think(loop)
             except Exception:
                 logger.exception("bg proactive tick failed")
             stop.wait(self._tick_interval)
 
+    def _in_quiet_hours(self, now: datetime.datetime | None = None) -> bool:
+        """静默时段判定：(开始小时, 结束小时)，支持跨午夜（如 23:00-08:00）。"""
+        if not self.quiet_hours:
+            return False
+        import datetime
+        now = now or datetime.datetime.now()
+        start, end = self.quiet_hours
+        if start < end:
+            return start <= now.hour < end
+        return now.hour >= start or now.hour < end  # 跨午夜
+
     def _tick_offline_think(self, loop: asyncio.AbstractEventLoop) -> None:
         """8.7.4 离线思考：静默窗口命中 + 模型已加载 → late_reply → 发送。"""
+        if self._in_quiet_hours():
+            return
         if not self.offline.due(time.time(), self._last_user_activity):
             return
         model_check = getattr(self.agent.llm, "is_model_loaded", None)

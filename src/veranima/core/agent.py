@@ -255,18 +255,27 @@ class Agent:
 
         仅 QQ 形态启用（CLI 不调用——用户可能只是离开，主动消息=打扰）。
         返回空串表示本次不触发；成功则已入档 memory 并追加历史。
+
+        触发约束（2026-08 修复夜间轰炸）：
+        - 对话必须未闭合：最近一条消息必须是 user（bot 还没回应完），
+          若最后一条是 assistant（对话已闭合/自问自答）则不触发；
+        - 低精力不触发（energy < 30）；
+        - LLM 降级模板池：排除最近已发过的模板，避免同一条连发刷屏。
         """
         if self.state.energy < 30:
             return ""
+        # 对话闭合检查：最后一条必须是 user 消息（有未回应完的内容）
+        recent = self.memory.recent_messages(limit=8)
+        if not recent or recent[-1]["role"] != "user":
+            return ""
         if getattr(self.llm, "is_model_loaded", None) is not None and self.llm.is_model_loaded():
             try:
-                recent = self.memory.recent_messages(limit=8)
                 user_msgs = [m["content"][:80] for m in reversed(recent) if m["role"] == "user"]
                 if user_msgs:
                     last = user_msgs[0]
                     task = (
-                        f"用户之前说过：\"{last}\"，但你当时没有回应完，"
-                        "现在想补一条迟来的回应。自然提起这件事，补充想法或表达关心。"
+                        f"用户之前说过：\"{last}\"，但你现在才空下来，"
+                        "想补一条迟来的回应。自然提起这件事，补充想法或表达关心。"
                         "40 字以内，不要问问题，不要加动作描写。"
                     )
                     reply = self._short_task(task, max_tokens=512)
@@ -276,12 +285,18 @@ class Agent:
                         return reply
             except Exception as e:
                 logger.debug("late reply LLM failed, fallback to template: %s", e)
-        # 降级：模板池
+        # 降级：模板池（排除最近已出现过的模板，防止同一条连发）
         pool = [
             "（想起刚才的事）你之前说的那件事，我后来想了想，觉得你说得有道理。",
             "刚在发呆，突然想到你之前说的话。没事，就是想告诉你我在听。",
+            "（突然想起来）对了，你之前提过的那件事，后来怎么样了？",
+            "安静了一会儿，忽然想到你之前说的话，想告诉你我在想这件事。",
         ]
-        msg = random.choice(pool)
+        used = {m["content"] for m in recent if m["role"] == "assistant"}
+        candidates = [p for p in pool if p not in used]
+        if not candidates:
+            return ""
+        msg = random.choice(candidates)
         self.memory.store_message("assistant", msg, self.state.energy, self.state.mood)
         self._history.append({"role": "assistant", "content": msg})
         return msg

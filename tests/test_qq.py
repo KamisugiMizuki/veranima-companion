@@ -69,7 +69,8 @@ def agent(tmp_path):
 
 @pytest.fixture
 def adapter(agent):
-    a = QQAdapter(agent, allowed_qq=["10001"])
+    # quiet_hours=None：默认测试不关心静默时段（时段判定单独测）
+    a = QQAdapter(agent, allowed_qq=["10001"], quiet_hours=None)
     a.bot = FakeBot()
     return a
 
@@ -201,6 +202,57 @@ def test_offline_window_dedup():
     assert t.due(now=1000.0, last_activity=1000.0 - 60 * 60)       # 触发
     assert not t.due(now=1010.0, last_activity=1000.0 - 60 * 60)   # 窗口内不重复
     assert t.due(now=1000.0 + 31 * 60, last_activity=1000.0 - 60 * 60)  # 再满窗口可再触发
+
+
+def test_offline_max_per_day_limit():
+    """每日上限：当天触发满 max_per_day 后不再触发（防整夜轰炸）。"""
+    t = OfflineThinkTimer(
+        silence_minutes=30, probability=1.0, max_per_day=2, rand=random.Random(0)
+    )
+    # 基准 now 需距 last_activity 超过静默窗口（30 分钟 = 1800s）
+    base = 2000.0
+    assert t.due(now=base, last_activity=0.0)                       # 第 1 次
+    assert t.due(now=base + 31 * 60, last_activity=0.0)             # 第 2 次
+    assert not t.due(now=base + 62 * 60, last_activity=0.0)         # 当日额度用尽
+
+
+def test_offline_max_per_day_resets_next_day():
+    """跨天重置每日计数。"""
+    t = OfflineThinkTimer(
+        silence_minutes=30, probability=1.0, max_per_day=1, rand=random.Random(0)
+    )
+    base = 2000.0
+    assert t.due(now=base, last_activity=0.0)
+    assert not t.due(now=base + 31 * 60, last_activity=0.0)         # 同日已满
+    assert t.due(now=base + 24 * 3600, last_activity=0.0)           # 次日重置
+
+
+def test_quiet_hours_judgment(adapter):
+    """静默时段判定：跨午夜区间（23:00-08:00）。"""
+    adapter.quiet_hours = (23, 8)
+    assert adapter._in_quiet_hours(datetime.datetime(2026, 8, 3, 23, 30))
+    assert adapter._in_quiet_hours(datetime.datetime(2026, 8, 4, 3, 0))
+    assert adapter._in_quiet_hours(datetime.datetime(2026, 8, 4, 7, 59))
+    assert not adapter._in_quiet_hours(datetime.datetime(2026, 8, 3, 22, 59))
+    assert not adapter._in_quiet_hours(datetime.datetime(2026, 8, 4, 8, 0))
+    adapter.quiet_hours = None
+    assert not adapter._in_quiet_hours(datetime.datetime(2026, 8, 4, 3, 0))
+
+
+def test_offline_think_skipped_in_quiet_hours(adapter, agent, monkeypatch):
+    """静默时段内 _tick_offline_think 直接短路，不发消息。"""
+    agent.memory.store_message("user", "下周要去面试了", 80, "平静")
+    adapter._last_user_activity = 0.0
+    adapter.offline = OfflineThinkTimer(
+        silence_minutes=1, probability=1.0, rand=random.Random(0)
+    )
+    monkeypatch.setattr(adapter, "_in_quiet_hours", lambda now=None: True)
+    loop, t = _run_loop_thread()
+    try:
+        adapter._tick_offline_think(loop)
+    finally:
+        _stop_loop_thread(loop, t)
+    assert adapter.bot.sent == []
 
 
 def _run_loop_thread():
