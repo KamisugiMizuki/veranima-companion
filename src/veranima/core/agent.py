@@ -152,7 +152,15 @@ class Agent:
 
         # 4. 组装对话（历史 + 当前）；当前轮含图时用多模态 content 数组
         messages = [{"role": "system", "content": system}]
-        messages.extend(self._history[-self.config.get("chat", {}).get("history_max_messages", 20):])
+        hist = self._history[-self.config.get("chat", {}).get("history_max_messages", 20):]
+        # 2026-08-04 修复：proactive/late_reply/问候会向 _history 追加孤立的 assistant
+        # 消息（无配对 user），截断后序列可能以 assistant 开头；llama.cpp Qwen3 jinja
+        # 模板要求第一条非 system 消息必须是 user，否则 400 "No user query found in
+        # messages"（现象：跑若干轮后偶发 400，且被 client 误报为"模型未加载"）。
+        # 丢弃开头的孤立 assistant，保证序列 [user, assistant, ..., user]。
+        while hist and hist[0]["role"] != "user":
+            hist = hist[1:]
+        messages.extend(hist)
         if images:
             content: list[dict] = [{"type": "text", "text": user_text or "（用户发了一张图片）"}]
             content.extend({"type": "image_url", "image_url": {"url": u}} for u in images)

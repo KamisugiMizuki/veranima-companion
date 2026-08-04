@@ -75,11 +75,18 @@ class LLMClient:
             logger.error("LLM unavailable: %s", e)
             raise LLMUnavailableError(str(e)) from e
         except httpx.HTTPStatusError as e:
-            # 4xx/5xx：LM Studio 模型未加载时返回 400/404
-            if e.response.status_code in (400, 404, 422):
+            # 4xx/5xx：LM Studio 模型未加载时返回 400/404。
+            # 但 400 也可能是 jinja 模板拒绝消息序列（"No user query found in
+            # messages" 等）——那是请求内容问题，模型其实加载着；归 LLMError，
+            # 避免误导性的"模型没在运行"唤醒兜底（2026-08-04 修复）。
+            body = (e.response.text or "").lower()
+            is_template_error = e.response.status_code == 400 and (
+                "jinja" in body or "prompt template" in body or "template" in body
+            )
+            if not is_template_error and e.response.status_code in (400, 404, 422):
                 logger.error("LLM model not loaded or bad request: %s", e.response.text[:200])
                 raise LLMUnavailableError(f"model not loaded: {e.response.status_code}") from e
-            logger.error("LLM server error: %s", e)
+            logger.error("LLM server error: %s", e.response.text[:200])
             raise LLMError(str(e)) from e
         except Exception as e:
             logger.error("LLM chat failed: %s", e)

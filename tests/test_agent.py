@@ -172,3 +172,43 @@ def test_handle_no_text_no_images_empty(agent):
     r = a.handle("")
     assert r.reply == ""
     assert llm.calls == 0
+
+
+def test_handle_history_starting_with_assistant_normalized(agent):
+    """孤立 assistant（proactive/late_reply 追加）被规范化：请求序列以 user 开头。
+
+    回归 2026-08-04：_history 截断后第一条是 assistant 时，llama.cpp Qwen3 jinja
+    模板报 400 "No user query found in messages"（跑若干轮后偶发）。
+    """
+    card, memory = agent
+    llm = FakeLLM()
+    a = Agent(card=card, memory=memory, llm=llm, state=AgentState(),
+              config={"chat": {"proactive_message_prob": 0.0, "history_max_messages": 4}})
+    # 模拟历史：proactive 留下的孤立 assistant（无配对 user），且截断边界使其成为第一条
+    a._history = [
+        {"role": "assistant", "content": "（想起一件事）对了，你上次说的那件事后来怎么样了？"},
+        {"role": "user", "content": "嗯，那件事已经解决了"},
+        {"role": "assistant", "content": "那就好。"},
+    ]
+    r = a.handle("今天天气不错")
+    assert r.reply
+    msgs = llm.last_messages
+    assert msgs[0]["role"] == "system"
+    assert msgs[1]["role"] == "user"      # 开头的孤立 assistant 被丢弃
+    assert msgs[-1]["role"] == "user"     # 结尾是当前用户消息
+    assert msgs[-1]["content"] == "今天天气不错"
+
+
+def test_handle_history_all_assistant_normalized(agent):
+    """极端情况：历史只有孤立 assistant（如 start 开场白后未对话）也能正常请求。"""
+    card, memory = agent
+    llm = FakeLLM()
+    a = Agent(card=card, memory=memory, llm=llm, state=AgentState(),
+              config={"chat": {"proactive_message_prob": 0.0}})
+    a._history = [{"role": "assistant", "content": "（敲完最后一行代码）嗯。具体问题？"}]
+    r = a.handle("在吗？")
+    assert r.reply
+    msgs = llm.last_messages
+    assert msgs[0]["role"] == "system"
+    assert msgs[1]["role"] == "user"
+    assert msgs[-1]["role"] == "user"
