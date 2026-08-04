@@ -109,6 +109,30 @@ class AgentState:
             "total_messages": self._total_messages,
         }
 
+    # ---------- 持久化快照（2026-08-04 重启续接） ----------
+
+    def to_snapshot(self) -> dict:
+        """状态 → 可持久化 dict（存 SQLite agent_state 单行）。"""
+        return {
+            "energy": round(self.energy, 2),
+            "mood": self.mood,
+            "attachment": round(self.attachment, 4),
+            "mood_score": round(self._mood_score, 2),
+            "total_messages": self._total_messages,
+        }
+
+    @classmethod
+    def from_snapshot(cls, data: dict, *, initial_attachment: float = 0.5) -> "AgentState":
+        """持久化 dict → 状态。缺失字段用默认；_last_tick 重置为当前时间。"""
+        st = cls(initial_attachment=initial_attachment)
+        st.energy = max(0.0, min(100.0, float(data.get("energy", st.energy))))
+        mood = data.get("mood", st.mood)
+        st.mood = mood if mood in ("开心", "平静", "低落", "期待") else st.mood
+        st.attachment = max(0.0, min(0.95, float(data.get("attachment", st.attachment))))
+        st._mood_score = float(data.get("mood_score", 0.0))
+        st._total_messages = max(0, int(data.get("total_messages", 0)))
+        return st
+
     @property
     def total_messages(self) -> int:
         return self._total_messages

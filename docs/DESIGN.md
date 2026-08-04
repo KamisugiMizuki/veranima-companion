@@ -70,6 +70,15 @@ Agent 的形象由一份**角色卡（character card）**定义，不写死在�
 
 各层均有**上下文注入预算**控制（参考 Sakura 实测参数：core_profile 1200 / 段落 1600 字符等），记忆按预算精挑注入 prompt，不全量塞入。
 
+### 会话续接（2026-08-04 实现）
+
+进程重启后对话不中断，恢复机制：
+
+- **最近对话上下文**：Agent 启动时从 `messages` 表恢复最近 N 条（N = `chat.history_max_messages`，默认 20）作为 LLM 对话上下文，上次话题直接延续（消息表本就持久化）
+- **内在状态**：精力/情绪/依恋度/消息计数持久化到 `agent_state` 单行表（SQLite），每轮对话结束写入；重启后恢复，不再回退初始值（依恋度不回 0.5）
+- **长期记忆**：semantic/episodic/procedural/core_profile 本就走 SQLite，跨重启检索不变
+- session 层（当前会话摘要）维持原设计语义：会话内摘要，由恢复的最近对话上下文承担"接续"职责
+
 ### 写入与检索（借鉴 mem0/memanto）
 
 **写入：零开销摄入 + ADD-only**

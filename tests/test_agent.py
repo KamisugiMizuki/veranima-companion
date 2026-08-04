@@ -212,3 +212,52 @@ def test_handle_history_all_assistant_normalized(agent):
     assert msgs[0]["role"] == "system"
     assert msgs[1]["role"] == "user"
     assert msgs[-1]["role"] == "user"
+
+
+# ---------- 重启续接（2026-08-04） ----------
+
+def test_restart_restores_history_and_state(tmp_path):
+    """重启续接：同 DB 新建 Agent 恢复对话上下文与内在状态（依恋度/计数）。"""
+    from veranima.core.agent import Agent
+    card = CharacterCard(name="小V", first_mes="你好")
+    cfg = {"chat": {"proactive_message_prob": 0.0}}
+
+    # 第一次运行：聊两轮，状态积累
+    mem1 = MemoryStore(db_path=str(tmp_path / "t.db"), config={}, provider=FakeEmbed())
+    a1 = Agent(card=card, memory=mem1, llm=FakeLLM(), state=AgentState(), config=cfg)
+    a1.handle("你好呀")
+    a1.handle("今天加班好累")
+    before_attach = a1.state.attachment
+    before_total = a1.state.total_messages
+    assert before_total >= 4  # 2 user + 2 assistant
+
+    # 模拟重启：同 DB 新建 agent（进程内存全部丢失）
+    mem2 = MemoryStore(db_path=str(tmp_path / "t.db"), config={}, provider=FakeEmbed())
+    a2 = Agent(card=card, memory=mem2, llm=FakeLLM(), state=AgentState(), config=cfg)
+
+    # 状态恢复（不再回初始 0.5）
+    assert a2.state.attachment == pytest.approx(before_attach, abs=1e-4)
+    assert a2.state.total_messages == before_total
+    # 对话上下文恢复
+    assert len(a2._history) == len(a1._history) == 4
+    assert a2._history[0]["role"] == "user"
+    assert a2._history[-1]["role"] == "assistant"
+    # 重启后直接接话：请求序列正常且能引用之前内容
+    r = a2.handle("我们刚才聊到哪了？")
+    assert r.reply
+    msgs = a2.llm.last_messages
+    assert msgs[0]["role"] == "system"
+    assert msgs[1]["role"] == "user"      # 恢复的历史以 user 开头
+    assert msgs[-1]["role"] == "user"
+    assert any("加班" in str(m.get("content")) for m in msgs)  # 上次话题在上下文中
+
+
+def test_restart_fresh_db_keeps_defaults(tmp_path):
+    """新库（无快照/无消息）：状态与历史保持默认，不报错。"""
+    from veranima.core.agent import Agent
+    card = CharacterCard(name="小V", first_mes="你好")
+    mem = MemoryStore(db_path=str(tmp_path / "t.db"), config={}, provider=FakeEmbed())
+    a = Agent(card=card, memory=mem, llm=FakeLLM(), state=AgentState(), config={})
+    assert a.state.attachment == pytest.approx(0.5)
+    assert a.state.total_messages == 0
+    assert a._history == []

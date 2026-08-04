@@ -43,6 +43,17 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
 
+-- Agent 内在状态（依恋度/精力/情绪/计数），单行，跨重启持久化（2026-08-04 续接）
+CREATE TABLE IF NOT EXISTS agent_state (
+    id             INTEGER PRIMARY KEY CHECK (id = 1),
+    energy         REAL NOT NULL DEFAULT 100.0,
+    mood           TEXT NOT NULL DEFAULT '平静',
+    attachment     REAL NOT NULL DEFAULT 0.5,
+    mood_score     REAL NOT NULL DEFAULT 0.0,
+    total_messages INTEGER NOT NULL DEFAULT 0,
+    updated_at     TEXT NOT NULL
+);
+
 -- FTS5 全文索引（BM25 检索，trigram 分词以支持中文），触发器自动同步
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     content, content='messages', content_rowid='id', tokenize='trigram'

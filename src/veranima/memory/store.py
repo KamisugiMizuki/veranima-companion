@@ -121,6 +121,30 @@ class MemoryStore:
         self.con.commit()
         return cur.lastrowid
 
+    # ---------- Agent 状态持久化（2026-08-04 重启续接） ----------
+
+    def save_state(self, snapshot: dict) -> None:
+        """Agent 内在状态（依恋度/精力/情绪/计数）单行 upsert。"""
+        self.con.execute(
+            """INSERT INTO agent_state (id, energy, mood, attachment, mood_score, total_messages, updated_at)
+               VALUES (1, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                 energy=excluded.energy, mood=excluded.mood, attachment=excluded.attachment,
+                 mood_score=excluded.mood_score, total_messages=excluded.total_messages,
+                 updated_at=excluded.updated_at""",
+            (snapshot.get("energy", 100.0), snapshot.get("mood", "平静"),
+             snapshot.get("attachment", 0.5), snapshot.get("mood_score", 0.0),
+             snapshot.get("total_messages", 0), _now()),
+        )
+        self.con.commit()
+
+    def load_state(self) -> dict | None:
+        """读取持久化的 Agent 状态；无记录（新库/旧库未初始化）返回 None。"""
+        row = self.con.execute(
+            "SELECT energy, mood, attachment, mood_score, total_messages FROM agent_state WHERE id=1"
+        ).fetchone()
+        return dict(row) if row else None
+
     def update_latest(self, memory_id: int, new_content: str, *, confidence: float = 1.0, meta: dict | None = None) -> MemoryEntry:
         """显式版本链：修正不覆盖——新版本入链，旧版本保留（DESIGN.md 写入与检索节）。"""
         old = self.get(memory_id)

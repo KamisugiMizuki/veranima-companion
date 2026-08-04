@@ -53,6 +53,26 @@ class Agent:
         self._history: list[dict] = []
         self._last_reply_ts: float | None = None  # 上一条回复时间（延迟信号用）
 
+        # 重启续接（2026-08-04）：状态快照 + 最近对话从 SQLite 恢复，
+        # 进程重启后像没重启过（依恋度/精力/情绪/对话上下文都在）
+        try:
+            snapshot = self.memory.load_state()
+            if snapshot:
+                self.state = AgentState.from_snapshot(
+                    snapshot, initial_attachment=self.state.initial_attachment
+                )
+                logger.info("restored agent state: %s", self.state.summary())
+            hist_limit = self.config.get("chat", {}).get("history_max_messages", 20)
+            recent = self.memory.recent_messages(limit=hist_limit)
+            self._history = [
+                {"role": m["role"], "content": m["content"]}
+                for m in recent if m["role"] in ("user", "assistant")
+            ]
+            if self._history:
+                logger.info("restored %d history messages for continuity", len(self._history))
+        except Exception as e:
+            logger.warning("state/history restore failed, starting fresh: %s", e)
+
         # MVP2 学习组件（持久化到 data/，随对话更新）
         root = self.config.get("root", ".")
         self.style = StyleLearner(persist_path=str(Path(root) / "data" / "style.json"))
@@ -100,6 +120,13 @@ class Agent:
 
     # ---------- 公开接口 ----------
 
+    def _persist_state(self) -> None:
+        """状态持久化（重启续接）：状态变更后写入 SQLite agent_state 单行。"""
+        try:
+            self.memory.save_state(self.state.to_snapshot())
+        except Exception as e:
+            logger.debug("state persist failed: %s", e)
+
     def start(self) -> str:
         """会话启动：恢复状态、时间问候或初遇开场白。"""
         self.state.tick(self.config.get("state", {}).get("energy_decay_per_minute", 0.02))
@@ -109,9 +136,12 @@ class Agent:
             opening = self.card.first_mes or f"你好，我是{self.card.name}。今天想聊点什么？"
             self.memory.store_message("assistant", opening, self.state.energy, self.state.mood)
             self._history.append({"role": "assistant", "content": opening})
+            self._persist_state()
             return opening
         # 非首次：按时间段问候
-        return self._time_greeting()
+        greeting = self._time_greeting()
+        self._persist_state()
+        return greeting
 
     def handle(self, user_text: str, images: list[str] | None = None) -> TurnResult:
         """处理一条用户消息，返回回复。
@@ -176,6 +206,7 @@ class Agent:
             self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
             self._history.append({"role": "assistant", "content": reply})
             self.state.on_assistant_message()
+            self._persist_state()
             return TurnResult(reply=reply, energy=self.state.energy, mood=self.state.mood)
 
         # 5. 生成（低精力时限短；联网搜索开启时走工具调用链路）
@@ -230,6 +261,9 @@ class Agent:
         proactive_msg = ""
         if random.random() < float(self.config.get("chat", {}).get("proactive_message_prob", 0.1)):
             proactive_msg = self._try_proactive()
+
+        # 9.5 状态持久化（重启续接）
+        self._persist_state()
 
         return TurnResult(
             reply=reply,
