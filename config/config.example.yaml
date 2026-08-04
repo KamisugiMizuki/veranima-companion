@@ -72,6 +72,9 @@ qq:
   access_token: ""                      # NapCat 若配置了 access_token 则填写
   allowed_qq: []                        # 白名单 QQ 号（1v1：只填你自己的号；空 = 拒绝所有）
   proactive: true                       # 定时问候 + 节庆纪念（每日去重）
+  # 主动消息延迟（分钟）：对话静默满该时长后才发送 turn 内触发的主动消息，
+  # 避免"回复 + 主动"双连发（真人不会秒补一句无关话题）
+  proactive_delay_minutes: 5
   # 静默时段 [开始小时, 结束小时]：此时间段不主动发任何消息（问候/离线思考），
   # 支持跨午夜（23 点 ~ 次日 8 点）。空 [] 或 null = 不限制。
   quiet_hours: [23, 8]

@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import random
+import time
 
 import pytest
 from aiocqhttp import Message
@@ -132,14 +133,51 @@ def test_image_only_message_skipped(adapter, agent):
 
 # ---------- 消息管线 ----------
 
-def test_proactive_msg_sent_after_reply(adapter, agent):
-    """handle 返回 proactive_msg 时，回复后追加发送。"""
+def test_proactive_msg_deferred_not_sent_immediately(adapter, agent):
+    """主动消息不立即发送：进 pending，等待对话静默（防双连发）。"""
     agent.handle = lambda text: TurnResult(
         reply="普通回复", proactive_msg="（主动）对了，你上次说的事",
         energy=80, mood="平静",
     )
     run(adapter._handle_private({"user_id": 10001, "message_type": "private", "message": "hi"}))
-    assert adapter.bot.sent == [("send", "普通回复"), ("send", "（主动）对了，你上次说的事")]
+    assert adapter.bot.sent == [("send", "普通回复")]  # 只有回复，主动消息未发
+    assert adapter._pending_proactive == "（主动）对了，你上次说的事"
+
+
+def test_pending_proactive_flushed_after_silence(adapter, agent, monkeypatch):
+    """对话静默满 proactive_delay_minutes 后，后台 tick 发送 pending 主动消息。"""
+    adapter._pending_proactive = "（主动）对了，你上次说的事"
+    adapter._last_user_activity = time.time() - adapter.proactive_delay_minutes * 60 - 10
+    loop, t = _run_loop_thread()
+    try:
+        adapter._flush_pending_proactive(loop)
+    finally:
+        _stop_loop_thread(loop, t)
+    assert adapter.bot.sent[0][0] == "private"
+    assert "（主动）对了，你上次说的事" in adapter.bot.sent[0][1]["message"]
+    assert adapter._pending_proactive is None  # 发送后清空
+
+
+def test_pending_proactive_not_flushed_before_silence(adapter, agent):
+    """对话还没冷下来：pending 不发送。"""
+    adapter._pending_proactive = "（主动）等等再说"
+    adapter._last_user_activity = time.time() - 10  # 10 秒前刚发过
+    loop, t = _run_loop_thread()
+    try:
+        adapter._flush_pending_proactive(loop)
+    finally:
+        _stop_loop_thread(loop, t)
+    assert adapter.bot.sent == []
+    assert adapter._pending_proactive == "（主动）等等再说"  # 保留等待
+
+
+def test_pending_proactive_discarded_on_new_user_message(adapter, agent):
+    """用户又发消息：旧 pending 作废，不插话。"""
+    adapter._pending_proactive = "（主动）旧话题"
+    agent.handle = lambda text: TurnResult(reply="新回复", energy=80, mood="平静")
+    run(adapter._handle_private({"user_id": 10001, "message_type": "private", "message": "hi"}))
+    assert adapter.bot.sent == [("send", "新回复")]
+    assert adapter._pending_proactive is None  # 作废
 
 
 def test_empty_reply_not_sent(adapter, agent):

@@ -65,6 +65,7 @@ def main() -> int:
         proactive=bool(qq_cfg.get("proactive", True)),
         offline_think=offline,
         quiet_hours=quiet_hours,
+        proactive_delay_minutes=int(qq_cfg.get("proactive_delay_minutes", 5)),
     )
     print(f"Veranima QQ 已启动（白名单: {', '.join(map(str, allowed))}）")
     print(f"监听 ws://{host}:{port}/ws —— 请在 NapCatQQ 配置反向 WebSocket 客户端连接此地址")

@@ -117,6 +117,7 @@ class QQAdapter:
         offline_think: OfflineThinkTimer | None = None,
         tick_interval: float = 60.0,
         quiet_hours: tuple[int, int] | None = (23, 8),
+        proactive_delay_minutes: int = 5,
     ):
         self.agent = agent
         self.ws_host = ws_host
@@ -126,8 +127,10 @@ class QQAdapter:
         self.offline = offline_think or OfflineThinkTimer()
         self._tick_interval = tick_interval
         self.quiet_hours = quiet_hours  # (开始小时, 结束小时)；None = 不限制
+        self.proactive_delay_minutes = max(1, int(proactive_delay_minutes))
         self._lock = asyncio.Lock()
         self._last_user_activity: float | None = None
+        self._pending_proactive: str | None = None  # 延迟主动消息（对话静默后发送）
         self.bot = CQHttp(access_token=access_token or None, message_class=Message)
         self._register()
 
@@ -139,7 +142,7 @@ class QQAdapter:
             await self._handle_private(event)
 
     async def _handle_private(self, event: Event) -> None:
-        """私聊消息：白名单过滤 → 文本提取 → 串行 handle → 回复（含主动消息）。"""
+        """私聊消息：白名单过滤 → 文本提取 → 串行 handle → 回复（主动消息延迟）。"""
         uid = str(event.get("user_id", ""))
         if uid not in self.allowed:
             logger.info("ignored private message from non-whitelist qq=%s", uid)
@@ -149,6 +152,10 @@ class QQAdapter:
             logger.info("no plain text in message from qq=%s, skipped", uid)
             return
         logger.info("qq=%s >> %s", uid, text[:80])
+        # 用户又说话了 → 对话恢复，旧的延迟主动消息作废（不插话）
+        if self._pending_proactive:
+            logger.info("pending proactive discarded (user active again): %s", self._pending_proactive[:60])
+            self._pending_proactive = None
         # 串行处理：agent 内部状态（历史/记忆/学习）有顺序依赖，禁止并发写
         async with self._lock:
             result = await asyncio.to_thread(self.agent.handle, text)
@@ -157,8 +164,13 @@ class QQAdapter:
             await self.bot.send(event, result.reply)
             logger.info("qq=%s << %s", uid, result.reply[:80])
         if result.proactive_msg:
-            await self.bot.send(event, result.proactive_msg)
-            logger.info("qq=%s << (主动) %s", uid, result.proactive_msg[:80])
+            # 不立即发送：等对话静默满 proactive_delay_minutes 后由后台 tick 发送，
+            # 避免"回复 + 主动"双连发（2026-08-04 修复：真人不会秒补一句无关话题）
+            self._pending_proactive = result.proactive_msg
+            logger.info(
+                "qq=%s << (主动-pending, %dmin 后发) %s",
+                uid, self.proactive_delay_minutes, result.proactive_msg[:60],
+            )
 
     @staticmethod
     def _plain_text(event: Event) -> str:
@@ -202,11 +214,29 @@ class QQAdapter:
                     if self.proactive:
                         for msg in self.agent.tick_proactive():
                             self._send_to_all(loop, msg)
+                        self._flush_pending_proactive(loop)
                     if self.offline is not None:
                         self._tick_offline_think(loop)
             except Exception:
                 logger.exception("bg proactive tick failed")
             stop.wait(self._tick_interval)
+
+    def _flush_pending_proactive(self, loop: asyncio.AbstractEventLoop) -> None:
+        """延迟主动消息：对话静默满 proactive_delay_minutes 后发送（2026-08-04）。
+
+        用户刚发完消息时回复 + 主动双连发很突兀；等对话冷下来再发，
+        像真人"过了会儿想起一件事"。
+        """
+        if not self._pending_proactive:
+            return
+        if self._last_user_activity is None:
+            return
+        if time.time() - self._last_user_activity < self.proactive_delay_minutes * 60:
+            return  # 对话还没冷下来
+        msg = self._pending_proactive
+        self._pending_proactive = None
+        logger.info("pending proactive flushed after %dmin: %s", self.proactive_delay_minutes, msg[:60])
+        self._send_to_all(loop, msg)
 
     def _in_quiet_hours(self, now: datetime.datetime | None = None) -> bool:
         """静默时段判定：(开始小时, 结束小时)，支持跨午夜（如 23:00-08:00）。"""
