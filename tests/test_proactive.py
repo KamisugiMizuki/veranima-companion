@@ -140,3 +140,32 @@ def test_tick_proactive_idempotent(agent):
 def test_tick_proactive_no_trigger_off_window(agent):
     """非问候窗口 + 无节日：返回空。"""
     assert agent.tick_proactive(now=datetime.datetime(2026, 8, 3, 15, 0)) == []
+
+
+# ---------- 状态：初始依恋度（DESIGN 6 章 2026-08） ----------
+
+def test_state_initial_attachment_default():
+    """默认初始依恋度 0.5：半亲密起步（落在亲密期门槛）。"""
+    from veranima.core.state import AgentState
+    s = AgentState()
+    assert abs(s.attachment - 0.5) < 1e-9
+    stage, _ = s.relationship_stage()
+    assert stage == "亲密期"
+
+
+def test_state_initial_attachment_custom():
+    """显式指定 initial_attachment：生效且封顶 0.95。"""
+    from veranima.core.state import AgentState
+    s = AgentState(initial_attachment=0.8)
+    assert abs(s.attachment - 0.8) < 1e-9
+    s2 = AgentState(initial_attachment=1.5)
+    assert abs(s2.attachment - 0.95) < 1e-9
+
+
+def test_state_initial_attachment_explicit_zero_respected():
+    """显式传 attachment=0.0 时尊重显式值（不使用默认 0.5）。"""
+    from veranima.core.state import AgentState
+    s = AgentState(attachment=0.0, initial_attachment=0.0)
+    assert s.attachment == 0.0
+    stage, _ = s.relationship_stage()
+    assert stage == "初识期"

@@ -15,9 +15,15 @@ def test_identity_block_has_no_role_content():
 
 
 def test_identity_block_keeps_hard_constraints():
-    """系统级硬约束必须保留。"""
-    for kw in ["不得声称自己是真实人类", "不要以问句结尾", "不得编造\"不实\"的具体外部事实",
-               "温和拒绝并说明理由"]:
+    """系统级硬约束必须保留（2026-08 改写：身份拟真放开后仍保留红线）。"""
+    for kw in ["身份追问回避", "不得以真人身份参与现实社交", "不得声称自己参与现实活动",
+               "不助长伤害", "温和拒绝并说明理由"]:
+        assert kw in IDENTITY_BLOCK
+
+
+def test_identity_block_allows_expression_freedom():
+    """表达层放开条款已写入系统级（2026-08）。"""
+    for kw in ["允许问句与反问", "表达自由", "暧昧", "虚构个人经历"]:
         assert kw in IDENTITY_BLOCK
 
 
@@ -32,7 +38,18 @@ def test_rational_card_not_polluted():
     for kw in ["绿萝", "面包店", "梧桐", "锚点", "先回应情绪"]:
         assert kw not in sp
     # 通用约束仍在
-    assert "不要以问句结尾" in sp
+    assert "不得以真人身份参与现实社交" in sp
+
+
+def test_initial_affection_injected():
+    """initial_affection 字段注入 prompt（【初始好感】块）。"""
+    card = CharacterCard(
+        name="测试卡",
+        veranima={"initial_affection": "对用户怀有初始好感与暧昧底色"},
+    )
+    sp = card.to_system_prompt()
+    assert "【初始好感】" in sp
+    assert "初始好感与暧昧底色" in sp
 
 
 def test_communication_style_injected():

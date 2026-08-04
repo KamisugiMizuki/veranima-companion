@@ -291,9 +291,9 @@ class Agent:
                     task = (
                         f"用户之前说过：\"{last}\"，但你现在才空下来，"
                         "想补一条迟来的回应。自然提起这件事，补充想法或表达关心。"
-                        "40 字以内，不要问问题，不要加动作描写。"
+                        "像平时聊天一样自然，长度随意。"
                     )
-                    reply = self._short_task(task, max_tokens=512)
+                    reply = self._short_task(task, max_tokens=1024)
                     if reply:
                         self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
                         self._history.append({"role": "assistant", "content": reply})
@@ -468,9 +468,9 @@ class Agent:
                 f"现在是{'早晨' if slot == 'morning' else '中午' if slot == 'noon' else '晚上'}。"
                 f"用户最近说过：\n{ctx}\n\n"
                 "给用户发一条简短的问候，如果能自然提到他最近说过的一件事（关心/跟进）最好；"
-                "想不起来就不提，保持简单。30 字以内，不要加动作描写。"
+                "想不起来就不提，保持简单。"
             )
-            return self._short_task(task, max_tokens=512) or base
+            return self._short_task(task, max_tokens=1024) or base
         except Exception as e:
             logger.debug("greeting LLM failed, fallback: %s", e)
             return base
@@ -492,16 +492,16 @@ class Agent:
                     task = (
                         f"你突然想起一件旧事：\"{old}\"。"
                         "给用户发一条消息，以'突然想起来'或'对了'的方式自然提起这件事，"
-                        "问问后续或表达关心。50 字以内，不要加动作描写。"
+                        "问问后续或表达关心。"
                     )
                 else:
                     task = (
                         f"下面是你和用户最近的对话：\n{ctx}\n\n"
                         "现在你打算主动给用户发一条消息，分享一件你虚拟日常里的小事"
                         "（窗台的绿萝、楼下遇到的猫、面包店、窗外天气等生活细节，要有连续性）。"
-                        "只说这件事本身，50 字以内，不要问问题，不要加动作描写。"
+                        "只说这件事本身，像平时聊天一样自然。"
                     )
-                reply = self._short_task(task, max_tokens=512)
+                reply = self._short_task(task, max_tokens=1024)
                 if reply:
                     self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
                     self._history.append({"role": "assistant", "content": reply})

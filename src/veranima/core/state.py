@@ -22,6 +22,8 @@ class AgentState:
     energy: float = 100.0
     mood: Mood = "平静"
     attachment: float = 0.0
+    # 初始依恋度（DESIGN.md 第 6 章 2026-08：默认 0.5 半亲密起步，跳过初识期）
+    initial_attachment: float = 0.5
     # 内部
     _last_tick: float = field(default=0.0, repr=False)
     _mood_score: float = field(default=0.0, repr=False)   # 近期互动累积
@@ -29,6 +31,8 @@ class AgentState:
 
     def __post_init__(self):
         self._last_tick = time.time()
+        if self.attachment == 0.0:
+            self.attachment = max(0.0, min(0.95, self.initial_attachment))
 
     # ---------- 时间推进 ----------
 

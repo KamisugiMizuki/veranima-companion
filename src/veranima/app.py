@@ -48,4 +48,10 @@ def create_agent(config: dict | None = None) -> Agent:
     # LLM
     llm = LLMClient(cfg.get("llm", {}))
 
-    return Agent(card=card, memory=memory, llm=llm, state=AgentState(), config=cfg)
+    return Agent(
+        card=card,
+        memory=memory,
+        llm=llm,
+        state=AgentState(initial_attachment=cfg.get("state", {}).get("initial_attachment", 0.5)),
+        config=cfg,
+    )

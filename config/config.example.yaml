@@ -12,9 +12,9 @@ llm:
   model: "qwen3.5-9b-uncensored-hauhaucs-aggressive@q4_k_m"  # 多模态（支持图像输入）；远程 API 示例：deepseek-chat / qwen-plus
   api_key: ""                             # 远程 API 填 key；本地 LM Studio/Ollama 留空
   temperature: 0.8
-  # thinking 模型 reasoning 长：qwen3.5 实测思考可达 1600+ chars，
-  # 1024 会被推理吃光导致空回复，需留足预算
-  max_tokens: 2048
+  # thinking 模型 reasoning 长：qwen3.5 实测思考可达 6000+ chars，
+  # 预算不足会导致空回复；4096 给足推理+回复空间（16K context 仍够）
+  max_tokens: 4096
   # 低精力时的简短回复配置
   low_energy_max_tokens: 256
   timeout: 120
@@ -52,6 +52,7 @@ state:
   energy_decay_per_minute: 0.02         # 每分钟衰减
   energy_recover_per_message: 3.0       # 每条消息恢复
   attachment_growth: 0.05               # 每轮依恋度增长
+  initial_attachment: 0.5               # 初始依恋度（0=初识 0.5=半亲密 0.75=亲密）
 
 # 对话
 chat:
