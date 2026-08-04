@@ -134,8 +134,8 @@ def test_image_only_message_skipped(adapter, agent):
 def test_image_message_with_url_passed_to_handle(adapter, agent, monkeypatch):
     """带 http url 的图片消息：下载为 data URL 传给 handle（8.6.2）。"""
     monkeypatch.setattr(
-        QQAdapter, "_download_image_data_url",
-        staticmethod(lambda url: "data:image/png;base64,QUJD"),
+        QQAdapter, "_download_image",
+        staticmethod(lambda url: ("data:image/png;base64,QUJD", b"raw")),
     )
     seen = {}
 
@@ -156,13 +156,84 @@ def test_image_message_with_url_passed_to_handle(adapter, agent, monkeypatch):
 
 def test_image_download_failure_falls_back_to_text(adapter, agent, monkeypatch):
     """图片下载失败：降级为纯文本对话，不阻塞（8.6.4 边界）。"""
-    monkeypatch.setattr(QQAdapter, "_download_image_data_url", staticmethod(lambda url: None))
+    monkeypatch.setattr(QQAdapter, "_download_image", staticmethod(lambda url: None))
     agent.handle = lambda text, images=None: TurnResult(reply="文字也能聊", energy=80, mood="平静")
     run(adapter._handle_private(
         {"user_id": 10001, "message_type": "private",
          "message": Message("[CQ:image,file=a.png,url=http://127.0.0.1:8099/img/x.png]你好")}
     ))
     assert adapter.bot.sent == [("send", "文字也能聊")]
+
+
+# ---------- 8.6.3 表情包库 ----------
+
+def _png_bytes() -> bytes:
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (32, 32), (255, 0, 0)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_sticker_ingest_new_image(adapter, agent, tmp_path, monkeypatch):
+    """没见过的新图：LLM 标注 → 入库（adapter 层链路）。"""
+    from veranima.core.stickers import StickerLibrary
+    lib = StickerLibrary(root=tmp_path / "stickers")
+    adapter.stickers = lib
+    raw = _png_bytes()
+    monkeypatch.setattr(QQAdapter, "_download_image",
+                        staticmethod(lambda url: ("data:image/png;base64,QUJD", raw)))
+    monkeypatch.setattr(agent, "annotate_sticker",
+                        lambda data_url: {"meaning": "红色", "moods": ["开心"], "scenarios": ["测试"]})
+    agent.handle = lambda text, images=None: TurnResult(reply="看到图了", energy=80, mood="平静")
+    run(adapter._handle_private(
+        {"user_id": 10001, "message_type": "private",
+         "message": Message("[CQ:image,file=a.png,url=http://127.0.0.1:8099/img/1.png]")}
+    ))
+    assert len(lib) == 1
+    assert lib._entries[0].meaning == "红色"
+
+
+def test_sticker_ingest_duplicate_skipped(adapter, agent, tmp_path, monkeypatch):
+    """见过的图：不重复标注入库。"""
+    from veranima.core.stickers import StickerLibrary
+    lib = StickerLibrary(root=tmp_path / "stickers")
+    adapter.stickers = lib
+    raw = _png_bytes()
+    lib.add(raw, meaning="已有", moods=["开心"])
+    monkeypatch.setattr(QQAdapter, "_download_image",
+                        staticmethod(lambda url: ("data:image/png;base64,QUJD", raw)))
+    monkeypatch.setattr(agent, "annotate_sticker", lambda data_url: (_ for _ in ()).throw(AssertionError("不应标注已见过的图")))
+    agent.handle = lambda text, images=None: TurnResult(reply="嗯", energy=80, mood="平静")
+    run(adapter._handle_private(
+        {"user_id": 10001, "message_type": "private",
+         "message": Message("[CQ:image,file=a.png,url=http://127.0.0.1:8099/img/1.png]")}
+    ))
+    assert len(lib) == 1
+
+
+def test_sticker_sent_on_happy_reply(adapter, agent, tmp_path):
+    """回复带开心情绪：宽松匹配 → 发送表情包。"""
+    from veranima.core.stickers import StickerLibrary
+    lib = StickerLibrary(root=tmp_path / "stickers")
+    adapter.stickers = lib
+    lib.add(_png_bytes(), meaning="开心", moods=["开心"])
+    agent.handle = lambda text, images=None: TurnResult(reply="哈哈太好了！", energy=80, mood="平静")
+    run(adapter._handle_private({"user_id": 10001, "message_type": "private", "message": "耶"}))
+    cq = [m for m in adapter.bot.sent if isinstance(m[1], str) and m[1].startswith("[CQ:image")]
+    assert len(cq) == 1
+    assert ".png" in cq[0][1]
+
+
+def test_sticker_not_sent_without_mood(adapter, agent, tmp_path):
+    """回复无情绪：不发表情包。"""
+    from veranima.core.stickers import StickerLibrary
+    lib = StickerLibrary(root=tmp_path / "stickers")
+    adapter.stickers = lib
+    lib.add(_png_bytes(), meaning="开心", moods=["开心"])
+    agent.handle = lambda text, images=None: TurnResult(reply="收到，好的", energy=80, mood="平静")
+    run(adapter._handle_private({"user_id": 10001, "message_type": "private", "message": "嗯"}))
+    assert adapter.bot.sent == [("send", "收到，好的")]
 
 
 # ---------- 消息管线 ----------

@@ -88,4 +88,8 @@ qq:
     growth_factor: 0.08                 # 未命中时概率增长量（"想念"积累，0=关闭）
     max_probability: 0.95               # 概率增长上限（发送后重置回基础值）
     max_per_day: 2                      # 每日最多触发次数（0 = 不限；防整夜轰炸）
+  # 8.6.3 表情包库：用户发图 → 没见过的 LLM 标注入库；回复时按情绪宽松匹配发送
+  stickers:
+    enabled: false                      # 默认关闭（需要多模态模型支持）
+    dir: "data/stickers"                # 存储目录（图片 + index.json 标注）
 

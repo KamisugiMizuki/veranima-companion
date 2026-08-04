@@ -56,6 +56,11 @@ def main() -> int:
     # 静默时段：默认 23:00-08:00 不主动发任何消息（问候/离线思考）
     qh = qq_cfg.get("quiet_hours", [23, 8])
     quiet_hours = (int(qh[0]), int(qh[1])) if qh else None
+    # 8.6.3 表情包库（可选）：用户发图 → 没见过的入库标注；回复时按情绪匹配发送
+    stickers = None
+    if qq_cfg.get("stickers", {}).get("enabled", False):
+        from .core.stickers import StickerLibrary
+        stickers = StickerLibrary(root=qq_cfg["stickers"].get("dir", "data/stickers"))
     adapter = QQAdapter(
         agent,
         ws_host=host,
@@ -66,6 +71,7 @@ def main() -> int:
         offline_think=offline,
         quiet_hours=quiet_hours,
         proactive_delay_minutes=int(qq_cfg.get("proactive_delay_minutes", 5)),
+        sticker_library=stickers,
     )
     print(f"Veranima QQ 已启动（白名单: {', '.join(map(str, allowed))}）")
     print(f"监听 ws://{host}:{port}/ws —— 请在 NapCatQQ 配置反向 WebSocket 客户端连接此地址")

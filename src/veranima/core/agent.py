@@ -518,3 +518,77 @@ class Agent:
         self.memory.store_message("assistant", msg, self.state.energy, self.state.mood)
         self._history.append({"role": "assistant", "content": msg})
         return msg
+
+    # ---------- 8.6.3 表情包标注 ----------
+
+    def annotate_sticker(self, image_data_url: str) -> dict | None:
+        """表情包标注（8.6.3）：LLM 看图 → JSON（含义/情绪/适用情景）。
+
+        返回 {"meaning","moods","scenarios"} 或 None（模型不可用/解析失败，
+        调用方不强行入库）。JSON 用纯文本约束输出，防 thinking 模型吞预算。
+        """
+        if getattr(self.llm, "is_model_loaded", None) is not None and not self.llm.is_model_loaded():
+            return None
+        try:
+            task = (
+                "这是一张表情包图片。用 JSON 输出它的标注，格式：\n"
+                '{"meaning": "一句话含义", "moods": ["情绪标签1", "情绪标签2"], '
+                '"scenarios": ["适用情景1", "适用情景2"]}\n'
+                "情绪标签从 [开心, 难过, 生气, 无语, 惊讶, 鼓励, 调侃, 无奈, 敷衍, 卖萌] 中选；"
+                "适用情景用简短短语描述（如'用户答应请求'）。只输出 JSON，不要其他文字。"
+            )
+            messages = [
+                {"role": "system", "content": "你是表情包标注助手，输出严格 JSON。"},
+                {"role": "user", "content": [
+                    {"type": "text", "text": task},
+                    {"type": "image_url", "image_url": {"url": image_data_url}},
+                ]},
+            ]
+            # 不传 max_tokens：thinking 模型 reasoning 长，用 config 默认（2048）
+            text = self.llm.chat(messages)
+            return _parse_sticker_json(text)
+        except Exception as e:
+            logger.debug("sticker annotate failed: %s", e)
+            return None
+
+
+def _parse_sticker_json(text: str) -> dict | None:
+    """解析 LLM 标注输出：剥离 ```json 围栏/前后杂文本，容错缺失字段。"""
+    import json
+    import re
+    text = text.strip()
+    m = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
+    if m:
+        text = m.group(1).strip()
+    else:
+        # 无围栏：取第一个 { 到最后一个 }
+        s, e = text.find("{"), text.rfind("}")
+        if s >= 0 and e > s:
+            text = text[s : e + 1]
+    try:
+        d = json.loads(text)
+    except Exception:
+        return None
+    if not isinstance(d, dict):
+        return None
+    return {
+        "meaning": str(d.get("meaning", "")).strip(),
+        "moods": [str(x).strip() for x in d.get("moods", []) if str(x).strip()],
+        "scenarios": [str(x).strip() for x in d.get("scenarios", []) if str(x).strip()],
+    }
+
+
+def _data_url_from_bytes(raw: bytes, default_ctype: str = "image/png") -> str:
+    """原始图片字节 → data URL（8.6.3 表情包标注用）。"""
+    import base64
+    # 从文件头嗅探类型（PNG/JPEG/GIF/WEBP），未知回退 default
+    ctype = default_ctype
+    if raw[:8] == b"\x89PNG\r\n\x1a\n":
+        ctype = "image/png"
+    elif raw[:3] == b"\xff\xd8\xff":
+        ctype = "image/jpeg"
+    elif raw[:6] in (b"GIF87a", b"GIF89a"):
+        ctype = "image/gif"
+    elif raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        ctype = "image/webp"
+    return f"data:{ctype};base64," + base64.b64encode(raw).decode()

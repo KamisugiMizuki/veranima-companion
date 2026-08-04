@@ -120,6 +120,7 @@ class QQAdapter:
         tick_interval: float = 60.0,
         quiet_hours: tuple[int, int] | None = (23, 8),
         proactive_delay_minutes: int = 5,
+        sticker_library=None,  # StickerLibrary | None；None = 表情包功能关闭
     ):
         self.agent = agent
         self.ws_host = ws_host
@@ -130,6 +131,7 @@ class QQAdapter:
         self._tick_interval = tick_interval
         self.quiet_hours = quiet_hours  # (开始小时, 结束小时)；None = 不限制
         self.proactive_delay_minutes = max(1, int(proactive_delay_minutes))
+        self.stickers = sticker_library  # 8.6.3 表情包库（None = 关闭）
         self._lock = asyncio.Lock()
         self._last_user_activity: float | None = None
         self._pending_proactive: str | None = None  # 延迟主动消息（对话静默后发送）
@@ -150,7 +152,7 @@ class QQAdapter:
             logger.info("ignored private message from non-whitelist qq=%s", uid)
             return
         text = self._plain_text(event)
-        # 8.6.2 图像输入：提取图片段 → 下载 → data URL（失败降级，不阻塞对话）
+        # 8.6.2/8.6.3：图片段 → 下载 (data_url, raw_bytes)；下载失败降级，不阻塞对话
         images = await self._collect_images(event)
         if not text and not images:
             logger.info("no text/image in message from qq=%s, skipped", uid)
@@ -160,13 +162,21 @@ class QQAdapter:
         if self._pending_proactive:
             logger.info("pending proactive discarded (user active again): %s", self._pending_proactive[:60])
             self._pending_proactive = None
+        # 8.6.3 表情包入库：没见过的图 → LLM 标注 → 入库（后台线程，不阻塞回复）
+        if images:
+            await asyncio.to_thread(self._ingest_stickers, [raw for _, raw in images])
         # 串行处理：agent 内部状态（历史/记忆/学习）有顺序依赖，禁止并发写
         async with self._lock:
-            result = await asyncio.to_thread(self.agent.handle, text, images)
+            result = await asyncio.to_thread(self.agent.handle, text, [d for d, _ in images])
         self._last_user_activity = time.time()
         if result.reply:
             await self.bot.send(event, result.reply)
             logger.info("qq=%s << %s", uid, result.reply[:80])
+            # 8.6.3 表情包输出：回复后按情绪宽松匹配，附加一张（不刷屏）
+            sticker = self._pick_sticker_for_reply(result.reply)
+            if sticker:
+                await self.bot.send(event, f"[CQ:image,file={sticker}]")
+                logger.info("qq=%s << (表情包) %s", uid, sticker)
         if result.proactive_msg:
             # 不立即发送：等对话静默满 proactive_delay_minutes 后由后台 tick 发送，
             # 避免"回复 + 主动"双连发（2026-08-04 修复：真人不会秒补一句无关话题）
@@ -176,6 +186,53 @@ class QQAdapter:
                 uid, self.proactive_delay_minutes, result.proactive_msg[:60],
             )
 
+    def _ingest_stickers(self, raw_images: list[bytes]) -> None:
+        """8.6.3 表情包入库：没见过的 → LLM 标注 → 存库。
+
+        判重用 dHash（同图不同尺寸/压缩也识别）；标注失败不强行入库。
+        """
+        if self.stickers is None:
+            return
+        for raw in raw_images:
+            try:
+                if self.stickers.find_similar(raw):
+                    continue  # 见过，不重复入库
+                from ..core.agent import _data_url_from_bytes
+                data_url = _data_url_from_bytes(raw)
+                meta = self.agent.annotate_sticker(data_url)
+                if meta:
+                    self.stickers.add(raw, **meta)
+            except Exception as e:
+                logger.debug("sticker ingest failed: %s", e)
+
+    def _pick_sticker_for_reply(self, reply: str) -> str | None:
+        """8.6.3 表情包输出：按回复情绪宽松匹配，返回本地文件路径或 None。
+
+        约束：情绪命中才发（宽松：相近即可）；低使用次数优先。
+        """
+        if self.stickers is None or len(self.stickers) == 0:
+            return None
+        mood = self._reply_mood(reply)
+        if not mood:
+            return None
+        cands = self.stickers.find_for_mood(mood, limit=3)
+        if not cands:
+            return None
+        entry = cands[0]
+        self.stickers.record_use(entry)
+        return str(self.stickers.root / entry.file)
+
+    @staticmethod
+    def _reply_mood(reply: str) -> str | None:
+        """回复文本 → 情绪标签（宽松匹配用）。无情绪 → None（不发）。"""
+        from ..core.agent import Agent
+        emo = Agent._detect_emotion(reply)
+        mapping = {
+            "很开心": "开心",
+            "有点低落": "难过",
+        }
+        return mapping.get(emo)
+
     @staticmethod
     def _plain_text(event: Event) -> str:
         """提取消息纯文本（CQ 码剥离；图片段单独走 _collect_images）。"""
@@ -184,10 +241,11 @@ class QQAdapter:
             return msg.extract_plain_text().strip()
         return str(msg).strip()
 
-    async def _collect_images(self, event: Event) -> list[str]:
-        """8.6.2 图像输入：提取消息中的图片段并下载为 data URL。
+    async def _collect_images(self, event: Event) -> list[tuple[str, bytes]]:
+        """8.6.2 图像输入：提取消息中的图片段并下载。
 
-        返回 data URL 列表（data:image/*;base64,...）；下载失败/无图片段返回 []。
+        返回 [(data_url, raw_bytes), ...]；下载失败/无图片段返回 []。
+        data_url 供 LLM 多模态看图；raw_bytes 供 8.6.3 表情包入库。
         """
         msg = event.get("message", "")
         if not isinstance(msg, Message):
@@ -204,16 +262,16 @@ class QQAdapter:
         if not urls:
             return []
         results = await asyncio.gather(
-            *(asyncio.to_thread(self._download_image_data_url, u) for u in urls)
+            *(asyncio.to_thread(self._download_image, u) for u in urls)
         )
         ok = [r for r in results if r]
         if len(ok) < len(urls):
             logger.warning("image download failed: %d/%d images dropped", len(urls) - len(ok), len(urls))
-        return ok
+        return [(data_url, raw) for data_url, raw in ok]
 
     @staticmethod
-    def _download_image_data_url(url: str) -> str | None:
-        """下载图片为 data URL（httpx，同步跑在线程池）。失败返回 None（降级纯文本）。"""
+    def _download_image(url: str) -> tuple[str, bytes] | None:
+        """下载图片为 (data_url, raw_bytes)。失败返回 None（降级纯文本）。"""
         try:
             with httpx.Client(timeout=15) as client:
                 resp = client.get(url)
@@ -223,7 +281,7 @@ class QQAdapter:
                 return None
             import base64
             b64 = base64.b64encode(resp.content).decode()
-            return f"data:{ctype};base64,{b64}"
+            return f"data:{ctype};base64,{b64}", resp.content
         except Exception as e:
             logger.debug("image download failed (%s): %s", url[:80], e)
             return None
