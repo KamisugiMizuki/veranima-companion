@@ -47,6 +47,8 @@ def main() -> int:
             silence_minutes=int(think_cfg.get("silence_minutes", 30)),
             probability=float(think_cfg.get("probability", 0.3)),
             max_per_day=int(think_cfg.get("max_per_day", 2)),
+            growth_factor=float(think_cfg.get("growth_factor", 0.08)),
+            max_probability=float(think_cfg.get("max_probability", 0.95)),
         )
 
     host = qq_cfg.get("ws_host", "127.0.0.1")

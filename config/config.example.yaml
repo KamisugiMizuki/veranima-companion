@@ -79,6 +79,8 @@ qq:
   offline_think:
     enabled: true
     silence_minutes: 30                 # 静默多少分钟后可能触发
-    probability: 0.3                    # 每次静默窗口的触发概率（0~1）
+    probability: 0.3                    # 基础触发概率（0~1）；每次窗口掷一次骰
+    growth_factor: 0.08                 # 未命中时概率增长量（"想念"积累，0=关闭）
+    max_probability: 0.95               # 概率增长上限（发送后重置回基础值）
     max_per_day: 2                      # 每日最多触发次数（0 = 不限；防整夜轰炸）
 

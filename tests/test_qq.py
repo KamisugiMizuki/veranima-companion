@@ -227,6 +227,57 @@ def test_offline_max_per_day_resets_next_day():
     assert t.due(now=base + 24 * 3600, last_activity=0.0)           # 次日重置
 
 
+def test_offline_probability_grows_on_miss():
+    """渴望度积累：未命中时概率增长，命中后重置回基础值。"""
+    class SeqRand:
+        def __init__(self, vals):
+            self._vals = list(vals)
+        def random(self):
+            return self._vals.pop(0)
+
+    t = OfflineThinkTimer(
+        silence_minutes=30, probability=0.3, growth_factor=0.1, max_probability=0.9,
+        rand=SeqRand([0.8, 0.5, 0.9, 0.2]),
+    )
+    # 窗口1：0.8 >= 0.3 → miss，概率 0.3 → 0.4
+    assert not t.due(now=2000.0, last_activity=0.0)
+    assert abs(t.probability - 0.4) < 1e-9
+    # 窗口2：0.5 >= 0.4 → miss，概率 0.4 → 0.5
+    assert not t.due(now=2000.0 + 31 * 60, last_activity=0.0)
+    assert abs(t.probability - 0.5) < 1e-9
+    # 窗口3：0.9 >= 0.5 → miss，概率 0.5 → 0.6
+    assert not t.due(now=2000.0 + 62 * 60, last_activity=0.0)
+    assert abs(t.probability - 0.6) < 1e-9
+    # 窗口4：0.2 < 0.6 → hit，概率重置回 0.3
+    assert t.due(now=2000.0 + 93 * 60, last_activity=0.0)
+    assert abs(t.probability - 0.3) < 1e-9
+
+
+def test_offline_probability_capped_at_max():
+    """渴望度积累封顶：不超过 max_probability。"""
+    class SeqRand:
+        def __init__(self, vals):
+            self._vals = list(vals)
+        def random(self):
+            return self._vals.pop(0)
+
+    t = OfflineThinkTimer(
+        silence_minutes=30, probability=0.85, growth_factor=0.1, max_probability=0.9,
+        rand=SeqRand([0.99, 0.99, 0.99]),
+    )
+    for i in range(3):
+        assert not t.due(now=2000.0 + i * 31 * 60, last_activity=0.0)
+    assert abs(t.probability - 0.9) < 1e-9  # 0.85+0.1 → 封顶 0.9
+
+
+def test_offline_probability_zero_never_grows():
+    """概率 0 = 关闭：永不触发，也不增长。"""
+    t = OfflineThinkTimer(silence_minutes=30, probability=0.0, rand=random.Random(0))
+    for i in range(5):
+        assert not t.due(now=2000.0 + i * 31 * 60, last_activity=0.0)
+    assert t.probability == 0.0
+
+
 def test_quiet_hours_judgment(adapter):
     """静默时段判定：跨午夜区间（23:00-08:00）。"""
     adapter.quiet_hours = (23, 8)

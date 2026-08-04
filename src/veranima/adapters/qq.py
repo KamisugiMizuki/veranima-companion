@@ -36,10 +36,15 @@ class OfflineThinkTimer:
         silence_minutes: int = 30,
         probability: float = 0.3,
         max_per_day: int = 2,
+        growth_factor: float = 0.08,
+        max_probability: float = 0.95,
         rand: random.Random | None = None,
     ):
         self.silence_minutes = max(1, int(silence_minutes))
-        self.probability = max(0.0, min(1.0, probability))
+        self.probability = max(0.0, min(1.0, probability))  # 当前概率（miss 后增长）
+        self._base_probability = self.probability           # 基础概率（发送后重置回）
+        self.growth_factor = max(0.0, min(1.0, growth_factor))
+        self.max_probability = max(0.0, min(1.0, max_probability))
         self.max_per_day = max(0, int(max_per_day))  # 0 = 不限
         self._rand = rand or random.Random()
         self._last_check_at: float | None = None  # 上次掷骰时间（窗口内只掷一次）
@@ -52,6 +57,11 @@ class OfflineThinkTimer:
         每个静默窗口只掷一次骰（`_last_check_at` 窗口去重），
         否则 60s tick 会在窗口内掷 30 次骰、概率闸门形同虚设
         （2026-08-04 修复：0.3 概率实际 ≈100% 每 30 分钟必发）。
+
+        渴望度积累（借鉴 revive-companion 的 PoissonEngine）：
+        掷骰未命中 → 概率 +growth_factor（"想念"随时间积累）；
+        命中 → 概率重置回基础值（"想念"得到满足）。
+        概率为 0 时视为关闭（永不触发，也不增长）。
 
         每日上限：同一天触发次数达到 max_per_day 后不再触发
         （2026-08 修复：防止用户入睡后整夜反复轰炸）。
@@ -72,10 +82,19 @@ class OfflineThinkTimer:
             if self._day_count >= self.max_per_day:
                 return False  # 当日额度已用完
         if self._rand.random() >= self.probability:
+            self._grow()  # miss → 渴望度积累
             return False
+        # 命中：概率重置（发送后"想念满足"）
+        self.probability = self._base_probability
         if self.max_per_day > 0:
             self._day_count += 1
         return True
+
+    def _grow(self) -> None:
+        """渴望度积累：未命中时概率增长，封顶 max_probability。"""
+        if self.probability <= 0:
+            return  # 0 = 关闭（永不触发）
+        self.probability = min(self.max_probability, self.probability + self.growth_factor)
 
     @staticmethod
     def _day_of(now: float) -> str:
