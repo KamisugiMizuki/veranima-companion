@@ -81,10 +81,24 @@ User Input → [社交博弈：消耗多少情绪资本]
 | LLM | LM Studio 本地（`qwen3.5-9b-uncensored@q4_k_m`，多模态） | object_design 已验证，httpx 直调 OpenAI 兼容接口 |
 | Embedding | `data/models/bge-m3`（sentence-transformers 本地） | object_design 已验证，1024 维 |
 | QQ 接入 | aiocqhttp + NapCatQQ（OneBot v11 反向 WS，端口 8099） | object_design 已验证 |
-| 桌宠前端 | **Tauri v2 + React**（桌宠窗口、TTS 播放、屏幕感知 UI） | 已有 MacroPhonic（Tauri+Python sidecar）经验可复用 |
-| 桌宠 TTS | Qwen3-TTS sidecar（复用 MacroPhonic 的 server.py 模式） | 已有实现 |
+| 桌宠前端 | **待定**（候选：Tauri v2 / Electron / WPF）。MacroPhonic 的 Tauri 桌宠端未调通（仅 TTS sidecar 可用），不能作为「已验证经验」复用，需重新评估 | 风险项，见 3.1 |
+| 桌宠 TTS | Qwen3-TTS sidecar（复用 MacroPhonic 的 server.py 模式，已验证可用） | 已有实现 |
 | 记忆存储 | SQLite + 向量（复用 object_design 的 store.py 模式） | 已验证 |
 | 测试 | pytest | 项目惯例 |
+
+---
+
+## 3.1 桌宠前端选型风险（技术栈中唯一未验证项）
+
+MacroPhonic 的 Tauri 桌宠端**未调通**（当时卡在窗口行为/GPU flags/退出码处理，最终只交付了 TTS sidecar）。因此桌宠前端不能沿用「已验证」假设，M3 前需重新选型：
+
+| 候选 | 优势 | 风险 |
+| --- | --- | --- |
+| Tauri v2 | 轻量（~10MB）、Rust 后端性能好、已有部分调试经验（虽然未通） | MacroPhonic 的前车之鉴：Windows 窗口/GPU 问题调试成本高 |
+| Electron | 成熟、koodo-reader 本身就是 Electron（React 栈可复用） | 体积大（~100MB+）、内存占用高；桌宠常驻场景不理想 |
+| WPF/.NET | Windows 原生、常驻轻量、屏幕感知 API 直接 | 技术栈与现有 Python/TS 生态割裂 |
+
+**决策时点**：M2（通道适配层）完成、TTS sidecar 已验证后再定，不提前绑定。核心诉求：常驻轻量 + TTS 播放 + 截屏/窗口感知 + 与 Python 后端通信（HTTP/WS 均可）。
 
 ---
 
