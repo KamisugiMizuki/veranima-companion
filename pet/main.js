@@ -15,6 +15,7 @@ let logWin = null;
 let tray = null;
 let ws = null;
 let coreProc = null;
+let ttsProc = null;  // 本地 TTS 服务子进程（Qwen3-TTS 1.7B，OpenAI 兼容）
 let reconnectDelay = 1000;
 let logRing = [];                 // 内存环形缓冲（转发给日志窗口）
 let logFile = null;               // 文件日志句柄
@@ -65,6 +66,40 @@ function startCore() {
     coreProc = null;
     scheduleCoreRestart();
   });
+}
+
+// ---------- spawn 本地 TTS 服务（OpenAI 兼容 /v1/audio/speech，Qwen3-TTS 1.7B） ----------
+function startTTS() {
+  const py = process.env.VERANIMA_PY || path.join(__dirname, '..', '.venv', 'Scripts', 'python.exe');
+  const srcDir = path.join(__dirname, '..', 'src');
+  pushLog('shell', 'spawning tts server (Qwen3-TTS 1.7B, port 9880)');
+  try {
+    ttsProc = spawn(py, ['-m', 'veranima.tts.server', '--port', '9880'], {
+      cwd: path.join(__dirname, '..'),
+      env: { ...process.env, PYTHONPATH: srcDir },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (e) {
+    pushLog('shell', `tts spawn failed: ${e.message}`);
+    scheduleTTSRestart();
+    return;
+  }
+  ttsProc.stdout.on('data', (d) => pushLog('tts', d.toString().trimEnd()));
+  ttsProc.stderr.on('data', (d) => pushLog('tts-err', d.toString().trimEnd()));
+  ttsProc.on('exit', (code, signal) => {
+    pushLog('shell', `tts exited (code=${code}, signal=${signal}); restarting in ${reconnectDelay}ms`);
+    ttsProc = null;
+    scheduleTTSRestart();
+  });
+}
+
+function scheduleTTSRestart() {
+  setTimeout(startTTS, reconnectDelay);
+  reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+}
+
+function stopTTS() {
+  if (ttsProc) { ttsProc.kill(); ttsProc = null; }
 }
 
 function scheduleCoreRestart() {
@@ -331,12 +366,13 @@ if (!gotLock) {
     powerSaveBlocker.start('prevent-app-suspension'); // M3_SPEC 3.4 缺陷4
     openLogFile();
     startCore();                // 壳 spawn 核心（M3_SPEC 3.6）
+    startTTS();                 // 壳 spawn 本地 TTS（Qwen3-TTS 1.7B）
     createWindow();
     createTray();
     connect();
     setInterval(healthCheck, HEALTH_INTERVAL_MS);
   });
-  app.on('before-quit', () => { stopCore(); });
+  app.on('before-quit', () => { stopCore(); stopTTS(); });
   app.on('window-all-closed', (e) => {
     // 桌宠壳关窗不退出（托盘常驻）；只有托盘菜单「退出」才 quit
   });

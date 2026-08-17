@@ -130,6 +130,40 @@ def test_pet_server_speak_without_tts(tmp_path):
     asyncio.run(scenario())
 
 
+# ---------- TTS 服务（FastAPI /v1/audio/speech） ----------
+
+def test_tts_server_health():
+    """/health 可用（不加载模型）。"""
+    from fastapi.testclient import TestClient
+    from veranima.tts.server import create_app
+    client = TestClient(create_app())
+    r = client.get("/health")
+    assert r.status_code == 200
+    assert r.json() == {"status": "ok"}
+
+
+def test_tts_server_missing_input():
+    """缺 input → 400。"""
+    from fastapi.testclient import TestClient
+    from veranima.tts.server import create_app
+    client = TestClient(create_app())
+    r = client.post("/v1/audio/speech", json={"model": "x"})
+    assert r.status_code == 400
+
+
+def test_tts_server_synthesize_mock(monkeypatch):
+    """synthesize mock 音频 → 200 audio/wav。"""
+    from fastapi.testclient import TestClient
+    from veranima.tts import server as tts_server
+    from veranima.tts.server import create_app
+    monkeypatch.setattr(tts_server, "synthesize", lambda text: b"RIFF mock-wav")
+    client = TestClient(create_app())
+    r = client.post("/v1/audio/speech", json={"model": "qwen-tts", "input": "你好", "response_format": "wav"})
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "audio/wav"
+    assert r.content == b"RIFF mock-wav"
+
+
 def _free_port():
     import socket
     with socket.socket() as s:
