@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..llm.client import LLMClient, LLMUnavailableError
-from ..llm.prompts import build_system_prompt
+from .prompts import build_system_prompt
 from ..memory.store import MemoryStore
 from ..tools.search import SEARCH_TOOL, SearXNGClient
 from .character import CharacterCard

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from ..core.character import CharacterCard
-from ..core.state import AgentState
+from .character import CharacterCard
+from .state import AgentState
 from ..memory.store import MemoryStore
 
 # 层 → prompt 标签与预算（DESIGN.md：core_profile 1200 / 段落 1600 / session 600）

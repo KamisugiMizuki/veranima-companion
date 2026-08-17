@@ -7,7 +7,7 @@ import pytest
 from veranima.core.agent import Agent
 from veranima.core.character import CharacterCard
 from veranima.core.state import AgentState
-from veranima.llm.prompts import format_memory_line
+from veranima.core.prompts import format_memory_line
 from veranima.memory.store import MemoryStore
 
 
