@@ -1,0 +1,96 @@
+# Veranima 默认配置模板
+# 复制为 config.yaml 使用（config.yaml 不入库）；留空值使用代码内默认。
+#
+# LLM 三种模式（任一即可，无需搭本地环境）：
+#   1. 远程 API：填 base_url + api_key + model（DeepSeek/通义/硅基流动等 OpenAI 兼容服务）
+#   2. 本地 LM Studio：base_url=http://localhost:12345/v1，api_key 留空，需加载模型
+#   3. 本地 Ollama：base_url=http://localhost:11434/v1，api_key 留空
+
+# LLM（OpenAI 兼容）
+llm:
+  base_url: "http://localhost:12345/v1"   # 远程 API 示例：https://api.deepseek.com/v1
+  model: "qwen3.5-9b-uncensored-hauhaucs-aggressive@q4_k_m"  # 多模态（支持图像输入）；远程 API 示例：deepseek-chat / qwen-plus
+  api_key: ""                             # 远程 API 填 key；本地 LM Studio/Ollama 留空
+  temperature: 0.8
+  # thinking 模型 reasoning 长：qwen3.5 实测思考可达 6000+ chars，
+  # 预算不足会导致空回复；4096 给足推理+回复空间（16K context 仍够）
+  max_tokens: 4096
+  # 低精力时的简短回复配置
+  low_energy_max_tokens: 256
+  timeout: 120
+
+# 角色卡（CCv3 兼容 JSON；留空则用内置示例卡）
+character_card: "config/character.json"
+
+# 联网搜索（DESIGN.md 8.5：工具调用，模型自主判断；默认关闭）
+search:
+  enabled: false
+  base_url: "http://127.0.0.1:8080"
+  max_results: 4
+
+# 记忆
+memory:
+  db_path: "data/veranima.db"
+  # embedding 三种模式：
+  #   local:data/models/bge-m3  → 本地模型（ModelScope 下载，隐私最好）
+  #   openai:bge-m3              → API embedding（复用 llm 的 base_url/api_key）
+  #   ollama:bge-m3              → Ollama embedding
+  embedding_model: "local:data/models/bge-m3"
+  recall_top_k: 5
+  recall_threshold: 0.3
+  core_profile_budget: 1200             # 字符预算
+  section_budget: 1600
+  session_budget: 600
+  # 遗忘衰减
+  decay_enabled: true
+  decay_interval_minutes: 60            # 后台衰减任务间隔
+  importance_base_s: 2592000            # 重要性=0.5 时半衰期（秒，默认30天）
+
+# 状态
+state:
+  energy_max: 100
+  energy_decay_per_minute: 0.02         # 每分钟衰减
+  energy_recover_per_message: 3.0       # 每条消息恢复
+  attachment_growth: 0.05               # 每轮依恋度增长
+  initial_attachment: 0.5               # 初始依恋度（0=初识 0.5=半亲密 0.75=亲密）
+
+# 对话
+chat:
+  history_max_messages: 20              # 注入的近期对话条数
+  curator_turns: 8                      # 每 N 轮触发整理（MVP2）
+  proactive_message_prob: 0.1           # 每轮主动发言概率（MVP1 简化）
+
+# CLI
+cli:
+  prompt_style: "rich"                  # rich / plain
+  user_name: "你"
+
+# QQ（NapCatQQ 接入，DESIGN.md：OneBot v11 协议反向 WebSocket，1v1 私聊）
+# 前置：NapCatQQ 已登录并配置"反向 WebSocket 客户端"连接
+#       ws://<ws_host>:<ws_port>/ws（默认 127.0.0.1:8099；8080 被本机 SearXNG 占用，勿用）
+qq:
+  enabled: false                        # python -m veranima.qq 是否启用 QQ 形态
+  ws_host: "127.0.0.1"                  # 本机监听地址（NapCat 与 bot 同机）
+  ws_port: 8099                         # aiocqhttp 反向 WS 服务端口
+  access_token: ""                      # NapCat 若配置了 access_token 则填写
+  allowed_qq: []                        # 白名单 QQ 号（1v1：只填你自己的号；空 = 拒绝所有）
+  proactive: true                       # 定时问候 + 节庆纪念（每日去重）
+  # 主动消息延迟（分钟）：对话静默满该时长后才发送 turn 内触发的主动消息，
+  # 避免"回复 + 主动"双连发（真人不会秒补一句无关话题）
+  proactive_delay_minutes: 5
+  # 静默时段 [开始小时, 结束小时]：此时间段不主动发任何消息（问候/离线思考），
+  # 支持跨午夜（23 点 ~ 次日 8 点）。空 [] 或 null = 不限制。
+  quiet_hours: [23, 8]
+  # 8.7.4 离线思考：对话静默 N 分钟后，低概率补发一条"迟来的回应"
+  offline_think:
+    enabled: true
+    silence_minutes: 30                 # 静默多少分钟后可能触发
+    probability: 0.3                    # 基础触发概率（0~1）；每次窗口掷一次骰
+    growth_factor: 0.08                 # 未命中时概率增长量（"想念"积累，0=关闭）
+    max_probability: 0.95               # 概率增长上限（发送后重置回基础值）
+    max_per_day: 2                      # 每日最多触发次数（0 = 不限；防整夜轰炸）
+  # 8.6.3 表情包库：用户发图 → 没见过的 LLM 标注入库；回复时按情绪宽松匹配发送
+  stickers:
+    enabled: false                      # 默认关闭（需要多模态模型支持）
+    dir: "data/stickers"                # 存储目录（图片 + index.json 标注）
+
