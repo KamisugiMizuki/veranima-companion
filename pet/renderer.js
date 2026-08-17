@@ -45,8 +45,15 @@ window.pet.onSpeak((m) => {
     const file = EXPRESSION_FILES[m.tags[0]];
     if (file) avatar.src = `assets/${file}.png`;
   }
-  // 模拟播放时长后回 idle（MVP 无真实音频；M3b TTS 接入后由 stop_speak 控制）
-  setTimeout(() => { if (currentState === 'speaking') setState('idle'); }, 2500);
+  // TTS 播放（M3_SPEC 3.2）：有 audioB64 播放真实语音，否则模拟 2.5s
+  if (m.audioB64) {
+    const audio = new Audio(`data:audio/wav;base64,${m.audioB64}`);
+    audio.onended = () => { if (currentState === 'speaking') setState('idle'); };
+    audio.play().catch(() => { /* 播放失败（无音频设备）→ 按文本时长回 idle */ });
+  } else {
+    // 模拟播放时长后回 idle（MVP 无真实音频；TTS 接入后由 audio.onended 控制）
+    setTimeout(() => { if (currentState === 'speaking') setState('idle'); }, 2500);
+  }
 });
 
 window.pet.onStopSpeak(() => setState('idle'));

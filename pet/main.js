@@ -267,7 +267,7 @@ function handleCoreMsg(msg) {
       win && win.webContents.send('core-state', msg);
       break;
     case 'speak':
-      win && win.webContents.send('speak', { text: msg.text, tags: msg.tags || [] });
+      win && win.webContents.send('speak', { text: msg.text, tags: msg.tags || [], audioB64: msg.audio_b64 || '' });
       break;
     case 'speak_chunk':
       win && win.webContents.send('speak-chunk', { text: msg.text });

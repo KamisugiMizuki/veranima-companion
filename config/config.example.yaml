@@ -20,6 +20,17 @@ chat:
   curator_turns: 8                      # 每 N 轮触发整理（MVP2）
   proactive_message_prob: 0.1           # 每轮主动发言概率（MVP1 简化）
 
+# TTS（桌宠语音；OpenAI 兼容 /v1/audio/speech，远程与本地统一接口）
+# 远程：base_url 指向任意 OpenAI 兼容 TTS API（OpenAI/硅基流动等）
+# 本地：base_url 指向 Qwen3-TTS 兼容服务（如 http://127.0.0.1:9880/v1）
+tts:
+  base_url: ""                          # 留空 = TTS 关闭（桌宠只显示气泡不发声）
+  model: "tts-1"                        # 远程按服务商提供；本地 Qwen3-TTS 服务填模型名
+  voice: "alloy"                        # 音色（远程：alloy/echo/fable...；本地：按服务实现）
+  api_key: ""                           # 远程必填；本地服务通常不需要
+  response_format: "wav"                # wav/mp3/opus（浏览器都支持；本地 Qwen3 常用 wav）
+  timeout: 60
+
 # 角色卡（CCv3 兼容 JSON；留空则用内置示例卡）
 character_card: "config/character.json"
 

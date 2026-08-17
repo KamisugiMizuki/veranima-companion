@@ -33,14 +33,29 @@ class PetServer:
         self.port = port
         self._client: websockets.ServerConnection | None = None
         self._agent = None  # 后续接 Agent；PoC 阶段 None
+        self._tts = None    # TTSClient（可选；未配置则桌宠只显气泡不发声）
 
     def connect_agent(self, agent) -> None:
         """接入 Agent（正式版：poke/speak 走 agent.handle(channel='tts')）。"""
         self._agent = agent
 
+    def connect_tts(self, tts) -> None:
+        """接入 TTS（远程/本地统一 OpenAI 兼容接口；未配置则跳过合成）。"""
+        self._tts = tts
+
     # ---------- 对外发送 ----------
     async def speak(self, text: str, tags: list | None = None) -> bool:
-        return await self._send({"type": "speak", "text": text, "tags": tags or []})
+        msg: dict = {"type": "speak", "text": text, "tags": tags or []}
+        # TTS 合成（配置了才发声；失败降级纯气泡）
+        if self._tts is not None and text.strip():
+            try:
+                import base64
+                audio = await asyncio.to_thread(self._tts.synthesize, text)
+                if audio:
+                    msg["audio_b64"] = base64.b64encode(audio).decode()
+            except Exception as e:
+                logger.warning("tts synthesize failed (bubble only): %s", e)
+        return await self._send(msg)
 
     async def speak_chunk(self, text: str) -> bool:
         """流式分片推送（DESIGN 4.13 打字机）。"""
@@ -158,7 +173,17 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Veranima 桌宠核心 WS 服务")
     ap.add_argument("--port", type=int, default=PORT)
     args = ap.parse_args()
-    asyncio.run(PetServer(port=args.port).run())
+    srv = PetServer(port=args.port)
+    # TTS（远程/本地统一 OpenAI 兼容接口；未配置 base_url 则桌宠只显气泡）
+    from veranima.config import load_config
+    from veranima.tts.client import TTSClient
+    tts_cfg = load_config().get("tts", {})
+    if tts_cfg.get("base_url"):
+        srv.connect_tts(TTSClient(tts_cfg))
+        logger.info("TTS enabled: %s", tts_cfg["base_url"])
+    else:
+        logger.info("TTS disabled (base_url 未配置)")
+    asyncio.run(srv.run())
 
 
 if __name__ == "__main__":
