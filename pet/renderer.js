@@ -53,6 +53,21 @@ window.pet.onStopSpeak(() => setState('idle'));
 
 window.pet.onBubble((m) => showBubble(m.text || ''));
 
+// 流式打字机（DESIGN 4.13）：逐句追加，speak_done 定稿
+let streamText = '';
+window.pet.onSpeakChunk((m) => {
+  setState('speaking');
+  streamText += (m.text || '');
+  showBubble(streamText, 10000); // 长气泡暂不消失，done 时重置
+});
+window.pet.onSpeakDone(() => {
+  if (streamText) {
+    showBubble(streamText, 5000);
+    streamText = '';
+    setTimeout(() => setState('idle'), 3000);
+  }
+});
+
 // ---------- 形象区域交互（穿透 ↔ 捕获） ----------
 // 默认整个窗口点击穿透；鼠标移入形象区域时恢复捕获（可拖拽/点击）
 const pet = document.getElementById('pet');

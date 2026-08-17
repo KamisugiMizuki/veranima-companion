@@ -13,6 +13,13 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
+def _split_sentences(text: str) -> list[str]:
+    """按句切分（DESIGN 4.13 分片粒度：。！？…断句），保留标点。"""
+    import re
+    parts = re.split(r"(?<=[。！？…])", text)
+    return [p.strip() for p in parts if p.strip()]
+
+
 class LLMUnavailableError(RuntimeError):
     """LLM 服务不可用：连接失败 / 鉴权失败。"""
 
@@ -49,6 +56,54 @@ class LLMClient:
             logger.warning("LLM returned empty content (reasoning %d chars)", len(reasoning))
             raise LLMError("empty completion: token budget consumed by thinking")
         return content
+
+    def stream_chat(self, messages: list[dict], *, max_tokens: int | None = None,
+                    temperature: float | None = None) -> list[str]:
+        """流式对话生成（DESIGN 4.13）：按句分片返回（。！？…断句）。
+
+        返回句子列表（完整回复按句切分）；API 不支持 stream / 流中断时回退
+        一次性 chat（降级：单元素列表）。用于桌宠打字机 + TTS 逐句。
+        """
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature if temperature is not None else self.temperature,
+            "max_tokens": max_tokens or self.max_tokens,
+            "stream": True,
+        }
+        chunks: list[str] = []
+        try:
+            with httpx.Client(timeout=self._timeout) as client:
+                with client.stream("POST", f"{self.base_url}/chat/completions",
+                                   json=payload, headers=self._headers()) as resp:
+                    resp.raise_for_status()
+                    for line in resp.iter_lines():
+                        if not line or not line.startswith("data:"):
+                            continue
+                        data = line[5:].strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            import json as _json
+                            delta = _json.loads(data)["choices"][0]["delta"].get("content", "")
+                        except (KeyError, IndexError, _json.JSONDecodeError):
+                            continue
+                        if delta:
+                            chunks.append(delta)
+        except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout) as e:
+            logger.error("LLM stream unavailable: %s", e)
+            raise LLMUnavailableError(str(e)) from e
+        except Exception as e:
+            # 流中断/协议异常 → 降级一次性（DESIGN 4.13 降级）
+            logger.warning("stream failed (%s), falling back to one-shot", e)
+            return [self.chat(messages, max_tokens=max_tokens, temperature=temperature)]
+
+        text = "".join(chunks).strip()
+        if not text:
+            # 空流 → 降级一次性（避免空回复）
+            logger.warning("stream empty, falling back to one-shot")
+            return [self.chat(messages, max_tokens=max_tokens, temperature=temperature)]
+        return _split_sentences(text)
 
     def chat_raw(self, messages: list[dict], *, max_tokens: int | None = None,
                  temperature: float | None = None, tools: list[dict] | None = None) -> dict:

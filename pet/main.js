@@ -269,6 +269,12 @@ function handleCoreMsg(msg) {
     case 'speak':
       win && win.webContents.send('speak', { text: msg.text, tags: msg.tags || [] });
       break;
+    case 'speak_chunk':
+      win && win.webContents.send('speak-chunk', { text: msg.text });
+      break;
+    case 'speak_done':
+      win && win.webContents.send('speak-done', {});
+      break;
     case 'bubble':
       win && win.webContents.send('bubble', { text: msg.text });
       break;

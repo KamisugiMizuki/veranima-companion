@@ -1,8 +1,9 @@
 #!/usr/bin/env python
-"""Veranima CLI 入口：python -m veranima.cli"""
+"""Veranima CLI 入口：python -m veranima.cli [roles|...]"""
 
 from __future__ import annotations
 
+import argparse
 import logging
 import sys
 
@@ -11,11 +12,49 @@ from .app import create_agent
 from .config import load_config
 
 
-def main() -> int:
+def _roles_cmd(args) -> int:
+    """多角色管理（DESIGN 4.11）：list / switch / clone。"""
+    from .core.roles import active_role, clone_role, list_roles, switch_role
+
+    cfg = load_config()
+    if args.roles_action == "list":
+        roles = list_roles()
+        active = active_role(cfg)
+        print(f"角色列表（{len(roles)} 个，目录 {cfg.get('root', '.')}/characters/）：")
+        for r in roles:
+            mark = " *" if active and r["id"] == active["id"] else ""
+            print(f"  {r['id']:<20} {r['name']}{mark}")
+        if active:
+            print(f"当前激活: {active['id']}（{active['name']}）")
+        return 0
+    if args.roles_action == "switch":
+        ok, msg = switch_role(args.role_id, cfg)
+        print(msg)
+        return 0 if ok else 1
+    if args.roles_action == "clone":
+        ok, msg = clone_role(args.role_id, args.new_id)
+        print(msg)
+        return 0 if ok else 1
+    return 1
+
+
+def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    ap = argparse.ArgumentParser(prog="veranima")
+    sub = ap.add_subparsers(dest="cmd")
+    rp = sub.add_parser("roles", help="多角色管理")
+    rp.add_argument("roles_action", choices=["list", "switch", "clone"])
+    rp.add_argument("role_id", nargs="?")
+    rp.add_argument("new_id", nargs="?")
+    args = ap.parse_args(argv)
+
+    if args.cmd == "roles":
+        return _roles_cmd(args)
+
+    # 默认：进入 CLI 对话
     cfg = load_config()
     agent = create_agent(cfg)
 

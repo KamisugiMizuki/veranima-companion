@@ -18,6 +18,7 @@ import logging
 import websockets
 
 from veranima.config import load_config, save_config
+from veranima.llm.client import _split_sentences
 
 logger = logging.getLogger("veranima.pet_server")
 
@@ -40,6 +41,13 @@ class PetServer:
     # ---------- 对外发送 ----------
     async def speak(self, text: str, tags: list | None = None) -> bool:
         return await self._send({"type": "speak", "text": text, "tags": tags or []})
+
+    async def speak_chunk(self, text: str) -> bool:
+        """流式分片推送（DESIGN 4.13 打字机）。"""
+        return await self._send({"type": "speak_chunk", "text": text})
+
+    async def speak_done(self) -> bool:
+        return await self._send({"type": "speak_done"})
 
     async def bubble(self, text: str) -> bool:
         return await self._send({"type": "bubble", "text": text})
@@ -87,6 +95,23 @@ class PetServer:
                         await self.speak("嗯？叫我干嘛～")
                 elif mtype == "drag":
                     pass  # 拖拽由壳自己处理，核心无需响应（PoC）
+                elif mtype == "stream_talk":
+                    # 流式对话（DESIGN 4.13）：逐句推送 speak_chunk → speak_done
+                    if self._agent is None:
+                        await self.speak("（流式需要接入 agent）")
+                        continue
+                    try:
+                        msg_text = str(msg.get("text") or "")
+                        # 构建消息 → 流式生成（agent 的 messages 由 handle 内部构建；
+                        # PoC：直接调 llm.stream_chat 需要消息列表——走 agent 的简化路径：
+                        # 用一次性 handle 拿完整回复再按句推（保证与 agent 状态一致）
+                        r = await asyncio.to_thread(self._agent.handle, msg_text, channel="tts")
+                        for sent in _split_sentences(r.reply):
+                            await self.speak_chunk(sent)
+                        await self.speak_done()
+                    except Exception as e:
+                        logger.warning("stream_talk failed: %s", e)
+                        await self.speak_done()
                 elif mtype == "ping":
                     await self._send({"type": "pong"})
                 elif mtype == "get_config":
