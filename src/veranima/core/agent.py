@@ -426,6 +426,34 @@ class Agent:
         self._history.append({"role": "assistant", "content": reply})
         return reply
 
+    def task_result_story(self, result: dict) -> str:
+        """M5 任务结果角色化转述（M5_SPEC 3.3：超时/失败 → 角色化转述）。
+
+        成功：简要转述结果要点；失败：角色化说明（「那事我让助手去办了，它说卡住了」）。
+        无 LLM（mock/未配置）→ 返回原始结果文本（不丢信息）。
+        """
+        output = str(result.get("output") or "").strip()
+        ok = bool(result.get("ok"))
+        task_id = str(result.get("task_id") or "")
+        if not output:
+            return "（任务没有任何输出……估计是没跑起来，我再看看）"
+        if not ok:
+            # 失败文案无需 LLM：固定角色化（M5_SPEC 3.3「那事我让助手去办了，它说卡住了」）
+            return f"那事我让助手去办了，它说卡住了（{task_id}）。我再看看怎么回事。"
+        if self.llm is None or not getattr(self.llm, "base_url", ""):
+            return output  # 无 LLM 直接给原文（成功场景不丢信息）
+        try:
+            task = (
+                f"你让桌面助手处理的任务（{task_id}）完成了。助手的结果原文：\n{output[:800]}\n"
+                "请用你的口吻向用户转述：简短说结果要点。别用'助手'这个词太多次，"
+                "像你自己经手办的一样。最多 3 句。"
+            )
+            reply = self._short_task(task, max_tokens=200)
+            return reply or output
+        except Exception as e:
+            logger.warning("task_result_story failed: %s", e)
+            return output
+
     def forget(self, keyword: str) -> int:
         """隐私擦除：删除包含关键词的记忆（级联）。"""
         n = self.memory.erase(content_contains=keyword)

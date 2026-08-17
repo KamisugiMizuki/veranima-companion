@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid
 from dataclasses import dataclass, field, asdict
@@ -81,11 +82,43 @@ def extract_format_pref(user_text: str) -> str:
     return m.group(1).lower() if m else ""
 
 
-def build_workorder(user_text: str, *, username: str = "", task_types: tuple = DEFAULT_TASK_TYPES) -> WorkOrder:
-    """模糊指令 → 工单（M5_SPEC 2.1 意图补完五维，低配规则版）。
+def build_workorder_llm(llm, user_text: str, *, task_type: str = "") -> WorkOrder:
+    """LLM 版意图补全（M5_SPEC 2.1）：模型直接补全五维，替换规则提取。
 
-    ponytail: 低配规则提取 + needs_clarification 标记缺失维度；精确补全（LLM 版）
-    在需要时替换本函数（接口不变）。
+    LLM 不可用/输出异常 → 降级规则版 build_workorder（调用方无感）。
+    """
+    try:
+        prompt = (
+            "你是任务意图补全器。把用户的模糊指令补全为结构化 JSON，字段：\n"
+            '{"goal": "可验证的目标", "context": "补充上下文（来源路径/用户偏好）", '
+            '"constraints": {"deadline": "或空", "format": ["目标格式数组"]}, '
+            '"fallback": "异常预案", "needs_clarification": ["缺失维度数组"]}\n'
+            "缺失维度只能从：来源路径/目标格式/任务类型/优先级约束。信息足够则 needs_clarification 为空。\n"
+            f"用户指令：{user_text}"
+        )
+        resp = llm.chat([{"role": "user", "content": prompt}], max_tokens=400)
+        import json as _json
+        data = _json.loads(resp.strip().lstrip("```json").rstrip("```").strip())
+        wo = WorkOrder(
+            goal=str(data.get("goal") or user_text),
+            context=str(data.get("context") or ""),
+            constraints=data.get("constraints") or {},
+            fallback=str(data.get("fallback") or "找不到文件时返回错误说明，不要编造"),
+            task_id=f"{uuid.uuid4().hex[:8]}",
+            task_type=task_type or classify_task_type(user_text),
+            needs_clarification=[str(x) for x in (data.get("needs_clarification") or [])],
+        )
+        return wo
+    except Exception:
+        logger = logging.getLogger(__name__)
+        logger.warning("LLM 意图补全失败，降级规则版")
+        return build_workorder(user_text)
+
+
+def build_workorder(user_text: str, *, username: str = "", task_types: tuple = DEFAULT_TASK_TYPES) -> WorkOrder:
+    """模糊指令 → 工单（M5_SPEC 2.1 意图补完五维，规则版）。
+
+    LLM 版见 build_workorder_llm（可用时替换本函数）。
     """
     wo = WorkOrder(
         goal=user_text.strip(),

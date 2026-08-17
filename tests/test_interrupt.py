@@ -148,6 +148,36 @@ def test_pet_server_presence_tick(agent, monkeypatch):
     assert len(sent) == 1
 
 
+def test_task_result_story_uses_agent_voice(agent, monkeypatch):
+    """任务结果角色化转述：有 LLM 时走角色口吻。"""
+    from veranima.core.agent import Agent
+    from veranima.core.state import AgentState
+    card, memory = agent
+    a = Agent(card=card, memory=memory, llm=None, state=AgentState(), config={})
+    # llm=None → 返回原文（不丢信息）
+    out = a.task_result_story({"task_id": "abc123", "output": "天气：晴 24°C", "ok": True})
+    assert "天气" in out
+
+    # mock LLM → 角色化
+    class FakeLLM:
+        base_url = "http://x"
+        def chat(self, messages, **kw):
+            return "查到了，今天晴，24 度，挺舒服的天气。"
+    a.llm = FakeLLM()
+    monkeypatch.setattr(a, "_short_task", lambda task, max_tokens=200: "查到了，今天晴，24 度，挺舒服的天气。")
+    story = a.task_result_story({"task_id": "abc123", "output": "weather: sunny 24C", "ok": True})
+    assert "24" in story
+
+
+def test_task_result_story_failure_gentle(agent, monkeypatch):
+    """失败转述：自然说明卡住，不甩锅不吓人。"""
+    from veranima.core.agent import Agent
+    from veranima.core.state import AgentState
+    card, memory = agent
+    a = Agent(card=card, memory=memory, llm=None, state=AgentState(), config={})
+    assert "卡住" in a.task_result_story({"task_id": "x", "output": "timeout", "ok": False})
+
+
 # ---------- M1 可逆性 + M3 TTS 打断 ----------
 
 def test_clarification_detection():

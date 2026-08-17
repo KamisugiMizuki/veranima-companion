@@ -96,14 +96,28 @@ def main(argv: list[str] | None = None) -> int:
 
 def _task_cmd(args) -> int:
     """M5 任务管道（M5_SPEC 2/3）：指令 → 工单 → 追问或转交 dsh。"""
-    from .core.workorder import build_workorder, clarification_question, is_task_request
-    from .tools.dsh_bridge import run_dsh_task
+    from .core.workorder import build_workorder, build_workorder_llm, clarification_question, is_task_request
+    from .tools.dsh_bridge import dsh_available, run_dsh_task
 
     text = " ".join(args.text)
     if not is_task_request(text):
         print("（这是闲聊，不转交任务管道）")
         return 0
-    wo = build_workorder(text)
+    if not dsh_available():
+        print("桌面助手（dsh）未安装：")
+        print("  1. cd dsh")
+        print("  2. npm install @deepseek-ai/dsh@0.1.0-rc.6")
+        print("  3. 设置 DEEPSEEK_BASE_URL / DEEPSEEK_API_KEY 环境变量（独立于 veranima 配置）")
+        print("  4. 重新执行本命令")
+        return 1
+    # LLM 版意图补全（无 LLM 时自动降级规则版）
+    try:
+        from .app import create_agent
+        cfg = load_config()
+        llm = create_agent(cfg).llm
+        wo = build_workorder_llm(llm, text) if llm.is_available() else build_workorder(text)
+    except Exception:
+        wo = build_workorder(text)
     print(f"工单: {wo.task_id} [{wo.task_type}]")
     q = clarification_question(wo)
     if q:
