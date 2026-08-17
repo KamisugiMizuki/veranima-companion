@@ -409,8 +409,8 @@ llm.stream_chat(messages) → 分片生成
 | 里程碑 | 内容 | 产出 |
 | --- | --- | --- |
 | **M0** | 仓库初始化 + 设计文档 + 从 object_design 拷贝可复用模块 | 可跑通的单端（QQ）基础 |
-| **M1** | Filter 仿生层：**实现顺序 = 记忆断片补丁（format_memory_line 已有 80%，补三维度系数）→ 打断决策（独立小模块 + topic_frequency 表）→ 表达瑕疵（prompt 引导为主，规则只做撤回收尾）** | QQ 端真实感增强 |
-| **M2** | 通道适配层：`handle(channel)` 通道感知 + IM 渲染器（挂发送出口）+ 跨通道共享核心 + **现实行动边界 prompt 块**（4.8 修正版：守边界不暴露身份） | 通道抽象就绪，QQ 端风格落地 |
+| **M1** | Filter 仿生层：**实现顺序 = 记忆断片补丁（format_memory_line 已有 80%，补三维度系数）→ 打断决策（独立小模块 + topic_frequency 表）→ 表达瑕疵（prompt 引导为主，规则只做撤回收尾）**。**细化见 docs/M1_SPEC.md** | QQ 端真实感增强 |
+| **M2** | 通道适配层：`handle(channel)` 通道感知 + IM 渲染器（挂发送出口）+ 跨通道共享核心 + **现实行动边界 prompt 块**（4.8 修正版：守边界不暴露身份）。**细化见 docs/M2_SPEC.md** | 通道抽象就绪，QQ 端风格落地 |
 | **M3** | 桌宠端 MVP：Electron 壳 + TTS sidecar + 时空沉浸（场景锁/后台心跳） + **角色包导入导出**（4.11 第一步：导出/导入，桌宠形象分发）+ **多角色切换**（4.11 注册表，启动加载 characters/）+ **流式输出**（4.13 桌宠打字机 + TTS 逐句）。**细化见 docs/M3_SPEC.md**（airi 式多窗口：主窗口+设置+日志，壳 spawn 核心；M3a 纯 Python 逻辑先行，M3b 桌宠本体） | 双端可用 |
 | **M4** | 视觉注意力调度器（锚点/三态/L0-L3）+ **表情标签驱动**（4.8：portrait/tone 字段输出 + 表情词表映射 + 立绘说明.txt 批量映射，替代固定四态）。**细化见 docs/M4_SPEC.md** | 桌宠屏幕感知 + 表达力跃升 |
 | **M5** | 需求翻译层（4.2 细化）+ 桌面 Agent（**独立模块**，DeepSeek Harness 引擎，API/配置完全独立于 veranima）。**细化见 docs/M5_SPEC.md** | 任务管道 |

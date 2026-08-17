@@ -8,6 +8,8 @@
 |---|---|
 | [docs/IDEA.md](docs/IDEA.md) | 原始构想 |
 | [docs/DESIGN.md](docs/DESIGN.md) | 主设计文档（方案唯一权威） |
+| [docs/M1_SPEC.md](docs/M1_SPEC.md) | M1 Filter 仿生层专项细化（记忆断片/打断/表达瑕疵） |
+| [docs/M2_SPEC.md](docs/M2_SPEC.md) | M2 通道适配层专项细化（IM/TTS 双通道表达） |
 | [docs/M3_SPEC.md](docs/M3_SPEC.md) | M3 桌宠专项细化（airi 式多窗口/进程模型/TTS/前台） |
 | [docs/M4_SPEC.md](docs/M4_SPEC.md) | M4 视觉注意力/表情标签驱动专项细化 |
 | [docs/M5_SPEC.md](docs/M5_SPEC.md) | M5 需求翻译层/桌面 Agent 专项细化（DeepSeek Harness 独立模块） |
