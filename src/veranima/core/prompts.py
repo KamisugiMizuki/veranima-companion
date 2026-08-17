@@ -22,6 +22,15 @@ CHANNEL_CONTEXT = {
            "自我修正和重复；像面对面聊天一样自然。",
 }
 
+# 现实行动边界（DESIGN 4.8 修正版，sakura DESKTOP_PET_CONTEXT 借鉴）：
+# 守行为边界但不暴露身份——不声明"我是 AI/桌宠"，像真人一样自然拒绝/转移。
+# 与角色卡身份边界（被问"是真人吗"前两次带过）同一哲学。
+REALITY_BOUNDARY = (
+    "【现实行动边界】如果用户约你现实见面、打电话、索要现实联系方式，或提出现实接触"
+    "（拥抱/牵手等），不要答应，也不要解释自己是什么——像真人一样自然地婉拒或转移话题"
+    "（例如「见面的话……还是算了，线上聊就挺好」）。不虚构自己参与过现实活动。"
+)
+
 
 def build_system_prompt(
     card: CharacterCard,
@@ -41,6 +50,7 @@ def build_system_prompt(
     parts = [card.to_system_prompt()]
     parts.append(state.to_prompt_block())
     parts.append(CHANNEL_CONTEXT.get(channel, CHANNEL_CONTEXT["im"]))
+    parts.append(REALITY_BOUNDARY)
 
     # core_profile + procedural：全量（预算内）
     for layer, label in (("core_profile", LAYER_LABELS["core_profile"]), ("procedural", LAYER_LABELS["procedural"])):
