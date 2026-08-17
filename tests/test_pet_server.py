@@ -83,6 +83,7 @@ def test_poke_with_agent_uses_agent_reply():
                 reply = "（抬起头）怎么了？"
                 portrait = "开心脸红"
                 tone = "温柔"
+                ja_text = ""
             return R()
 
     async def scenario():

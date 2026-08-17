@@ -39,6 +39,7 @@ class TurnResult:
     mood: str = ""
     portrait: str = ""   # M4 表情标签驱动：情绪表情标签（如"开心脸红"），空=回退 idle
     tone: str = ""       # M4：语气标签（TTS 预留）
+    ja_text: str = ""    # M5 双语：日语台词（送 TTS）；空=非双语角色
 
 
 def _interrupt_prompt(level: int) -> str:
@@ -306,10 +307,13 @@ class Agent:
             reply = cut + "……（我这边有点忙，回头细说）"
 
         # 5.6 M4 表情标签驱动：tts 通道解析结构化输出（text/tone/portrait）
+        #     M5 双语（角色卡 bilingual.enabled）：ja_text 送 TTS / reply(zh) 显示
         portrait = ""
         tone = ""
+        ja_text = ""
         if channel == "tts":
-            reply, tone, portrait = extract_segments(reply)
+            bilingual = bool(((self.card.veranima or {}).get("bilingual") or {}).get("enabled"))
+            reply, tone, portrait, ja_text = extract_segments(reply, bilingual=bilingual)
             if portrait and not self._portrait_valid(portrait):
                 portrait = ""  # 词表外标签回退（防 OOC）
 
@@ -360,6 +364,7 @@ class Agent:
             mood=self.state.mood,
             portrait=portrait,
             tone=tone,
+            ja_text=ja_text,
         )
 
     def _portrait_valid(self, label: str) -> bool:

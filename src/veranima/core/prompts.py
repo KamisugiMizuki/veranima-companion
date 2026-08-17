@@ -50,6 +50,14 @@ SEGMENTED_OUTPUT_INSTRUCTION = (
     "不要输出 JSON 以外的任何内容。"
 )
 
+# M5 双语输出（角色卡 bilingual.enabled 时生效；如由岐：日语配音 + 中文显示）
+BILINGUAL_OUTPUT_INSTRUCTION = (
+    "【双语输出】你的回复必须同时提供日语与中文："
+    '{"segments":[{"ja":"日本語のセリフ（声優役・TTS用）","zh":"中文对照（显示用）","tone":"语气标签","portrait":"表情标签"}]}'
+    "。ja 是你要说出的台词（自然口语，符合角色语气），zh 是同一句的中文翻译（给用户看的）。"
+    "tone 从角色语气里选，portrait 只能从可用表情列表里选。不要输出 JSON 以外的任何内容。"
+)
+
 
 def _expression_prompt(card) -> str:
     """从角色卡提取可用表情标签列表（M4_SPEC 2.2：prompt 注入词表防 OOC）。"""
@@ -87,7 +95,9 @@ def build_system_prompt(
         expr_prompt = _expression_prompt(card)
         if expr_prompt:
             parts.append(expr_prompt)
-        parts.append(SEGMENTED_OUTPUT_INSTRUCTION)
+        # M5 双语（角色卡 bilingual.enabled）：ja 送 TTS / zh 显示
+        bilingual = bool(((card.veranima or {}).get("bilingual") or {}).get("enabled"))
+        parts.append(BILINGUAL_OUTPUT_INSTRUCTION if bilingual else SEGMENTED_OUTPUT_INSTRUCTION)
 
     # core_profile + procedural：全量（预算内）
     for layer, label in (("core_profile", LAYER_LABELS["core_profile"]), ("procedural", LAYER_LABELS["procedural"])):

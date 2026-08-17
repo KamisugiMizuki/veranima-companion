@@ -1,5 +1,5 @@
 // Veranima 桌宠 renderer（M3_SPEC 3.5）
-// 职责：四态切换、气泡显示、形象区域交互（拖拽/戳一下）、穿透切换
+// 职责：四态切换、气泡显示、形象区域交互（拖拽/点击弹输入框/右键菜单）
 const avatar = document.getElementById('avatar');
 const bubble = document.getElementById('bubble');
 const connDot = document.getElementById('conn');
@@ -39,7 +39,9 @@ window.pet.onCoreState((m) => {
 
 window.pet.onSpeak((m) => {
   setState('speaking');
-  showBubble(m.text || '…');
+  // 双语（M5_SPEC 由岐日语）：ja 播 TTS，zh 显示气泡
+  const displayText = m.text_zh || m.text || '…';
+  showBubble(displayText);
   // M4 表情标签驱动：tags 携带 portrait 标签 → 映射表情图（M4_SPEC 2.4）
   if (m.tags && m.tags.length > 0) {
     const file = EXPRESSION_FILES[m.tags[0]];
@@ -81,44 +83,60 @@ window.pet.onSpeakDone(() => {
   }
 });
 
-// ---------- 形象区域交互（整窗捕获：拖拽/戳一下/右键；sakura 同款） ----------
+// ---------- 形象区域交互（整窗捕获：拖拽/点击/右键；sakura 同款） ----------
 const pet = document.getElementById('pet');
 
-// 拖拽移动窗口（透明窗不能用 -webkit-app-region；renderer 上报**增量** → main setBounds）
-avatar.addEventListener('mousedown', (e) => {
+// 拖拽：mousedown/mouseup 只发 start/end 信号，main 进程用 setInterval 轮询
+// 全局鼠标位置移动窗口（Windows 透明置顶窗的 renderer mousemove 投递不可靠——
+// 实测 mousedown 到达但 mousemove 丢失，窗口不动；轮询方案 sakura 同款，跨屏可靠）
+avatar.addEventListener('mousedown', () => {
   isDragging = true;
-  dragStart = { x: e.screenX, y: e.screenY };  // 同时作为 last 位置
-});
-window.addEventListener('mousemove', (e) => {
-  if (isDragging && dragStart) {
-    // 增量（相对上一次事件位置）——main 在 setBounds 里逐帧累加，不能发累计位移
-    const dx = e.screenX - dragStart.x;
-    const dy = e.screenY - dragStart.y;
-    dragStart = { x: e.screenX, y: e.screenY };
-    window.pet.sendEvent({ type: 'drag', dx, dy });
-  }
+  window.pet.sendEvent({ type: 'drag-start' });
 });
 window.addEventListener('mouseup', () => {
-  isDragging = false;
-  dragStart = null;
+  if (isDragging) {
+    isDragging = false;
+    window.pet.sendEvent({ type: 'drag-end' });
+  }
 });
 
-// 左键单击 = 戳一下（触发核心互动；M3_SPEC 3.5 交互）
-function poke() {
-  setState('thinking');
-  showBubble('……', 1500); // thinking 气泡
-  window.pet.sendEvent({ type: 'poke' });
-  setTimeout(() => setState('idle'), 1500);
-}
+// 单击 = 打开输入框（用户指定交互：点击弹输入框，不再缩放立绘/poke）
 avatar.addEventListener('click', () => {
   if (isDragging) return;
-  poke();
+  openChatInput();
 });
-// 右键菜单「戳一下」同逻辑
-window.pet.onMenuPoke(() => poke());
 
 // 右键菜单（sakura 同款：形象上右键弹原生菜单；参考 sakura 托盘菜单）
 window.addEventListener('contextmenu', (e) => {
   e.preventDefault();
   window.pet.sendEvent({ type: 'menu' });
 });
+
+// ---------- 聊天输入框（用户指定交互：点击形象 → 弹输入框 → LLM 回复气泡+TTS） ----------
+let chatInput = null;
+function openChatInput() {
+  if (chatInput) { chatInput.focus(); return; }
+  chatInput = document.createElement('input');
+  chatInput.id = 'chat-input';
+  chatInput.placeholder = '对她说点什么…';
+  chatInput.style.cssText = [
+    'position:absolute; bottom:36px; left:8px; width:204px; padding:6px 10px;',
+    'border:1px solid #d8dce3; border-radius:8px; font-size:13px;',
+    'background:rgba(255,255,255,.97); outline:none; z-index:10;',
+  ].join('');
+  document.getElementById('pet').appendChild(chatInput);
+  chatInput.focus();
+  const send = () => {
+    const text = chatInput.value.trim();
+    if (!text) return;
+    window.pet.sendEvent({ type: 'stream_talk', text });  // 核心流式回复（speak_chunk→done）
+    setState('thinking');
+    showBubble('……', 2000);
+    chatInput.remove();
+    chatInput = null;
+  };
+  chatInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') send();
+    if (e.key === 'Escape') { chatInput.remove(); chatInput = null; }
+  });
+}

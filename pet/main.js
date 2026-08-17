@@ -339,7 +339,7 @@ function handleCoreMsg(msg) {
       win && win.webContents.send('core-state', msg);
       break;
     case 'speak':
-      win && win.webContents.send('speak', { text: msg.text, tags: msg.tags || [], audioB64: msg.audio_b64 || '' });
+      win && win.webContents.send('speak', { text: msg.text, text_zh: msg.text_zh || '', tags: msg.tags || [], audioB64: msg.audio_b64 || '' });
       break;
     case 'speak_chunk':
       win && win.webContents.send('speak-chunk', { text: msg.text });
@@ -360,11 +360,13 @@ function handleCoreMsg(msg) {
 
 // ---------- renderer → 核心 ----------
 ipcMain.on('pet-event', (e, payload) => {
-  if (payload && payload.type === 'drag') {
-    // 拖拽：main 直接移动窗口（透明窗不能靠 -webkit-app-region）
-    if (win && !win.isDestroyed()) {
-      const b = win.getBounds();
-      win.setBounds({ x: b.x + (payload.dx || 0), y: b.y + (payload.dy || 0), width: b.width, height: b.height });
+  if (payload && (payload.type === 'drag-start' || payload.type === 'drag-end')) {
+    // 拖拽：main 进程轮询全局鼠标位置移动窗口（renderer mousemove 在透明置顶窗不可靠；
+    // sakura 同款方案——跨屏、跨窗口层级稳定）
+    if (payload.type === 'drag-start') {
+      startDragPoll();
+    } else {
+      stopDragPoll();
     }
     return;
   }
@@ -379,6 +381,33 @@ ipcMain.on('pet-event', (e, payload) => {
     ws.send(JSON.stringify(payload));
   }
 });
+
+// ---------- 拖拽轮询（main 进程全局鼠标） ----------
+let dragTimer = null;
+let lastDragPoint = null;
+const { screen } = require('electron');
+
+function startDragPoll() {
+  if (dragTimer) return;
+  const p = screen.getCursorScreenPoint();
+  lastDragPoint = { x: p.x, y: p.y };
+  dragTimer = setInterval(() => {
+    if (!win || win.isDestroyed()) { stopDragPoll(); return; }
+    const p2 = screen.getCursorScreenPoint();
+    const dx = p2.x - lastDragPoint.x;
+    const dy = p2.y - lastDragPoint.y;
+    lastDragPoint = { x: p2.x, y: p2.y };
+    if (dx || dy) {
+      const b = win.getBounds();
+      win.setBounds({ x: b.x + dx, y: b.y + dy, width: b.width, height: b.height });
+    }
+  }, 16); // ~60Hz
+}
+
+function stopDragPoll() {
+  if (dragTimer) { clearInterval(dragTimer); dragTimer = null; }
+  lastDragPoint = null;
+}
 // ---------- health：渲染进程内存监控 + 自愈 ----------
 function healthCheck() {
   if (!win || win.isDestroyed()) return;

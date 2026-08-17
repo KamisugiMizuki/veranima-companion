@@ -68,13 +68,17 @@ class PetServer:
         return False
 
     # ---------- 对外发送 ----------
-    async def speak(self, text: str, tags: list | None = None) -> bool:
+    async def speak(self, text: str, tags: list | None = None, tts_text: str | None = None) -> bool:
+        """推送回复；tts_text 指定时用它合成音频（M5 双语：ja 配音 / zh 显示）。"""
         msg: dict = {"type": "speak", "text": text, "tags": tags or []}
+        if tts_text:
+            msg["text_zh"] = text  # renderer 显示中文
         # TTS 合成（配置了才发声；失败降级纯气泡）
-        if self._tts is not None and text.strip():
+        speak_text = tts_text or text  # 双语时用日语合成
+        if self._tts is not None and speak_text.strip():
             try:
                 import base64
-                audio = await asyncio.to_thread(self._tts.synthesize, text)
+                audio = await asyncio.to_thread(self._tts.synthesize, speak_text)
                 if audio:
                     msg["audio_b64"] = base64.b64encode(audio).decode()
             except Exception as e:
@@ -128,7 +132,7 @@ class PetServer:
                         # 正式版：agent 生成一句互动（channel=tts 语音风格 + 表情标签）
                         try:
                             r = await asyncio.to_thread(self._agent.handle, "（用户戳了戳桌宠）", channel="tts")
-                            await self.speak(r.reply, tags=[r.portrait] if r.portrait else None)
+                            await self.speak(r.reply, tags=[r.portrait] if r.portrait else None, tts_text=r.ja_text or None)
                         except Exception as e:
                             logger.warning("poke agent failed: %s", e)
                             await self.speak("嗯？叫我干嘛～")
@@ -151,6 +155,9 @@ class PetServer:
                         for sent in _split_sentences(r.reply):
                             await self.speak_chunk(sent)
                         await self.speak_done()
+                        # M5 双语：日语台词合成音频播放（显示已流式，音频补发）
+                        if r.ja_text:
+                            await self.speak(r.reply, tts_text=r.ja_text)
                     except Exception as e:
                         logger.warning("stream_talk failed: %s", e)
                         await self.speak_done()

@@ -20,7 +20,7 @@ def agent(tmp_path):
 
 def test_extract_segments_normal_json():
     reply = '{"segments":[{"text":"你好呀","tone":"温柔","portrait":"开心脸红"}]}'
-    text, tone, portrait = extract_segments(reply)
+    text, tone, portrait, ja = extract_segments(reply)
     assert text == "你好呀"
     assert tone == "温柔"
     assert portrait == "开心脸红"
@@ -28,7 +28,7 @@ def test_extract_segments_normal_json():
 
 def test_extract_segments_plain_text_fallback():
     """非 JSON 回复：整段当文本，portrait/tone 空。"""
-    text, tone, portrait = extract_segments("今天天气不错")
+    text, tone, portrait, ja = extract_segments("今天天气不错")
     assert text == "今天天气不错"
     assert tone == ""
     assert portrait == ""
@@ -37,7 +37,7 @@ def test_extract_segments_plain_text_fallback():
 def test_extract_segments_markdown_fenced_json():
     """模型包了 markdown 代码块：容错解析出 text。"""
     reply = '```json\n{"segments":[{"text":"嗯，在的","tone":"中性","portrait":"站立待机"}]}\n```'
-    text, tone, portrait = extract_segments(reply)
+    text, tone, portrait, ja = extract_segments(reply)
     assert text == "嗯，在的"
     assert portrait == "站立待机"
 
@@ -45,10 +45,23 @@ def test_extract_segments_markdown_fenced_json():
 def test_extract_segments_missing_text_key():
     """缺 text 字段：文本回退原文，tone/portrait 保留。"""
     reply = '{"segments":[{"tone":"中性","portrait":"站立待机"}]}'
-    text, tone, portrait = extract_segments(reply)
+    text, tone, portrait, ja = extract_segments(reply)
     assert text == reply
     assert tone == "中性"
     assert portrait == "站立待机"
+
+
+def test_extract_segments_bilingual():
+    """双语模式：ja 送 TTS / zh 显示（M5 由岐日语配音）。"""
+    reply = '{"segments":[{"ja":"こんにちは","zh":"你好","tone":"平静","portrait":"微笑"}]}'
+    text, tone, portrait, ja = extract_segments(reply, bilingual=True)
+    assert text == "你好"
+    assert ja == "こんにちは"
+    assert portrait == "微笑"
+    # 非双语模式（zima 等）ja 字段忽略、text 用 text
+    reply2 = '{"segments":[{"text":"普通回复","tone":"中性","portrait":"闲置"}]}'
+    text2, _, _, ja2 = extract_segments(reply2, bilingual=False)
+    assert text2 == "普通回复" and ja2 == ""
 
 
 # ---------- 视觉注意力（M4_SPEC 1.2） ----------
