@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Veranima 设置</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #f5f5f5; color: #222; font-family: "Microsoft YaHei", sans-serif; padding: 20px; }
+    h2 { font-size: 16px; margin-bottom: 16px; }
+    .field { margin-bottom: 14px; }
+    label { display: block; font-size: 12px; color: #666; margin-bottom: 4px; }
+    input { width: 100%; padding: 7px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; }
+    input:focus { outline: none; border-color: #4a9eff; }
+    .hint { font-size: 11px; color: #999; margin-top: 3px; }
+    button { background: #4a9eff; color: #fff; border: none; padding: 8px 18px; border-radius: 4px; cursor: pointer; font-size: 13px; }
+    button:hover { background: #3a8eef; }
+    #msg { margin-top: 12px; font-size: 12px; min-height: 18px; }
+    #msg.ok { color: #2e7d32; }
+    #msg.err { color: #c62828; }
+    #masked-key { color: #999; font-size: 12px; padding: 7px 0; }
+  </style>
+</head>
+<body>
+  <h2>Veranima 设置</h2>
+  <div class="field">
+    <label>LLM Base URL</label>
+    <input id="base-url" placeholder="https://api.example.com/v1">
+  </div>
+  <div class="field">
+    <label>LLM 模型</label>
+    <input id="model" placeholder="model-name">
+  </div>
+  <div class="field">
+    <label>API Key</label>
+    <div id="masked-key">读取中…</div>
+    <div class="hint">密钥不在此修改（config.yaml 手动维护）</div>
+  </div>
+  <div class="field">
+    <label>QQ 白名单（逗号分隔）</label>
+    <input id="allowed" placeholder="10001,10002">
+  </div>
+  <button id="save">保存（重启核心生效）</button>
+  <div id="msg"></div>
+  <script src="settings-renderer.js"></script>
+</body>
+</html>

@@ -17,6 +17,8 @@ import logging
 
 import websockets
 
+from veranima.config import load_config, save_config
+
 logger = logging.getLogger("veranima.pet_server")
 
 PORT = 8765
@@ -78,6 +80,31 @@ class PetServer:
                     pass  # 拖拽由壳自己处理，核心无需响应（PoC）
                 elif mtype == "ping":
                     await self._send({"type": "pong"})
+                elif mtype == "get_config":
+                    # 设置窗口读配置：返回可编辑字段（api_key 打码）
+                    cfg = load_config()
+                    llm = cfg.get("llm", {})
+                    key = llm.get("api_key", "")
+                    masked = (key[:4] + "****" + key[-4:]) if len(key) > 8 else ("****" if key else "")
+                    await self._send({"type": "config", "id": msg.get("id"), "data": {
+                        "llm": {"base_url": llm.get("base_url", ""), "model": llm.get("model", ""),
+                                "api_key": masked},
+                        "qq": {"allowed": cfg.get("allowed_qq", [])},
+                    }})
+                elif mtype == "save_config":
+                    # 设置窗口保存：只允许更新白名单字段
+                    cfg = load_config()
+                    d = msg.get("data", {})
+                    llm = d.get("llm", {})
+                    if "base_url" in llm:
+                        cfg.setdefault("llm", {})["base_url"] = llm["base_url"]
+                    if "model" in llm:
+                        cfg.setdefault("llm", {})["model"] = llm["model"]
+                    if "allowed" in d.get("qq", {}):
+                        cfg["allowed_qq"] = d["qq"]["allowed"]
+                    save_config(cfg)
+                    await self._send({"type": "config_saved", "id": msg.get("id"), "ok": True,
+                                     "restart": "重启核心生效"})
                 else:
                     logger.warning("unknown msg: %s", mtype)
         except websockets.exceptions.ConnectionClosed:

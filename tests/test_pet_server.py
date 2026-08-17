@@ -66,3 +66,45 @@ def test_send_without_client_returns_false():
     """无客户端连接时 send 返回 False（不抛异常）。"""
     srv = PetServer()
     assert asyncio.run(srv.speak("hi")) is False
+
+
+def test_config_roundtrip(tmp_path):
+    """get_config 返回打码 key；save_config 写回 yaml 并可再读。"""
+    from veranima.config import save_config
+    port = _free_port()
+    cfg_dir = tmp_path / "config"
+    cfg_dir.mkdir(exist_ok=True)
+    cfg_path = cfg_dir / "config.yaml"
+    save_config({"llm": {"base_url": "https://a.example/v1", "model": "m1", "api_key": "sk-abcdef1234567890"},
+                 "allowed_qq": [10001]}, cfg_path)
+    results = {}
+
+    async def scenario():
+        srv = PetServer(host="127.0.0.1", port=port)
+        task = asyncio.create_task(srv.run())
+        await asyncio.sleep(0.3)
+        import veranima.config as cfgmod
+        cfgmod.ROOT = tmp_path  # 让 load_config 找到 tmp 下的 config.yaml
+        async with websockets.connect(f"ws://127.0.0.1:{port}") as ws:
+            # get_config
+            await ws.send(json.dumps({"type": "get_config", "id": 1}))
+            msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=3))
+            results["get"] = msg
+            # save_config（改 model）
+            await ws.send(json.dumps({"type": "save_config", "id": 2,
+                                      "data": {"llm": {"model": "m2"}, "qq": {"allowed": [10002]}}}))
+            msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=3))
+            results["save"] = msg
+        task.cancel()
+
+    asyncio.run(scenario())
+    assert results["get"]["type"] == "config"
+    assert results["get"]["id"] == 1
+    assert results["get"]["data"]["llm"]["api_key"] == "sk-a****7890"  # 打码
+    assert results["save"]["type"] == "config_saved"
+    assert results["save"]["id"] == 2
+    # 写回验证
+    import yaml
+    saved = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    assert saved["llm"]["model"] == "m2"
+    assert saved["allowed_qq"] == [10002]

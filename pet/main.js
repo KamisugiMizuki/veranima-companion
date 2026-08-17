@@ -45,12 +45,12 @@ function pushLog(tag, line) {
 // ---------- spawn 核心（M3_SPEC 3.6 进程模型） ----------
 function startCore() {
   const py = process.env.VERANIMA_PY || path.join(__dirname, '..', '.venv', 'Scripts', 'python.exe');
-  const entry = process.env.VERANIMA_CORE || path.join(__dirname, '..', 'src', 'veranima', 'pet_server.py');
-  pushLog('shell', `spawning core: ${py} ${entry}`);
+  const srcDir = path.join(__dirname, '..', 'src');
+  pushLog('shell', `spawning core: ${py} -m veranima.pet_server`);
   try {
-    coreProc = spawn(py, [entry, '--port', '8765'], {
+    coreProc = spawn(py, ['-m', 'veranima.pet_server', '--port', '8765'], {
       cwd: path.join(__dirname, '..'),
-      env: { ...process.env, PYTHONPATH: '' },
+      env: { ...process.env, PYTHONPATH: srcDir },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (e) {
@@ -130,12 +130,60 @@ function openLogWindow() {
   logWin.on('closed', () => { logWin = null; });
 }
 
+// ---------- 设置窗口（airi reusable 模式） ----------
+let settingsWin = null;
+let wsRequestId = 0;
+const wsPending = new Map(); // id -> resolve
+
+function wsRequest(type, data, timeoutMs = 5000) {
+  return new Promise((resolve) => {
+    if (!ws || ws.readyState !== 1) { resolve(null); return; }
+    const id = ++wsRequestId;
+    wsPending.set(id, resolve);
+    ws.send(JSON.stringify({ type, data, id }));
+    setTimeout(() => { if (wsPending.has(id)) { wsPending.delete(id); resolve(null); } }, timeoutMs);
+  });
+}
+
+function openSettingsWindow() {
+  if (settingsWin && !settingsWin.isDestroyed()) {
+    settingsWin.show();
+    settingsWin.focus();
+    return;
+  }
+  settingsWin = new BrowserWindow({
+    width: 600, height: 800,
+    title: 'Veranima 设置',
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+    },
+  });
+  settingsWin.loadFile('settings.html');
+  settingsWin.on('close', (e) => { e.preventDefault(); settingsWin.hide(); }); // 复用
+  settingsWin.on('ready-to-show', () => settingsWin.show());
+  settingsWin.on('closed', () => { settingsWin = null; });
+}
+
+// 设置窗口 IPC：请求 → WS → 核心 → 响应回传
+ipcMain.handle('settings-get-config', async () => {
+  const resp = await wsRequest('get_config');
+  return resp && resp.type === 'config' ? resp.data : null;
+});
+ipcMain.handle('settings-save-config', async (e, data) => {
+  const resp = await wsRequest('save_config', data);
+  return !!(resp && resp.type === 'config_saved' && resp.ok);
+});
+ipcMain.on('core-restart', () => { stopCore(); startCore(); });
+
 // ---------- 托盘 ----------
 function createTray() {
   tray = new Tray(path.join(__dirname, 'assets', 'idle.png'));
   tray.setToolTip('Veranima 桌宠');
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '显示/隐藏桌宠', click: () => { win ? win.show() : createWindow(); } },
+    { label: '打开设置', click: () => openSettingsWindow() },
     { label: '打开日志', click: () => openLogWindow() },
     { type: 'separator' },
     { label: '退出（核心一起停）', click: () => { stopCore(); app.quit(); } },
@@ -183,6 +231,13 @@ function scheduleReconnect() {
 
 // ---------- 核心消息 → renderer ----------
 function handleCoreMsg(msg) {
+  // 带 id 的响应 → 回传 wsRequest pending
+  if (msg.id && wsPending.has(msg.id)) {
+    const resolve = wsPending.get(msg.id);
+    wsPending.delete(msg.id);
+    resolve(msg);
+    return;
+  }
   switch (msg.type) {
     case 'state':
       win && win.webContents.send('core-state', msg);

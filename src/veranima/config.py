@@ -37,3 +37,20 @@ def resolve_path(config: dict, key: str) -> str:
     if p and not Path(p).is_absolute():
         return str(root / p)
     return p
+
+
+def save_config(data: dict, path: str | Path | None = None) -> Path:
+    """写回配置到 config/config.yaml（设置窗口用）。
+
+    注意：yaml.dump 会丢失原文件注释——MVP 接受（配置结构简单）。
+    返回写回路径。
+    """
+    target = Path(path) if path else ROOT / "config" / "config.yaml"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    safe = {k: v for k, v in data.items() if k != "root"}
+    target.write_text(
+        yaml.safe_dump(safe, allow_unicode=True, sort_keys=False, default_flow_style=False),
+        encoding="utf-8",
+    )
+    logger.info("config saved to %s", target)
+    return target

@@ -10,6 +10,10 @@ contextBridge.exposeInMainWorld('pet', {
   // 日志窗口通道
   onLogLine: (cb) => ipcRenderer.on('log-line', (e, m) => cb(m)),
   onLogHistory: (cb) => ipcRenderer.on('log-history', (e, m) => cb(m)),
+  // 设置窗口通道：请求 → main 转发 WS → 核心响应回传
+  getConfig: () => ipcRenderer.invoke('settings-get-config'),
+  saveConfig: (data) => ipcRenderer.invoke('settings-save-config', data),
+  restartCore: () => ipcRenderer.send('core-restart'),
   // renderer → main
   sendEvent: (payload) => ipcRenderer.send('pet-event', payload),
   setIgnoreMouse: (ignore) => ipcRenderer.send('set-ignore-mouse', ignore),
