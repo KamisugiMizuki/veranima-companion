@@ -84,15 +84,17 @@ window.pet.onSpeakDone(() => {
 // ---------- 形象区域交互（整窗捕获：拖拽/戳一下/右键；sakura 同款） ----------
 const pet = document.getElementById('pet');
 
-// 拖拽移动窗口（透明窗不能用 -webkit-app-region；renderer 上报位移 → main setBounds）
+// 拖拽移动窗口（透明窗不能用 -webkit-app-region；renderer 上报**增量** → main setBounds）
 avatar.addEventListener('mousedown', (e) => {
   isDragging = true;
-  dragStart = { x: e.screenX, y: e.screenY };
+  dragStart = { x: e.screenX, y: e.screenY };  // 同时作为 last 位置
 });
 window.addEventListener('mousemove', (e) => {
   if (isDragging && dragStart) {
+    // 增量（相对上一次事件位置）——main 在 setBounds 里逐帧累加，不能发累计位移
     const dx = e.screenX - dragStart.x;
     const dy = e.screenY - dragStart.y;
+    dragStart = { x: e.screenX, y: e.screenY };
     window.pet.sendEvent({ type: 'drag', dx, dy });
   }
 });

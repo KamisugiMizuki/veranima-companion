@@ -106,6 +106,8 @@ def apply_portrait_description(char_dir: Path) -> dict[str, str]:
     char_dir = Path(char_dir)
     desc_path = char_dir / "portraits" / "立绘说明.txt"
     if not desc_path.exists():
+        desc_path = char_dir / "portraits" / "image_description.txt"  # 别名（等价文件）
+    if not desc_path.exists():
         return {}
     mapping: dict[str, str] = {}
     for line in desc_path.read_text(encoding="utf-8").splitlines():

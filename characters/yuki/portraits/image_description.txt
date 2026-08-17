@@ -1,0 +1,13 @@
+yk0000.png 闲置
+yk0001.png 微笑
+yk0002.png 咧嘴笑
+yk0003.png 喜悦
+yk0004.png 严肃
+yk0005.png 愤怒
+yk0006.png 失落
+yk0007.png 悲伤
+yk0008.png 好奇
+yk0009.png 惊讶
+yk0010.png 无奈
+yk0050.png 戏谑
+yk0051.png 不屑
