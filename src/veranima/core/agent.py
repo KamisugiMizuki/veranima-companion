@@ -16,6 +16,7 @@ from ..llm.client import LLMClient, LLMUnavailableError
 from .prompts import build_system_prompt
 from .segments import extract_segments
 from .ambient import Arbitrator, ChannelActivityTracker, SceneLock
+from .interrupt import InterruptDecider, TopicFrequency
 from ..memory.store import MemoryStore
 from ..tools.search import SEARCH_TOOL, SearXNGClient
 from .character import CharacterCard
@@ -40,6 +41,40 @@ class TurnResult:
     tone: str = ""       # M4：语气标签（TTS 预留）
 
 
+def _interrupt_prompt(level: int) -> str:
+    """M1 打断指令（DESIGN 4.5）：L1 轻推 / L2 转移+新出口，收尾协议。
+
+    L1 = 委婉提醒用户重复说过（40~60% 概率触发）
+    L2 = 主动转移话题 + 必须附带「新出口」（方案/新话题/问题）
+    """
+    if level == 1:
+        return (
+            "【打断指令·轻推】用户刚刚又提了之前说过的话题。"
+            "委婉地提醒他这件事你说过了（自然点，别像查重），然后给一个更深入的视角或建议。"
+        )
+    return (
+        "【打断指令·转移】用户反复纠缠同一个话题（已经说过好几次了）。"
+        "自然地打断并转移话题——先点一句'这事咱们聊过'，然后换一个新话题或抛一个新问题，"
+        "让对话换个频道。不要生硬，语气保持你自己的风格。"
+    )
+
+
+def _maybe_withdraw(reply: str, state, rand: float) -> str:
+    """M1 表达瑕疵（DESIGN 4.9 IM 通道）：低确信/疲劳时撤回限频 15~25%。
+
+    条件：低确信（<0.6）或低精力（<40）且回复含具体细节（长度 > 20）且概率命中。
+    """
+    low_confidence = getattr(state, "confidence", 1.0) < 0.6
+    low_energy = getattr(state, "energy", 100) < 40
+    if not (low_confidence or low_energy):
+        return reply
+    if len(reply) < 20:
+        return reply  # 无具体细节不触发
+    if rand > 0.2:
+        return reply  # 限频 15~25%（20% 概率）
+    return reply + "（撤回一下，我刚才打错了，应该是想说……算了，意思你懂就行）"
+
+
 class Agent:
     def __init__(
         self,
@@ -56,6 +91,10 @@ class Agent:
         self.config = config or {}
         self._history: list[dict] = []
         self._last_reply_ts: float | None = None  # 上一条回复时间（延迟信号用）
+
+        # M1 打断决策（DESIGN 4.5）：共享话题频率表 + 分级决策器
+        self.topic_freq = TopicFrequency()
+        self.interrupt_decider = InterruptDecider()
 
         # 重启续接（2026-08-04）：状态快照 + 最近对话从 SQLite 恢复，
         # 进程重启后像没重启过（依恋度/精力/情绪/对话上下文都在）
@@ -178,22 +217,31 @@ class Agent:
         if scene != "normal":
             logger.info("scene active: %s", scene)
 
+        # 1.6 M1 打断决策：话题复现计数 → L0-L3 分级（DESIGN 4.5）
+        topic_count = self.topic_freq.note(user_text)
+        interrupt_level = self.interrupt_decider.decide(topic_count)
+        if interrupt_level > 0:
+            logger.info("interrupt L%d (topic count=%d)", interrupt_level, topic_count)
+
         # 2. 零开销摄入：消息立即入库（FTS5 同步索引）
         self.memory.store_message("user", store_text, self.state.energy, self.state.mood)
 
-        # 3. 记忆检索（预算内注入）+ MVP2 附加块（风格/镜像/承诺）
+        # 3. 记忆检索（预算内注入）+ MVP2 附加块（风格/镜像/承诺）+ 打断指令
         query_hint = user_text or "图片"
+        extra_blocks = [
+            self.style.params.to_prompt_block(),
+            self.mirror.to_prompt_block(),
+            self.promises.to_prompt_block(query_hint=query_hint),
+        ]
+        if interrupt_level > 0:
+            extra_blocks.append(_interrupt_prompt(interrupt_level))
         system = build_system_prompt(
             self.card, self.state, self.memory,
             core_profile_budget=self.config.get("memory", {}).get("core_profile_budget", 1200),
-            section_budget=self.config.get("memory", {}).get("section_budget", 1600),
+            section_budget=self.config.get("memory", {}).get("section_budget", 2400),
             session_budget=self.config.get("memory", {}).get("session_budget", 600),
             channel=channel,
-            extra_blocks=[
-                self.style.params.to_prompt_block(),
-                self.mirror.to_prompt_block(),
-                self.promises.to_prompt_block(query_hint=query_hint),
-            ],
+            extra_blocks=extra_blocks,
         )
 
         # 4. 组装对话（历史 + 当前）；当前轮含图时用多模态 content 数组
@@ -338,6 +386,38 @@ class Agent:
             reply = self._short_task(task, max_tokens=200)
         except Exception as e:
             logger.warning("proactive_from_visual failed: %s", e)
+            return ""
+        if not reply:
+            return ""
+        self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
+        self._history.append({"role": "assistant", "content": reply})
+        return reply
+
+    def seamless_greeting(self) -> str:
+        """M3 无缝衔接（DESIGN 4.8）：用户回到电脑前 → 从共享历史接续最近话题。
+
+        取最近对话（跨通道共享），生成「你刚才说…」衔接语；无历史/低精力返回 ""。
+        """
+        if self.state.energy < 30:
+            return ""
+        recent = self.memory.recent_messages(limit=6)
+        # 找最近一条用户消息（可能是 QQ 通道的）
+        last_user = ""
+        for m in reversed(recent):
+            if m.get("role") == "user":
+                last_user = str(m.get("content") or "")[:80]
+                break
+        if not last_user:
+            return ""
+        task = (
+            f"用户刚回到电脑前。他之前在别的端说过：\"{last_user}\"。"
+            "发一条简短的衔接语，自然地提起这件事（比如'你刚才说的那个…后来怎么样了？'）。"
+            "只说这一句，不要展开。"
+        )
+        try:
+            reply = self._short_task(task, max_tokens=120)
+        except Exception as e:
+            logger.warning("seamless_greeting failed: %s", e)
             return ""
         if not reply:
             return ""

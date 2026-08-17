@@ -34,6 +34,7 @@ class PetServer:
         self._client: websockets.ServerConnection | None = None
         self._agent = None  # 后续接 Agent；PoC 阶段 None
         self._tts = None    # TTSClient（可选；未配置则桌宠只显气泡不发声）
+        self._presence_was_absent = False  # M3 衔接：在场转变检测
 
     def connect_agent(self, agent) -> None:
         """接入 Agent（正式版：poke/speak 走 agent.handle(channel='tts')）。"""
@@ -42,6 +43,29 @@ class PetServer:
     def connect_tts(self, tts) -> None:
         """接入 TTS（远程/本地统一 OpenAI 兼容接口；未配置则跳过合成）。"""
         self._tts = tts
+
+    async def tick_presence(self) -> bool:
+        """M3 无缝衔接（DESIGN 4.8）：L0 在场检测 → absent→present 转变 → 衔接语。
+
+        返回是否发送了衔接语。无 agent / 用户仍在场 / 从未 absent 不触发。
+        """
+        from veranima.core.presence import presence
+        if self._agent is None:
+            return False
+        now_present = presence()
+        if now_present and self._presence_was_absent:
+            self._presence_was_absent = False
+            try:
+                msg = await asyncio.to_thread(self._agent.seamless_greeting)
+                if msg:
+                    await self.speak(msg)
+                    return True
+            except Exception as e:
+                logger.warning("seamless greeting failed: %s", e)
+                return False
+        if not now_present:
+            self._presence_was_absent = True
+        return False
 
     # ---------- 对外发送 ----------
     async def speak(self, text: str, tags: list | None = None) -> bool:
@@ -165,6 +189,15 @@ class PetServer:
     async def run(self) -> None:
         logger.info("pet server on ws://%s:%d", self.host, self.port)
         async with websockets.serve(self._handle, self.host, self.port):
+            # M3 无缝衔接：30s 一次 L0 在场检测（absent→present → 衔接语）
+            async def _presence_loop():
+                while True:
+                    try:
+                        await self.tick_presence()
+                    except Exception as e:
+                        logger.warning("presence tick failed: %s", e)
+                    await asyncio.sleep(30)
+            asyncio.create_task(_presence_loop())
             await asyncio.Future()  # 常驻
 
 
