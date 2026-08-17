@@ -7,6 +7,9 @@ contextBridge.exposeInMainWorld('pet', {
   onSpeak: (cb) => ipcRenderer.on('speak', (e, m) => cb(m)),
   onBubble: (cb) => ipcRenderer.on('bubble', (e, m) => cb(m)),
   onStopSpeak: (cb) => ipcRenderer.on('stop-speak', () => cb()),
+  // 日志窗口通道
+  onLogLine: (cb) => ipcRenderer.on('log-line', (e, m) => cb(m)),
+  onLogHistory: (cb) => ipcRenderer.on('log-history', (e, m) => cb(m)),
   // renderer → main
   sendEvent: (payload) => ipcRenderer.send('pet-event', payload),
   setIgnoreMouse: (ignore) => ipcRenderer.send('set-ignore-mouse', ignore),

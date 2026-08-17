@@ -1,17 +1,80 @@
-// Veranima 桌宠壳 main 进程（M3_SPEC 3.5）
-// 职责：窗口管理（透明/置顶/穿透）、WS 连核心、状态广播、health 自愈
+// Veranima 桌宠壳 main 进程（M3_SPEC 3.5/3.6）
+// 职责：窗口管理（主窗口/日志窗口）、spawn 核心、WS 连核心、日志汇聚、health 自愈
 const { app, BrowserWindow, Tray, Menu, ipcMain, powerSaveBlocker } = require('electron');
+const { spawn } = require('child_process');
+const fs = require('fs');
 const path = require('path');
 
 const CORE_WS = process.env.VERANIMA_PET_WS || 'ws://127.0.0.1:8765';
 const MEMORY_LIMIT_MB = 400;      // 渲染进程 RSS 阈值（M3_SPEC 3.4 缺陷1）
 const HEALTH_INTERVAL_MS = 5 * 60 * 1000; // 5min 采样
+const LOG_RING_MAX = 500;         // 内存环形缓冲行数
 
 let win = null;
+let logWin = null;
 let tray = null;
 let ws = null;
+let coreProc = null;
 let reconnectDelay = 1000;
-let speaking = false;
+let logRing = [];                 // 内存环形缓冲（转发给日志窗口）
+let logFile = null;               // 文件日志句柄
+
+// ---------- 日志（汇聚 + 落盘） ----------
+function openLogFile() {
+  try {
+    const dir = app.getPath('userData');
+    fs.mkdirSync(dir, { recursive: true });
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    logFile = fs.createWriteStream(path.join(dir, `veranima-${ts}.log`), { flags: 'a' });
+  } catch (e) { console.error('log file open failed:', e.message); }
+}
+
+function pushLog(tag, line) {
+  const ts = new Date().toISOString().slice(11, 23);
+  const entry = `[${ts}] [${tag}] ${line}`;
+  logRing.push(entry);
+  if (logRing.length > LOG_RING_MAX) logRing.shift();
+  if (logFile) logFile.write(entry + '\n');
+  if (logWin && !logWin.isDestroyed()) {
+    logWin.webContents.send('log-line', entry);
+  }
+  // 壳自身日志也走这里（health/ws 诊断）
+  console.log(entry);
+}
+
+// ---------- spawn 核心（M3_SPEC 3.6 进程模型） ----------
+function startCore() {
+  const py = process.env.VERANIMA_PY || path.join(__dirname, '..', '.venv', 'Scripts', 'python.exe');
+  const entry = process.env.VERANIMA_CORE || path.join(__dirname, '..', 'src', 'veranima', 'pet_server.py');
+  pushLog('shell', `spawning core: ${py} ${entry}`);
+  try {
+    coreProc = spawn(py, [entry, '--port', '8765'], {
+      cwd: path.join(__dirname, '..'),
+      env: { ...process.env, PYTHONPATH: '' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (e) {
+    pushLog('shell', `core spawn failed: ${e.message}`);
+    scheduleCoreRestart();
+    return;
+  }
+  coreProc.stdout.on('data', (d) => pushLog('core', d.toString().trimEnd()));
+  coreProc.stderr.on('data', (d) => pushLog('core-err', d.toString().trimEnd()));
+  coreProc.on('exit', (code, signal) => {
+    pushLog('shell', `core exited (code=${code}, signal=${signal}); restarting in ${reconnectDelay}ms`);
+    coreProc = null;
+    scheduleCoreRestart();
+  });
+}
+
+function scheduleCoreRestart() {
+  setTimeout(startCore, reconnectDelay);
+  reconnectDelay = Math.min(reconnectDelay * 2, 30000); // 1s→2s→4s…上限30s
+}
+
+function stopCore() {
+  if (coreProc) { coreProc.kill(); coreProc = null; }
+}
 
 // ---------- 窗口 ----------
 function createWindow() {
@@ -37,7 +100,34 @@ function createWindow() {
     console.error('[health] renderer gone:', details.reason);
     setTimeout(() => { win && win.reload(); }, 2000); // 自愈重建（M3_SPEC 3.4 缺陷2）
   });
+  // airi allowClose 模式：关窗=隐藏（托盘常驻），托盘「退出」才真关
+  win.on('close', (e) => { e.preventDefault(); win.hide(); });
   win.on('closed', () => { win = null; });
+}
+
+// ---------- 日志窗口（airi createReusableWindow 简化：关闭隐藏复用） ----------
+function openLogWindow() {
+  if (logWin && !logWin.isDestroyed()) {
+    logWin.show();
+    logWin.focus();
+    return;
+  }
+  logWin = new BrowserWindow({
+    width: 560, height: 600,
+    title: 'Veranima 日志',
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+    },
+  });
+  logWin.loadFile('log.html');
+  logWin.on('close', (e) => { e.preventDefault(); logWin.hide(); }); // 复用模式
+  logWin.on('ready-to-show', () => {
+    logWin.show();
+    logWin.webContents.send('log-history', logRing); // 补发历史
+  });
+  logWin.on('closed', () => { logWin = null; });
 }
 
 // ---------- 托盘 ----------
@@ -45,8 +135,10 @@ function createTray() {
   tray = new Tray(path.join(__dirname, 'assets', 'idle.png'));
   tray.setToolTip('Veranima 桌宠');
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: '显示/隐藏', click: () => { win ? win.show() : createWindow(); } },
-    { label: '退出桌宠（核心继续跑）', click: () => app.quit() },
+    { label: '显示/隐藏桌宠', click: () => { win ? win.show() : createWindow(); } },
+    { label: '打开日志', click: () => openLogWindow() },
+    { type: 'separator' },
+    { label: '退出（核心一起停）', click: () => { stopCore(); app.quit(); } },
   ]));
   tray.on('click', () => { win && win.isVisible() ? win.hide() : (win ? win.show() : createWindow()); });
 }
@@ -144,11 +236,14 @@ if (!gotLock) {
   });
   app.whenReady().then(() => {
     powerSaveBlocker.start('prevent-app-suspension'); // M3_SPEC 3.4 缺陷4
+    openLogFile();
+    startCore();                // 壳 spawn 核心（M3_SPEC 3.6）
     createWindow();
     createTray();
     connect();
     setInterval(healthCheck, HEALTH_INTERVAL_MS);
   });
+  app.on('before-quit', () => { stopCore(); });
   app.on('window-all-closed', (e) => {
     // 桌宠壳关窗不退出（托盘常驻）；只有托盘菜单「退出」才 quit
   });
