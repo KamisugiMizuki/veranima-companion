@@ -362,7 +362,7 @@ class QQAdapter:
         return now.hour >= start or now.hour < end  # 跨午夜
 
     def _tick_offline_think(self, loop: asyncio.AbstractEventLoop) -> None:
-        """8.7.4 离线思考：静默窗口命中 + 模型已加载 → late_reply → 发送。"""
+        """8.7.4 离线思考 + M3a 心跳：静默窗口命中 → late_reply 优先 → heartbeat 兜底。"""
         if self._in_quiet_hours():
             return
         if not self.offline.due(time.time(), self._last_user_activity):
@@ -372,6 +372,9 @@ class QQAdapter:
             logger.info("offline think skipped: model not loaded")
             return
         msg = self.agent.late_reply()
+        if not msg:
+            # 对话已闭合（late_reply 不触发）→ 心跳破冰
+            msg = self.agent.heartbeat()
         if msg:
             logger.info("offline think reply: %s", msg[:60])
             self._send_to_all(loop, msg)

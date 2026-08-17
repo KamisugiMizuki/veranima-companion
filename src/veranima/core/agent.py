@@ -332,6 +332,54 @@ class Agent:
             self.arbitrator.commit("ritual")
         return msgs
 
+    def heartbeat(self) -> str:
+        """M3a 后台心跳（M3_SPEC 2.1）：对话已闭合 + 静默 → 「离线整理」破冰。
+
+        与 late_reply 互补：late_reply 要求对话未闭合（有没回完的话），
+        心跳要求已闭合（无事发生太久，主动找话说）。返回空串=不触发。
+
+        触发约束：
+        - 最近一条是 assistant（对话闭合）；用户刚说话则不触发
+        - 过仲裁器（场景 normal + 他通道不活跃 + idle 冷却/日上限）
+        - LLM 生成「离线整理」破冰；失败降级模板池
+        """
+        # 仲裁：idle 机制（闲适性）
+        if not self.arbitrator.request("idle", scene=self.scene_lock.current(),
+                                       other_channel_active=self.activity.blocking("qq")):
+            return ""
+        recent = self.memory.recent_messages(limit=8)
+        if not recent or recent[-1]["role"] != "assistant":
+            return ""  # 用户刚说完话或有未闭合对话，不需要破冰
+        if getattr(self.llm, "is_model_loaded", None) is not None and self.llm.is_model_loaded():
+            try:
+                ctx = ("最近的对话：\n" + "\n".join(
+                    f"{m['role']}: {m['content'][:60]}" for m in recent[-4:]
+                )) if recent else ""
+                task = (
+                    f"{ctx}\n\n你刚在整理聊天记录（离线成长），想跟用户说点什么破冰。"
+                    "自然带出一点整理时的发现（他之前提过的事/你记住的细节），"
+                    "像平时聊天一样自然，长度随意。不要用「欢迎回来」这类生硬话。"
+                )
+                reply = self._short_task(task, max_tokens=1024)
+                if reply:
+                    self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
+                    self._history.append({"role": "assistant", "content": reply})
+                    self.arbitrator.commit("idle")
+                    return reply
+            except Exception as e:
+                logger.debug("heartbeat LLM failed, fallback to template: %s", e)
+        # 降级：模板池
+        pool = [
+            "（刚在整理聊天记录）上次你说那事，后来有后续了吗？",
+            "刚闲着没事翻了翻咱俩的聊天记录，发现你之前念叨的东西挺多的……最近都还好吗？",
+            "（离线整理完毕）我突然想起你上次说的那个计划，后来怎么样了？",
+        ]
+        reply = pool[0]
+        self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
+        self._history.append({"role": "assistant", "content": reply})
+        self.arbitrator.commit("idle")
+        return reply
+
     def late_reply(self) -> str:
         """8.7.4 离线思考：静默一段时间后，针对之前话题发一条"迟来的回应"。
 

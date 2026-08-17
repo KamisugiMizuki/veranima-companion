@@ -1,7 +1,18 @@
-"""M3a 时空沉浸测试：场景锁 / 通道互斥 / 仲裁器最小版。"""
+"""M3a 时空沉浸测试：场景锁 / 通道互斥 / 仲裁器最小版 / 心跳。"""
 import pytest
 
+from veranima.core.agent import Agent
 from veranima.core.ambient import Arbitrator, ChannelActivityTracker, SceneLock
+from veranima.core.character import CharacterCard
+from veranima.core.state import AgentState
+from veranima.memory.store import MemoryStore
+
+
+@pytest.fixture
+def agent(tmp_path):
+    mem = MemoryStore(db_path=str(tmp_path / "t.db"), config={}, llm_config={})
+    card = CharacterCard(name="测试", first_mes="hi")
+    return card, mem
 
 
 # ---------- 场景锁 ----------
@@ -85,3 +96,48 @@ def test_arbitrator_cooldown_and_daily_cap():
 def test_arbitrator_priority_sort():
     a = Arbitrator()
     assert a.sort(["idle", "conflict", "fatigue"]) == ["conflict", "fatigue", "idle"]
+
+
+# ---------- 心跳（agent.heartbeat） ----------
+
+def test_heartbeat_requires_closed_conversation(agent):
+    """对话闭合（最后一条 assistant）才触发心跳；用户刚说话不触发。"""
+    from veranima.core.agent import Agent
+    card, memory = agent
+    llm = FakeHeartbeatLLM()
+    a = Agent(card=card, memory=memory, llm=llm, state=AgentState(),
+              config={"chat": {"proactive_message_prob": 0.0}})
+    # 对话未闭合：最后一条是 user
+    memory.store_message("user", "你好", 80, "平静")
+    assert a.heartbeat() == ""
+    # 闭合：补一条 assistant
+    memory.store_message("assistant", "你好呀", 80, "平静")
+    a.arbitrator._cooldown.clear()
+    out = a.heartbeat()
+    assert out != ""
+    assert llm.calls > 0
+
+
+def test_heartbeat_blocked_by_scene(agent):
+    from veranima.core.agent import Agent
+    card, memory = agent
+    a = Agent(card=card, memory=memory, llm=FakeHeartbeatLLM(), state=AgentState(),
+              config={"chat": {"proactive_message_prob": 0.0}})
+    memory.store_message("user", "你好", 80, "平静")
+    memory.store_message("assistant", "你好呀", 80, "平静")
+    a.scene_lock.note("我去看个电影了")
+    assert a.heartbeat() == ""  # busy 场景拦截
+
+
+class FakeHeartbeatLLM:
+    """心跳测试用假 LLM：loaded=True，chat 返回固定文本。"""
+
+    def __init__(self):
+        self.calls = 0
+
+    def is_model_loaded(self):
+        return True
+
+    def chat(self, messages, **kwargs):
+        self.calls += 1
+        return "（刚在整理聊天记录）上次你说的那事，后来怎么样了？"
