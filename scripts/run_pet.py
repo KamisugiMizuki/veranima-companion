@@ -46,8 +46,43 @@ def qq_enabled() -> bool:
         return False
 
 
+def preflight_ports() -> None:
+    """启动前检查核心/TTS 端口：残留孤儿进程（壳被强杀后 Windows 不回收子进程）
+    会占住 8765/9880 导致核心 bind 失败死循环——这里自动清理。
+
+    ponytail: 按端口找 PID，再按命令行确认是 pet_server/tts.server 才杀（防误杀）。
+    """
+    import re
+
+    def find_listener(port: int) -> list[str]:
+        try:
+            out = subprocess.run(["netstat", "-ano"], capture_output=True, timeout=30).stdout
+            return [l.split()[-1] for l in out.decode("gbk", errors="replace").splitlines()
+                    if f":{port}" in l and "LISTENING" in l]
+        except Exception:
+            return []
+
+    def is_our_process(pid: str) -> bool:
+        try:
+            # wmic 在新 Windows 已弃用，用 PowerShell CIM（同样零依赖）
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 f"(Get-CimInstance Win32_Process -Filter \"ProcessId={pid}\").CommandLine"],
+                capture_output=True, timeout=30).stdout.decode("gbk", errors="replace")
+            return "pet_server" in out or "tts.server" in out
+        except Exception:
+            return False
+
+    for port, name in ((8765, "核心"), (9880, "TTS 服务")):
+        for pid in find_listener(port):
+            if is_our_process(pid):
+                subprocess.run(["taskkill", "/F", "/PID", pid], capture_output=True, timeout=30)
+                print(f"已清理残留{name}进程 (PID {pid}, 端口 {port})")
+
+
 def main() -> None:
     check_node_modules()
+    preflight_ports()  # 清理残留核心/TTS 进程（防端口占用死循环）
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
 
