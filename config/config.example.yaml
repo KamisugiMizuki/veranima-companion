@@ -12,8 +12,8 @@ llm:
   model: "deepseek-chat"                     # 模型名（远程 API 按服务商提供；示例：deepseek-chat / qwen-plus）
   api_key: ""                                # 远程 API 必填；留空则无法鉴权
   temperature: 0.8
-  # thinking 模型 reasoning 长：qwen3.5 实测思考可达 6000+ chars，
-  # 预算不足会导致空回复；4096 给足推理+回复空间（16K context 仍够）
+  # max_tokens 只限制输出（单次回复长度），不影响输入上下文；
+  # 4096 对陪伴对话足够，无需随 context 上调
   max_tokens: 4096
   # 低精力时的简短回复配置
   low_energy_max_tokens: 256
