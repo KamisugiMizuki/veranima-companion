@@ -31,6 +31,14 @@ tts:
   response_format: "wav"                # wav/mp3/opus（浏览器都支持；本地 Qwen3 常用 wav）
   timeout: 60
 
+# STT 语音输入（OpenAI 兼容 /v1/audio/transcriptions；未配置 = 未接入，接口就绪模型后接）
+stt:
+  base_url: ""                          # 留空 = STT 关闭；填远程/本地 OpenAI 兼容端点
+  model: "whisper-1"                    # 远程：whisper-1 等；本地：服务对应模型名
+  language: ""                          # 空 = 自动检测；填 zh 固定中文
+  api_key: ""                           # 远程必填；本地服务通常不需要
+  timeout: 60
+
 # 角色卡（CCv3 兼容 JSON；留空则用内置示例卡）
 character_card: "config/character.json"
 
