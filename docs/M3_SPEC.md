@@ -83,11 +83,11 @@
 
 | 候选 | 状态 | 备注 |
 | --- | --- | --- |
-| Tauri v2 | MacroPhonic 未调通（窗口/GPU 问题），**不能当已验证经验** | 需重新评估，重点：透明窗口/置顶/多屏 |
-| Electron | koodo-reader 已验证（Electron+React 全家桶） | 重（~100MB），但桌面壳成熟 |
-| WPF | Windows 原生 | 与 Python 核心通信要自写 |
+| ~~Tauri v2~~ | ~~MacroPhonic 未调通（窗口/GPU 问题），不能当已验证经验~~ | **已弃选**（2026-08）：Live2D 生态弱 + 透明窗口坑多 |
+| **Electron ✓** | koodo-reader 已验证（Electron+React 全家桶） | **已选定**（2026-08）：Live2D 生态最成熟，包大不是问题（可外置更新/按需加载），缺陷对策见 3.5 |
+| WPF | Windows 原生 | 弃选：Live2D 生态几乎为零 |
 
-**决策时点**：M3a 完成、进入 M3b 时；先用最小 PoC 验证「透明置顶小窗 + WS 连接」再定。
+**PoC 范围（M3b 开工第一件事）**：透明置顶小窗 + 点击穿透 + WS 连接，验证通过后进入正式开发。
 
 **评估标准（含 Live2D 前瞻）**：
 1. 透明置顶小窗 + 点击穿透（MVP 必需）
@@ -110,7 +110,46 @@
 - 判定：`last_input_ts` 距现在 <5min → 用户在场；持续 >30min 无输入且屏幕锁定 → 离开
 - 只发事件：`presence: on/off`，不传具体内容（隐私）
 
-### 3.4 桌宠前台 UI 细节（MVP 必需集）
+### 3.4 Electron 显著缺陷与对策（2026-08 选型后专项）
+
+桌宠是 **7×24 常驻**应用，Electron 的缺陷必须正面处理。逐条对策：
+
+**缺陷 1：渲染进程内存泄漏（Chromium 多进程模型）**
+- 症状：长时间运行后渲染进程 RSS 持续增长（常见泄漏源：未清理的事件监听器、闭包引用、pixi.js 纹理/精灵未销毁、`<audio>` 元素残留）
+- 对策：
+  - **渲染进程心跳监控 + 自愈重启**：主进程每 5min 采样 `webContents.getProcessMemoryInfo()`，渲染进程 RSS 超阈值（如 400MB）或持续增长（3 次采样均升）→ `webContents.reload()` 或重建窗口。壳无状态，重启无损（状态在 Python 核心）
+  - **事件监听纪律**：React 组件卸载必清监听（`useEffect` cleanup / `AbortController`）；全局监听器（WS、全局快捷键）挂 main 进程不挂 renderer
+  - **音频资源释放**：`<audio>` 播放完置 `src=""` 并移除节点；TTS 音频是高频对象，是泄漏重灾区
+  - **pixi.js 资源纪律**（Live2D 后启用）：纹理/模型卸载时 `destroy()`，不用 `removeChild` 了事
+  - **V8 堆上限**：`app.commandLine.appendSwitch('js-flags', '--max-old-space-size=512')` 防堆失控
+
+**缺陷 2：渲染进程崩溃/白屏**
+- 症状：GPU 崩溃、OOM 后窗口白屏无响应
+- 对策：监听 `render-process-gone` 事件 → 自动重建窗口（含当前状态恢复）；配 `process.crashReporter` 落盘日志便于排查
+
+**缺陷 3：GPU 进程问题（透明窗口 + WebGL）**
+- 症状：透明窗口花屏/闪烁、GPU 进程崩溃（MacroPhonic 同款坑）
+- 对策：PoC 阶段就验证「透明 + 置顶 + WebGL(为 Live2D 预留)」组合；出问题先试 `app.disableHardwareAcceleration()` 或 `--use-gl=angle --use-angle=swiftshader`（软件渲染，桌宠画面简单，性能损失可接受）
+
+**缺陷 4：后台节流（timer 被压）**
+- 症状：窗口隐藏/失焦时 Chromium 节流 `setTimeout`/`requestAnimationFrame`，呼吸动画/气泡消失卡顿
+- 对策：**壳内动画用 main 进程定时器驱动**（`webContents.send` 广播），不依赖 renderer 的 rAF；或 `powerSaveBlocker.start('prevent-app-suspension')`（常驻桌宠合理使用）
+
+**缺陷 5：包体大 + 启动慢**
+- 症状：~100MB 安装包、首启几百 ms
+- 对策：**MVP 阶段接受**（本地开发跑 dev 模式无感）；后续优化路径：electron-builder 压缩 + 按需加载 Live2D 资源（模型文件不进主包，运行时从 `assets/` 读）+ 可选 ASAR 外置。**不提前优化**（YAGNI：等真到了分发阶段再处理）
+
+**缺陷 6：单实例冲突**
+- 症状：用户重复启动出现两个桌宠
+- 对策：`app.requestSingleInstanceLock()`，第二次启动 → 聚焦已有实例并退出
+
+**监控与自愈总纲**：
+- 壳内建 `health.js`（main 进程）：5min 周期采样渲染进程内存 + WS 连接状态 → 异常自动恢复（重启渲染进程/重连核心）
+- 所有自愈动作打日志（`logs/pet-shell.log`），配合核心侧日志可完整复盘
+
+---
+
+### 3.5 桌宠前台 UI 细节（MVP 必需集）
 
 **窗口形态**：
 - 尺寸 ~200×240px（形象区 + 气泡区），置顶 + 无边框 + **点击穿透**（除形象本体外区域鼠标穿透，不挡用户操作）
@@ -152,11 +191,12 @@
 | 2.3 衔接 | 回到电脑前触发衔接语，内容与最近 QQ 对话相关 |
 | 3.2 TTS | 桌宠语音正常合成播放；新消息打断旧播放 |
 | 3.3 在场 | 键盘活动 5min 内判定在场；30min 无输入判定离开 |
-| 3.4 窗口 | 置顶无边框 + 点击穿透；拖拽移动并记住位置；最小化进托盘 |
-| 3.4 形象 | idle/speaking/thinking/sleeping 四态切换正确 |
-| 3.4 气泡 | speak 文本进气泡，3s 后消失；thinking 显示「……」 |
-| 3.4 交互 | 左键「戳一下」触发互动；右键菜单三项可用；壳退出不杀核心 |
-| 3.4 重连 | 核心重启后壳自动重连恢复（指数退避） |
+| 3.5 窗口 | 置顶无边框 + 点击穿透；拖拽移动并记住位置；最小化进托盘 |
+| 3.5 形象 | idle/speaking/thinking/sleeping 四态切换正确 |
+| 3.5 气泡 | speak 文本进气泡，3s 后消失；thinking 显示「……」 |
+| 3.5 交互 | 左键「戳一下」触发互动；右键菜单三项可用；壳退出不杀核心 |
+| 3.5 重连 | 核心重启后壳自动重连恢复（指数退避） |
+| 3.4 内存 | 渲染进程 RSS 超阈值自动重启；7×24 运行无白屏 |
 
 ---
 

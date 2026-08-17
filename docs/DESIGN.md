@@ -101,7 +101,7 @@ User Input → [社交博弈：消耗多少情绪资本]
 | LLM | OpenAI 兼容远程 API（DeepSeek/通义/硅基流动等；httpx 直调，配置 base_url/model/api_key） | 2026-08 切换：弃用本地 LM Studio |
 | Embedding | `data/models/bge-m3`（sentence-transformers 本地）或 `openai:` API 模式 | object_design 已验证，1024 维 |
 | QQ 接入 | aiocqhttp + NapCatQQ（OneBot v11 反向 WS，端口 8099） | object_design 已验证 |
-| 桌宠前端 | **待定**（候选：Tauri v2 / Electron / WPF）。MacroPhonic 的 Tauri 桌宠端未调通（仅 TTS sidecar 可用），不能作为「已验证经验」复用，需重新评估 | 风险项，见 3.1 |
+| 桌宠前端 | **Electron**（2026-08 选定：Live2D 生态最成熟，koodo-reader 已验证 Electron 栈；缺陷对策见 M3_SPEC 3.4） | 包大可接受，不提前优化 |
 | 桌宠 TTS | Qwen3-TTS sidecar（复用 MacroPhonic 的 server.py 模式，已验证可用） | 已有实现 |
 | 记忆存储 | SQLite + 向量（复用 object_design 的 store.py 模式） | 已验证 |
 | 测试 | pytest | 项目惯例 |
