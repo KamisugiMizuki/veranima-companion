@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -95,44 +94,29 @@ class LLMClient:
     def is_available(self) -> bool:
         try:
             with httpx.Client(timeout=5) as client:
-                resp = client.get(f"{self.base_url}/models")
+                resp = client.get(f"{self.base_url}/models", headers=self._headers())
             return resp.status_code == 200
         except Exception:
             return False
 
     def is_model_loaded(self) -> bool:
-        """检测配置的模型是否已实际加载（LM Studio 本地模式专用：lms ps 查询）。
+        """远程 API 模式（配置了 api_key）：无「加载」概念，始终可用。
 
-        /v1/models 在模型卸载后仍列出全部模型（无 loaded 状态），不可靠；
-        且 LM Studio 收到未加载模型的 chat 请求会自动重载（瞬间吃回显存）。
-        游戏模式下必须先查 lms ps，未加载则不应发请求。
-
-        远程 API 模式（配置了 api_key）或无本地 lms：视为始终可用，放行交给 chat 异常处理。
+        放行交给 chat 的异常处理（连接失败/鉴权失败会在 chat_raw 分类）。
         """
-        if self.api_key:
-            return True  # 远程 API：无"加载"概念
-        lms = self.config.get("lms_path", str(Path.home() / ".lmstudio" / "bin" / "lms.exe"))
-        if not Path(lms).exists():
-            return True  # 非 LM Studio 本地模式（如 Ollama 或其他兼容服务）：放行
-        try:
-            import subprocess
-            r = subprocess.run([lms, "ps"], capture_output=True, text=True, timeout=15)
-            return self.model in (r.stdout or "")
-        except Exception as e:
-            logger.warning("lms ps check failed: %s", e)
-            return True  # 查询失败时放行，交给 chat 异常处理
+        return True
 
     def ensure_model(self) -> bool:
-        """检查配置的模型是否已加载；未加载时列出可用模型。"""
+        """检查远程 API 是否可达且配置的模型存在。"""
         try:
             with httpx.Client(timeout=5) as client:
-                resp = client.get(f"{self.base_url}/models")
+                resp = client.get(f"{self.base_url}/models", headers=self._headers())
             if resp.status_code != 200:
                 return False
             names = [m.get("id", "") for m in resp.json().get("data", [])]
             if self.model in names:
                 return True
-            logger.warning("model %s not loaded (available: %s). 用 LM Studio 加载后重试。", self.model, names)
+            logger.warning("model %s not found (available: %s). 检查 config 的 model 名。", self.model, names)
             return False
         except Exception as e:
             logger.error("cannot reach LLM server at %s: %s", self.base_url, e)

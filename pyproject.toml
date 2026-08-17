@@ -14,6 +14,7 @@ dependencies = [
     "httpx>=0.27",
     "sqlite-vec>=0.1",
     "pillow>=10",
+    "pyyaml>=6",
 ]
 
 [build-system]
