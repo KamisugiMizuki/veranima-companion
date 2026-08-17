@@ -146,3 +146,58 @@ def test_pet_server_presence_tick(agent, monkeypatch):
     monkeypatch.setattr(presence_mod, "presence", lambda: True)
     assert asyncio.run(srv.tick_presence()) is True
     assert len(sent) == 1
+
+
+# ---------- M1 可逆性 + M3 TTS 打断 ----------
+
+def test_clarification_detection():
+    """追问检测：细节追问词命中。"""
+    from veranima.core.prompts import is_clarification
+    assert is_clarification("那到底是什么时候说的？") is True
+    assert is_clarification("具体是几点来着") is True
+    assert is_clarification("今天天气不错") is False
+
+
+def test_format_memory_clarification_gives_exact():
+    """追问时低确信记忆不模糊化（M1_SPEC 2.2 可逆性）。"""
+    from veranima.core.prompts import format_memory_line
+    from veranima.memory.store import MemoryEntry
+    e = MemoryEntry(id=1, layer="episodic", content="三天前下午三点在星巴克见面", importance=0.5,
+                    confidence=0.5, provenance="test", version=1, strength=0.5,
+                    category=None, meta={}, created_at=0, updated_at=0)
+    fuzzy = format_memory_line(e)
+    exact = format_memory_line(e, clarification=True)
+    assert "那阵子" in fuzzy  # 模糊化生效（3 天 → 那阵子）
+    assert "三天前下午三点在星巴克见面" in exact  # 追问给精确值
+    assert "细节全糊了" not in exact
+
+
+def test_tts_interrupt_on_new_message(monkeypatch):
+    """新互动（poke/stream_talk）→ 先 stop_speak（M3 3.2 TTS 打断）。"""
+    import asyncio
+    from veranima.pet_server import PetServer
+    srv = PetServer()
+    stopped = []
+    async def fake_stop():
+        stopped.append(1)
+        return True
+    monkeypatch.setattr(srv, "stop_speak", fake_stop)
+    # 直接验证处理分支（模拟 _handle 中的打断逻辑）
+    from veranima.pet_server import PetServer as PS
+    # 通过真实 WS 验证：poke 到达时 stop_speak 被调用
+    port = 9987
+    async def scenario():
+        import websockets, json
+        orig_handle = srv._handle
+        async def wrapped(ws):
+            await orig_handle(ws)
+        srv2 = PS(port=port)
+        monkeypatch.setattr(srv2, "stop_speak", fake_stop)
+        server = await websockets.serve(srv2._handle, "127.0.0.1", port)
+        async with websockets.connect(f"ws://127.0.0.1:{port}") as ws:
+            await ws.send(json.dumps({"type": "poke"}))
+            await asyncio.sleep(0.3)
+        server.close()
+        await server.wait_closed()
+    asyncio.run(scenario())
+    assert len(stopped) >= 1

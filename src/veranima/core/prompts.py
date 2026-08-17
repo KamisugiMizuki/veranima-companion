@@ -22,6 +22,17 @@ CHANNEL_CONTEXT = {
            "自我修正和重复；像面对面聊天一样自然。",
 }
 
+# M1 追问检测（M1_SPEC 2.2 噪声注入可逆性）：用户追问细节 → 跳过模糊化给精确值
+CLARIFY_PATTERNS = (
+    "什么时候", "几点", "哪一天", "哪个星期", "几号", "多久", "多少", "具体是", "到底是",
+    "再想想", "仔细想想", "记清楚", "具体时间", "具体地点", "在哪", "哪里",
+)
+
+
+def is_clarification(user_text: str) -> bool:
+    """用户是否在追问记忆细节（触发精确值重检索）。"""
+    return any(p in user_text for p in CLARIFY_PATTERNS)
+
 # 现实行动边界（DESIGN 4.8 修正版，sakura DESKTOP_PET_CONTEXT 借鉴）：
 # 守行为边界但不暴露身份——不声明"我是 AI/桌宠"，像真人一样自然拒绝/转移。
 # 与角色卡身份边界（被问"是真人吗"前两次带过）同一哲学。
@@ -61,6 +72,7 @@ def build_system_prompt(
     session_budget: int = 600,
     extra_blocks: list[str] | None = None,
     channel: str = "im",
+    clarification: bool = False,  # M1 可逆性：用户追问细节 → 记忆行不模糊化
 ) -> str:
     """按预算组装系统 prompt。记忆按层注入，超出预算截断。extra_blocks 为附加块（学习参数/镜像/承诺）。
 
@@ -96,13 +108,16 @@ def build_system_prompt(
             entries = memory.recall(query_hint, top_k=5, layer=layer)
             if not entries:
                 continue
-            texts = [format_memory_line(e) for e in entries if e.strength >= 0.3]
+            texts = [format_memory_line(e, clarification=clarification) for e in entries if e.strength >= 0.3]
             if not texts:
                 continue
             joined = "\n".join(texts)
             if len(joined) > section_budget:
                 joined = joined[:section_budget] + "…"
             parts.append(label + "\n" + joined)
+            # M1 延迟纠错（M1_SPEC 2.3，prompt 引导）：低确信记忆允许偶发自我修正
+            if any(e.strength < 0.85 for e in entries):
+                parts.append("（你可以偶尔说'等一下，我刚才记错了，应该是……'——人回忆时会有延迟纠错，但不要每轮都用）")
 
     # session：最近会话摘要（简化：最近对话由历史列表承担，这里注入会话层记忆）
     session_entries = memory.list_layer("session", limit=10)
@@ -123,27 +138,27 @@ def build_system_prompt(
 def _fuzzy_ify(text: str) -> str:
     """噪声注入（4.4）：精确数字/日期模糊化——「完美的精确度就是非人感」。
 
-    仅低确信档调用。规则覆盖常见时间/数量表达，保持语义可懂。
+    仅低确信档调用。规则覆盖常见时间/数量表达（阿拉伯数字 + 中文数字），保持语义可懂。
     """
     import re
 
     t = text
     # 上周三 / 三月五号 → 上次
     t = re.sub(r"(上|这|前|大前|上上)(周|星期)([一二三四五六日天])", "上次", t)
-    # 3月5日 / 3.5 / 03-05 → 上个月那几天（仅当是过去式语境时语义仍通顺）
-    t = re.sub(r"\d{1,2}月\d{1,2}日?", "上个月那几天", t)
-    # 3小时 / 45分钟 / 2天 / 一周 / 3年 → 好一阵子 / 那阵子（完全模糊，去掉精确感）
-    t = re.sub(r"\d+\s*(小时|分钟|秒钟?)", "好一阵子", t)
-    t = re.sub(r"\d+\s*(天|周|个月|年)", "那阵子", t)
-    # 3点20分 / 3:20 → 那会儿
-    t = re.sub(r"\d{1,2}[:：]\d{2}", "那会儿", t)
+    # 3月5日 / 三月五日 → 上个月那几天
+    t = re.sub(r"[0-9一二两三四五六七八九十]+月[0-9一二两三四五六七八九十]+日?", "上个月那几天", t)
+    # 3小时 / 45分钟 / 2天 / 一周 / 3年 → 好一阵子 / 那阵子（含中文数字：三天/两周）
+    t = re.sub(r"[0-9一二两三四五六七八九十]+\s*(小时|分钟|秒钟?)", "好一阵子", t)
+    t = re.sub(r"[0-9一二两三四五六七八九十]+\s*(天|周|个月|年)", "那阵子", t)
+    # 3点20分 / 三点二十 / 3:20 → 那会儿
+    t = re.sub(r"[0-9一二两三四五六七八九十]+[:：][0-9一二两三四五六七八九十]+", "那会儿", t)
     return t
 
 
-def format_memory_line(entry) -> str:
+def format_memory_line(entry, *, clarification: bool = False) -> str:
     """记忆行格式化（4.4 确信度分级）：按 strength 四档措辞 + 噪声注入。
 
-    - strength ≥0.85：自信调用「我记得你……」
+    - strength ≥0.85：自信调用「我记得你……」——**追问（clarification）时跳过模糊化直接给精确值**（M1_SPEC 2.2 可逆性）
     - 0.6~0.85：试探性调用「我好像记得……是……吗？还是我记串了？」
     - 0.35~0.6：模糊关联「我记得好像有这么回事……细节全糊了，你能再跟我说说吗？」+ 数字模糊化
     - <0.35：隐约记得（基本不注入，build_system_prompt 已过滤）
@@ -157,7 +172,9 @@ def format_memory_line(entry) -> str:
         content = entry.content + "……是……吗？还是我记串了？"
     elif entry.strength >= 0.35:
         verb = "我记得好像有这么回事"
-        content = _fuzzy_ify(entry.content) + "……细节全糊了，你能再跟我说说吗？"
+        # M1 可逆性：追问细节时给精确值（不模糊化），否则模糊化
+        content = entry.content if clarification else _fuzzy_ify(entry.content)
+        content += "……细节全糊了，你能再跟我说说吗？" if not clarification else ""
     else:
         verb = "我隐约记得"
         content = entry.content

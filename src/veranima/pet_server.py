@@ -119,6 +119,9 @@ class PetServer:
                 except json.JSONDecodeError:
                     continue
                 mtype = msg.get("type")
+                if mtype in ("poke", "stream_talk"):
+                    # M3 3.2 TTS 打断：用户新互动 → 停止当前播放
+                    await self.stop_speak()
                 if mtype == "poke":
                     logger.info("poke received")
                     if self._agent is not None:
@@ -198,6 +201,28 @@ class PetServer:
                         logger.warning("presence tick failed: %s", e)
                     await asyncio.sleep(30)
             asyncio.create_task(_presence_loop())
+
+            # M4 视觉调度（M4_SPEC 1.2/1.3）：三态 + 像素差异 + L3 观察；QQ 活跃时降频
+            async def _visual_loop():
+                from veranima.core.vision import VisualAttention
+                va = VisualAttention()
+                await asyncio.sleep(10)  # 启动后延迟（等核心就绪）
+                while True:
+                    try:
+                        va.tick(presence=True)
+                        if va.state == "wander":
+                            await asyncio.sleep(30)
+                            continue
+                        changed = await asyncio.to_thread(va.significant_change)
+                        if changed and self._agent is not None:
+                            # L3：远程多模态理解屏幕（QQ 活跃时跳过——通道互斥）
+                            qq_active = self._agent.activity.active("qq") if self._agent.activity else False
+                            if not qq_active:
+                                await asyncio.to_thread(va.observe_screen, self._agent.llm)
+                    except Exception as e:
+                        logger.warning("visual tick failed: %s", e)
+                    await asyncio.sleep(va.interval())
+            asyncio.create_task(_visual_loop())
             await asyncio.Future()  # 常驻
 
 

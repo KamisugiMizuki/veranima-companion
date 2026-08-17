@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..llm.client import LLMClient, LLMUnavailableError
-from .prompts import build_system_prompt
+from .prompts import build_system_prompt, is_clarification
 from .segments import extract_segments
 from .ambient import Arbitrator, ChannelActivityTracker, SceneLock
 from .interrupt import InterruptDecider, TopicFrequency
@@ -241,6 +241,7 @@ class Agent:
             section_budget=self.config.get("memory", {}).get("section_budget", 2400),
             session_budget=self.config.get("memory", {}).get("session_budget", 600),
             channel=channel,
+            clarification=is_clarification(user_text),  # M1 可逆性：追问 → 精确值
             extra_blocks=extra_blocks,
         )
 

@@ -43,9 +43,12 @@ def test_protocol_roundtrip():
             assert await srv.bubble("在想你")
             msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=3))
             results["bubble"] = msg
-            # 壳 → 核心：poke → 核心回 speak
+            # 壳 → 核心：poke → 先 stop_speak（TTS 打断）再回 speak
             await ws.send(json.dumps({"type": "poke"}))
-            msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=3))
+            while True:
+                msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=3))
+                if msg["type"] == "speak":
+                    break
             results["poke_reply"] = msg
             # 壳 → 核心：ping → pong
             await ws.send(json.dumps({"type": "ping"}))
@@ -89,7 +92,10 @@ def test_poke_with_agent_uses_agent_reply():
         await asyncio.sleep(0.3)
         async with websockets.connect(f"ws://127.0.0.1:{port}") as ws:
             await ws.send(json.dumps({"type": "poke"}))
-            msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=3))
+            while True:
+                msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=3))
+                if msg["type"] == "speak":
+                    break
             results["reply"] = msg
         task.cancel()
 
