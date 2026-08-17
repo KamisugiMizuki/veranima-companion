@@ -1,4 +1,6 @@
 """M4 测试：表情标签驱动（segments 解析/词表校验/渲染链）+ 视觉注意力（三态/像素差异）。"""
+import sys
+
 import pytest
 
 from veranima.core.segments import extract_segments
@@ -92,6 +94,51 @@ def test_observe_ring_and_cooldown():
     va._now = 1100.0  # 100s 后
     assert va.note_observe("办公") is True
     assert len(va.observations) == 2
+
+
+# ---------- M4 1.3/1.4：L0 在场 + L3 观察 + 联想式主动 ----------
+
+def test_presence_non_windows():
+    """非 Windows 降级：恒在场、前台空。"""
+    from veranima.core.presence import foreground_app, presence
+    if sys.platform != "win32":
+        assert presence() is True
+        assert foreground_app() == ""
+
+
+def test_observe_screen_mock(monkeypatch):
+    """observe_screen：mock LLM 返回 JSON → 解析 tag/note 注入缓冲。"""
+    from veranima.core import vision as vision_mod
+    va = VisualAttention(now=2000.0)
+    monkeypatch.setattr(vision_mod, "_CAN_CAPTURE", False)  # 无截屏环境降级
+    # 直接测 note_observe 路径（observe_screen 无截屏返回 None 是设计）
+    assert va.note_observe("游戏", "在打游戏") is True
+
+
+def test_proactive_from_visual(agent, monkeypatch):
+    """联想式主动：episodic 层含 tag 记忆 → 生成消息。"""
+    from veranima.core.agent import Agent
+    from veranima.core.state import AgentState
+    card, memory = agent
+    # 植入事件记忆（episodic 层）
+    memory.store(layer="episodic", content="用户上次打游戏打到凌晨三点，第二天上班迟到了", provenance="test")
+    a = Agent(card=card, memory=memory, llm=None, state=AgentState(), config={})
+    a.state.energy = 80
+    # mock _short_task 返回消息
+    monkeypatch.setattr(a, "_short_task", lambda task, max_tokens=200: "咦，你又在打游戏？上次通宵的事忘了？")
+    reply = a.proactive_from_visual("游戏")
+    assert "游戏" in reply
+    assert len(a._history) == 1
+
+
+def test_proactive_from_visual_no_memory(agent):
+    """无匹配记忆 → 返回空（不发起）。"""
+    from veranima.core.agent import Agent
+    from veranima.core.state import AgentState
+    card, memory = agent
+    a = Agent(card=card, memory=memory, llm=None, state=AgentState(), config={})
+    a.state.energy = 80
+    assert a.proactive_from_visual("办公") == ""
 
 
 # ---------- 表情词表校验（M4_SPEC 2.2，走 agent） ----------

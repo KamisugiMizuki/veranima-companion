@@ -10,6 +10,8 @@
 """
 from __future__ import annotations
 
+import logging
+import re
 import time
 from dataclasses import dataclass, field
 
@@ -18,6 +20,8 @@ try:
     _CAN_CAPTURE = True
 except ImportError:
     _CAN_CAPTURE = False
+
+logger = logging.getLogger(__name__)
 
 # 三态参数（M4_SPEC 1.2）
 STABLE_INTERVAL = 30.0     # 稳定期：30s 低频
@@ -145,3 +149,41 @@ class VisualAttention:
         if tag:
             self.focus = {"tag": tag, "since": now}
         return True
+
+    def observe_screen(self, llm, tag_hint: str = "") -> VisualObservation | None:
+        """M4 1.3 L3 观察：截屏 → base64 → 大模型理解 → 注入缓冲。
+
+        依赖 llm.observe_image；失败/无截屏返回 None（降级静默）。
+        """
+        if not _CAN_CAPTURE:
+            return None
+        try:
+            import base64
+            import io as _io
+            img = ImageGrab.grab()
+            if img is None:
+                return None
+            buf = _io.BytesIO()
+            img.convert("RGB").save(buf, format="PNG")
+            b64 = base64.b64encode(buf.getvalue()).decode()
+            resp = llm.observe_image(b64)
+            if not resp:
+                return None
+            # 解析 JSON（容错：剥 markdown fence + 截取 {..}）
+            import json as _json
+            tag, note = tag_hint, resp
+            cleaned = resp.strip()
+            if cleaned.startswith("```"):
+                cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+                cleaned = re.sub(r"\s*```$", "", cleaned)
+            try:
+                data = _json.loads(cleaned)
+                tag = str(data.get("tag") or tag_hint)
+                note = str(data.get("observe") or resp)
+            except _json.JSONDecodeError:
+                pass
+            self.note_observe(tag, note)
+            return VisualObservation(tag=tag, note=note, ts=self._t())
+        except Exception as e:
+            logger.warning("observe_screen failed: %s", e)
+            return None

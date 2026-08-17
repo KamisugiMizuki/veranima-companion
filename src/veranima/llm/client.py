@@ -105,6 +105,35 @@ class LLMClient:
             return [self.chat(messages, max_tokens=max_tokens, temperature=temperature)]
         return _split_sentences(text)
 
+    def observe_image(self, image_b64: str, *, prompt: str | None = None) -> str:
+        """M4 L3 大模型观察（M4_SPEC 1.3）：截图 → 结构化理解。
+
+        image_b64：无头 base64（PNG）。返回模型文本；失败返回 ""（调用方降级）。
+        """
+        payload = {
+            "model": self.model,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt or (
+                        "简要描述这张屏幕截图里发生了什么（50字内）。"
+                        '只输出 JSON：{"observe": "描述", "tag": "类别(游戏/办公/浏览器/其他)"}'
+                    )},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}},
+                ],
+            }],
+            "max_tokens": 200,
+        }
+        try:
+            with httpx.Client(timeout=60.0) as client:
+                resp = client.post(f"{self.base_url}/chat/completions", json=payload, headers=self._headers())
+                resp.raise_for_status()
+                data = resp.json()
+            return (data["choices"][0]["message"].get("content") or "").strip()
+        except Exception as e:
+            logger.warning("observe_image failed: %s", e)
+            return ""
+
     def chat_raw(self, messages: list[dict], *, max_tokens: int | None = None,
                  temperature: float | None = None, tools: list[dict] | None = None) -> dict:
         """对话生成（完整 message 返回，含 tool_calls）。tools 为 OpenAI 格式工具定义。"""

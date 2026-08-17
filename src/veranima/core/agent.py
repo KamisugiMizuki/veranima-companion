@@ -310,6 +310,41 @@ class Agent:
         exprs = (self.card.veranima or {}).get("avatar", {}).get("expressions", {})
         return label in exprs
 
+    def proactive_from_visual(self, tag: str) -> str:
+        """M4 联想式主动发起（4.7 联想机制 + M4_SPEC 1.4）。
+
+        屏幕 focus.tag × 事件记忆模糊匹配：episodic 层含 tag 关键词 → 生成联想消息。
+        无匹配 / 模型不可用 → 返回 ""。
+        """
+        if not tag or self.state.energy < 30:
+            return ""
+        # 检索 episodic 层含 tag 的记忆
+        try:
+            hits = [
+                e for e in self.memory.list_layer("episodic", limit=20)
+                if tag in (e.content or "")
+            ]
+        except Exception:
+            hits = []
+        if not hits:
+            return ""
+        old = hits[-1].content[:120]
+        task = (
+            f"你看到用户正在{tag}（屏幕焦点）。突然想起一件旧事：\"{old}\"。"
+            f"给用户发一条消息，自然地提起这件事（可以带'咦''说起来'这类开头），"
+            "顺便问问现在的情况。只发消息本身。"
+        )
+        try:
+            reply = self._short_task(task, max_tokens=200)
+        except Exception as e:
+            logger.warning("proactive_from_visual failed: %s", e)
+            return ""
+        if not reply:
+            return ""
+        self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
+        self._history.append({"role": "assistant", "content": reply})
+        return reply
+
     def forget(self, keyword: str) -> int:
         """隐私擦除：删除包含关键词的记忆（级联）。"""
         n = self.memory.erase(content_contains=keyword)
