@@ -132,14 +132,15 @@ MacroPhonic 的 Tauri 桌宠端**未调通**（当时卡在窗口行为/GPU flag
 - 匹配 → 任务管道（需求翻译层）；不匹配 → 闲聊管道（记忆 + 社交 + 表达）
 - **复用**：object_design 无此模块，重写（小，关键词/规则匹配）
 
-### 4.2 需求翻译层（暂缓，随外部 Agent 一起）
+### 4.2 需求翻译层（随外部 Agent 一起，M5）
 
 **职责**：模糊指令 → 结构化任务工单 → 桌面 Agent Prompt。
 
 - 意图补完五维：目标澄清 / 来源路径 / 用户偏好注入 / 优先级约束 / 异常预案
 - 信息不足主动追问（附带猜测建议）
-- 工单协议 `TASK_TRANSFER_PROTOCOL`（YAML），发送后必须给「已安排」反馈
-- **里程碑**：M4，独立系统
+- 工单协议 `TASK_TRANSFER_PROTOCOL`（JSON），发送后必须给「已安排」反馈
+- **桌面 Agent = DeepSeek Harness（dsh）独立模块**：API/配置/会话完全独立于 veranima（独立环境变量 DEEPSEEK_BASE_URL/DEEPSEEK_API_KEY，不读本 config.yaml）；veranima 侧只经薄壳 `tools/dsh_bridge.py`（工单 → headless CLI → 结果）
+- **细化见 docs/M5_SPEC.md**
 
 ### 4.3 能力匹配层
 
@@ -412,7 +413,7 @@ llm.stream_chat(messages) → 分片生成
 | **M2** | 通道适配层：`handle(channel)` 通道感知 + IM 渲染器（挂发送出口）+ 跨通道共享核心 + **现实行动边界 prompt 块**（4.8 修正版：守边界不暴露身份） | 通道抽象就绪，QQ 端风格落地 |
 | **M3** | 桌宠端 MVP：Electron 壳 + TTS sidecar + 时空沉浸（场景锁/后台心跳） + **角色包导入导出**（4.11 第一步：导出/导入，桌宠形象分发）+ **多角色切换**（4.11 注册表，启动加载 characters/）+ **流式输出**（4.13 桌宠打字机 + TTS 逐句）。**细化见 docs/M3_SPEC.md**（airi 式多窗口：主窗口+设置+日志，壳 spawn 核心；M3a 纯 Python 逻辑先行，M3b 桌宠本体） | 双端可用 |
 | **M4** | 视觉注意力调度器（锚点/三态/L0-L3）+ **表情标签驱动**（4.8：portrait/tone 字段输出 + 表情词表映射 + 立绘说明.txt 批量映射，替代固定四态）。**细化见 docs/M4_SPEC.md** | 桌宠屏幕感知 + 表达力跃升 |
-| **M5** | 需求翻译层 + 桌面 Agent（暂缓项，独立系统） | 任务管道 |
+| **M5** | 需求翻译层（4.2 细化）+ 桌面 Agent（**独立模块**，DeepSeek Harness 引擎，API/配置完全独立于 veranima）。**细化见 docs/M5_SPEC.md** | 任务管道 |
 
 **M0 注意**：veranima 从 object_design 读取文件按需拷贝，object_design 本体不动（纯参考库）。
 
