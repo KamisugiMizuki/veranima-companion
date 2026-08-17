@@ -83,15 +83,26 @@ def test_proactive_fallback_when_no_memory(agent):
 # ---------- 8.7.2 记得感分级 ----------
 
 def test_format_memory_high_strength():
-    e = MemoryEntryStub(strength=0.8, content="你喜欢下雨天", meta={})
+    e = MemoryEntryStub(strength=0.9, content="你喜欢下雨天", meta={})
     line = format_memory_line(e)
     assert line.startswith("- 我记得")
     assert "下雨天" in line
 
 
-def test_format_memory_mid_strength():
-    e = MemoryEntryStub(strength=0.5, content="你喜欢下雨天", meta={})
-    assert format_memory_line(e).startswith("- 我好像记得")
+def test_format_memory_tentative_strength():
+    e = MemoryEntryStub(strength=0.7, content="你喜欢下雨天", meta={})
+    line = format_memory_line(e)
+    assert line.startswith("- 我好像记得")
+    assert "记串了" in line
+
+
+def test_format_memory_fuzzy_strength():
+    e = MemoryEntryStub(strength=0.5, content="你上周三说加班3小时", meta={})
+    line = format_memory_line(e)
+    assert line.startswith("- 我记得好像有这么回事")
+    assert "细节全糊了" in line
+    assert "上周三" not in line  # 噪声注入：精确日期已模糊化
+    assert "3小时" not in line   # 噪声注入：精确时长已模糊化
 
 
 def test_format_memory_low_strength():
@@ -100,7 +111,7 @@ def test_format_memory_low_strength():
 
 
 def test_format_memory_with_emotion():
-    e = MemoryEntryStub(strength=0.8, content="用户喜欢蓝色", meta={"emotion": "很开心"})
+    e = MemoryEntryStub(strength=0.9, content="用户喜欢蓝色", meta={"emotion": "很开心"})
     line = format_memory_line(e)
     assert "很开心" in line
 

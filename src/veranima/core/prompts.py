@@ -72,21 +72,48 @@ def build_system_prompt(
     return "\n".join(parts)
 
 
-def format_memory_line(entry) -> str:
-    """记忆行格式化（8.7.2）：按 strength 分级措辞 + 情感色彩。
+def _fuzzy_ify(text: str) -> str:
+    """噪声注入（4.4）：精确数字/日期模糊化——「完美的精确度就是非人感」。
 
-    - strength ≥0.7：我记得你……
-    - 0.4~0.7：我好像记得……
-    - <0.4：我隐约记得……
+    仅低确信档调用。规则覆盖常见时间/数量表达，保持语义可懂。
+    """
+    import re
+
+    t = text
+    # 上周三 / 三月五号 → 上次
+    t = re.sub(r"(上|这|前|大前|上上)(周|星期)([一二三四五六日天])", "上次", t)
+    # 3月5日 / 3.5 / 03-05 → 上个月那几天（仅当是过去式语境时语义仍通顺）
+    t = re.sub(r"\d{1,2}月\d{1,2}日?", "上个月那几天", t)
+    # 3小时 / 45分钟 / 2天 / 一周 / 3年 → 好一阵子 / 那阵子（完全模糊，去掉精确感）
+    t = re.sub(r"\d+\s*(小时|分钟|秒钟?)", "好一阵子", t)
+    t = re.sub(r"\d+\s*(天|周|个月|年)", "那阵子", t)
+    # 3点20分 / 3:20 → 那会儿
+    t = re.sub(r"\d{1,2}[:：]\d{2}", "那会儿", t)
+    return t
+
+
+def format_memory_line(entry) -> str:
+    """记忆行格式化（4.4 确信度分级）：按 strength 四档措辞 + 噪声注入。
+
+    - strength ≥0.85：自信调用「我记得你……」
+    - 0.6~0.85：试探性调用「我好像记得……是……吗？还是我记串了？」
+    - 0.35~0.6：模糊关联「我记得好像有这么回事……细节全糊了，你能再跟我说说吗？」+ 数字模糊化
+    - <0.35：隐约记得（基本不注入，build_system_prompt 已过滤）
     - meta.emotion 存在时附加（"你提起时听起来很开心"）
     """
-    if entry.strength >= 0.7:
+    if entry.strength >= 0.85:
         verb = "我记得"
-    elif entry.strength >= 0.4:
+        content = entry.content
+    elif entry.strength >= 0.6:
         verb = "我好像记得"
+        content = entry.content + "……是……吗？还是我记串了？"
+    elif entry.strength >= 0.35:
+        verb = "我记得好像有这么回事"
+        content = _fuzzy_ify(entry.content) + "……细节全糊了，你能再跟我说说吗？"
     else:
         verb = "我隐约记得"
-    line = f"- {verb}：{entry.content}"
+        content = entry.content
+    line = f"- {verb}：{content}"
     emotion = (entry.meta or {}).get("emotion")
     if emotion:
         line += f"（你提起时听起来{emotion}）"
