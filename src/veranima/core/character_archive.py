@@ -96,6 +96,42 @@ def _validate_zip_members(zf: zipfile.ZipFile) -> None:
         raise CharacterArchiveError("角色包总大小超限")
 
 
+def apply_portrait_description(char_dir: Path) -> dict[str, str]:
+    """应用立绘说明.txt（M4_SPEC 2.3）：按前缀批量绑定表情标签 → avatar.expressions。
+
+    立绘说明.txt 每行「文件前缀 标签」（空格分隔）；匹配：portraits/ 下文件名以
+    前缀开头 → 绑定标签。写回 character.json 的 avatar.expressions。返回映射。
+    """
+    char_dir = Path(char_dir)
+    desc_path = char_dir / "portraits" / "立绘说明.txt"
+    if not desc_path.exists():
+        return {}
+    mapping: dict[str, str] = {}
+    for line in desc_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        prefix, label = parts[0].strip(), parts[1].strip()
+        for p in (char_dir / "portraits").iterdir():
+            if p.is_file() and p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".gif"} \
+                    and p.name.startswith(prefix):
+                mapping[label] = f"portraits/{p.name}"
+    if not mapping:
+        return {}
+    # 写回 character.json avatar.expressions
+    cj = char_dir / "character.json"
+    if cj.exists():
+        data = json.loads(cj.read_text(encoding="utf-8"))
+        ver = data.setdefault("extensions", {}).setdefault("veranima", {})
+        avatar = ver.setdefault("avatar", {})
+        avatar.setdefault("expressions", {}).update(mapping)
+        cj.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return mapping
+
+
 def import_character(archive_path: Path, characters_dir: Path) -> Path:
     """.char zip → 校验 → 展开到 characters/<id>/，重名自动改名。返回角色目录。"""
     archive_path = Path(archive_path)
@@ -131,6 +167,8 @@ def import_character(archive_path: Path, characters_dir: Path) -> Path:
             if not src.is_dir():
                 raise CharacterArchiveError("角色包缺少 character/ 根目录")
             shutil.copytree(src, target_dir)
+            # M4_SPEC 2.3：导入时自动应用立绘说明.txt（批量绑定表情标签）
+            apply_portrait_description(target_dir)
             # manifest 的 display_name 若被改名，写回 character.json
             if target_name != display_name:
                 cj = target_dir / "character.json"

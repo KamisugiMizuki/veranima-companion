@@ -7,6 +7,7 @@ import pytest
 from veranima.core.character_archive import (
     MAX_ARCHIVE_COMPRESSION_RATIO,
     CharacterArchiveError,
+    apply_portrait_description,
     export_character,
     import_character,
 )
@@ -117,3 +118,35 @@ def test_import_rejects_zip_bomb(tmp_path):
         zf.writestr("character/card.md", "A" * (MAX_ARCHIVE_COMPRESSION_RATIO * 200))  # 超高压缩比
     with pytest.raises(CharacterArchiveError, match="压缩比"):
         import_character(bomb, tmp_path / "chars")
+
+
+def test_apply_portrait_description(tmp_path):
+    """立绘说明.txt 前缀批量映射 → avatar.expressions（M4_SPEC 2.3）。"""
+    d = _make_character_dir(tmp_path)
+    # 覆盖立绘说明
+    portraits = d / "portraits"
+    (portraits / "happy.png").write_bytes(b"\x89PNG happy")
+    (portraits / "sad.png").write_bytes(b"\x89PNG sad")
+    (portraits / "立绘说明.txt").write_text("happy 开心脸红\nsad 难过\n", encoding="utf-8")
+
+    mapping = apply_portrait_description(d)
+    assert mapping == {"开心脸红": "portraits/happy.png", "难过": "portraits/sad.png"}
+    # 写回 character.json
+    data = json.loads((d / "character.json").read_text(encoding="utf-8"))
+    exprs = data["extensions"]["veranima"]["avatar"]["expressions"]
+    assert exprs["开心脸红"] == "portraits/happy.png"
+
+
+def test_import_applies_portrait_description(tmp_path):
+    """导入角色包时自动应用立绘说明.txt。"""
+    d = _make_character_dir(tmp_path)
+    (d / "portraits" / "happy.png").write_bytes(b"\x89PNG happy")
+    (d / "portraits" / "立绘说明.txt").write_text("happy 开心脸红\n", encoding="utf-8")
+    archive = tmp_path / "xiaov.char"
+    export_character(d, archive)
+
+    chars = tmp_path / "chars"
+    imported = import_character(archive, chars)
+    data = json.loads((imported / "character.json").read_text(encoding="utf-8"))
+    exprs = data["extensions"]["veranima"]["avatar"]["expressions"]
+    assert exprs["开心脸红"] == "portraits/happy.png"
