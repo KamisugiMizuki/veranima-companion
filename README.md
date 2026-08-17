@@ -6,16 +6,13 @@
 
 | 文档 | 内容 |
 |---|---|
-| [docs/IDEA.md](docs/IDEA.md) | 原始构想 |
 | [docs/DESIGN.md](docs/DESIGN.md) | 主设计文档（方案唯一权威） |
 | [docs/M1_SPEC.md](docs/M1_SPEC.md) | M1 Filter 仿生层专项细化（记忆断片/打断/表达瑕疵） |
 | [docs/M2_SPEC.md](docs/M2_SPEC.md) | M2 通道适配层专项细化（IM/TTS 双通道表达） |
 | [docs/M3_SPEC.md](docs/M3_SPEC.md) | M3 桌宠专项细化（airi 式多窗口/进程模型/TTS/前台） |
 | [docs/M4_SPEC.md](docs/M4_SPEC.md) | M4 视觉注意力/表情标签驱动专项细化 |
 | [docs/M5_SPEC.md](docs/M5_SPEC.md) | M5 需求翻译层/桌面 Agent 专项细化（DeepSeek Harness 独立模块，装在 dsh/） |
-| [docs/CHARACTER_TEMPLATE.md](docs/CHARACTER_TEMPLATE.md) | 角色卡模板 |
-| [docs/STRUCTURE_DESIGN.md](docs/STRUCTURE_DESIGN.md) | 结构设计演进记录 |
-| [docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md) | 文件管理规范 |
+| [config/character.example.json](config/character.example.json) | 角色卡示例（字段说明见 DESIGN.md 4.8 / CHARACTER 相关章节） |
 
 ## 技术栈
 
@@ -34,7 +31,7 @@ cp config/config.example.yaml config/config.yaml
 
 # 3. 角色卡
 cp config/character.example.json config/character.json
-# 编辑 config/character.json 自定义角色；模板见 docs/CHARACTER_TEMPLATE.md
+# 编辑 config/character.json 自定义角色；字段参考 config/character.example.json（含 veranima 扩展段：capabilities/fillers/tones 等）
 
 # 4. 运行（CLI 对话）
 .venv/Scripts/python -m veranima.cli
