@@ -51,6 +51,7 @@ function startCore() {
   try {
     coreProc = spawn(py, ['-m', 'veranima.pet_server', '--port', '8765'], {
       cwd: path.join(__dirname, '..'),
+      windowsHide: true,   // 不弹控制台窗口（用户要求单窗口启动）
       env: { ...process.env, PYTHONPATH: srcDir },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -76,6 +77,7 @@ function startTTS() {
   try {
     ttsProc = spawn(py, ['-m', 'veranima.tts.server', '--port', '9880'], {
       cwd: path.join(__dirname, '..'),
+      windowsHide: true,   // 不弹控制台窗口
       env: { ...process.env, PYTHONPATH: srcDir },
       stdio: ['ignore', 'pipe', 'pipe'],
     });

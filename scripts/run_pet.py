@@ -35,9 +35,10 @@ def main() -> None:
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
     shell = subprocess.Popen([NODE, ELECTRON_CLI, "."], cwd=os.path.join(V, "pet"), env=env)
-    print("桌宠已启动（壳会自动拉起 Python 核心；Ctrl+C 退出）")
+    print("桌宠已启动（壳会自动拉起 Python 核心；托盘退出后本进程随之退出）")
     try:
-        while True:
+        # 等待壳退出（托盘退出 = 真正退出）；pythonw 下无 Ctrl+C
+        while shell.poll() is None:
             time.sleep(1)
     except KeyboardInterrupt:
         pass

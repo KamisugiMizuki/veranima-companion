@@ -1,12 +1,12 @@
 @echo off
-rem Veranima 桌宠 launcher（Electron 壳 + 核心 + TTS 三进程）
-rem 双击启动：.venv\Scripts\python scripts/run_pet.py（壳自动 spawn 核心 + TTS）
+rem Veranima 桌宠 launcher（Electron 壳 + 核心 + TTS 三进程，无控制台窗口）
+rem 双击启动：pythonw 无窗口跑 run_pet.py，本窗口立即关闭
 cd /d "%~dp0"
 
 rem Hermes-style PYTHONPATH pollution guard (harmless otherwise)
 set PYTHONPATH=
 
-if not exist ".venv\Scripts\python.exe" (
+if not exist ".venv\Scripts\pythonw.exe" (
     echo [ERROR] .venv not found. Run:
     echo   python -m venv .venv
     echo   .venv\Scripts\pip install -e .
@@ -23,8 +23,6 @@ if not exist "pet\node_modules\electron\cli.js" (
     exit /b 1
 )
 
-echo Starting Veranima 桌宠（壳 spawn 核心 + TTS）... Ctrl+C to stop
-.venv\Scripts\python.exe scripts\run_pet.py
-echo.
-echo Veranima 桌宠 exited.
-pause
+rem 后台无窗口启动（pythonw = 无控制台；start 分离后本窗口立即退出）
+start "" ".venv\Scripts\pythonw.exe" scripts\run_pet.py
+exit /b 0
