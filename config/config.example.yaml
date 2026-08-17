@@ -36,7 +36,7 @@ memory:
   #   local:data/models/bge-m3  → 本地模型（ModelScope 下载，隐私最好）
   #   openai:bge-m3              → API embedding（复用 llm 的 base_url/api_key）
   #   ollama:bge-m3              → Ollama embedding
-  embedding_model: "local:data/models/bge-m3"
+  embedding_model: "local:data/models/bge-m3"   # 默认本地（多数远程 API 不提供 embeddings 接口；需先放置模型或从 object_design 拷贝）
   recall_top_k: 5
   recall_threshold: 0.3
   core_profile_budget: 2000             # 字符预算（远程 API 上调；本地小 context 改回 1200）
