@@ -31,6 +31,25 @@ REALITY_BOUNDARY = (
     "（例如「见面的话……还是算了，线上聊就挺好」）。不虚构自己参与过现实活动。"
 )
 
+# M4 表情标签驱动（M4_SPEC 2.1/2.2）：tts 通道要求结构化 JSON 输出
+SEGMENTED_OUTPUT_INSTRUCTION = (
+    "【输出格式】语音对话时，你的回复必须以 JSON 输出："
+    '{"segments":[{"text":"回复内容","tone":"语气标签","portrait":"表情标签"}]}'
+    "。tone 从角色语气里选，portrait 只能从可用表情列表里选（列出的表情标签）。"
+    "不要输出 JSON 以外的任何内容。"
+)
+
+
+def _expression_prompt(card) -> str:
+    """从角色卡提取可用表情标签列表（M4_SPEC 2.2：prompt 注入词表防 OOC）。"""
+    ver = getattr(card, "veranima", None) or {}
+    avatar = ver.get("avatar") or {}
+    exprs = avatar.get("expressions") or {}
+    if not exprs:
+        return ""
+    labels = "、".join(exprs.keys())
+    return f"【可用表情标签】{labels}（回复的 portrait 字段只能从这些里面选）"
+
 
 def build_system_prompt(
     card: CharacterCard,
@@ -51,6 +70,12 @@ def build_system_prompt(
     parts.append(state.to_prompt_block())
     parts.append(CHANNEL_CONTEXT.get(channel, CHANNEL_CONTEXT["im"]))
     parts.append(REALITY_BOUNDARY)
+    # M4：tts 通道注入表情词表 + 结构化输出要求（M4_SPEC 2.1/2.2）
+    if channel == "tts":
+        expr_prompt = _expression_prompt(card)
+        if expr_prompt:
+            parts.append(expr_prompt)
+        parts.append(SEGMENTED_OUTPUT_INSTRUCTION)
 
     # core_profile + procedural：全量（预算内）
     for layer, label in (("core_profile", LAYER_LABELS["core_profile"]), ("procedural", LAYER_LABELS["procedural"])):

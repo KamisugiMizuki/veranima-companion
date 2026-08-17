@@ -75,10 +75,10 @@ class PetServer:
                 if mtype == "poke":
                     logger.info("poke received")
                     if self._agent is not None:
-                        # 正式版：agent 生成一句互动（channel=tts 语音风格）
+                        # 正式版：agent 生成一句互动（channel=tts 语音风格 + 表情标签）
                         try:
                             r = await asyncio.to_thread(self._agent.handle, "（用户戳了戳桌宠）", channel="tts")
-                            await self.speak(r.reply)
+                            await self.speak(r.reply, tags=[r.portrait] if r.portrait else None)
                         except Exception as e:
                             logger.warning("poke agent failed: %s", e)
                             await self.speak("嗯？叫我干嘛～")

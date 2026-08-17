@@ -10,6 +10,10 @@ let isDragging = false;
 let dragStart = null;
 
 const STATES = ['idle', 'speaking', 'thinking', 'sleeping'];
+// M4 表情标签 → 立绘文件（与角色卡 avatar.expressions 同步；M4_SPEC 2.2）
+const EXPRESSION_FILES = {
+  '站立待机': 'stand', '开心脸红': 'happy', '疑惑': 'puzzled', '难过': 'sad', '惊讶': 'surprised',
+};
 
 // ---------- 四态切换 ----------
 function setState(s) {
@@ -36,6 +40,11 @@ window.pet.onCoreState((m) => {
 window.pet.onSpeak((m) => {
   setState('speaking');
   showBubble(m.text || '…');
+  // M4 表情标签驱动：tags 携带 portrait 标签 → 映射表情图（M4_SPEC 2.4）
+  if (m.tags && m.tags.length > 0) {
+    const file = EXPRESSION_FILES[m.tags[0]];
+    if (file) avatar.src = `assets/${file}.png`;
+  }
   // 模拟播放时长后回 idle（MVP 无真实音频；M3b TTS 接入后由 stop_speak 控制）
   setTimeout(() => { if (currentState === 'speaking') setState('idle'); }, 2500);
 });

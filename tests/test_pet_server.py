@@ -76,7 +76,10 @@ def test_poke_with_agent_uses_agent_reply():
     class FakeAgent:
         def handle(self, text, channel="im"):
             assert channel == "tts"
-            class R: reply = "（抬起头）怎么了？"
+            class R:
+                reply = "（抬起头）怎么了？"
+                portrait = "开心脸红"
+                tone = "温柔"
             return R()
 
     async def scenario():

@@ -14,6 +14,7 @@ from pathlib import Path
 
 from ..llm.client import LLMClient, LLMUnavailableError
 from .prompts import build_system_prompt
+from .segments import extract_segments
 from .ambient import Arbitrator, ChannelActivityTracker, SceneLock
 from ..memory.store import MemoryStore
 from ..tools.search import SEARCH_TOOL, SearXNGClient
@@ -35,6 +36,8 @@ class TurnResult:
     proactive_msg: str = ""
     energy: float = 0.0
     mood: str = ""
+    portrait: str = ""   # M4 表情标签驱动：情绪表情标签（如"开心脸红"），空=回退 idle
+    tone: str = ""       # M4：语气标签（TTS 预留）
 
 
 class Agent:
@@ -245,6 +248,14 @@ class Agent:
             cut = reply[:max_len].rstrip("，。！？ ")
             reply = cut + "……（我这边有点忙，回头细说）"
 
+        # 5.6 M4 表情标签驱动：tts 通道解析结构化输出（text/tone/portrait）
+        portrait = ""
+        tone = ""
+        if channel == "tts":
+            reply, tone, portrait = extract_segments(reply)
+            if portrait and not self._portrait_valid(portrait):
+                portrait = ""  # 词表外标签回退（防 OOC）
+
         # 6. 回复入库 + 历史更新
         self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
         self._history.append({"role": "user", "content": store_text})
@@ -290,7 +301,14 @@ class Agent:
             proactive_msg=proactive_msg or "",
             energy=self.state.energy,
             mood=self.state.mood,
+            portrait=portrait,
+            tone=tone,
         )
+
+    def _portrait_valid(self, label: str) -> bool:
+        """M4：portrait 标签必须在角色卡 expressions 词表内（防 OOC 标签）。"""
+        exprs = (self.card.veranima or {}).get("avatar", {}).get("expressions", {})
+        return label in exprs
 
     def forget(self, keyword: str) -> int:
         """隐私擦除：删除包含关键词的记忆（级联）。"""
