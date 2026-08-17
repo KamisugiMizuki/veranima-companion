@@ -14,7 +14,7 @@ from .config import load_config
 
 def _roles_cmd(args) -> int:
     """多角色管理（DESIGN 4.11）：list / switch / clone。"""
-    from .core.roles import active_role, clone_role, list_roles, switch_role
+    from .core.roles import active_role, clone_role, list_roles, roles_dir, switch_role
 
     cfg = load_config()
     if args.roles_action == "list":
@@ -35,6 +35,26 @@ def _roles_cmd(args) -> int:
         ok, msg = clone_role(args.role_id, args.new_id)
         print(msg)
         return 0 if ok else 1
+    if args.roles_action == "export":
+        from .core.character_archive import export_character
+        from pathlib import Path
+        try:
+            out = export_character(roles_dir() / args.role_id, Path(args.new_id or f"{args.role_id}.char"))
+            print(f"已导出: {out}")
+            return 0
+        except Exception as e:
+            print(f"导出失败: {e}")
+            return 1
+    if args.roles_action == "import":
+        from .core.character_archive import import_character
+        from pathlib import Path
+        try:
+            target = import_character(Path(args.role_id), roles_dir())
+            print(f"已导入: {target}")
+            return 0
+        except Exception as e:
+            print(f"导入失败: {e}")
+            return 1
     return 1
 
 
@@ -46,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="veranima")
     sub = ap.add_subparsers(dest="cmd")
     rp = sub.add_parser("roles", help="多角色管理")
-    rp.add_argument("roles_action", choices=["list", "switch", "clone"])
+    rp.add_argument("roles_action", choices=["list", "switch", "clone", "export", "import"])
     rp.add_argument("role_id", nargs="?")
     rp.add_argument("new_id", nargs="?")
     args = ap.parse_args(argv)

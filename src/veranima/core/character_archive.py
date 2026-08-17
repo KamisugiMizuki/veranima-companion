@@ -46,13 +46,14 @@ def export_character(dir_path: Path, out_path: Path) -> Path:
         raise CharacterArchiveError(f"角色目录缺少 character.json: {dir_path}")
     data = json.loads(manifest_path.read_text(encoding="utf-8"))
     name = str(data.get("name") or data.get("display_name") or "character").strip()
-    slug = re.sub(r"[^A-Za-z0-9_.-]", "", name) or "char"
+    slug = re.sub(r"[^A-Za-z0-9_.-]", "", name) or ""
     char_id = slug
     # 与 sakura 的 id 字段兼容：角色卡已有 id 则优先
     if str(data.get("id") or "").strip():
         char_id = str(data["id"]).strip()
     if not _SAFE_ID_RE.match(char_id):
-        char_id = f"{slug}-{hashlib.md5(name.encode()).hexdigest()[:4]}"
+        # 非 ASCII 名（如俄文）→ slug 为空/非法 → char-<hash4> 保证可识别且唯一
+        char_id = f"char-{hashlib.md5(name.encode()).hexdigest()[:4]}"
     manifest = {
         "id": char_id,
         "display_name": name,
