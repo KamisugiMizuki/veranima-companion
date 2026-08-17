@@ -22,6 +22,7 @@ import httpx
 from aiocqhttp import CQHttp, Event, Message
 
 from ..core.agent import Agent
+from ..core.render import render_im
 
 logger = logging.getLogger(__name__)
 
@@ -371,7 +372,19 @@ class QQAdapter:
             self._send_to_all(loop, msg)
 
     def _send_to_all(self, loop: asyncio.AbstractEventLoop, msg: str) -> None:
-        """后台线程 → bot 事件循环，向白名单 QQ 号发送私聊消息。"""
+        """后台线程 → bot 事件循环，向白名单 QQ 号发送私聊消息。
+
+        发送前过 IM 通道渲染器（DESIGN 4.8：感叹号限频/波浪号阈值/换行压缩/表情限频）。
+        """
+        try:
+            card = self.agent.card
+            emoji_freq = (card.veranima or {}).get("emoji_frequency", "low") if card else "low"
+            attachment = self.agent.state.attachment
+        except Exception:
+            emoji_freq, attachment = "low", 0.5
+        msg = render_im(msg, attachment=attachment, emoji_frequency=emoji_freq)
+        if not msg:
+            return
         for uid in self.allowed:
             fut = asyncio.run_coroutine_threadsafe(
                 self.bot.send_private_msg(user_id=int(uid), message=msg), loop

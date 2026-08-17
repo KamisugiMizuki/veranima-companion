@@ -143,13 +143,14 @@ class Agent:
         self._persist_state()
         return greeting
 
-    def handle(self, user_text: str, images: list[str] | None = None) -> TurnResult:
+    def handle(self, user_text: str, images: list[str] | None = None, channel: str = "im") -> TurnResult:
         """处理一条用户消息，返回回复。
 
         images: 图片 data URL 列表（如 data:image/png;base64,...），
         多模态模型直接看图（DESIGN 8.6.2）；纯文本时传 None/[]。
         图片会以 OpenAI 多模态 content 数组形式进当前轮 LLM 请求；
         记忆/历史用 [图片] 占位（避免 base64 撑爆上下文与 FTS5）。
+        channel: 通道标识（im/tts，DESIGN 4.8 通道感知），注入 system prompt 的通道语境。
         """
         user_text = user_text.strip()
         images = images or []
@@ -173,6 +174,7 @@ class Agent:
             core_profile_budget=self.config.get("memory", {}).get("core_profile_budget", 1200),
             section_budget=self.config.get("memory", {}).get("section_budget", 1600),
             session_budget=self.config.get("memory", {}).get("session_budget", 600),
+            channel=channel,
             extra_blocks=[
                 self.style.params.to_prompt_block(),
                 self.mirror.to_prompt_block(),

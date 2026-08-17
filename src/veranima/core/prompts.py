@@ -14,6 +14,14 @@ LAYER_LABELS = {
     "procedural": "【我答应过你/你要求的规则】",
 }
 
+# 通道语境（DESIGN 4.8 通道感知：表达风格挂通道不挂角色卡）
+CHANNEL_CONTEXT = {
+    "im": "【当前场景】你正在用文字聊天软件打字聊天。打字要利落，不用「嗯…那个…」这类口语填充词；"
+          "长内容拆短句，标点表达情绪；不模仿语音停顿。",
+    "tts": "【当前场景】你正在用户旁边说话交流。可以口语化，允许「嗯…」「那个…」填充词、"
+           "自我修正和重复；像面对面聊天一样自然。",
+}
+
 
 def build_system_prompt(
     card: CharacterCard,
@@ -24,10 +32,15 @@ def build_system_prompt(
     section_budget: int = 1600,
     session_budget: int = 600,
     extra_blocks: list[str] | None = None,
+    channel: str = "im",
 ) -> str:
-    """按预算组装系统 prompt。记忆按层注入，超出预算截断。extra_blocks 为附加块（学习参数/镜像/承诺）。"""
+    """按预算组装系统 prompt。记忆按层注入，超出预算截断。extra_blocks 为附加块（学习参数/镜像/承诺）。
+
+    channel 注入通道语境（DESIGN 4.8 通道感知）：im=打字聊天（利落/去填充词），tts=语音（口语化/允许填充词）。
+    """
     parts = [card.to_system_prompt()]
     parts.append(state.to_prompt_block())
+    parts.append(CHANNEL_CONTEXT.get(channel, CHANNEL_CONTEXT["im"]))
 
     # core_profile + procedural：全量（预算内）
     for layer, label in (("core_profile", LAYER_LABELS["core_profile"]), ("procedural", LAYER_LABELS["procedural"])):
