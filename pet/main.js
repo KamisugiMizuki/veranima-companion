@@ -242,7 +242,22 @@ function openSettingsWindow() {
 // 设置窗口 IPC：请求 → WS → 核心 → 响应回传
 ipcMain.handle('settings-get-config', async () => {
   const resp = await wsRequest('get_config');
-  return resp && resp.type === 'config' ? resp.data : null;
+  if (!resp || resp.type !== 'config') return null;
+  // 附角色列表（扫描 characters/ 目录；settings 角色下拉用）
+  const charsDir = path.join(__dirname, '..', 'characters');
+  let roles = [];
+  try {
+    roles = fs.readdirSync(charsDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && fs.existsSync(path.join(charsDir, d.name, 'character.json')))
+      .map((d) => {
+        try {
+          const cj = JSON.parse(fs.readFileSync(path.join(charsDir, d.name, 'character.json'), 'utf-8'));
+          const name = cj.name || cj.display_name || d.name;
+          return { id: d.name, name };
+        } catch { return { id: d.name, name: d.name }; }
+      });
+  } catch { /* characters/ 不存在 → 空列表 */ }
+  return { ...resp.data, roles };
 });
 ipcMain.handle('settings-save-config', async (e, data) => {
   const resp = await wsRequest('save_config', data);

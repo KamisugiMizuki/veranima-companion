@@ -1,46 +1,146 @@
 <!DOCTYPE html>
-<html>
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <title>Veranima 设置</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { background: #f5f5f5; color: #222; font-family: "Microsoft YaHei", sans-serif; padding: 20px; }
-    h2 { font-size: 16px; margin-bottom: 16px; }
-    .field { margin-bottom: 14px; }
-    label { display: block; font-size: 12px; color: #666; margin-bottom: 4px; }
-    input { width: 100%; padding: 7px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; }
-    input:focus { outline: none; border-color: #4a9eff; }
-    .hint { font-size: 11px; color: #999; margin-top: 3px; }
-    button { background: #4a9eff; color: #fff; border: none; padding: 8px 18px; border-radius: 4px; cursor: pointer; font-size: 13px; }
-    button:hover { background: #3a8eef; }
-    #msg { margin-top: 12px; font-size: 12px; min-height: 18px; }
-    #msg.ok { color: #2e7d32; }
-    #msg.err { color: #c62828; }
-    #masked-key { color: #999; font-size: 12px; padding: 7px 0; }
-  </style>
+  <link rel="stylesheet" href="./settings.css">
 </head>
 <body>
-  <h2>Veranima 设置</h2>
-  <div class="field">
-    <label>LLM Base URL</label>
-    <input id="base-url" placeholder="https://api.example.com/v1">
-  </div>
-  <div class="field">
-    <label>LLM 模型</label>
-    <input id="model" placeholder="model-name">
-  </div>
-  <div class="field">
-    <label>API Key</label>
-    <div id="masked-key">读取中…</div>
-    <div class="hint">密钥不在此修改（config.yaml 手动维护）</div>
-  </div>
-  <div class="field">
-    <label>QQ 白名单（逗号分隔）</label>
-    <input id="allowed" placeholder="10001,10002">
-  </div>
-  <button id="save">保存（重启核心生效）</button>
-  <div id="msg"></div>
+  <main class="settings-shell">
+    <aside class="nav-card">
+      <div class="nav-brand">
+        <span class="nav-brand-mark">❀</span>
+        <span class="nav-brand-text">Veranima</span>
+      </div>
+      <nav class="nav-list">
+        <div class="nav-group">
+          <p class="nav-group-label">角色</p>
+          <button class="nav-item is-active" data-page="character" aria-current="page">角色与布局</button>
+        </div>
+        <div class="nav-group">
+          <p class="nav-group-label">智能</p>
+          <button class="nav-item" data-page="llm">模型供应商</button>
+        </div>
+        <div class="nav-group">
+          <p class="nav-group-label">语音</p>
+          <button class="nav-item" data-page="voice">TTS / STT</button>
+        </div>
+        <div class="nav-group">
+          <p class="nav-group-label">系统</p>
+          <button class="nav-item" data-page="system">QQ 与行为</button>
+        </div>
+      </nav>
+    </aside>
+
+    <section class="content-card">
+      <!-- 角色与布局 -->
+      <div class="page is-active" data-page="character">
+        <h2>角色与布局</h2>
+        <div class="field">
+          <label>激活角色</label>
+          <select id="role-select"></select>
+          <div class="hint">切换后重启核心生效；角色目录：characters/</div>
+        </div>
+        <div class="field">
+          <label>当前角色卡</label>
+          <div id="card-path" class="readonly"></div>
+        </div>
+        <div class="field">
+          <label>LLM 供应商（当前配置）</label>
+          <div id="llm-summary" class="readonly"></div>
+        </div>
+        <div class="field">
+          <label>桌宠位置</label>
+          <div class="readonly">拖动形象移动；位置自动保存</div>
+        </div>
+      </div>
+
+      <!-- 模型供应商 -->
+      <div class="page" data-page="llm">
+        <h2>模型供应商</h2>
+        <div class="field">
+          <label>Base URL</label>
+          <input id="llm-base" placeholder="https://api.example.com/v1">
+        </div>
+        <div class="field">
+          <label>模型</label>
+          <input id="llm-model" placeholder="model-name">
+        </div>
+        <div class="field">
+          <label>Temperature</label>
+          <input id="llm-temp" type="number" step="0.1" min="0" max="2" placeholder="0.8">
+        </div>
+        <div class="field">
+          <label>API Key</label>
+          <div id="llm-key" class="readonly">读取中…</div>
+          <div class="hint">密钥不在此修改（config.yaml 手动维护）</div>
+        </div>
+      </div>
+
+      <!-- TTS / STT -->
+      <div class="page" data-page="voice">
+        <h2>TTS（语音输出）</h2>
+        <div class="field">
+          <label>TTS Base URL</label>
+          <input id="tts-base" placeholder="http://127.0.0.1:9880/v1">
+        </div>
+        <div class="field">
+          <label>TTS 模型</label>
+          <input id="tts-model" placeholder="Qwen3-TTS-12Hz-1.7B-CustomVoice">
+        </div>
+        <div class="field">
+          <label>音色</label>
+          <input id="tts-voice" placeholder="alloy">
+        </div>
+        <h2>STT（语音输入）</h2>
+        <div class="field">
+          <label>STT Base URL（留空 = 未接入）</label>
+          <input id="stt-base" placeholder="http://127.0.0.1:9000/v1">
+        </div>
+        <div class="field">
+          <label>STT 模型</label>
+          <input id="stt-model" placeholder="whisper-1">
+        </div>
+        <div class="field">
+          <label>识别语言（留空 = 自动）</label>
+          <input id="stt-language" placeholder="zh">
+        </div>
+      </div>
+
+      <!-- QQ 与行为 -->
+      <div class="page" data-page="system">
+        <h2>QQ 接入</h2>
+        <div class="field">
+          <label>QQ 白名单（逗号分隔）</label>
+          <input id="qq-allowed" placeholder="10001,10002">
+        </div>
+        <div class="field">
+          <label>主动消息</label>
+          <select id="qq-proactive">
+            <option value="true">开启</option>
+            <option value="false">关闭</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>离线思考</label>
+          <select id="qq-offline">
+            <option value="true">开启</option>
+            <option value="false">关闭</option>
+          </select>
+        </div>
+        <h2>记忆</h2>
+        <div class="field">
+          <label>Embedding 模型</label>
+          <div id="mem-embedding" class="readonly"></div>
+        </div>
+      </div>
+
+      <div class="footer">
+        <button id="save">保存（重启核心生效）</button>
+        <div id="msg"></div>
+      </div>
+    </section>
+  </main>
   <script src="settings-renderer.js"></script>
 </body>
 </html>
