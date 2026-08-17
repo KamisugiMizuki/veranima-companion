@@ -16,6 +16,7 @@ dependencies = [
     "pillow>=10",
     "pyyaml>=6",
     "sentence-transformers>=3",  # 本地 embedding（bge-m3，远程 API 不支持 embeddings 时必需）
+    "websockets>=12",            # 桌宠壳 WS 通信（M3_SPEC 1）
 ]
 
 [build-system]

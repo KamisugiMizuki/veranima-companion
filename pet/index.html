@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Veranima</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; }
+    html, body {
+      background: transparent;         /* 透明窗 */
+      overflow: hidden;
+      font-family: "Microsoft YaHei", sans-serif;
+    }
+    #pet {
+      width: 220px; height: 260px;
+      position: relative;
+      cursor: grab;
+    }
+    #avatar {
+      width: 200px; height: 200px;
+      position: absolute; top: 0; left: 10px;
+      image-rendering: pixelated;
+      transition: transform 0.15s;
+    }
+    #avatar:active { transform: scale(0.96); } /* 按压反馈 */
+    #bubble {
+      position: absolute; top: 150px; left: 60px;
+      max-width: 150px;
+      background: rgba(255,255,255,0.95);
+      border-radius: 10px; padding: 6px 10px;
+      font-size: 12px; line-height: 1.5;
+      color: #333;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+      opacity: 0; transition: opacity 0.2s;
+      pointer-events: none;
+    }
+    #bubble.show { opacity: 1; }
+    #conn {
+      position: absolute; bottom: 4px; right: 8px;
+      width: 8px; height: 8px; border-radius: 50%;
+      background: #f44; /* 红=失联 */
+    }
+    #conn.ok { background: #4c4; }    /* 绿=已连核心 */
+  </style>
+</head>
+<body>
+  <div id="pet">
+    <img id="avatar" src="assets/idle.png" draggable="false">
+    <div id="bubble"></div>
+    <div id="conn" title="核心连接状态"></div>
+  </div>
+  <script src="renderer.js"></script>
+</body>
+</html>
