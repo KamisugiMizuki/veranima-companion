@@ -34,7 +34,7 @@ class PetServer:
         self._agent = None  # 后续接 Agent；PoC 阶段 None
 
     def connect_agent(self, agent) -> None:
-        """接入 Agent（M3b 正式版：speak 走 agent.handle(channel='tts')）。"""
+        """接入 Agent（正式版：poke/speak 走 agent.handle(channel='tts')）。"""
         self._agent = agent
 
     # ---------- 对外发送 ----------
@@ -74,8 +74,17 @@ class PetServer:
                 mtype = msg.get("type")
                 if mtype == "poke":
                     logger.info("poke received")
-                    # PoC：回复一句固定气泡；正式版接 agent 生成
-                    await self.speak("嗯？叫我干嘛～")
+                    if self._agent is not None:
+                        # 正式版：agent 生成一句互动（channel=tts 语音风格）
+                        try:
+                            r = await asyncio.to_thread(self._agent.handle, "（用户戳了戳桌宠）", channel="tts")
+                            await self.speak(r.reply)
+                        except Exception as e:
+                            logger.warning("poke agent failed: %s", e)
+                            await self.speak("嗯？叫我干嘛～")
+                    else:
+                        # PoC：无 agent 时写死文案
+                        await self.speak("嗯？叫我干嘛～")
                 elif mtype == "drag":
                     pass  # 拖拽由壳自己处理，核心无需响应（PoC）
                 elif mtype == "ping":

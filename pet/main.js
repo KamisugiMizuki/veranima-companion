@@ -76,13 +76,34 @@ function stopCore() {
   if (coreProc) { coreProc.kill(); coreProc = null; }
 }
 
+// ---------- 位置持久化（airi config.json 同款，M3_SPEC 3.6） ----------
+function loadWindowPos() {
+  try {
+    const p = path.join(app.getPath('userData'), 'win-pos.json');
+    if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf-8'));
+  } catch (e) { console.error('win-pos load failed:', e.message); }
+  return null;
+}
+
+function saveWindowPos() {
+  if (!win || win.isDestroyed()) return;
+  try {
+    const b = win.getBounds();
+    fs.writeFileSync(path.join(app.getPath('userData'), 'win-pos.json'),
+      JSON.stringify({ x: b.x, y: b.y, width: b.width, height: b.height }));
+  } catch (e) { /* 非关键路径，失败忽略 */ }
+}
+
 // ---------- 窗口 ----------
 function createWindow() {
+  const pos = loadWindowPos();
   win = new BrowserWindow({
-    width: 220, height: 260,
+    width: pos?.width || 220, height: pos?.height || 260,
+    x: pos?.x, y: pos?.y,
     transparent: true,            // 透明背景
     frame: false,                 // 无边框
     alwaysOnTop: true,            // 置顶
+    type: 'panel',                // airi 同款：置顶层级更高、不抢焦点
     resizable: false,
     skipTaskbar: true,            // 不进任务栏（托盘常驻）
     hasShadow: false,
@@ -95,6 +116,9 @@ function createWindow() {
   win.loadFile('index.html');
   // 点击穿透：默认整个窗口穿透（形象区域由 renderer 通过 setIgnoreMouseEvents(false) 局部恢复）
   win.setIgnoreMouseEvents(true, { forward: true });
+  // 位置持久化：move/resize → 存 userData/win-pos.json
+  win.on('move', saveWindowPos);
+  win.on('resize', saveWindowPos);
 
   win.webContents.on('render-process-gone', (e, details) => {
     console.error('[health] renderer gone:', details.reason);
@@ -258,6 +282,14 @@ function handleCoreMsg(msg) {
 
 // ---------- renderer → 核心 ----------
 ipcMain.on('pet-event', (e, payload) => {
+  if (payload && payload.type === 'drag') {
+    // 拖拽：main 直接移动窗口（透明窗不能靠 -webkit-app-region）
+    if (win && !win.isDestroyed()) {
+      const b = win.getBounds();
+      win.setBounds({ x: b.x + (payload.dx || 0), y: b.y + (payload.dy || 0), width: b.width, height: b.height });
+    }
+    return;
+  }
   if (ws && ws.readyState === 1) {
     ws.send(JSON.stringify(payload));
   }

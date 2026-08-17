@@ -68,6 +68,33 @@ def test_send_without_client_returns_false():
     assert asyncio.run(srv.speak("hi")) is False
 
 
+def test_poke_with_agent_uses_agent_reply():
+    """poke 接入 agent 后：回复来自 agent 生成（channel=tts）。"""
+    port = _free_port()
+    results = {}
+
+    class FakeAgent:
+        def handle(self, text, channel="im"):
+            assert channel == "tts"
+            class R: reply = "（抬起头）怎么了？"
+            return R()
+
+    async def scenario():
+        srv = PetServer(host="127.0.0.1", port=port)
+        srv.connect_agent(FakeAgent())
+        task = asyncio.create_task(srv.run())
+        await asyncio.sleep(0.3)
+        async with websockets.connect(f"ws://127.0.0.1:{port}") as ws:
+            await ws.send(json.dumps({"type": "poke"}))
+            msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=3))
+            results["reply"] = msg
+        task.cancel()
+
+    asyncio.run(scenario())
+    assert results["reply"]["type"] == "speak"
+    assert results["reply"]["text"] == "（抬起头）怎么了？"
+
+
 def test_config_roundtrip(tmp_path):
     """get_config 返回打码 key；save_config 写回 yaml 并可再读。"""
     from veranima.config import save_config

@@ -75,6 +75,7 @@ window.addEventListener('mouseup', () => {
 avatar.addEventListener('click', () => {
   if (isDragging) return;
   setState('thinking');
+  showBubble('……', 1500); // thinking 气泡
   window.pet.sendEvent({ type: 'poke' });
   setTimeout(() => setState('idle'), 1500);
 });
