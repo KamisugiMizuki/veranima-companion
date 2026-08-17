@@ -113,6 +113,14 @@ function stopCore() {
   if (coreProc) { coreProc.kill(); coreProc = null; }
 }
 
+// 重启核心（设置保存后）：kill 旧进程 → 等端口释放 → spawn 新的。
+// 直接 kill 后立即 start 会撞上旧进程端口未释放（Errno 10048 实测）。
+function restartCore() {
+  stopCore();
+  const waitMs = 3000;  // 旧 python 进程退出 + 端口释放通常 <3s
+  setTimeout(() => { startCore(); }, waitMs);
+}
+
 // ---------- 位置持久化（airi config.json 同款，M3_SPEC 3.6） ----------
 function loadWindowPos() {
   try {
@@ -261,9 +269,31 @@ ipcMain.handle('settings-get-config', async () => {
 });
 ipcMain.handle('settings-save-config', async (e, data) => {
   const resp = await wsRequest('save_config', data);
-  return !!(resp && resp.type === 'config_saved' && resp.ok);
+  const ok = !!(resp && resp.type === 'config_saved' && resp.ok);
+  if (ok) pushAvatarMap();  // 角色可能变了 → 刷新立绘映射
+  return ok;
 });
-ipcMain.on('core-restart', () => { stopCore(); startCore(); });
+ipcMain.on('core-restart', () => { restartCore(); });
+
+// 角色立绘映射：读当前角色卡 avatar.expressions → {标签: 绝对路径} → renderer
+// （M4_SPEC 2.2：表情标签驱动；角色切换后立绘跟着换，不再写死 assets/）
+function pushAvatarMap() {
+  try {
+    wsRequest('get_config').then((resp) => {
+      const cardPath = resp && resp.data && resp.data.character_card;
+      if (!cardPath) return;
+      const full = path.join(__dirname, '..', cardPath);
+      const cj = JSON.parse(fs.readFileSync(full, 'utf-8'));
+      const exprs = (((cj.extensions || {}).veranima || {}).avatar || {}).expressions || {};
+      const map = {};
+      for (const [label, rel] of Object.entries(exprs)) {
+        map[label] = require('url').pathToFileURL(path.join(path.dirname(full), rel)).href;
+      }
+      win && win.webContents.send('avatar-map', map);
+      console.log('[shell] avatar map updated:', Object.keys(map).length, 'expressions');
+    }).catch((e) => console.warn('[shell] avatar map failed:', e.message));
+  } catch (e) { console.warn('[shell] avatar map failed:', e.message); }
+}
 
 // ---------- 托盘 ----------
 // 右键菜单模板（形象右键 + 托盘共用；sakura 同款：设置/日志/重启/退出）
@@ -274,7 +304,7 @@ function buildContextMenu() {
     { type: 'separator' },
     { label: '打开设置', click: () => openSettingsWindow() },
     { label: '打开日志', click: () => openLogWindow() },
-    { label: '重启核心', click: () => { stopCore(); startCore(); } },
+    { label: '重启核心', click: () => { restartCore(); } },
     { type: 'separator' },
     { label: '退出（全部一起停）', click: () => { stopCore(); stopTTS(); app.quit(); } },
   ]);
@@ -301,6 +331,7 @@ function connect() {
     console.log('[ws] connected to core');
     reconnectDelay = 1000;
     win && win.webContents.send('core-state', { connected: true });
+    pushAvatarMap();  // 启动时加载当前角色立绘映射
   });
   ws.on('message', (data) => {
     try {

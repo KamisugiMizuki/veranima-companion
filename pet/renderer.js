@@ -10,15 +10,31 @@ let isDragging = false;
 let dragStart = null;
 
 const STATES = ['idle', 'speaking', 'thinking', 'sleeping'];
-// M4 表情标签 → 立绘文件（与角色卡 avatar.expressions 同步；M4_SPEC 2.2）
+// M4 表情标签 → 立绘文件（默认 zima assets/；角色卡 avatar.expressions 到达后优先）
 const EXPRESSION_FILES = {
   '站立待机': 'stand', '开心脸红': 'happy', '疑惑': 'puzzled', '难过': 'sad', '惊讶': 'surprised',
 };
+// 角色立绘映射：{表情标签: 绝对路径}（main 读角色卡 avatar.expressions 推来）
+let avatarMap = null;
+window.pet.onAvatarMap((map) => {
+  avatarMap = map || null;
+  if (avatarMap) applyExpression(Object.keys(avatarMap)[0] || '');
+});
+// 表情 → 立绘路径：角色卡优先，fallback 默认 assets/
+function applyExpression(label) {
+  if (avatarMap && avatarMap[label]) { avatar.src = avatarMap[label]; return true; }
+  const f = EXPRESSION_FILES[label];
+  if (f) { avatar.src = `assets/${f}.png`; return true; }
+  return false;
+}
 
 // ---------- 四态切换 ----------
 function setState(s) {
   if (!STATES.includes(s)) s = 'idle';
   currentState = s;
+  // 立绘：角色卡表情映射优先（闲置/微笑…），fallback assets/ 状态图（zima 默认）
+  if (s === 'idle') { applyExpression('闲置') || (avatar.src = `assets/idle.png`); return; }
+  if (s === 'speaking') { applyExpression('微笑') || (avatar.src = `assets/speaking.png`); return; }
   avatar.src = `assets/${s}.png`;
 }
 
@@ -44,8 +60,7 @@ window.pet.onSpeak((m) => {
   showBubble(displayText);
   // M4 表情标签驱动：tags 携带 portrait 标签 → 映射表情图（M4_SPEC 2.4）
   if (m.tags && m.tags.length > 0) {
-    const file = EXPRESSION_FILES[m.tags[0]];
-    if (file) avatar.src = `assets/${file}.png`;
+    applyExpression(m.tags[0]);
   }
   // TTS 播放（M3_SPEC 3.2）：有 audioB64 播放真实语音，否则模拟 2.5s
   if (m.audioB64) {
@@ -89,21 +104,23 @@ const pet = document.getElementById('pet');
 // 拖拽：mousedown/mouseup 只发 start/end 信号，main 进程用 setInterval 轮询
 // 全局鼠标位置移动窗口（Windows 透明置顶窗的 renderer mousemove 投递不可靠——
 // 实测 mousedown 到达但 mousemove 丢失，窗口不动；轮询方案 sakura 同款，跨屏可靠）
-avatar.addEventListener('mousedown', () => {
+let downPos = null;
+avatar.addEventListener('mousedown', (e) => {
   isDragging = true;
+  downPos = { x: e.screenX, y: e.screenY };
   window.pet.sendEvent({ type: 'drag-start' });
 });
-window.addEventListener('mouseup', () => {
+window.addEventListener('mouseup', (e) => {
   if (isDragging) {
     isDragging = false;
     window.pet.sendEvent({ type: 'drag-end' });
+    // 点击判定：按下/松开距离 < 5px = 点击（不用 click 事件——拖动窗口后
+    // 按下/松开位置不同，click 会丢失；实测 drag-start 轮询哪怕移动 1px 就没 click）
+    if (downPos && Math.abs(e.screenX - downPos.x) < 5 && Math.abs(e.screenY - downPos.y) < 5) {
+      openChatInput();
+    }
+    downPos = null;
   }
-});
-
-// 单击 = 打开输入框（用户指定交互：点击弹输入框，不再缩放立绘/poke）
-avatar.addEventListener('click', () => {
-  if (isDragging) return;
-  openChatInput();
 });
 
 // 右键菜单（sakura 同款：形象上右键弹原生菜单；参考 sakura 托盘菜单）
