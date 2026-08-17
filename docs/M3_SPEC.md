@@ -89,6 +89,14 @@
 
 **决策时点**：M3a 完成、进入 M3b 时；先用最小 PoC 验证「透明置顶小窗 + WS 连接」再定。
 
+**评估标准（含 Live2D 前瞻）**：
+1. 透明置顶小窗 + 点击穿透（MVP 必需）
+2. **Live2D/VTuber 骨骼动画支持度**（中期路线图）：Electron 生态最成熟（pixi-live2d-display），Tauri/WebView2 理论可行但透明+GPU+WebGL 组合坑多（MacroPhonic 教训）——若确认走 Live2D，Electron 加分
+3. 与 Python 核心的 WS 通信成本
+4. 打包体积与启动速度
+
+**形象渲染抽象**：壳内渲染器只依赖「状态 → 资源」映射（avatar 字段）——静态图/骨骼动画只换渲染器，状态机/协议/交互不动。
+
 ### 3.2 TTS 链路
 
 - 复用 MacroPhonic `server.py`（Qwen3-TTS sidecar，已验证）——独立进程，Python 核心 HTTP 调 `/tts`
