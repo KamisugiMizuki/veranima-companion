@@ -117,9 +117,21 @@ function stopCore() {
 function loadWindowPos() {
   try {
     const p = path.join(app.getPath('userData'), 'win-pos.json');
-    if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf-8'));
+    if (fs.existsSync(p)) {
+      const pos = JSON.parse(fs.readFileSync(p, 'utf-8'));
+      // 校验屏幕内（防止显示器变更后窗口跑到屏幕外）
+      const { screen } = require('electron');
+      const display = screen.getDisplayNearestPoint({ x: pos.x || 0, y: pos.y || 0 });
+      const wa = display.workArea;
+      if (pos.x >= wa.x - 50 && pos.x < wa.x + wa.width - 50 && pos.y >= wa.y - 50 && pos.y < wa.y + wa.height - 50) {
+        return pos;
+      }
+    }
   } catch (e) { console.error('win-pos load failed:', e.message); }
-  return null;
+  // 默认右下角（sakura/airi 同款：初次启动不居中）
+  const { screen } = require('electron');
+  const wa = screen.getPrimaryDisplay().workArea;
+  return { x: wa.x + wa.width - 260, y: wa.y + wa.height - 300, width: 220, height: 260 };
 }
 
 function saveWindowPos() {
@@ -239,16 +251,24 @@ ipcMain.handle('settings-save-config', async (e, data) => {
 ipcMain.on('core-restart', () => { stopCore(); startCore(); });
 
 // ---------- 托盘 ----------
+// 右键菜单模板（形象右键 + 托盘共用；sakura 同款：设置/日志/重启/退出）
+function buildContextMenu() {
+  return Menu.buildFromTemplate([
+    { label: '戳一下', click: () => { win && win.webContents.send('menu-poke'); } },
+    { label: '显示/隐藏桌宠', click: () => { win ? (win.isVisible() ? win.hide() : win.show()) : createWindow(); } },
+    { type: 'separator' },
+    { label: '打开设置', click: () => openSettingsWindow() },
+    { label: '打开日志', click: () => openLogWindow() },
+    { label: '重启核心', click: () => { stopCore(); startCore(); } },
+    { type: 'separator' },
+    { label: '退出（全部一起停）', click: () => { stopCore(); stopTTS(); app.quit(); } },
+  ]);
+}
+
 function createTray() {
   tray = new Tray(path.join(__dirname, 'assets', 'idle.png'));
   tray.setToolTip('Veranima 桌宠');
-  tray.setContextMenu(Menu.buildFromTemplate([
-    { label: '显示/隐藏桌宠', click: () => { win ? win.show() : createWindow(); } },
-    { label: '打开设置', click: () => openSettingsWindow() },
-    { label: '打开日志', click: () => openLogWindow() },
-    { type: 'separator' },
-    { label: '退出（核心一起停）', click: () => { stopCore(); app.quit(); } },
-  ]));
+  tray.setContextMenu(buildContextMenu());
   tray.on('click', () => { win && win.isVisible() ? win.hide() : (win ? win.show() : createWindow()); });
 }
 
@@ -330,6 +350,13 @@ ipcMain.on('pet-event', (e, payload) => {
     if (win && !win.isDestroyed()) {
       const b = win.getBounds();
       win.setBounds({ x: b.x + (payload.dx || 0), y: b.y + (payload.dy || 0), width: b.width, height: b.height });
+    }
+    return;
+  }
+  if (payload && payload.type === 'menu') {
+    // 右键菜单：形象区域右键 → 弹原生菜单（sakura 同款）
+    if (win && !win.isDestroyed()) {
+      buildContextMenu().popup({ window: win });
     }
     return;
   }

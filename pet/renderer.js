@@ -82,11 +82,26 @@ window.pet.onSpeakDone(() => {
 });
 
 // ---------- 形象区域交互（穿透 ↔ 捕获） ----------
-// 默认整个窗口点击穿透；鼠标移入形象区域时恢复捕获（可拖拽/点击）
+// Electron 局部穿透方案：窗口默认穿透 + forward 模式（鼠标移动仍转发给 renderer），
+// renderer 检测鼠标是否在形象上 → 在则恢复捕获，不在则保持穿透。
 const pet = document.getElementById('pet');
-pet.addEventListener('mouseenter', () => window.pet.setIgnoreMouse(false));
-pet.addEventListener('mouseleave', () => {
-  if (!isDragging) window.pet.setIgnoreMouse(true);
+let mouseInPet = false;
+
+window.addEventListener('mousemove', (e) => {
+  // forward 模式下仍能收到 mousemove（事件被转发）；检测是否在形象区域上
+  const rect = pet.getBoundingClientRect();
+  const inside = e.clientX >= rect.left && e.clientX <= rect.right &&
+                 e.clientY >= rect.top && e.clientY <= rect.bottom;
+  if (inside !== mouseInPet) {
+    mouseInPet = inside;
+    window.pet.setIgnoreMouse(!inside);
+  }
+  // 拖拽中持续上报位移（main 移动窗口；窗口外也有效——screenX/Y 全局坐标）
+  if (isDragging && dragStart) {
+    const dx = e.screenX - dragStart.x;
+    const dy = e.screenY - dragStart.y;
+    window.pet.sendEvent({ type: 'drag', dx, dy });
+  }
 });
 
 // 拖拽移动窗口（MVP：利用 electron 的 -webkit-app-region 不可用于透明窗的局部；
@@ -95,30 +110,29 @@ avatar.addEventListener('mousedown', (e) => {
   isDragging = true;
   dragStart = { x: e.screenX, y: e.screenY };
 });
-window.addEventListener('mousemove', (e) => {
-  if (isDragging && dragStart) {
-    const dx = e.screenX - dragStart.x;
-    const dy = e.screenY - dragStart.y;
-    window.pet.sendEvent({ type: 'drag', dx, dy });
-  }
-});
 window.addEventListener('mouseup', () => {
   isDragging = false;
   dragStart = null;
-  if (!pet.matches(':hover')) window.pet.setIgnoreMouse(true);
+  // 鼠标可能已经不在形象上（拖出窗口）→ 恢复穿透
+  if (!mouseInPet) window.pet.setIgnoreMouse(true);
 });
 
 // 左键单击 = 戳一下（触发核心互动；M3_SPEC 3.5 交互）
-avatar.addEventListener('click', () => {
-  if (isDragging) return;
+function poke() {
   setState('thinking');
   showBubble('……', 1500); // thinking 气泡
   window.pet.sendEvent({ type: 'poke' });
   setTimeout(() => setState('idle'), 1500);
+}
+avatar.addEventListener('click', () => {
+  if (isDragging) return;
+  poke();
 });
+// 右键菜单「戳一下」同逻辑
+window.pet.onMenuPoke(() => poke());
 
-// 右键菜单交给 main 的托盘；窗口内右键 = 恢复穿透
+// 右键菜单（sakura 同款：形象上右键弹原生菜单；参考 sakura 托盘菜单）
 window.addEventListener('contextmenu', (e) => {
   e.preventDefault();
-  window.pet.setIgnoreMouse(true);
+  window.pet.sendEvent({ type: 'menu' });
 });
