@@ -168,7 +168,12 @@ class QQAdapter:
             await asyncio.to_thread(self._ingest_stickers, [raw for _, raw in images])
         # 串行处理：agent 内部状态（历史/记忆/学习）有顺序依赖，禁止并发写
         async with self._lock:
-            result = await asyncio.to_thread(self.agent.handle, text, [d for d, _ in images])
+            # M3a 通道互斥：QQ 消息到达 → 记 QQ 通道活跃（桌宠感知降功耗）
+            try:
+                self.agent.activity.touch("qq")
+            except Exception:
+                pass
+            result = await asyncio.to_thread(self.agent.handle, text, [d for d, _ in images], channel="im")
         self._last_user_activity = time.time()
         if result.reply:
             await self.bot.send(event, result.reply)

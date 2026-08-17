@@ -139,7 +139,7 @@ def test_image_message_with_url_passed_to_handle(adapter, agent, monkeypatch):
     )
     seen = {}
 
-    def spy(text, images=None):
+    def spy(text, images=None, channel="im"):
         seen["text"] = text
         seen["images"] = images
         return TurnResult(reply="看到了", energy=80, mood="平静")
@@ -157,7 +157,7 @@ def test_image_message_with_url_passed_to_handle(adapter, agent, monkeypatch):
 def test_image_download_failure_falls_back_to_text(adapter, agent, monkeypatch):
     """图片下载失败：降级为纯文本对话，不阻塞（8.6.4 边界）。"""
     monkeypatch.setattr(QQAdapter, "_download_image", staticmethod(lambda url: None))
-    agent.handle = lambda text, images=None: TurnResult(reply="文字也能聊", energy=80, mood="平静")
+    agent.handle = lambda text, images=None, channel="im": TurnResult(reply="文字也能聊", energy=80, mood="平静")
     run(adapter._handle_private(
         {"user_id": 10001, "message_type": "private",
          "message": Message("[CQ:image,file=a.png,url=http://127.0.0.1:8099/img/x.png]你好")}
@@ -185,7 +185,7 @@ def test_sticker_ingest_new_image(adapter, agent, tmp_path, monkeypatch):
                         staticmethod(lambda url: ("data:image/png;base64,QUJD", raw)))
     monkeypatch.setattr(agent, "annotate_sticker",
                         lambda data_url: {"meaning": "红色", "moods": ["开心"], "scenarios": ["测试"]})
-    agent.handle = lambda text, images=None: TurnResult(reply="看到图了", energy=80, mood="平静")
+    agent.handle = lambda text, images=None, channel="im": TurnResult(reply="看到图了", energy=80, mood="平静")
     run(adapter._handle_private(
         {"user_id": 10001, "message_type": "private",
          "message": Message("[CQ:image,file=a.png,url=http://127.0.0.1:8099/img/1.png]")}
@@ -204,7 +204,7 @@ def test_sticker_ingest_duplicate_skipped(adapter, agent, tmp_path, monkeypatch)
     monkeypatch.setattr(QQAdapter, "_download_image",
                         staticmethod(lambda url: ("data:image/png;base64,QUJD", raw)))
     monkeypatch.setattr(agent, "annotate_sticker", lambda data_url: (_ for _ in ()).throw(AssertionError("不应标注已见过的图")))
-    agent.handle = lambda text, images=None: TurnResult(reply="嗯", energy=80, mood="平静")
+    agent.handle = lambda text, images=None, channel="im": TurnResult(reply="嗯", energy=80, mood="平静")
     run(adapter._handle_private(
         {"user_id": 10001, "message_type": "private",
          "message": Message("[CQ:image,file=a.png,url=http://127.0.0.1:8099/img/1.png]")}
@@ -218,7 +218,7 @@ def test_sticker_sent_on_happy_reply(adapter, agent, tmp_path):
     lib = StickerLibrary(root=tmp_path / "stickers")
     adapter.stickers = lib
     lib.add(_png_bytes(), meaning="开心", moods=["开心"])
-    agent.handle = lambda text, images=None: TurnResult(reply="哈哈太好了！", energy=80, mood="平静")
+    agent.handle = lambda text, images=None, channel="im": TurnResult(reply="哈哈太好了！", energy=80, mood="平静")
     run(adapter._handle_private({"user_id": 10001, "message_type": "private", "message": "耶"}))
     cq = [m for m in adapter.bot.sent if isinstance(m[1], str) and m[1].startswith("[CQ:image")]
     assert len(cq) == 1
@@ -231,7 +231,7 @@ def test_sticker_not_sent_without_mood(adapter, agent, tmp_path):
     lib = StickerLibrary(root=tmp_path / "stickers")
     adapter.stickers = lib
     lib.add(_png_bytes(), meaning="开心", moods=["开心"])
-    agent.handle = lambda text, images=None: TurnResult(reply="收到，好的", energy=80, mood="平静")
+    agent.handle = lambda text, images=None, channel="im": TurnResult(reply="收到，好的", energy=80, mood="平静")
     run(adapter._handle_private({"user_id": 10001, "message_type": "private", "message": "嗯"}))
     assert adapter.bot.sent == [("send", "收到，好的")]
 
@@ -240,7 +240,7 @@ def test_sticker_not_sent_without_mood(adapter, agent, tmp_path):
 
 def test_proactive_msg_deferred_not_sent_immediately(adapter, agent):
     """主动消息不立即发送：进 pending，等待对话静默（防双连发）。"""
-    agent.handle = lambda text, images=None: TurnResult(
+    agent.handle = lambda text, images=None, channel="im": TurnResult(
         reply="普通回复", proactive_msg="（主动）对了，你上次说的事",
         energy=80, mood="平静",
     )
@@ -279,7 +279,7 @@ def test_pending_proactive_not_flushed_before_silence(adapter, agent):
 def test_pending_proactive_discarded_on_new_user_message(adapter, agent):
     """用户又发消息：旧 pending 作废，不插话。"""
     adapter._pending_proactive = "（主动）旧话题"
-    agent.handle = lambda text, images=None: TurnResult(reply="新回复", energy=80, mood="平静")
+    agent.handle = lambda text, images=None, channel="im": TurnResult(reply="新回复", energy=80, mood="平静")
     run(adapter._handle_private({"user_id": 10001, "message_type": "private", "message": "hi"}))
     assert adapter.bot.sent == [("send", "新回复")]
     assert adapter._pending_proactive is None  # 作废
@@ -287,7 +287,7 @@ def test_pending_proactive_discarded_on_new_user_message(adapter, agent):
 
 def test_empty_reply_not_sent(adapter, agent):
     """回复为空（空白输入）不发送。"""
-    agent.handle = lambda text, images=None: TurnResult(reply="", energy=80, mood="平静")
+    agent.handle = lambda text, images=None, channel="im": TurnResult(reply="", energy=80, mood="平静")
     run(adapter._handle_private({"user_id": 10001, "message_type": "private", "message": "hi"}))
     assert adapter.bot.sent == []
 
@@ -298,7 +298,7 @@ def test_messages_serialized(adapter, agent):
     active = []
     seen = []
 
-    def slow_handle(text, images=None):
+    def slow_handle(text, images=None, channel="im"):
         active.append(1)
         assert len(active) == 1, "handle 并发调用！"
         import time

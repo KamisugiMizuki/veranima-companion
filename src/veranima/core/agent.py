@@ -14,6 +14,7 @@ from pathlib import Path
 
 from ..llm.client import LLMClient, LLMUnavailableError
 from .prompts import build_system_prompt
+from .ambient import Arbitrator, ChannelActivityTracker, SceneLock
 from ..memory.store import MemoryStore
 from ..tools.search import SEARCH_TOOL, SearXNGClient
 from .character import CharacterCard
@@ -84,6 +85,11 @@ class Agent:
         # 主动触发（定时问候 + 节庆纪念；CLI 与 QQ adapter 共用 tick_proactive）
         self.greeter = GreetingScheduler()
         self.occasion = OccasionChecker()
+
+        # M3a 时空沉浸：场景锁 + 通道互斥 + 主动仲裁（最小版）
+        self.scene_lock = SceneLock()
+        self.activity = ChannelActivityTracker()
+        self.arbitrator = Arbitrator()
 
         # 联网搜索（DESIGN.md 8.5 方案 A：工具调用；默认关闭，config 开启）
         search_cfg = self.config.get("search", {})
@@ -164,6 +170,11 @@ class Agent:
         self.state.tick(self.config.get("state", {}).get("energy_decay_per_minute", 0.02))
         self.state.on_user_message(recover_per_message=self.config.get("state", {}).get("energy_recover_per_message", 3.0))
 
+        # 1.5 M3a 场景锁：用户消息进来时更新场景（进入/退出 busy/away）
+        scene = self.scene_lock.note(user_text)
+        if scene != "normal":
+            logger.info("scene active: %s", scene)
+
         # 2. 零开销摄入：消息立即入库（FTS5 同步索引）
         self.memory.store_message("user", store_text, self.state.energy, self.state.mood)
 
@@ -227,6 +238,12 @@ class Agent:
         except Exception as e:
             logger.error("chat failed: %s", e)
             reply = "（我这边有点卡……让我缓一下，你再说一遍？）"
+
+        # 5.5 场景锁（M3a）：busy 场景截短回复（模拟"在忙，简单回一句"）
+        max_len = self.scene_lock.max_len()
+        if max_len and len(reply) > max_len:
+            cut = reply[:max_len].rstrip("，。！？ ")
+            reply = cut + "……（我这边有点忙，回头细说）"
 
         # 6. 回复入库 + 历史更新
         self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
@@ -293,8 +310,13 @@ class Agent:
 
         返回本次应发送的主动消息列表（已入档 memory）；adapter（CLI/QQ）
         负责展示/发送。供后台 tick 线程调用，幂等。``now`` 注入便于测试。
+
+        M3a：主动发起前过仲裁器——场景非 normal / 其他通道活跃 / 冷却 / 日上限则拦截。
         """
         msgs: list[str] = []
+        if not self.arbitrator.request("ritual", scene=self.scene_lock.current(),
+                                       other_channel_active=self.activity.blocking("qq")):
+            return msgs
         slot = self.greeter.due_greeting(now=now)
         if slot:
             # 8.7.5 个性化问候（结合最近记忆；LLM 不可用回退模板）
@@ -306,6 +328,8 @@ class Agent:
             msg = self.occasion.occasion_reaction(occasion, self.card.name)
             self.memory.store_message("assistant", msg, self.state.energy, self.state.mood)
             msgs.append(msg)
+        if msgs:
+            self.arbitrator.commit("ritual")
         return msgs
 
     def late_reply(self) -> str:
