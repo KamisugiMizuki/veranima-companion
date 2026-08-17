@@ -70,7 +70,9 @@ QQ 形态额外启用：定时问候/节庆纪念主动消息、离线思考（�
 .venv/Scripts/pip install -e . torch --index-url https://download.pytorch.org/whl/cu128
 
 # 3. 启动桌宠（壳 spawn 核心 + TTS 服务两个子进程，日志在日志窗口可看）
-python scripts/run_pet.py
+.venv/Scripts/python.exe scripts/run_pet.py
+# 注：run_pet.py 只是 Electron 壳启动器；壳 spawn 的核心/TTS 默认用 .venv/Scripts/python.exe
+#   （可用环境变量 VERANIMA_PY 覆盖 python 路径）
 ```
 
 - 桌宠三进程：Electron 壳（UI，主窗口+设置窗+日志窗）+ Python 核心（WS 8765，Agent/时空/在场）+ Qwen3-TTS 服务（9880），崩溃自动重启
