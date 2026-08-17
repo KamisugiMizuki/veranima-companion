@@ -1,0 +1,129 @@
+"""M5 需求翻译层（DESIGN 4.2 + M5_SPEC 2）：模糊指令 → 结构化任务工单。
+
+- 意图补完五维：目标澄清 / 来源路径 / 用户偏好注入 / 优先级约束 / 异常预案
+- 信息不足主动追问（附带猜测建议）
+- TASK_TRANSFER_PROTOCOL JSON 工单，发送后必须给「已安排」反馈
+"""
+from __future__ import annotations
+
+import json
+import re
+import uuid
+from dataclasses import dataclass, field, asdict
+from pathlib import Path
+
+# 可转交任务类型清单（M5_SPEC 2.3 触发条件；config.yaml task_types 可配置）
+DEFAULT_TASK_TYPES = ("文档处理", "信息检索", "系统操作", "自动化流程")
+
+# 触发关键词（能力匹配层判定：命中 → 任务管道）
+_TASK_TRIGGERS = (
+    "帮我", "帮我做", "帮我弄", "帮我写", "帮我整理", "帮我转", "帮我查", "帮我下载",
+    "生成", "整理一下", "转成", "转换成", "汇总", "做成", "处理一下",
+)
+
+
+@dataclass
+class WorkOrder:
+    """TASK_TRANSFER_PROTOCOL 工单（M5_SPEC 2.2 JSON 格式）。"""
+
+    goal: str                       # 目标澄清：可验证的结果
+    context: str = ""               # 补充上下文（来源路径/用户偏好）
+    constraints: dict = field(default_factory=dict)  # 优先级约束（deadline/format 等）
+    fallback: str = ""              # 异常预案
+    task_id: str = ""               # 自动生成
+    task_type: str = ""             # 任务类型（能力匹配层）
+    needs_clarification: list[str] = field(default_factory=list)  # 缺失维度
+
+    def to_json(self) -> str:
+        """工单序列化（TASK_TRANSFER_PROTOCOL JSON）。"""
+        d = asdict(self)
+        return json.dumps(d, ensure_ascii=False, indent=2)
+
+
+def is_task_request(user_text: str) -> bool:
+    """能力匹配层判定（M5_SPEC 2.3）：任务意图 → 转交任务管道。
+
+    规则：明确任务前缀（帮我/整理/转成等）优先——闲聊词仅在无任务前缀时生效。
+    """
+    has_task_prefix = any(t in user_text for t in _TASK_TRIGGERS)
+    if has_task_prefix:
+        return True
+    return False
+
+
+def classify_task_type(user_text: str, task_types: tuple = DEFAULT_TASK_TYPES) -> str:
+    """粗分类到任务类型清单（低配关键词；精确分类由 LLM 补全阶段做）。"""
+    if any(k in user_text for k in ("文档", "文件", "word", "excel", "ppt", "pdf", "表格", "周报")):
+        return "文档处理"
+    if any(k in user_text for k in ("查", "搜索", "找", "信息", "资料")):
+        return "信息检索"
+    if any(k in user_text for k in ("安装", "打开", "启动", "关闭", "删除", "复制", "移动", "重启")):
+        return "系统操作"
+    if any(k in user_text for k in ("自动", "每天", "定时", "批量", "脚本", "流水线")):
+        return "自动化流程"
+    return task_types[0] if task_types else ""
+
+
+def extract_source_path(user_text: str) -> str:
+    """来源路径提取（低配：引号/盘符/常见路径模式）。"""
+    m = re.search(r"[A-Za-z]:[\\/][^\s，。！？\"']+", user_text)
+    if m:
+        return m.group(0)
+    m = re.search(r"[\"']([^\"']+\.(?:xlsx?|docx?|pptx?|pdf|csv|md|txt))[\"']", user_text)
+    if m:
+        return m.group(1)
+    return ""
+
+
+def extract_format_pref(user_text: str) -> str:
+    """格式偏好提取（低配：'转成 X' / '做成 X'）。"""
+    m = re.search(r"(?:转成|转换成|做成|导出为)\s*([A-Za-z0-9]+)", user_text)
+    return m.group(1).lower() if m else ""
+
+
+def build_workorder(user_text: str, *, username: str = "", task_types: tuple = DEFAULT_TASK_TYPES) -> WorkOrder:
+    """模糊指令 → 工单（M5_SPEC 2.1 意图补完五维，低配规则版）。
+
+    ponytail: 低配规则提取 + needs_clarification 标记缺失维度；精确补全（LLM 版）
+    在需要时替换本函数（接口不变）。
+    """
+    wo = WorkOrder(
+        goal=user_text.strip(),
+        context="",
+        constraints={},
+        fallback="找不到文件时返回错误说明，不要编造",
+        task_id=f"{uuid.uuid4().hex[:8]}",
+        task_type=classify_task_type(user_text, task_types),
+    )
+    src = extract_source_path(user_text)
+    fmt = extract_format_pref(user_text)
+    if src:
+        wo.context += f"来源路径：{src}。"
+    if fmt:
+        wo.constraints["format"] = [fmt]
+        wo.context += f"目标格式：{fmt}。"
+    if username:
+        wo.context += f"用户：{username}。"
+
+    # 缺失维度标记（M5_SPEC 2.1：信息不足主动追问）
+    if not src and any(k in user_text for k in ("这个", "那个", "那份", "桌面", "文件")):
+        wo.needs_clarification.append("来源路径")
+    if not fmt and any(k in user_text for k in ("转成", "转换成", "做成", "导出")):
+        wo.needs_clarification.append("目标格式")
+    if not wo.task_type:
+        wo.needs_clarification.append("任务类型")
+    return wo
+
+
+def clarification_question(wo: WorkOrder) -> str:
+    """针对缺失维度生成追问（附带猜测建议，M5_SPEC 2.1）。"""
+    if not wo.needs_clarification:
+        return ""
+    parts = []
+    if "来源路径" in wo.needs_clarification:
+        parts.append("那个文件在哪？桌面上还是某个文件夹里？（发路径给我）")
+    if "目标格式" in wo.needs_clarification:
+        parts.append("想要什么格式？（比如 PDF / PPT / Word）")
+    if "任务类型" in wo.needs_clarification:
+        parts.append("具体要做什么？（整理 / 转格式 / 查资料 / 自动化）")
+    return "；".join(parts)

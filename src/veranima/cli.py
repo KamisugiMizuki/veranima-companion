@@ -69,10 +69,14 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("roles_action", choices=["list", "switch", "clone", "export", "import"])
     rp.add_argument("role_id", nargs="?")
     rp.add_argument("new_id", nargs="?")
+    tp = sub.add_parser("task", help="M5 任务管道：模糊指令 → 工单 → dsh")
+    tp.add_argument("text", nargs="+", help="任务描述")
     args = ap.parse_args(argv)
 
     if args.cmd == "roles":
         return _roles_cmd(args)
+    if args.cmd == "task":
+        return _task_cmd(args)
 
     # 默认：进入 CLI 对话
     cfg = load_config()
@@ -88,6 +92,29 @@ def main(argv: list[str] | None = None) -> int:
 
     CLIAdapter(agent).run()
     return 0
+
+
+def _task_cmd(args) -> int:
+    """M5 任务管道（M5_SPEC 2/3）：指令 → 工单 → 追问或转交 dsh。"""
+    from .core.workorder import build_workorder, clarification_question, is_task_request
+    from .tools.dsh_bridge import run_dsh_task
+
+    text = " ".join(args.text)
+    if not is_task_request(text):
+        print("（这是闲聊，不转交任务管道）")
+        return 0
+    wo = build_workorder(text)
+    print(f"工单: {wo.task_id} [{wo.task_type}]")
+    q = clarification_question(wo)
+    if q:
+        print(f"需澄清: {q}")
+        print("（回复补充信息后重新发起即可；演示模式直接转交 dsh）")
+    print("已安排，任务交给桌面助手处理中……")
+    result = run_dsh_task(wo.to_json())
+    print(f"结果: exit={result['exit_code']}")
+    out = result["output"]
+    print((out[:600] + "…") if len(out) > 600 else out)
+    return 0 if result["ok"] else 1
 
 
 if __name__ == "__main__":
