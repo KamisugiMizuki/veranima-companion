@@ -1,0 +1,5 @@
+stand 站立待机
+happy 开心脸红
+puzzled 疑惑
+sad 难过
+surprised 惊讶

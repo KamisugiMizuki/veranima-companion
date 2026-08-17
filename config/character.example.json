@@ -56,7 +56,14 @@
     "idle": "assets/pet/idle.png",
     "speaking": "assets/pet/speaking.png",
     "thinking": "assets/pet/thinking.png",
-    "sleeping": "assets/pet/sleeping.png"
+    "sleeping": "assets/pet/sleeping.png",
+    "expressions": {
+     "站立待机": "assets/pet/stand.png",
+     "开心脸红": "assets/pet/happy.png",
+     "疑惑": "assets/pet/puzzled.png",
+     "难过": "assets/pet/sad.png",
+     "惊讶": "assets/pet/surprised.png"
+    }
    }
   }
  }
