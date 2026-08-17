@@ -35,10 +35,10 @@ def main() -> int:
     agent = create_agent(cfg)
     llm = agent.llm
     if not llm.is_available():
-        print(f"警告：无法连接 LLM 服务（{cfg.get('llm', {}).get('base_url', 'http://localhost:1234/v1')}）。")
+        print(f"警告：无法连接 LLM 服务（{cfg.get('llm', {}).get('base_url', '未配置')}）。")
         print("QQ 服务仍将启动；LLM 恢复后消息处理自动可用。")
     elif not llm.ensure_model():
-        print(f"警告：模型 {cfg.get('llm', {}).get('model', '?')} 未加载，回复将提示唤醒。")
+        print(f"警告：模型 {cfg.get('llm', {}).get('model', '?')} 不存在，回复将提示唤醒。")
 
     think_cfg = qq_cfg.get("offline_think", {})
     offline = None

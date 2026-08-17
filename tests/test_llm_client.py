@@ -27,7 +27,7 @@ class _FakeTransport:
         return False
 
     def post(self, *args, **kwargs):
-        req = httpx.Request("POST", "http://localhost:12345/v1/chat/completions")
+        req = httpx.Request("POST", "https://api.example.com/v1/chat/completions")
         resp = httpx.Response(self._status, text=self._text, request=req)
         if self._status >= 400:
             raise httpx.HTTPStatusError(f"{self._status} error", request=req, response=resp)
@@ -36,7 +36,7 @@ class _FakeTransport:
 
 @pytest.fixture
 def client():
-    return LLMClient({"base_url": "http://localhost:12345/v1", "model": "qwen3-8b"})
+    return LLMClient({"base_url": "https://api.example.com/v1", "model": "qwen3-8b"})
 
 
 def _stub_http(monkeypatch, status: int, text: str) -> None:

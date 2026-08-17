@@ -18,7 +18,7 @@ from .memory.store import MemoryStore
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_BASE_URL = "http://localhost:12345/v1"
+DEFAULT_BASE_URL = ""
 DEFAULT_CARD_NAME = "小V"
 DEFAULT_CARD_FIRST_MES = "你好，我是小V。今天想聊点什么？"
 

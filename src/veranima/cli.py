@@ -21,10 +21,10 @@ def main() -> int:
 
     llm = agent.llm
     if not llm.is_available():
-        print(f"无法连接 LLM 服务（{cfg.get('llm', {}).get('base_url', 'http://localhost:1234/v1')}）。请先启动 LM Studio 并开启本地服务器。")
+        print(f"无法连接 LLM 服务（{cfg.get('llm', {}).get('base_url', '未配置')}）。请检查网络与 API 配置。")
         return 1
     if not llm.ensure_model():
-        print(f"模型 {cfg.get('llm', {}).get('model', '?')} 未加载，请在 LM Studio 中加载后重试")
+        print(f"模型 {cfg.get('llm', {}).get('model', '?')} 不可用，请在 config 中检查模型名")
         return 1
 
     CLIAdapter(agent).run()

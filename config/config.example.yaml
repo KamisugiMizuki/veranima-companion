@@ -1,12 +1,7 @@
 # Veranima 默认配置模板
 # 复制为 config.yaml 使用（config.yaml 不入库）；留空值使用代码内默认。
 #
-# LLM 三种模式（任一即可，无需搭本地环境）：
-#   1. 远程 API：填 base_url + api_key + model（DeepSeek/通义/硅基流动等 OpenAI 兼容服务）
-#   2. 本地 LM Studio：base_url=http://localhost:12345/v1，api_key 留空，需加载模型
-#   3. 本地 Ollama：base_url=http://localhost:11434/v1，api_key 留空
-
-# LLM（OpenAI 兼容）
+# LLM（OpenAI 兼容远程 API；DeepSeek/通义/硅基流动等，任一即可，无需本地环境）
 llm:
   base_url: "https://api.deepseek.com/v1"   # OpenAI 兼容 API 地址（示例：DeepSeek/通义/硅基流动）
   model: "deepseek-chat"                     # 模型名（远程 API 按服务商提供；示例：deepseek-chat / qwen-plus）

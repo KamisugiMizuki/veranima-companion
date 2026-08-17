@@ -483,7 +483,7 @@ def test_offline_think_generates_late_reply(adapter, agent):
 
 
 def test_offline_think_skips_when_model_unloaded(adapter, agent):
-    """模型未加载：离线思考不发送（不打扰）。"""
+    """模型不可用：离线思考不发送（不打扰）。"""
     agent.memory.store_message("user", "下周要去面试了", 80, "平静")
     agent.llm = FakeLLM()
     agent.llm.is_model_loaded = lambda: False

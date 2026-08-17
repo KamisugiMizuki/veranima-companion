@@ -81,8 +81,8 @@ class SentenceTransformersProvider:
 class OpenAIEmbedProvider:
     """OpenAI 兼容 embeddings API（/v1/embeddings）。
 
-    远程 API（DeepSeek/通义/硅基流动等）或本地 LM Studio 均可；
-    base_url/api_key 复用 llm 段配置。模型名如 'bge-m3'（LM Studio）/ 'text-embedding-v4'（通义）。
+    远程 API（DeepSeek/通义/硅基流动等）均可；
+    base_url/api_key 复用 llm 段配置。模型名如 'bge-m3' / 'text-embedding-v4'（通义）。
     """
 
     def __init__(self, base_url: str, api_key: str = "", model: str = "bge-m3", dim: int = 1024):

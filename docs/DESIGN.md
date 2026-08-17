@@ -244,7 +244,7 @@ MacroPhonic 的 Tauri 桌宠端**未调通**（当时卡在窗口行为/GPU flag
 | `core/agent.py`（handle 循环 + _short_task） | **重写**（插入 Filter 仿生层） |
 | `adapters/qq.py`（aiocqhttp + 防骚扰 + 表情包） | **复用**（接通道适配器） |
 | `core/proactive.py`（问候/纪念日/离线思考） | **复用改造**（→ 时空沉浸引擎） |
-| `llm/client.py`（httpx 直调 LM Studio，多模态） | **复用** |
+| `llm/client.py`（httpx 直调 OpenAI 兼容 API） | **复用**（已切远程，含鉴权） |
 | `core/stickers.py`（表情包库） | **复用**（QQ 端） |
 | `tools/search.py`（联网搜索） | **复用** |
 | `llm/prompts.py`（system prompt 组装） | **复用改造**（确信度措辞注入） |

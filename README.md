@@ -23,16 +23,10 @@ Python + SQLite(sqlite-vec/FTS5) + Qwen3-8B + bge-m3 embedding
 python -m venv .venv
 .venv/Scripts/pip install -e .
 
-# 2. 配置（二选一）
-#   方式 A：远程 API（无需本地模型环境）
+# 2. 配置（远程 OpenAI 兼容 API）
 cp config/config.example.yaml config/config.yaml
-# 编辑 config.yaml：llm.base_url / llm.api_key / llm.model（如 DeepSeek/通义）
+# 编辑 config.yaml：llm.base_url / llm.api_key / llm.model（如 DeepSeek/通义/硅基流动）
 # 并把 memory.embedding_model 改为 openai:<你的embedding模型>
-
-#   方式 B：本地 LM Studio
-#   下载 Qwen3-8B GGUF（ModelScope Qwen/Qwen3-8B-GGUF），放入 LM Studio 模型库
-#   bash scripts/run_lmstudio.sh
-#   （Windows 下也可运行 run_lmstudio.bat：菜单选 1 加载 / 2 卸载）
 
 # 3. 角色卡（默认使用内置卡，可选自定义）
 cp config/character.example.json config/character.json

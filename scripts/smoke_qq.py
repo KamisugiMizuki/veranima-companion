@@ -35,12 +35,12 @@ tmp = tempfile.mkdtemp()
 memory = MemoryStore(
     db_path=os.path.join(tmp, "smoke.db"),
     config={},
-    llm_config={"base_url": "http://localhost:12345/v1"},
+    llm_config={"base_url": "https://api.example.com/v1"},
 )
 agent = Agent(
     card=CharacterCard(name="小V", first_mes="hi"),
     memory=memory,
-    llm=LLMClient({"base_url": "http://localhost:12345/v1"}),
+    llm=LLMClient({"base_url": "https://api.example.com/v1"}),
     state=AgentState(),
     config={"chat": {"proactive_message_prob": 0.0}},
 )

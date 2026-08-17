@@ -57,14 +57,14 @@ def agent(tmp_path):
 
 
 def test_handle_llm_unavailable_returns_wakeup(agent, tmp_path):
-    """模型未加载（游戏模式 off）：前置检查拦截，返回唤醒文案，不发请求不触发自动重载。"""
+    """服务不可用：前置检查拦截，返回唤醒文案，不发请求。"""
     card, memory = agent
     llm = FakeLLM(error=LLMUnavailableError("model not loaded"), loaded=False)
     a = Agent(card=card, memory=memory, llm=llm, state=AgentState(), config={"chat": {"proactive_message_prob": 0.0}})
     r = a.handle("在吗？")
     assert "还没醒" in r.reply
-    assert "run_lmstudio" in r.reply
-    assert llm.calls == 0  # 关键：未加载时不发 chat 请求（避免 LM Studio 自动重载吃显存）
+    assert "API" in r.reply
+    assert llm.calls == 0  # 关键：不可用时不发 chat 请求
     msgs = memory.recent_messages(limit=4)
     assert len(msgs) == 2  # user + assistant 兜底
     assert msgs[-1]["role"] == "assistant"

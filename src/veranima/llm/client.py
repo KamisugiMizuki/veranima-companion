@@ -1,6 +1,6 @@
-"""LLM 客户端：OpenAI 兼容接口（httpx 直调）。
+"""LLM 客户端：OpenAI 兼容接口（httpx 直调远程 API）。
 
-兼容 LM Studio（http://localhost:1234/v1）与 Ollama（http://localhost:11434/v1）。
+配置 base_url/model/api_key 即可对接任意 OpenAI 兼容服务（DeepSeek/通义/硅基流动等）。
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 class LLMUnavailableError(RuntimeError):
-    """LLM 服务不可用：连接失败 / 模型未加载（游戏模式 off 时典型）。"""
+    """LLM 服务不可用：连接失败 / 鉴权失败。"""
 
 
 class LLMError(RuntimeError):
@@ -24,7 +24,7 @@ class LLMError(RuntimeError):
 class LLMClient:
     def __init__(self, config: dict):
         self.config = config
-        self.base_url = config.get("base_url", "http://localhost:1234/v1")
+        self.base_url = config.get("base_url", "")
         self.model = config.get("model", "qwen3:8b")
         self.api_key = config.get("api_key", "")
         self.temperature = config.get("temperature", 0.8)
@@ -74,10 +74,9 @@ class LLMClient:
             logger.error("LLM unavailable: %s", e)
             raise LLMUnavailableError(str(e)) from e
         except httpx.HTTPStatusError as e:
-            # 4xx/5xx：LM Studio 模型未加载时返回 400/404。
-            # 但 400 也可能是 jinja 模板拒绝消息序列（"No user query found in
-            # messages" 等）——那是请求内容问题，模型其实加载着；归 LLMError，
-            # 避免误导性的"模型没在运行"唤醒兜底（2026-08-04 修复）。
+            # 4xx/5xx：远程 API 返回 400 可能是请求内容问题（模型其实在线），
+            # 401/403 是鉴权失败。400 且非鉴权类时归 LLMError 而非 Unavailable，
+            # 避免误导性的"服务不可用"唤醒兜底（2026-08-04 修复）。
             body = (e.response.text or "").lower()
             is_template_error = e.response.status_code == 400 and (
                 "jinja" in body or "prompt template" in body or "template" in body
