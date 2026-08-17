@@ -57,6 +57,8 @@ def _load_model():
         model_path,
         device_map=_device,
         dtype=torch.bfloat16 if _device == "cuda" else torch.float32,
+        # sdpa 实测比 eager 快 ~15%（attention 非瓶颈；flash-attn 编译收益有限不值 2-3h）
+        attn_implementation="sdpa",
     )
     logger.info("model loaded")
     return _model, _tokenizer, _device
