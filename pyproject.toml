@@ -20,6 +20,7 @@ dependencies = [
     "fastapi>=0.110",            # 本地 TTS 服务（OpenAI 兼容 /v1/audio/speech）
     "uvicorn>=0.27",             # 本地 TTS 服务 ASGI
     "sentencepiece>=0.1.99",     # Qwen3-TTS 分词
+    "qwen-tts>=0.1",             # Qwen3-TTS 推理（transformers 无内置支持）
 ]
 
 [build-system]

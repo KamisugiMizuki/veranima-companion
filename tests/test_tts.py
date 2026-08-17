@@ -156,7 +156,7 @@ def test_tts_server_synthesize_mock(monkeypatch):
     from fastapi.testclient import TestClient
     from veranima.tts import server as tts_server
     from veranima.tts.server import create_app
-    monkeypatch.setattr(tts_server, "synthesize", lambda text: b"RIFF mock-wav")
+    monkeypatch.setattr(tts_server, "synthesize", lambda text, voice="alloy": b"RIFF mock-wav")
     client = TestClient(create_app())
     r = client.post("/v1/audio/speech", json={"model": "qwen-tts", "input": "你好", "response_format": "wav"})
     assert r.status_code == 200

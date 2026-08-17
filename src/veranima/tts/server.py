@@ -4,7 +4,10 @@
   {"model": "...", "input": "文本", "voice": "...", "response_format": "wav"}
   → 音频 bytes
 
-模型：data/models/qwen3-tts/Qwen3-TTS-12Hz-1.7B-Base（transformers 加载）。
+模型：data/models/qwen3-tts/Qwen3-TTS-12Hz-1.7B-CustomVoice
+（qwen-tts 包；CustomVoice 内置 9 种音色，无需参考音频。
+  音色映射：alloy→Vivian（中文明亮女声）、echo→Serena（温柔女声）等，未识别回退 Vivian）
+
 启动：python -m veranima.tts.server --port 9880
 """
 from __future__ import annotations
@@ -17,9 +20,19 @@ from starlette.requests import Request
 
 logger = logging.getLogger("veranima.tts.server")
 
-# 模型路径（相对项目根；环境变量可覆盖）
-_MODEL_DIR = "data/models/qwen3-tts/Qwen3-TTS-12Hz-1.7B-Base"
+# 模型路径（相对项目根）
+_MODEL_DIR = "data/models/qwen3-tts/Qwen3-TTS-12Hz-1.7B-CustomVoice"
 _SPEECH_TOKENIZER_DIR = "data/models/qwen3-tts/Qwen3-TTS-Tokenizer-12Hz"
+
+# OpenAI voice → Qwen3-TTS speaker 映射（CustomVoice 内置音色）
+VOICE_MAP = {
+    "alloy": "Vivian",     # 明亮、略带锐利的年轻女声（中文）
+    "echo": "Serena",      # 温暖柔和的年轻女声（中文）
+    "fable": "Vivian",
+    "onyx": "Uncle_Fu",    # 低沉圆润的男声
+    "nova": "Serena",
+    "shimmer": "Vivian",
+}
 
 _model = None
 _tokenizer = None
@@ -32,38 +45,44 @@ def _load_model():
     if _model is not None:
         return _model, _tokenizer, _device
     import torch
-    from transformers import AutoTokenizer, Qwen3TTSForConditionalGeneration
+    from qwen_tts import Qwen3TTSModel, Qwen3TTSTokenizer
     from veranima.config import ROOT
 
     model_path = ROOT / _MODEL_DIR
     tok_path = ROOT / _SPEECH_TOKENIZER_DIR
     _device = "cuda" if torch.cuda.is_available() else "cpu"
-    logger.info("loading Qwen3-TTS from %s (device=%s) ...", model_path, _device)
-    _tokenizer = AutoTokenizer.from_pretrained(tok_path)
-    _model = Qwen3TTSForConditionalGeneration.from_pretrained(
-        model_path, torch_dtype=torch.float16 if _device == "cuda" else torch.float32
-    ).to(_device)
+    logger.info("loading Qwen3-TTS CustomVoice from %s (device=%s) ...", model_path, _device)
+    _tokenizer = Qwen3TTSTokenizer.from_pretrained(tok_path)
+    _model = Qwen3TTSModel.from_pretrained(
+        model_path,
+        device_map=_device,
+        dtype=torch.bfloat16 if _device == "cuda" else torch.float32,
+    )
     logger.info("model loaded")
     return _model, _tokenizer, _device
 
 
-def synthesize(text: str) -> bytes:
-    """文本 → WAV bytes。"""
-    import torch
+def synthesize(text: str, voice: str = "alloy") -> bytes:
+    """文本 → WAV bytes。voice 用 CustomVoice 内置音色。"""
+    import io as _io
+    import numpy as np
 
-    model, tokenizer, device = _load_model()
-    inputs = tokenizer(text, return_tensors="pt").to(device)
-    with torch.no_grad():
-        output = model.generate(**inputs)
-    audio = output[0].cpu().numpy()
-    # 转 WAV（16kHz mono 16bit）
+    model, _tok, _ = _load_model()
+    speaker = VOICE_MAP.get(voice, "Vivian")
+    # CustomVoice 生成（中文；auto 语言自适应）
+    wavs, sr = model.generate_custom_voice(
+        text=text,
+        language="Chinese",
+        speaker=speaker,
+    )
+    audio = np.asarray(wavs[0], dtype=np.float32)
+    # 转 WAV（16bit PCM）
     import wave
-    buf = io.BytesIO()
+    buf = _io.BytesIO()
     with wave.open(buf, "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
-        wf.setframerate(16000)
-        import numpy as np
+        wf.setframerate(sr)
         pcm = (np.clip(audio, -1, 1) * 32767).astype(np.int16)
         wf.writeframes(pcm.tobytes())
     return buf.getvalue()
@@ -72,6 +91,7 @@ def synthesize(text: str) -> bytes:
 def create_app():
     """FastAPI 应用（/v1/audio/speech）。"""
     from fastapi import FastAPI, HTTPException
+    from fastapi.responses import Response
 
     app = FastAPI(title="Veranima TTS")
 
@@ -88,23 +108,22 @@ def create_app():
         text = str(body.get("input") or "").strip()
         if not text:
             raise HTTPException(400, "input required")
-        # response_format 只支持 wav（Qwen3-TTS 原生输出波形）
         fmt = body.get("response_format", "wav")
         if fmt not in ("wav",):
             raise HTTPException(400, f"unsupported response_format: {fmt}")
+        voice = str(body.get("voice") or "alloy")
         try:
-            audio = await _run_sync(synthesize, text)
+            audio = await _run_sync(synthesize, text, voice)
         except Exception as e:
             logger.error("synthesize failed: %s", e)
             raise HTTPException(500, str(e))
-        from fastapi.responses import Response
         return Response(content=audio, media_type="audio/wav")
 
     return app
 
 
 async def _run_sync(fn, *args):
-    """线程池跑 CPU/GPU 推理（不阻塞事件循环）。"""
+    """线程池跑 GPU 推理（不阻塞事件循环）。"""
     import asyncio
     return await asyncio.to_thread(fn, *args)
 

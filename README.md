@@ -56,9 +56,9 @@ QQ 形态额外启用：定时问候/节庆纪念主动消息、8.7.4 离线思�
 ```bash
 # 1. 本地 TTS 模型（clone 后需手动放入，gitignore 排除）：
 #    从 ModelScope/HF 下载 Qwen3-TTS 到 data/models/qwen3-tts/：
-#      Qwen3-TTS-12Hz-1.7B-Base/（推理模型，~4.5GB）
+#      Qwen3-TTS-12Hz-1.7B-CustomVoice/（内置 9 种音色，无需参考音频，~4.5GB）
 #      Qwen3-TTS-Tokenizer-12Hz/（分词器）
-#    （0.6B-Base 也可用但效果略差；1.7B latency 与 0.6B 接近）
+#    （1.7B 效果好且 latency 与 0.6B 接近；如需自定义音色可换 Base + 参考音频）
 
 # 2. 依赖（含 CUDA torch；无 GPU 则 CPU 可用但慢）
 .venv/Scripts/pip install -e . torch --index-url https://download.pytorch.org/whl/cu128
