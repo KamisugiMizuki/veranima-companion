@@ -7,11 +7,10 @@ from veranima.stt.client import STTClient, STTUnavailableError
 
 
 def test_stt_requires_base_url():
-    """未配置 base_url → 明确报错（不静默）。"""
+    """未配置 base_url → 返回空串（提示但不报错，调用方降级）。"""
     c = STTClient({})
     assert c.is_available() is False
-    with pytest.raises(STTUnavailableError):
-        c.transcribe(b"RIFF....")
+    assert c.transcribe(b"RIFF....") == ""
 
 
 def test_stt_transcribe_mock(monkeypatch):
@@ -94,7 +93,7 @@ def test_stt_language_param(monkeypatch):
 
 
 def test_stt_http_error(monkeypatch):
-    """HTTP 错误 → STTUnavailableError。"""
+    """HTTP 错误 → STTUnavailableError（配置了但服务故障仍报错）。"""
     import httpx
 
     class FakeResponse:

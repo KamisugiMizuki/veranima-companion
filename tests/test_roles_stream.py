@@ -4,7 +4,16 @@ import json
 import pytest
 
 from veranima.core.roles import active_role, list_roles, switch_role
-from veranima.llm.client import _split_sentences
+from veranima.llm.client import LLMClient, _split_sentences
+
+
+def test_llm_unconfigured_returns_hint():
+    """LLM 未配置 base_url → 返回缺省提示文案（不报错）。"""
+    c = LLMClient({})
+    reply = c.chat([{"role": "user", "content": "hi"}])
+    assert "未配置" in reply or "config.yaml" in reply
+    chunks = c.stream_chat([{"role": "user", "content": "hi"}])
+    assert isinstance(chunks, list) and len(chunks) == 1
 
 
 # ---------- 多角色注册表 ----------

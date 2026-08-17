@@ -26,10 +26,10 @@
 ```
 
 **独立性约定**：
-- **目录独立**：桌面 Agent 作为独立模块（`D:\Hermes_workspace\dsh_import` 或 veranima 仓库外独立目录），不混入 veranima 的 `src/`
+- **目录独立**：桌面 Agent 装在项目内 `dsh/` 目录（`dsh/` 已 gitignore，不入库；clone 后按 README 安装 dsh npm 包到该目录）——代码与 veranima 主体分离，但随项目分发
 - **配置独立**：dsh 用自身的 config/headless profile + 独立环境变量；**不读** veranima config.yaml
 - **API 独立**：`DEEPSEEK_BASE_URL`/`DEEPSEEK_API_KEY` 独立设置（可与 veranima 的 LLM 提供商不同——veranima 用 gemai.cc 远程，dsh 可用 DeepSeek 官方 key 或本地模型）
-- **依赖独立**：dsh 是 npm 包（node_modules 自带），不进 veranima pyproject
+- **依赖独立**：dsh 是 npm 包（dsh/node_modules 自带，gitignore），不进 veranima pyproject
 - **进程独立**：dsh 任务在独立子进程跑，与桌宠核心/QQ 无共享状态
 
 ## 2. 需求翻译层（DESIGN 4.2 细化）
@@ -94,10 +94,16 @@ DEEPSEEK_API_KEY=sk-xxx                       # 本地模型可任意值；DeepS
 
 ```python
 # veranima/tools/dsh_bridge.py（仅此一个文件接触 dsh）
+import subprocess, os
+
+DSH_DIR = "dsh"  # 项目内 dsh 安装目录（gitignore）
+
 def run_dsh_task(workorder: dict) -> dict:
     """工单 → dsh headless 子进程 → 结果。超时/失败返回错误码。"""
+    env = dict(os.environ)
+    env["PATH"] = os.path.join(os.getcwd(), DSH_DIR, "node_modules", ".bin") + os.pathsep + env.get("PATH", "")
     cmd = ["dsh", "--profile", "headless", workorder["prompt"]]
-    # subprocess.run，timeout=workorder 的 deadline，stdout 捕获
+    # subprocess.run，cwd=dsh/，timeout=workorder 的 deadline，stdout 捕获
     return {"task_id": workorder["task_id"], "output": out, "exit_code": rc}
 ```
 

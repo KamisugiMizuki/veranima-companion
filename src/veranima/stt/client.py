@@ -43,9 +43,11 @@ class STTClient:
         """音频 bytes → 文本（OpenAI /v1/audio/transcriptions 格式）。
 
         multipart：file + model [+ language]。返回识别文本；失败抛 STTUnavailableError。
+        未配置 base_url：logger 提示「STT 未配置」并返回 ""（调用方降级），不报错。
         """
         if not self.base_url:
-            raise STTUnavailableError("STT 未配置 base_url")
+            logger.info("STT 未配置（config.yaml stt.base_url 留空）——跳过识别，调用方应降级处理")
+            return ""
         # base_url 可能带 /v1（OpenAI 惯例）——避免 /v1/v1 重复（与 TTS client 同款）
         url = self.base_url if self.base_url.endswith("/audio/transcriptions") else (
             f"{self.base_url}/audio/transcriptions" if self.base_url.endswith("/v1")

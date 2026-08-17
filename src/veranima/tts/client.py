@@ -39,10 +39,14 @@ class TTSClient:
         """base_url 配置了即可用（连接性由 synthesize 错误暴露）。"""
         return bool(self.base_url)
 
-    def synthesize(self, text: str, *, voice: str | None = None) -> bytes:
-        """文本 → 音频 bytes（OpenAI /v1/audio/speech 格式）。"""
+    def synthesize(self, text: str, *, voice: str | None = None) -> bytes | None:
+        """文本 → 音频 bytes（OpenAI /v1/audio/speech 格式）。
+
+        未配置 base_url：logger 提示「TTS 未配置」并返回 None（调用方降级为纯气泡），不报错。
+        """
         if not self.base_url:
-            raise TTSUnavailableError("TTS 未配置 base_url")
+            logger.info("TTS 未配置（config.yaml tts.base_url 留空）——跳过合成，调用方应降级处理")
+            return None
         payload = {
             "model": self.model,
             "input": text,

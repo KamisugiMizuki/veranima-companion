@@ -48,7 +48,11 @@ class LLMClient:
         错误分类：连接失败/模型未加载 → LLMUnavailableError；在线但生成失败 → LLMError。
         空 content 也抛 LLMError（Qwen3 thinking 模型：短任务预算可能全被 reasoning 吃掉，
         返回空串会让调用方发出空回复；统一由调用方兜底）。
+        未配置 base_url：logger 提示并返回缺省提示文案（不报错，调用方可直接发出）。
         """
+        if not self.base_url:
+            logger.info("LLM 未配置（config.yaml llm.base_url 留空）——返回缺省提示")
+            return "（模型连接尚未配置：请在 config.yaml 填写 llm.base_url / llm.api_key）"
         msg = self.chat_raw(messages, max_tokens=max_tokens, temperature=temperature)
         content = (msg.get("content") or "").strip()
         if not content:
@@ -63,7 +67,11 @@ class LLMClient:
 
         返回句子列表（完整回复按句切分）；API 不支持 stream / 流中断时回退
         一次性 chat（降级：单元素列表）。用于桌宠打字机 + TTS 逐句。
+        未配置 base_url：与 chat 一致返回缺省提示单句（不报错）。
         """
+        if not self.base_url:
+            logger.info("LLM 未配置（config.yaml llm.base_url 留空）——流式返回缺省提示")
+            return ["（模型连接尚未配置：请在 config.yaml 填写 llm.base_url / llm.api_key）"]
         payload = {
             "model": self.model,
             "messages": messages,

@@ -35,6 +35,7 @@ logs/
 *.gguf
 *.safetensors
 data/models/
+dsh/
 
 # 编辑器 / 系统文件
 .idea/

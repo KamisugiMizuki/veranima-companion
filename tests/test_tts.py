@@ -7,11 +7,10 @@ from veranima.tts.client import TTSClient, TTSUnavailableError
 
 
 def test_tts_requires_base_url():
-    """未配置 base_url → 不可用。"""
+    """未配置 base_url → 返回 None（提示不报错，调用方降级纯气泡）。"""
     c = TTSClient({})
     assert c.is_available() is False
-    with pytest.raises(TTSUnavailableError):
-        c.synthesize("你好")
+    assert c.synthesize("你好") is None
 
 
 def test_tts_synthesize_success(monkeypatch):
