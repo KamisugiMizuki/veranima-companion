@@ -367,14 +367,15 @@ ipcMain.on('pet-event', (e, payload) => {
 // ---------- health：渲染进程内存监控 + 自愈 ----------
 function healthCheck() {
   if (!win || win.isDestroyed()) return;
-  win.webContents.getProcessMemoryInfo().then((info) => {
-    const rssMB = Math.round(info.workingSetSize / 1024 / 1024);
-    console.log(`[health] renderer RSS: ${rssMB}MB`);
-    if (rssMB > MEMORY_LIMIT_MB) {
-      console.warn(`[health] RSS ${rssMB}MB > ${MEMORY_LIMIT_MB}MB, reloading renderer`);
-      win.reload(); // 壳无状态，重启无损
-    }
-  }).catch(() => {});
+  // Electron 34+ 移除了 webContents.getProcessMemoryInfo，改用 app.getAppMetrics()
+  const pid = win.webContents.getOSProcessId();
+  const metric = app.getAppMetrics().find((m) => m.pid === pid);
+  const rssMB = metric ? Math.round(metric.memory.workingSetSize / 1024 / 1024) : 0;
+  console.log(`[health] renderer RSS: ${rssMB}MB`);
+  if (rssMB > MEMORY_LIMIT_MB) {
+    console.warn(`[health] RSS ${rssMB}MB > ${MEMORY_LIMIT_MB}MB, reloading renderer`);
+    win.reload(); // 壳无状态，重启无损
+  }
 }
 
 // ---------- 生命周期 ----------
