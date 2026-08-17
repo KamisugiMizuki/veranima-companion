@@ -149,6 +149,7 @@ class Arbitrator:
         self._cooldown: dict[str, float] = {}
         self._today_count = 0
         self._today_key = ""
+        self._fail_streak: dict[str, int] = {}  # 连续失败计数（4.7 连续失败抑制）
         self._now = now
 
     def _t(self) -> float:
@@ -182,9 +183,23 @@ class Arbitrator:
         return True
 
     def commit(self, mechanism: str) -> None:
-        """发起成功：记冷却 + 日计数。"""
+        """发起成功：记冷却 + 日计数 + 失败计数清零。"""
         self._cooldown[mechanism] = self._t() + self.COOLDOWN_SECONDS
         self._today_count += 1
+        self._fail_streak[mechanism] = 0
+
+    def note_failure(self, mechanism: str) -> None:
+        """连续失败抑制（DESIGN 4.7）：连续 2 次被无视/打断 → 冷却指数增长。
+
+        第 n 次连续失败 → 冷却 = 30min × 2^(n-2)（第 2 次起翻倍）。
+        """
+        n = self._fail_streak.get(mechanism, 0) + 1
+        self._fail_streak[mechanism] = n
+        if n >= 2:
+            grow = self.COOLDOWN_SECONDS * (2 ** (n - 1))  # 第 2 次=60min，第 3 次=120min…
+            self._cooldown[mechanism] = self._t() + grow
+            logger.info("arbitrator: %s failed %d×, cooldown extended to %.0f min",
+                        mechanism, n, grow / 60)
 
     def sort(self, requests: list[str]) -> list[str]:
         """按优先级排序（conflict 最先）。"""
