@@ -19,5 +19,4 @@ contextBridge.exposeInMainWorld('pet', {
   restartCore: () => ipcRenderer.send('core-restart'),
   // renderer → main
   sendEvent: (payload) => ipcRenderer.send('pet-event', payload),
-  setIgnoreMouse: (ignore) => ipcRenderer.send('set-ignore-mouse', ignore),
 });

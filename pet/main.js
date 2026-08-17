@@ -163,8 +163,8 @@ function createWindow() {
   });
   win.setAlwaysOnTop(true, 'screen-saver'); // 尽量压在普通窗口上
   win.loadFile('index.html');
-  // 点击穿透：默认整个窗口穿透（形象区域由 renderer 通过 setIgnoreMouseEvents(false) 局部恢复）
-  win.setIgnoreMouseEvents(true, { forward: true });
+  // 鼠标：整窗捕获（不穿透）——形象可拖拽/右键/点击；sakura 同款
+  // （注：Electron 的 setIgnoreMouseEvents forward 仅在 macOS 有效，Windows 穿透会锁死交互）
   // 位置持久化：move/resize → 存 userData/win-pos.json
   win.on('move', saveWindowPos);
   win.on('resize', saveWindowPos);
@@ -364,11 +364,6 @@ ipcMain.on('pet-event', (e, payload) => {
     ws.send(JSON.stringify(payload));
   }
 });
-// 形象区域鼠标交互：穿透↔捕获切换（renderer 拖动/点击时恢复）
-ipcMain.on('set-ignore-mouse', (e, ignore) => {
-  win && win.setIgnoreMouseEvents(ignore, { forward: true });
-});
-
 // ---------- health：渲染进程内存监控 + 自愈 ----------
 function healthCheck() {
   if (!win || win.isDestroyed()) return;

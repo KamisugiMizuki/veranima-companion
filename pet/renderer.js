@@ -81,40 +81,24 @@ window.pet.onSpeakDone(() => {
   }
 });
 
-// ---------- 形象区域交互（穿透 ↔ 捕获） ----------
-// Electron 局部穿透方案：窗口默认穿透 + forward 模式（鼠标移动仍转发给 renderer），
-// renderer 检测鼠标是否在形象上 → 在则恢复捕获，不在则保持穿透。
+// ---------- 形象区域交互（整窗捕获：拖拽/戳一下/右键；sakura 同款） ----------
 const pet = document.getElementById('pet');
-let mouseInPet = false;
 
+// 拖拽移动窗口（透明窗不能用 -webkit-app-region；renderer 上报位移 → main setBounds）
+avatar.addEventListener('mousedown', (e) => {
+  isDragging = true;
+  dragStart = { x: e.screenX, y: e.screenY };
+});
 window.addEventListener('mousemove', (e) => {
-  // forward 模式下仍能收到 mousemove（事件被转发）；检测是否在形象区域上
-  const rect = pet.getBoundingClientRect();
-  const inside = e.clientX >= rect.left && e.clientX <= rect.right &&
-                 e.clientY >= rect.top && e.clientY <= rect.bottom;
-  if (inside !== mouseInPet) {
-    mouseInPet = inside;
-    window.pet.setIgnoreMouse(!inside);
-  }
-  // 拖拽中持续上报位移（main 移动窗口；窗口外也有效——screenX/Y 全局坐标）
   if (isDragging && dragStart) {
     const dx = e.screenX - dragStart.x;
     const dy = e.screenY - dragStart.y;
     window.pet.sendEvent({ type: 'drag', dx, dy });
   }
 });
-
-// 拖拽移动窗口（MVP：利用 electron 的 -webkit-app-region 不可用于透明窗的局部；
-// 简单方案：拖拽时让 main 移动窗口——renderer 发事件，main 处理）
-avatar.addEventListener('mousedown', (e) => {
-  isDragging = true;
-  dragStart = { x: e.screenX, y: e.screenY };
-});
 window.addEventListener('mouseup', () => {
   isDragging = false;
   dragStart = null;
-  // 鼠标可能已经不在形象上（拖出窗口）→ 恢复穿透
-  if (!mouseInPet) window.pet.setIgnoreMouse(true);
 });
 
 // 左键单击 = 戳一下（触发核心互动；M3_SPEC 3.5 交互）
