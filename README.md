@@ -19,7 +19,7 @@
 
 ## 技术栈
 
-Python + SQLite(sqlite-vec/FTS5) + 远程 OpenAI 兼容 LLM（DeepSeek/通义/硅基流动等）+ bge-m3 embedding（本地）+ Electron 桌宠壳 + Qwen3-TTS 1.7B（本地语音）
+Python + SQLite(sqlite-vec/FTS5) + 远程 OpenAI 兼容 LLM（DeepSeek/通义/硅基流动等）+ bge-m3 embedding（本地）+ Electron 桌宠壳 + Qwen3-TTS 1.7B（本地语音）+ STT 接口就绪（OpenAI 兼容，未接模型）
 
 ## 快速开始（CLI / QQ）
 
@@ -88,14 +88,33 @@ python scripts/run_pet.py
 
 ## 状态
 
-**M0-M4 全部完成**：
+**M0-M5 全部完成**：
 
 | 里程碑 | 内容 |
 |---|---|
 | M0 | 仓库初始化 + 设计文档 + 可复用模块拷贝（bge-m3 embedding 本地化） |
-| M1 | Filter 仿生层：记忆断片（四档确信度+噪声注入）/ 打断决策（话题复现 L0-L3 分级+自愈冷却）/ 表达瑕疵（撤回限频） |
-| M2 | 通道适配层：handle(channel) 通道感知 + IM 渲染器 + 跨通道共享核心 + 现实行动边界 |
+| M1 | Filter 仿生层：记忆断片（四档确信度+噪声注入+追问可逆）/ 打断决策（话题复现 L0-L3 分级+自愈冷却）/ 表达瑕疵（撤回限频+延迟纠错） |
+| M2 | 通道适配层：handle(channel) 通道感知 + IM 渲染器 + 跨通道共享核心 + 现实行动边界 + 能力匹配层（擅长/略知/完全不懂） |
 | M3 | 桌宠 MVP：Electron 壳（airi 式多窗口）+ 本地 TTS（Qwen3-TTS 1.7B）+ 时空沉浸（场景锁/心跳/互斥）+ 角色包/多角色 + 流式输出 + 无缝衔接 |
 | M4 | 视觉注意力（锚点/三态/L0-L3 分级）+ 表情标签驱动（portrait/tone 结构化输出 + 立绘说明.txt 批量映射） |
+| M5 | 需求翻译层（LLM 意图补全 + 工单协议）+ 桌面 Agent（DeepSeek Harness 独立模块，装在 dsh/，API 独立）+ 任务结果角色化转述 |
 
-M5（需求翻译层 + 桌面 Agent）暂缓。测试基线 226 passed。
+测试基线 252 passed。M5 之后：studio（角色工作室 GUI）为独立子模块暂缓，触发条件见 DESIGN 4.12。
+
+## 桌面 Agent（M5，dsh）
+
+```bash
+# 1. 安装 dsh 到项目 dsh/ 目录（gitignore，clone 后需手动装）
+cd dsh
+npm install @deepseek-ai/dsh@0.1.0-rc.6
+
+# 2. 设置 dsh 独立 API（不读 veranima config.yaml）
+#    环境变量：DEEPSEEK_BASE_URL / DEEPSEEK_API_KEY
+
+# 3. 使用（CLI 任务管道：指令 → 工单 → dsh 执行）
+.venv/Scripts/python -m veranima.cli task "帮我查一下今天的天气"
+```
+
+## STT 语音输入（OpenAI 兼容接口，未接模型）
+
+config.yaml `stt` 段已就绪（`base_url` 留空 = 未接入，不报错返回空）：填远程/本地 OpenAI 兼容 `/v1/audio/transcriptions` 端点后即可使用。
