@@ -27,19 +27,22 @@ if not exist ".venv\Scripts\python.exe" (
 )
 
 set "VCVARS=C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
-if not exist "%VCVARS%" (
-    echo [ERROR] VS Build Tools not found: %VCVARS%
-    echo Install Visual Studio Build Tools with C++ desktop workload.
-    pause & exit /b 1
-)
+rem NOTE: VCVARS contains "(x86)" - never expand it inside a parenthesized
+rem if-block, cmd parses the parens as block nesting and dies on "\Microsoft".
+if not exist "%VCVARS%" goto :err_vcvars
 
 rem ---- 1. enter MSVC env ----
 call "%VCVARS%" >nul 2>&1
-if errorlevel 1 (
-    echo [ERROR] vcvars64.bat failed
-    pause & exit /b 1
-)
+if errorlevel 1 goto :err_vcvars
 echo [OK] MSVC env ready
+goto :after_vcvars
+
+:err_vcvars
+echo [ERROR] VS Build Tools not found: %VCVARS%
+echo Install Visual Studio Build Tools with C++ desktop workload.
+pause & exit /b 1
+
+:after_vcvars
 
 rem ---- 2. ninja ----
 set "NINJA_DIR=.venv\Lib\site-packages\ninja"
