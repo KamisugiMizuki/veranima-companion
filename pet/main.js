@@ -139,8 +139,12 @@ function startTTS() {
     scheduleTTSRestart();
     return;
   }
-  ttsProc.stdout.on('data', (d) => pushLog('tts', d.toString().trimEnd()));
-  ttsProc.stderr.on('data', (d) => pushLog('tts-err', d.toString().trimEnd()));
+  // GPT-SoVITS runtime 输出按系统 GBK（-I 隔离模式忽略 PYTHONIOENCODING）；
+  // 按 UTF-8 解会变锟斤拷（中文+日文假名混杂）。TextDecoder('gbk') 还原。
+  // stream:true 处理跨 chunk 的多字节字符（否则切断处出 replacement char）。
+  const ttsDec = new TextDecoder('gbk');
+  ttsProc.stdout.on('data', (d) => pushLog('tts', ttsDec.decode(d, { stream: true }).trimEnd()));
+  ttsProc.stderr.on('data', (d) => pushLog('tts-err', ttsDec.decode(d, { stream: true }).trimEnd()));
   ttsProc.on('exit', (code, signal) => {
     pushLog('shell', `tts exited (code=${code}, signal=${signal}); restarting in ${reconnectDelay}ms`);
     ttsProc = null;
