@@ -263,36 +263,45 @@ class PetServer:
                 from veranima.core.vision import VisualAttention
                 va = VisualAttention()
                 await asyncio.sleep(10)  # 启动后延迟（等核心就绪）
+                logger.info("visual: 注意力循环启动 anchors=%s", [a.name for a in va.anchors])
                 while True:
                     try:
-                        va.tick(presence=True)
+                        state = va.tick(presence=True)
                         if va.state == "wander":
                             await asyncio.sleep(30)
                             continue
                         changed = await asyncio.to_thread(va.significant_change)
-                        if changed and self._agent is not None:
-                            # L3：远程多模态理解屏幕（QQ 活跃时跳过——通道互斥）
-                            qq_active = self._agent.activity.active("qq") if self._agent.activity else False
-                            if not qq_active:
-                                obs = await asyncio.to_thread(va.observe_screen, self._agent.llm)
-                                if obs and obs.note:
-                                    # 接入（2026-08-19 补）：观察注入 episodic 记忆 →
-                                    # 对话时检索自动带出（prompts 层语义/情节注入）；
-                                    # 并按 tag 触发联想式主动发起（agent.proactive_from_visual）
-                                    try:
-                                        self._agent.memory.store(
-                                            "episodic",
-                                            f"[屏幕观察] {obs.note}（{obs.tag}）",
-                                            importance=0.5, confidence=0.7,
-                                            provenance="visual-attention",
-                                            category="screen",
-                                        )
-                                        proactive = await asyncio.to_thread(
-                                            self._agent.proactive_from_visual, obs.tag)
-                                        if proactive:
-                                            await self.speak(proactive)
-                                    except Exception as e:
-                                        logger.warning("visual observe inject failed: %s", e)
+                        if changed:
+                            logger.info("visual: 屏幕变化触发（state=%s）", state)
+                            if self._agent is not None:
+                                # L3：远程多模态理解屏幕（QQ 活跃时跳过——通道互斥）
+                                qq_active = self._agent.activity.active("qq") if self._agent.activity else False
+                                if not qq_active:
+                                    obs = await asyncio.to_thread(va.observe_screen, self._agent.llm)
+                                    if obs and obs.note:
+                                        # 接入（2026-08-19 补）：观察注入 episodic 记忆 →
+                                        # 对话时检索自动带出（prompts 层语义/情节注入）；
+                                        # 并按 tag 触发联想式主动发起（agent.proactive_from_visual）
+                                        try:
+                                            self._agent.memory.store(
+                                                "episodic",
+                                                f"[屏幕观察] {obs.note}（{obs.tag}）",
+                                                importance=0.5, confidence=0.7,
+                                                provenance="visual-attention",
+                                                category="screen",
+                                            )
+                                            logger.info("visual: 观察注入记忆 tag=%s note=%s", obs.tag, obs.note[:60])
+                                            proactive = await asyncio.to_thread(
+                                                self._agent.proactive_from_visual, obs.tag)
+                                            if proactive:
+                                                logger.info("visual: 联想主动发起: %s", proactive[:60])
+                                                await self.speak(proactive)
+                                        except Exception as e:
+                                            logger.warning("visual observe inject failed: %s", e)
+                                else:
+                                    logger.info("visual: 屏幕变化但 QQ 活跃，跳过 L3 观察")
+                        else:
+                            logger.info("visual: tick 无显著变化（state=%s，%.0fs 后下次）", state, va.interval())
                     except Exception as e:
                         logger.warning("visual tick failed: %s", e)
                     await asyncio.sleep(va.interval())

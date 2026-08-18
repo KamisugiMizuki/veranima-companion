@@ -50,8 +50,11 @@ class VisualAttention:
     """三态视觉调度：稳定 → 触发 → 游离，像素差异驱动。"""
 
     def __init__(self, anchors: list[Anchor] | None = None, now: float | None = None) -> None:
+        # 默认锚点覆盖屏幕主体（标题栏几乎不变 → 单锚点永远不触发，实测）：
+        # 主体区 0.05-0.95 高度全宽 + 顶部 5% 标题栏/任务栏区
         self.anchors = anchors or [
-            Anchor("窗口标题栏", (0.05, 0.0, 0.95, 0.05), tag="应用", priority=1),
+            Anchor("屏幕主体", (0.0, 0.05, 1.0, 0.95), tag="屏幕", priority=1),
+            Anchor("窗口标题栏", (0.05, 0.0, 0.95, 0.05), tag="应用", priority=2),
         ]
         self._now = now
         self.state = "stable"          # stable / trigger / wander
