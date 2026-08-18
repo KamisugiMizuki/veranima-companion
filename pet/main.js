@@ -1,6 +1,11 @@
 // Veranima 桌宠壳 main 进程（M3_SPEC 3.5/3.6）
 // 职责：窗口管理（主窗口/日志窗口）、spawn 核心、WS 连核心、日志汇聚、health 自愈
-const { app, BrowserWindow, Tray, Menu, ipcMain, powerSaveBlocker } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, powerSaveBlocker, screen } = require('electron');
+
+// 主动对话（L0 衔接语等）无用户手势：Chromium autoplay 策略默认拒绝
+// audio.play() → 音频不播 + renderer catch 立即清气泡（实测「消失过快」）。
+// 桌宠是常驻陪伴 UI，放行无手势播放。
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -546,7 +551,6 @@ ipcMain.on('pet-event', (e, payload) => {
 // ---------- 拖拽轮询（main 进程全局鼠标） ----------
 let dragTimer = null;
 let lastDragPoint = null;
-const { screen } = require('electron');
 
 function startDragPoll() {
   if (dragTimer) return;
