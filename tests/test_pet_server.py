@@ -113,7 +113,7 @@ def test_config_roundtrip(tmp_path):
     cfg_dir.mkdir(exist_ok=True)
     cfg_path = cfg_dir / "config.yaml"
     save_config({"llm": {"base_url": "https://a.example/v1", "model": "m1", "api_key": "sk-abcdef1234567890"},
-                 "allowed_qq": [10001]}, cfg_path)
+                 "qq": {"allowed_qq": [10001]}}, cfg_path)
     results = {}
 
     async def scenario():
@@ -144,4 +144,4 @@ def test_config_roundtrip(tmp_path):
     import yaml
     saved = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     assert saved["llm"]["model"] == "m2"
-    assert saved["allowed_qq"] == [10002]
+    assert saved["qq"]["allowed_qq"] == [10002]
