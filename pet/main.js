@@ -470,6 +470,7 @@ function buildContextMenu() {
   return Menu.buildFromTemplate([
     { label: '戳一下', click: () => { win && win.webContents.send('menu-poke'); } },
     { label: '打开聊天', click: () => openChatWindow() },
+    { label: '清空聊天记录', click: () => clearChatHistory() },
     { label: '显示/隐藏桌宠', click: () => { win ? (win.isVisible() ? win.hide() : win.show()) : createWindow(); } },
     { type: 'separator' },
     { label: '打开设置', click: () => openSettingsWindow() },
@@ -597,6 +598,14 @@ function openChatWindow() {
     chatWin.webContents.send('chat-history', chatHistory);  // 补发历史
   });
   chatWin.on('closed', () => { chatWin = null; });
+}
+function clearChatHistory() {
+  chatHistory = [];
+  saveChatHistory();
+  if (chatWin && !chatWin.isDestroyed()) {
+    chatWin.webContents.send('chat-history', []);  // 清空已打开窗口的显示
+  }
+  pushLog('shell', 'chat history cleared');
 }
 // 聊天窗口 IPC：发送 → WS stream_talk + 本地记录用户消息
 ipcMain.on('chat-send', (e, text) => {
