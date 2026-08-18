@@ -1,67 +1,100 @@
 # R3 专项：桌宠作为“在场的人”
 
-> 本文替代旧 M3 的功能清单。Electron + Python 核心、GPT-SoVITS、独立聊天窗等已确认技术决策保留；验收改为人物在场体验。
+> 目标：Electron 只做身体与媒介，不持有 Agent 业务状态。
+> 现有复用：`pet/main.js`, `preload.js`, `renderer.js`, `chat.html`, `chat-renderer.js`, `pet_server.py`。
+> 参考：sakura 的角色包/历史/音频组织；airi 的可取消回复、异步历史批处理和运行时事件。
 
-## 1. 原点
+## 1. 进程与协议
 
-桌宠不是一个会弹提示的监控面板。它的价值是让角色拥有位置、声音、停顿和可被用户主动靠近的身体感。
+Python 核心：Agent、MemoryStore、AgentState、SceneLock、Arbitrator、AttentionScheduler、TTS 调度。
 
-## 2. 进程边界
+Electron：BrowserWindow、IPC、WS 转发、立绘/气泡、音频、聊天历史展示。
 
-- Python 核心持有 Agent、记忆、状态、关系和主动性裁决。
-- Electron 只负责窗口、立绘、聊天历史显示、音频播放和用户操作。
-- 所有窗口从同一核心状态源同步；聊天窗不能有“固定在线/固定角色名”。
-- IPC 状态必须有生命周期：connecting → online → thinking → speaking → idle / failed / offline。
+核心 WS 事件统一带：`event_id, turn_id, ts, type, payload`。最小事件：
+
+```json
+{"type":"state","payload":{"status":"online","character":"Yuki","turn_id":""}}
+{"type":"reply_start","payload":{"turn_id":"abc","channel":"tts"}}
+{"type":"reply_segment","payload":{"turn_id":"abc","text":"...","audio_b64":"","tone":"","portrait":""}}
+{"type":"reply_end","payload":{"turn_id":"abc"}}
+{"type":"reply_error","payload":{"turn_id":"abc","code":"tts_failed","recoverable":true}}
+{"type":"reply_cancelled","payload":{"turn_id":"abc"}}
+```
+
+兼容旧 `speak/speak_chunk/speak_done` 两个版本，迁移完成后删除旧路径。
+
+## 2. 状态广播
+
+`main.js` 提供唯一 `broadcastToWindows(channel, payload)`，不能只给 `win`。状态状态机：
+
+```text
+connecting → online → generating → speaking → online
+       ↘ offline ↔ reconnecting
+任意生成态 → failed/cancelled → online
+```
+
+chat window 初始显示“连接中…”，不得静态显示“正在输入…”。收到 core state 后同步标题、状态点、输入可用性和 aria-live。
 
 ## 3. 主窗
 
-- 透明、置顶、可拖动、托盘常驻。
-- 点击形象打开独立聊天窗；右键菜单是辅助入口，不是唯一入口。
-- 首次出现只给一次短提示：点击聊天、拖动移动、右键菜单；用户关闭后不再打扰。
-- 连接状态同时有颜色、文本/tooltip 和无障碍语义。
-- 气泡是当前 Reply 的字幕，不承担错误提示和日志功能。
+- 透明置顶、拖动、托盘常驻、位置持久化：保留现有实现。
+- 点击形象打开 chat window；右键为辅助入口。
+- 首次使用提示存 `userData/onboarding.json`，关闭后永久不再显示。
+- 连接状态同时提供颜色、可读文本/tooltip 和无障碍名称。
+- 气泡只显示 Reply segment，错误在聊天窗显示；TTS 失败不清空文字。
 
-## 4. 独立聊天窗
+## 4. 聊天窗
 
-必须具备：
+DOM 最小契约：
 
-- 当前角色的真实名称、头像和表达式。
-- 持久化历史、空状态、加载状态、错误状态。
-- 在线/思考/说话/失败/断线状态同步。
-- Enter 发送、停止生成、重试、保留失败文本。
-- 清空历史确认；历史过长时分批加载或压缩，不一次性无条件渲染。
-- 状态和消息可被键盘/屏幕阅读器理解。
-
-空状态不是占位：“还没聊过。你可以先问她今天在做什么。”，并提供少量真正可点击的开场白。
-
-## 5. TTS 与立绘
-
-当前 GPT-SoVITS v4 本地服务作为实现选择保留。产品契约只认：
-
-```text
-Reply segment → text/translation + tone + portrait → TTS + bubble + portrait
+```html
+<header aria-label="角色状态">角色名 + 状态</header>
+<main id="msgs" role="log" aria-live="polite"></main>
+<form id="inputbar"><label for="input">发送消息</label><textarea id="input"></textarea><button>发送</button></form>
 ```
 
-不要把模型日志、编码故障、空文本送入用户体验。TTS 失败降级为文字，并保留重试入口。
+功能状态：
 
-## 6. 窗口与历史
+| 状态 | 输入 | 按钮 | 消息区 |
+|---|---|---|---|
+| offline | 可编辑 | 重试连接 | 错误 + 重试 |
+| online | 可编辑 | 发送 | 空态/历史 |
+| generating | 可继续输入或取消，配置决定 | 停止 | 思考中 |
+| speaking | 可取消 | 停止 | segment + 音频 |
+| failed | 保留草稿 | 重试 | 角色化失败 |
 
-参考 sakura 的历史窗口、空状态、确认清空和角色资源组织；参考 airi 的取消、异步批量渲染和运行时状态。不要复制 airi 的全平台插件系统。
+历史：当前先使用 `userData/chat.json` 兼容现状，最多 500 条；展示端每批 40 条，后续再迁移 SQLite。清空必须确认，并广播刷新所有窗口。角色切换时记录 `character_id`，显示当前角色范围。
 
-关闭聊天窗默认隐藏复用，但 UI 应明确这是“隐藏”而不是“退出”。历史属于当前角色会话；角色切换时显示明确的角色与历史范围，避免用户误以为不同角色共享了同一段记忆。
+## 5. TTS/立绘资源
 
-## 7. 验收
+角色包结构复用现有 `characters/<id>/`：
 
-1. 首次启动用户在 10 秒内知道如何打开聊天。
-2. 切换角色后主窗、聊天标题、头像、声音和立绘一致。
-3. 核心断线时聊天窗真实显示断线且可重试。
-4. TTS 失败时文字不消失。
-5. 新消息能停止旧回复，旧音频不再继续。
-6. 空历史有角色化起点。
-7. 清空历史需要确认，重启后历史可恢复。
-8. 视觉上是角色窗口，不是服务监控窗口；日志只在日志窗口出现。
-9. 断线、失败、恢复和取消都有用户可理解的文字。
+```text
+character.json
+portraits/
+voice/refs/
+voice/models/
+```
 
-## 8. 暂缓
+Electron 不硬编码 Yuki；启动时由核心下发 `character_id/name/avatar_map/voice_profile`。声音、气泡、portrait 必须来自同一个 `turn_id + segment_id`。
 
-Live2D、语音输入、拖文件、多角色同时对话、复杂聊天搜索。没有完成静态桌宠 + 独立聊天的状态闭环前不扩展。
+## 6. 配置
+
+```yaml
+pet:
+  enabled: true
+  avatar_height: 200
+  onboarding: true
+  chat_history_limit: 500
+  chat_batch_size: 40
+  keep_text_on_tts_failure: true
+  autoplay: true
+```
+
+## 7. 测试/验收
+
+定向：`tests/test_pet_server.py`, 新增 `tests/test_pet_protocol.py`；JS 用 `node --check`，若引入前端测试再用已有 Node 环境，不新增框架。
+
+验收：首次 10 秒知道入口；角色切换全链路一致；chatWin 收到在线/断线；TTS 失败文字保留；取消后旧音频不播；空态、重试、清空确认和历史恢复可用。
+
+暂缓：Live2D、语音输入、拖文件、多角色并聊、搜索历史。

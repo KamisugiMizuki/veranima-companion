@@ -1,52 +1,111 @@
 # R2 专项：同一个人的表达
 
-> 本文替代旧 M2“通道适配层”表述，保留双通道，但把核心从“口癖差异”提升为“同一立场的媒介化表达”。
+> 目标：同一角色在 IM 与 TTS 中表达不同，但事实、立场、关系和情绪一致。
+> 现有复用：`core/agent.py`, `core/segments.py`, `core/render.py`, `tts/client.py`, `pet_server.py`。
+> 最小新增：统一 Reply DTO、回复解析器、通道 renderer 契约和失败状态。
 
-## 1. 原点
+## 1. Reply 契约
 
-同一个人发消息和说话当然不同，但她的判断、关系和情绪不能因为通道改变。通道只改变表达动作，不改变灵魂。
+建议放置：`src/veranima/core/reply.py`。
 
-## 2. 统一回复对象
+```python
+@dataclass
+class ReplySegment:
+    text: str
+    translation: str = ""
+    tone: str = "中性"
+    portrait: str = ""
 
-核心先生成语义层 `Reply`：
+@dataclass
+class Reply:
+    segments: list[ReplySegment]
+    stance: str = ""
+    follow_up: str = "none"
+    memory_candidates: list[dict] = field(default_factory=list)
+    degraded: str = ""
+```
 
-- `stance`：她对此事的态度。
-- `segments`：内容段落。
-- `tone`：语气。
-- `portrait`：形象状态。
-- `follow_up`：展开、邀请或收束。
-- `memory_candidates`：候选记忆。
+兼容策略：`TurnResult.reply/portrait/tone/ja_text` 暂时保留为 property；QQ/TTS adapter 逐步消费 `Reply`。
 
-IM/TTS renderer 各自消费，不重复调用 LLM 改写人格。
+## 2. LLM 输出与解析
 
-## 3. IM
+### IM
 
-- 像真实聊天：短段、自然换行、可回看。
-- 不把“嗯…那个…”等语音填充词硬搬进文字。
-- 口癖必须来自角色卡的可观察习惯，低频出现，不能当滤镜随机插入。
-- 发送失败、重试、撤回、草稿是产品状态，不伪装成角色行为。
+提示模型输出纯文本。解析器直接构造一个 `ReplySegment(text=raw)`。禁止为 IM 强制 JSON。
 
-## 4. TTS
+### TTS
 
-- 保留口语停顿、自我修正和呼吸，但必须符合角色的说话习惯。
-- `tone` 选择角色对应的参考音频/合成参数。
-- `portrait` 和音频属于同一段 Reply，不能出现语音说 A、气泡显示 B。
-- 合成失败时保留可见文字并明确静默降级。
-- 新输入取消旧回复时，先停止音频和队列，再显示新回复。
+提示模型输出：
 
-## 5. 角色样本
+```json
+{"segments":[{"ja":"日语","zh":"中文","tone":"中性","portrait":"闲置"}]}
+```
 
-每个角色至少提供 8 个短样本，覆盖：闲聊、技术问题、用户低落、被重复询问、自己不懂、被纠正、想结束话题、主动提起旧事。样本用于校准习惯，不作为固定模板复读。
+`core/segments.py` 负责：去 markdown fence、解析、语言方向检查、tone/portrait 白名单、缺 ja 防御。失败顺序：
 
-## 6. 验收
+1. 从 JSON/fence 提取可读文本。
+2. 有中文显示文本但无日语：静默文字降级，不送日语 TTS。
+3. 完全无文本：返回角色化“我这边没组织好，再说一次”并记录 reason。
 
-1. 同一事实在 QQ/TTS 中内容和立场一致，表达自然不同。
-2. 角色卡换成反差人格后，旧口癖和生活锚点不泄漏。
-3. 结构化输出失败不露 JSON、标签或 thinking 残片。
-4. TTS 失败文字仍可见，且用户有重试/继续输入路径。
-5. 用户打断时旧音频停止，不能继续播放旧队列。
-6. 一周内口癖能被识别，但不会每句都出现。
+不得将 JSON、thinking 残片或异常堆栈送至 UI/TTS。
 
-## 7. 暂缓
+## 3. Renderer 接口
 
-随机错字、强制撤回、通道专属复杂瑕疵模型。先靠角色卡、状态和真实失败路径建立自然感。
+```python
+render_im(reply: Reply, state: AgentState) -> str
+render_tts(reply: Reply, state: AgentState) -> list[SpeechSegment]
+```
+
+IM 只做可逆清理：感叹号上限、连续空行、角色卡 emoji 频率、亲密度阈值。不得随机改写事实。
+
+TTS 生成 `SpeechSegment(text, tone, portrait, display_text)`。`display_text` 与语音必须同一 segment，禁止整段中文/单句日文错配。
+
+## 4. 角色表达配置
+
+角色卡 `extensions.veranima`：
+
+```json
+{
+  "communication_style": "可观察的说话习惯",
+  "sentence_style": {"length":"short|mixed|long", "opening":["嘛","啧"]},
+  "emoji_frequency": "never|low|medium|high",
+  "tones": ["中性","调侃","疲惫"],
+  "avatar": {"expressions": {"闲置":"portraits/idle.png"}},
+  "bilingual": {"enabled": true, "display":"zh", "tts":"ja"}
+}
+```
+
+系统级 prompt 不写具体角色意象；角色卡才写角色习惯。对话样本 8 组作为校准数据，不作为模板。
+
+## 5. 状态与取消
+
+统一状态：`idle → generating → speaking → idle`；失败为 `failed`，取消为 `cancelled`，都必须清理队列。
+
+用户新输入时：
+
+1. adapter 发 `cancel_current_turn`。
+2. 壳暂停当前音频并清空队列。
+3. 核心丢弃旧 turn 的迟到结果（`turn_id` 不匹配）。
+4. 新输入正常生成。
+
+低成本实现使用递增 `turn_id`，不引入任务编排库。
+
+## 6. 配置
+
+```yaml
+output:
+  max_segments: 6
+  max_text_chars: 1200
+  parse_retry: 1
+  keep_text_on_tts_failure: true
+tts:
+  provider: gpt-sovits
+  timeout: 60
+  segment_mode: whole
+```
+
+thinking 模型的普通回复使用 `llm.max_tokens`；短任务不得自行传 120/200 等小预算，统一走 `short_task_max_tokens >= 1024`。
+
+## 7. 测试
+
+覆盖：纯文本、fence JSON、残缺 JSON、双语缺 ja、非法 portrait、TTS 失败保留文字、取消后迟到音频丢弃、IM/TTS 事实一致。

@@ -1,40 +1,63 @@
-# R5 专项：外部任务协作（可选，不属于陪伴核心）
+# R5 专项：外部任务协作
 
-> M5 保留 DeepSeek Harness 独立集成方向，但从产品主线降级为可选能力。桌宠首先是“某个人”，不是一个披着角色皮的桌面自动化代理。
+> 目标：把明确的桌面任务交给独立工具，同时保持 veranima 是一个人，不是自动化平台。
+> 现有复用：`core/workorder.py`, `tools/dsh_bridge.py`。
+> dsh 参考：当前目录 `dsh/` 独立 npm 环境；不把 dsh API/会话混入 veranima。
 
-## 1. 边界
+## 1. 触发契约
 
-- veranima 负责理解用户意图、判断是否适合转交和人格化反馈。
-- dsh 负责执行任务，拥有独立配置、会话、API 和进程。
-- dsh 的工具调用、过程日志和任务历史不进入陪伴记忆，除非用户明确要求记住结果。
-- 任务执行不得阻塞普通陪伴对话；用户可以取消。
+默认不自动转交。命中以下规则才进入候选：
 
-## 2. 触发
+- 明确动作词 + 可验证产物：“帮我把 X 转成 PDF”。
+- 用户说“交给桌面助手/执行这个任务”。
+- 超出角色能力边界后，角色先说明可转交并等待确认。
 
-默认不自动转交。以下任一条件成立才进入任务候选：
+“我想聊聊周报”不得触发。规则入口复用 `is_task_request()`，LLM 只补全字段，不改变是否需要确认。
 
-- 用户明确说“帮我执行/交给桌面助手”。
-- 用户请求超出角色声明的能力边界，且用户确认愿意转交。
-- 设置中显式开启某类自动转交。
+## 2. WorkOrder
 
-“我想聊聊周报”不能因为出现“周报”就自动变成文件任务。
+现有 `WorkOrder` 扩展字段：
 
-## 3. 工单
+```python
+task_id, goal, task_type, source, constraints,
+deadline, fallback, cancellation_policy,
+needs_clarification, status
+```
 
-最小结构：`task_id / goal / source / constraints / deadline / cancellation_policy`。缺失关键信息先问，不让 LLM 自己猜绝对路径或危险操作。
+JSON 发送前校验：goal/source 长度、路径存在性、危险操作确认、deadline 范围、task_type 白名单。LLM 不能猜绝对路径；缺路径必须追问。
 
-## 4. 反馈
+## 3. 生命周期
 
-执行前：角色说明“我把这件事交给另一个工具处理了”。执行中：只在有实质进度时反馈，不把日志刷给用户。成功/失败：保留原始结果和角色化转述，失败给下一步动作。
+```text
+draft → needs_clarification → confirmed → running
+→ succeeded | failed | cancelled | timed_out
+```
 
-## 5. 验收
+状态持有在 dsh bridge 的任务记录，不写陪伴记忆。聊天窗口能显示状态，但只显示角色化摘要和可操作按钮。
 
-1. 闲聊不误转交。
-2. 用户明确转交后，能看到已安排、进行中、完成/失败和取消。
-3. dsh 进程失败不会让 Agent 状态或聊天窗口卡死。
-4. 任务结果不会自动污染人物记忆。
-5. 用户能取消长任务。
+## 4. dsh bridge
 
-## 6. 暂缓
+`run_dsh_task(workorder, cancel_event)`：
 
-多任务并发、任务队列、dsh Web UI、自动把所有任务结果写入记忆。单用户场景没有证据前都不做。
+- 独立 cwd、env、超时和 stdout/stderr。
+- argv 列表调用，不拼 shell 字符串。
+- 输出截断到配置上限，原始日志单独落盘。
+- 非零退出、超时、取消都返回结构化结果。
+- veranima 核心对话线程不能被 `subprocess.run` 阻塞；使用已有线程/异步边界。
+
+## 5. 配置
+
+```yaml
+tasks:
+  enabled: false
+  require_confirmation: true
+  timeout_seconds: 600
+  output_max_chars: 12000
+  allowed_types: [文档处理, 信息检索, 系统操作, 自动化流程]
+```
+
+## 6. 测试/验收
+
+低成本模型先测 `workorder.py` 纯函数，再测 bridge fake subprocess；真实 dsh 冒烟单独执行，不放普通 pytest。覆盖闲聊不转交、缺路径追问、用户确认、取消、超时、失败、结果不写记忆。
+
+暂缓：并发队列、Web UI、多工具编排、自动记忆结果。

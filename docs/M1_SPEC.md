@@ -1,69 +1,129 @@
 # R1 专项：共同经历与状态连续性
 
-> 本文替代旧 M1“Filter 仿生层”作为当前设计。核心不是给输出加瑕疵，而是让角色拥有可追溯的过去和可解释的当下。
+> 目标：让角色拥有可追溯的过去和可解释的当下。不要用随机错字/随机遗忘模拟真人。
+> 现有复用：`core/agent.py`、`core/state.py`、`memory/store.py`、`memory/schema.py`、`core/prompts.py`。
+> 最小新增：记忆分类映射、状态字段、候选记忆校验、版本链关联。
 
-## 1. 原点
+## 1. 数据契约
 
-用户感到“她像某个人”，首先不是因为她偶尔打错字，而是因为她记得一起经历过什么，并且今天的态度和昨天有连续关系。
+### 1.1 记忆类型
 
-## 2. 数据模型
+旧数据库层映射如下，不立刻改表 CHECK：
 
-### 2.1 记忆层
+| R1 类型 | 旧 layer | 写入对象 |
+|---|---|---|
+| identity | `core_profile` | 角色卡，不写用户对话 |
+| user_fact | `semantic` | 用户偏好/经历/边界 |
+| shared_episode | `episodic` | 共同事件、情绪、结果 |
+| commitment | `procedural` | 承诺与协作规则 |
+| session | `session` | 当前任务/短期视觉 context |
 
-- `identity`：角色卡固定事实。
-- `user_fact`：用户偏好、经历、边界。
-- `shared_episode`：共同事件、当时情绪、结果、后续。
-- `commitment`：承诺和协作规则。
-- `session`：当前上下文。
+`MemoryEntry.meta` 增加：`subject`, `event_time`, `emotion`, `status`, `expires_at`, `supersedes`。不修改旧字段语义。
 
-统一字段：`id, content, source, confidence, importance, created_at, updated_at, last_recalled_at, version, supersedes`。
+### 1.2 候选记忆
 
-### 2.2 状态
+```json
+{
+  "kind": "user_fact|shared_episode|commitment",
+  "content": "用户喜欢下雨天",
+  "confidence": 0.0,
+  "importance": 0.0,
+  "source_message_id": 123,
+  "event_time": "可选 ISO 时间",
+  "expires_at": null,
+  "needs_confirmation": false
+}
+```
 
-`energy / mood / social_appetite / attention / relationship_stage / last_interaction` 持久化到 AgentState。状态变化必须记录 `cause`，例如 `user_feedback`, `time_decay`, `conversation`, `scene_change`。
+程序校验：kind 白名单、content 非空且 <=500 字、confidence/importance 截断到 0-1、source 必须存在。LLM 不得直接执行 SQL。
 
-## 3. 写入规则
+## 2. 写入流程
 
-- 每轮先保存原始对话，再异步提取候选记忆。
-- 用户明确说“记住/以后/我喜欢/我讨厌”优先写入。
-- 共同事件只有在有结果或情绪意义时写入 `shared_episode`。
-- 视觉观察只写短期 context，除非用户明确确认或对话验证。
-- LLM 只能提出候选；程序负责字段校验、去重、版本链和写入。
-- 不从 assistant 自己编造的生活细节生成用户事实。
+`Agent.handle()` 中固定顺序：
 
-## 4. 召回规则
+```text
+store_message(user) → recall → LLM reply → store_message(assistant)
+→ rule_extract(user) → optional LLM candidate extraction
+→ validate → dedupe → store/update_latest
+→ persist AgentState
+```
 
-召回排序：当前话题相关性 > 共同经历 > 新鲜度 > 重要性 > 置信度。注入预算固定，避免把角色 prompt 变成数据库 dump。
+低成本实现第一版只做规则提取：
 
-表达梯度：
+- “记住/以后/我喜欢/我讨厌/我不喜欢” → `user_fact`。
+- “我们一起/刚才/上次……结果” → `shared_episode`，仅当有事件或结果。
+- “以后提醒/下次记得/你答应” → `commitment`，问句不命中。
 
-| 置信度 | 行为 |
-|---|---|
-| 高 | 自然调用具体事实 |
-| 中 | “我好像记得”并允许纠正 |
-| 低 | 询问，不假装记得 |
-| 已过期/冲突 | 说明版本变化或承认记错 |
+候选提取失败不影响回复；写入失败只记录日志，不阻塞用户。
 
-不做随机张冠李戴。延迟纠正只在检索到冲突或用户纠正时发生。
+## 3. 去重与修正
 
-## 5. 状态与关系
+- 同层同主题相似度 >=0.92：忽略重复。
+- 0.78-0.92：保留新版本，调用 `update_latest()`，`meta.supersedes=old_id`。
+- 用户明确纠正：必须写新版本，旧版本不删除。
+- 召回只取版本链最新有效记录；旧版本用于解释和审计。
 
-- energy 随时间与互动消耗/恢复。
-- mood 由事件和用户反馈缓慢改变，不每轮随机。
-- social_appetite 控制展开、主动和收束。
-- relationship_stage 由共同经历、信任和修复事件累计。
-- attachment 是观测指标，不直接驱动所有亲密行为。
+## 4. 召回
 
-## 6. 验收
+复用 `MemoryStore.recall()`，先不新增检索框架。排序最终分数：
 
-1. 新建 Agent 后跨重启恢复状态和最近上下文。
-2. 用户明确偏好能写入并在相关话题召回。
-3. 同一事件被纠正后旧版本保留、后续使用新版本。
-4. 换角色卡不泄漏旧角色的生活锚点和说话习惯。
-5. 空记忆时模型不会编造共同回忆。
-6. 一周对话中，用户能指出至少两次“她记得我们之前发生过的事”。
-7. 低置信记忆会表现为不确定，而不是错误自信。
+```text
+0.45 * semantic_similarity
++ 0.20 * FTS relevance
++ 0.15 * freshness
++ 0.10 * importance
++ 0.10 * confidence
+```
 
-## 7. 暂缓
+暂时无法取得某项时归一化剩余权重，不补随机分。每层预算由 config 控制，默认总注入不超过 5600 字符。
 
-随机遗忘、随机错记、复杂人格学习、多代理记忆审查。没有连续性数据前不做。
+注入格式固定：
+
+```text
+[共同经历|置信度:高|时间:上周] 用户和角色一起完成了……
+[用户事实|置信度:中] 用户喜欢……
+```
+
+模型只需遵守表达梯度：高置信自然调用，中置信试探，低置信承认不确定。
+
+## 5. 状态契约
+
+现有 `AgentState` 先保留 energy/mood/attachment，新增：
+
+```python
+social_appetite: float = 0.8
+attention_topic: str = ""
+attention_scene: str = "normal"
+last_interaction_channel: str = ""
+last_cause: str = "startup"
+```
+
+`to_snapshot/from_snapshot` 使用 `.get()` 默认值，旧 SQLite 自动兼容。每次更新调用：
+
+```python
+state.apply(event="user_message|assistant_reply|time_decay|scene_change|user_feedback", delta={...})
+```
+
+第一版不新建通用状态机库；用 `AgentState` 方法和事件字符串即可。每次变更记录 debug 日志 `state changed cause=...`，不把内部数值直接展示给用户。
+
+## 6. 配置
+
+```yaml
+memory:
+  recall_top_k: 5
+  recall_threshold: 0.30
+  max_injected_chars: 5600
+  candidate_extraction: rules
+  correction_enabled: true
+state:
+  social_appetite_initial: 0.8
+  energy_decay_per_minute: 0.02
+```
+
+删除重复 `chat` 配置段；同一键只能出现一次。
+
+## 7. 测试与验收
+
+定向测试：`tests/test_memory.py`, `tests/test_agent.py`, 新增 `tests/test_continuity.py`。
+
+必须覆盖：空库不编造、明确偏好写入、重复去重、纠正版本链、跨重启状态、换卡不污染、低置信措辞、视觉 context 到期不进入长期记忆。

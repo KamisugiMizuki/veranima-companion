@@ -1,72 +1,89 @@
-# R4 专项：有分寸的在场与视觉注意力
+# R4 专项：有分寸的在场与主动性
 
-> 视觉注意力的目标不是“检测到变化”，而是让角色拥有有限、可解释、不会令人不适的注意力。
+> 目标：让角色偶尔主动靠近，但没有监控感和骚扰感。
+> 现有复用：`core/ambient.py` 的 SceneLock/ChannelActivityTracker/Arbitrator、`core/proactive.py`、`core/presence.py`、`pet_server.py`。
+> 最小新增：ProactiveCandidate/ProactiveDecision、统一主动入口、忽略反馈持久化。
 
-## 1. 原点
-
-真人不会均匀扫描屏幕，也不会每次看到窗口切换就立刻发表评论。她会先注意、判断是否与自己有关、再决定要不要说话。视觉模块默认只产生情境，不产生发言。
-
-## 2. 三层信号
-
-1. L0：前台窗口、鼠标位置、键鼠空闲、锁屏等系统信号。
-2. L1：低成本全局变化与显著度，判断注意力可能转移到哪里。
-3. L2：注视区域裁剪与窗口元数据，必要时交给多模态 LLM 理解。
-
-优先使用 Windows 原生 API；截图是补充，不是唯一依据。
-
-## 3. 注意力状态
-
-- `orienting`：发现新窗口/显著变化，短暂朝向。
-- `fixating`：在一个区域停留，积累理解。
-- `habituated`：同一区域长期无新内容，降低关注。
-- `away`：用户离开或明确忙碌，只保留低成本信号。
-
-鼠标位置、前台窗口和显著度是证据，不是用户真实注意力的事实。副屏、视频、游戏鼠标都必须允许误判并自然回退。
-
-## 4. 从观察到主动消息
+## 1. 三段式决策
 
 ```text
-attention event
-  → short-lived scene context
-  → relevance to character/user/shared episode
-  → disturbance check
-  → desire/permission decision
-  → optional one message
+Source event → Candidate → Decision → Reply
 ```
 
-以下情况禁止自动发言：用户明确忙碌、全屏游戏战斗/会议/播放、刚刚主动拒绝、最近主动消息未回应、视觉内容无法与角色或共同经历关联。
+### Candidate
 
-窗口切换只能提高“理解优先级”，不能绕过主动性仲裁。
+```python
+@dataclass(frozen=True)
+class ProactiveCandidate:
+    source: str                 # shared_episode/commitment/scene/ritual/attention
+    reason: str                 # 内部可解释原因
+    relevance: float            # 0..1
+    urgency: float              # 0..1
+    intent: str                 # remind/check_in/share/bridge
+    context: dict
+```
 
-## 5. 冷却与成本
+### Decision
 
-冷却不再是统一的“60 秒后才能理解”。感知无冷却，理解按事件价值和上下文缓存分层：
+```python
+@dataclass(frozen=True)
+class ProactiveDecision:
+    allow: bool
+    reason: str
+    cooldown_until: float
+    candidate: ProactiveCandidate | None = None
+```
 
-- 同一窗口/区域：只更新短期变化，不重复调用 LLM。
-- 新窗口：可立即读取标题和低成本元数据；图像理解要受最小间隔限制。
-- 高价值显著事件：允许提前一次观察，但必须写入预算。
-- 主动发言冷却独立于理解冷却，且更长。
+`AttentionScheduler` 只能产出 candidate context，禁止调用 `Agent.proactive_from_visual()` 或 `speak()`。
 
-模型观察结果默认保存为短期 context，不进入长期记忆。只有用户在对话中确认的内容才可升级成 shared episode。
+## 2. 确定性闸门顺序
 
-## 6. 隐私与可解释性
+按顺序执行，任一失败返回 `allow=false`：
 
-- 默认不保存原始屏幕图，只保存摘要、时间、窗口类别和置信度。
-- 敏感窗口、密码字段、私人聊天、视频会议列入禁止观察/自动打码。
-- 用户可一键暂停视觉注意力，并能看到当前是否暂停。
-- 日志记录“为什么观察/为什么没有发言”，不记录不必要的屏幕内容。
+1. `enabled` 与用户暂停开关。
+2. 场景不是 `busy/away/blocked`。
+3. 当前没有其他通道活跃（QQ/桌宠交互窗口）。
+4. quiet hours 外。
+5. 当日上限未满（默认 2）。
+6. 距上次主动消息足够久（默认 30min；同源默认 2h）。
+7. 最近主动消息未被忽略到抑制阈值。
+8. candidate relevance >= 0.65，且有 shared_episode/commitment/明确场景理由。
+9. 生成前检查 LLM 可用、输出非空、人格/通道解析成功。
 
-## 7. 验收
+不保留 `random.random() < proactive_message_prob` 作为主入口；如需自然性，只允许在全部闸门通过后做一次小概率抑制，并记录 reason。
 
-1. 切换窗口能被识别，但不会每次都主动评论。
-2. 鼠标停留和前台窗口能影响焦点估计，焦点会习惯化。
-3. 持续打字不会持续触发 LLM。
-4. 相关窗口 + 共同经历 + 用户不忙时，最多产生一句自然联想。
-5. 用户忽略主动消息后，角色会明显收敛，不连续追问。
-6. 屏幕观察不会自动制造长期记忆。
-7. 暂停开关即时生效，敏感窗口不发送图像。
-8. 每次主动行为都能在日志中解释原因、来源和抑制原因。
+## 3. 来源策略
 
-## 8. 暂缓
+| 来源 | 默认 | 说明 |
+|---|---|---|
+| commitment | 高 | 到期/用户明确要求时可主动提醒 |
+| shared_episode | 中 | 相关场景触发，一次即可 |
+| scene | 低 | 场景结束后衔接，不在忙碌中打扰 |
+| ritual | 低 | 生日/纪念日，需真实记忆来源 |
+| attention | 低 | 视觉只提供候选，必须再匹配角色兴趣/共同经历 |
+| idle/fatigue | 关闭 | 没有理由的“你在干嘛”暂不做 |
 
-本地视觉小模型、复杂眼动仿真、跨屏精确注视、自动兴趣锚点学习。先把“观察不等于发言”和隐私边界跑通。
+## 4. 忽略与自愈
+
+记录 `proactive_feedback`：`sent_at, source, responded, interrupted, user_sent_within, dismissed`。连续两次未响应：同源冷却翻倍；用户明确“不想被打扰”：立即暂停直到用户主动恢复。
+
+用户新消息到来时，尚未发送的 pending candidate 作废。主动消息不得与用户回复同一轮连发。
+
+## 5. 配置
+
+```yaml
+proactive:
+  enabled: true
+  max_per_day: 2
+  min_gap_minutes: 30
+  source_gap_minutes: 120
+  quiet_hours: [23, 8]
+  ignore_backoff: true
+  visual_candidates: true
+```
+
+配置旧 `qq.proactive` 只作为兼容读取，最终归一到此段。
+
+## 6. 测试
+
+覆盖：场景阻塞、通道互斥、静默时段、日上限、同源冷却、用户新消息作废、连续忽略退避、视觉候选无共同经历不发送、commitment 到期可发、低成本模型输出异常降级。

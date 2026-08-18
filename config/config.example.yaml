@@ -14,21 +14,16 @@ llm:
   low_energy_max_tokens: 256
   timeout: 120
 
-# 对话（远程 API 256K context 可上调；本地小 context 模型请改回 20）
-chat:
-  history_max_messages: 50              # 注入的近期对话条数
-  curator_turns: 8                      # 每 N 轮触发整理（MVP2）
-  proactive_message_prob: 0.1           # 每轮主动发言概率（MVP1 简化）
-
-# TTS（桌宠语音；OpenAI 兼容 /v1/audio/speech，远程与本地统一接口）
-# 远程：base_url 指向任意 OpenAI 兼容 TTS API（OpenAI/硅基流动等）
-# 本地：base_url 指向 Qwen3-TTS 兼容服务（如 http://127.0.0.1:9880/v1）
+# TTS（桌宠语音；当前生产实现为本地 GPT-SoVITS v4 HTTP 服务）
+# 壳启动时拉起 tts/gpt-sovits/api_v2.py，默认监听 http://127.0.0.1:9880。
+# 远程 OpenAI 兼容 TTS 仍可通过 provider/base_url 接入，但不是角色默认链路。
 tts:
+  provider: gpt-sovits
   base_url: ""                          # 留空 = TTS 关闭（桌宠只显示气泡不发声）
-  model: "tts-1"                        # 远程按服务商提供；本地 Qwen3-TTS 服务填模型名
-  voice: "alloy"                        # 音色（远程：alloy/echo/fable...；本地：按服务实现）
+  model: "gpt-sovits-v4"
+  voice: "yuki"
   api_key: ""                           # 远程必填；本地服务通常不需要
-  response_format: "wav"                # wav/mp3/opus（浏览器都支持；本地 Qwen3 常用 wav）
+  response_format: "wav"                # wav/mp3/opus（GPT-SoVITS 当前使用 wav）
   timeout: 60
 
 # STT 语音输入（OpenAI 兼容 /v1/audio/transcriptions；未配置 = 未接入，接口就绪模型后接）
@@ -74,12 +69,6 @@ state:
   attachment_growth: 0.05               # 每轮依恋度增长
   initial_attachment: 0.5               # 初始依恋度（0=初识 0.5=半亲密 0.75=亲密）
 
-# 对话
-chat:
-  history_max_messages: 20              # 注入的近期对话条数
-  curator_turns: 8                      # 每 N 轮触发整理（MVP2）
-  proactive_message_prob: 0.1           # 每轮主动发言概率（MVP1 简化）
-
 # CLI
 cli:
   prompt_style: "rich"                  # rich / plain
@@ -113,4 +102,54 @@ qq:
   stickers:
     enabled: false                      # 默认关闭（需要多模态模型支持）
     dir: "data/stickers"                # 存储目录（图片 + index.json 标注）
+
+# 统一对话配置（只能保留这一段 chat，避免 YAML 重复键覆盖）
+chat:
+  history_max_messages: 50
+  curator_turns: 8
+  short_task_max_tokens: 1024
+  max_reply_chars: 1200
+  # 兼容旧配置；实现 R4 后不再作为主动入口
+  proactive_message_prob: 0.0
+
+# R4 主动性：观察/记忆只生成候选，统一由程序闸门裁决
+proactive:
+  enabled: true
+  max_per_day: 2
+  min_gap_minutes: 30
+  source_gap_minutes: 120
+  quiet_hours: [23, 8]
+  ignore_backoff: true
+  visual_candidates: true
+
+# R4 视觉注意力：默认只保存短期摘要，不保存原始截图
+attention:
+  enabled: true
+  paused: false
+  global_scan_sec: 5
+  mouse_focus_stay_sec: 2
+  habituation_sec: 60
+  observe_cache_ttl_sec: 120
+  observe_daily_budget: 120
+  crop_ratio: 0.30
+  save_raw_images: false
+  sensitive_categories: [password, payment, private, meeting, lockscreen]
+
+# R3 Electron 桌宠 UI
+pet:
+  enabled: true
+  avatar_height: 200
+  onboarding: true
+  chat_history_limit: 500
+  chat_batch_size: 40
+  keep_text_on_tts_failure: true
+  autoplay: true
+
+# R5 外部任务协作，默认关闭且要求用户确认
+tasks:
+  enabled: false
+  require_confirmation: true
+  timeout_seconds: 600
+  output_max_chars: 12000
+  allowed_types: [文档处理, 信息检索, 系统操作, 自动化流程]
 
