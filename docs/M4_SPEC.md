@@ -2,6 +2,8 @@
 
 > 依据：DESIGN.md 4.6（视觉注意力）、4.8（表情标签驱动）、M3_SPEC（进程架构/通道互斥）
 > M4 范围：视觉感知管线（L0-L3）+ 表情标签驱动落地（模型输出 portrait → 形象渲染）
+>
+> **实现状态（2026-08-19）**：**第 1 章（视觉注意力调度器）已被 VISION_SPEC 替代**——独立模块 `core/attention/`（AttentionScheduler：三层感知/三通道显著度/扫视-注视状态机/鼠标焦点/习惯化/分层冷却），原 `vision.py` 已删除；第 2 章（表情标签驱动）保持有效（已实现：portrait/tone 结构化输出 + 立绘映射）。
 
 ---
 
@@ -109,7 +111,7 @@ agent.handle(channel=tts) → 结构化回复(text, tone, portrait)
   → renderer: expressions[portrait] ?? 四态回退链
 ```
 
-- `tone` 暂不做映射（Qwen3-TTS 无语气参数，见 M3_SPEC 3.2；等接入后评估）
+- `tone` 暂不做映射（GPT-SoVITS 无语气参数，见 M3_SPEC 3.2；等接入后评估）
 - 气泡文本 = `text`；形象图 = `expressions[portrait]` 或回退
 
 ---

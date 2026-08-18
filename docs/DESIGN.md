@@ -102,14 +102,14 @@ User Input → [社交博弈：消耗多少情绪资本]
 
 | 层 | 选型 | 依据 |
 | --- | --- | --- |
-| 运行时 | Python 3.14（系统预装） | object_design 已验证 |
+| 运行时 | Python 3.11（项目 venv，uv 管理；系统预装 3.14 勿混用） | 2026-08 实测 |
 | LLM | OpenAI 兼容远程 API（DeepSeek/通义/硅基流动等；httpx 直调，配置 base_url/model/api_key） | 2026-08 切换：弃用本地 LM Studio |
 | Embedding | `data/models/bge-m3`（sentence-transformers 本地）或 `openai:` API 模式 | object_design 已验证，1024 维 |
-| QQ 接入 | aiocqhttp + NapCatQQ（OneBot v11 反向 WS，端口 8099） | object_design 已验证 |
+| QQ 接入 | NapCatQQ（OneBot v11 反向 WS，端口 8099，websockets 直连） | object_design 已验证 |
 | 桌宠前端 | **Electron**（2026-08 选定：Live2D 生态最成熟，koodo-reader 已验证 Electron 栈；缺陷对策见 M3_SPEC 3.4） | 包大可接受，不提前优化 |
-| 桌宠 TTS | Qwen3-TTS sidecar（复用 MacroPhonic 的 server.py 模式，已验证可用） | 已有实现 |
+| 桌宠 TTS | **GPT-SoVITS v4 本地日语合成**（2026-08-19 拍板，替代 Qwen3-TTS：延迟不可接受；微调音色 yuki-e15） | 实测 0.57x 实时率 |
 | 记忆存储 | SQLite + 向量（复用 object_design 的 store.py 模式） | 已验证 |
-| 测试 | pytest | 项目惯例 |
+| 测试 | pytest（当前 251 passed） | 项目惯例 |
 
 ---
 
@@ -198,13 +198,15 @@ MacroPhonic 的 Tauri 桌宠端**未调通**（当时卡在窗口行为/GPU flag
 
 ### 4.6 视觉注意力调度器（桌宠端核心）
 
+> **实现状态（2026-08-19）**：本节为原始设计（锚点/三态/直方图），**已由仿生注意力模型替代**——独立模块 `src/veranima/core/attention/`（`AttentionScheduler`：三层感知/三通道显著度/扫视-注视状态机/鼠标焦点/习惯化/分层冷却），专项设计见 **docs/VISION_SPEC.md**（V1-V3 已完成）。本节保留作设计演进记录。
+
 **职责**：极低成本「AI 在看着你」的感知。
 
 - 兴趣锚点（1~3 个）：游戏血条/小地图/对话框；办公光标/地址栏/通知区
 - 三态切换：稳定期（30s 低频小截图）→ 触发期（显著变化高频+扩窗）→ 游离期（2min 无变化低分辨率全屏扫描）
 - 注意力惯性：3~5min 随机瞥一眼周边
 - 分级管线 L0-L3：系统 API 文本状态 → 事件驱动截图 → 本地小模型筛选 → 云端/本地大模型理解
-- **复用**：object_design 无此模块，重写；依赖多模态模型（已有）+ 桌面截屏能力（Tauri/Python 均可）
+- **复用**：object_design 无此模块，重写（→ `core/attention/` 包，VISION_SPEC）；依赖多模态模型（已有）+ 桌面截屏能力（Pillow ImageGrab）
 
 ### 4.7 时空沉浸引擎 + 主动发起机制
 
@@ -284,12 +286,13 @@ QQ 里是「打字利落但有温度的朋友」，桌宠里是「坐在旁边�
 - **通道互斥活动检测**：某通道活跃时（如 QQ 有消息），视觉调度器进入低功耗模式（暂停截图，只监听系统事件）——避免「手机聊天 + 桌宠盯屏」的双线程 token 浪费；与 4.7 场景白名单同类机制
 
 **窗口架构（2026-08 定案，airi 式多窗口）**：
-- **主进程统一管理所有窗口**（airi `window-manager` 模式）：主窗口（桌宠）+ 设置窗口 + 日志窗口，可复用窗口模式创建
+- **主进程统一管理所有窗口**（airi `window-manager` 模式）：主窗口（桌宠）+ 聊天窗口 + 设置窗口 + 日志窗口，可复用窗口模式创建
 - **主窗口**：桌宠形象（透明置顶，type=panel），关窗=隐藏（托盘常驻），托盘「退出」才真正退出；窗口位置/尺寸持久化（config.json）
+- **聊天窗口**：QQ 风格独立对话框（2026-08-19 用户拍板）——聊天记录持久化（`%APPDATA%\veranima-pet\chat.json`）、流式回复、主动对话去重；点击形象打开
 - **设置窗口**：独立窗口（600×800），从主窗口/托盘打开；改配置后重启核心生效
-- **日志窗口**：核心 stdout/stderr 由壳捕获转发（`log-line`），文件日志落盘（userData/veranima-{ts}.log）+ 日志窗口实时查看
+- **日志窗口**：核心 stdout/stderr 由壳捕获转发（`log-line`），文件日志按模块落盘（`logs/core.log`/`logs/tts.log`/`logs/shell.log`）+ 日志窗口实时查看
 - **进程**：Python 核心由壳 `child_process.spawn` 拉起，崩溃指数退避重启；壳退出（托盘退出）→ 核心一起退
-- **验收**：启动后屏幕上是主窗口 + 需要时弹出的设置/日志窗口；核心崩溃自动重启；日志可窗口查看可文件追溯
+- **验收**：启动后屏幕上是主窗口 + 需要时弹出的聊天/设置/日志窗口；核心崩溃自动重启；日志可窗口查看可文件追溯
 
 - **复用**：object_design 的 adapters/qq.py 消息流，新增通道抽象层
 
@@ -357,6 +360,8 @@ QQ 里是「打字利落但有温度的朋友」，桌宠里是「坐在旁边�
 
 ### 4.13 流式输出（桌宠通道优先，2026-08 sakura 借鉴）
 
+> **实现状态（2026-08-19）**：打字机流式已实现（speak_chunk）；**TTS 部分用户拍板改为整段合成**（`speak()` 一次合成整段推一条消息）——逐句播放链路的重复推送/气泡异常 bug 全灭，代价是首句延迟 = 整段合成时间（~0.57x 实时率）。本节「TTS 逐句播放」部分保留作演进记录。
+
 **职责**：LLM 生成分片推送，桌宠打字机渲染 + TTS 逐句播放。
 
 **现状缺口**：`llm/client.py` 的 `chat()` 是一次性等待完整回复；桌宠只有「整段到达 → 气泡一次性显示」。
@@ -397,7 +402,7 @@ llm.stream_chat(messages) → 分片生成
 | `core/state.py`（energy/mood/attachment） | **复用**（补 patience 账户） |
 | `core/character.py`（角色卡 + IDENTITY_BLOCK） | **复用**（加 capabilities/口癖字段） |
 | `core/agent.py`（handle 循环 + _short_task） | **重写**（插入 Filter 仿生层） |
-| `adapters/qq.py`（aiocqhttp + 防骚扰 + 表情包） | **复用**（接通道适配器） |
+| `adapters/qq.py`（OneBot v11 反 WS + 防骚扰 + 表情包） | **复用**（接通道适配器） |
 | `core/proactive.py`（问候/纪念日/离线思考） | **复用改造**（→ 时空沉浸引擎） |
 | `llm/client.py`（httpx 直调 OpenAI 兼容 API） | **复用**（已切远程，含鉴权） |
 | `core/stickers.py`（表情包库） | **复用**（QQ 端） |
@@ -405,7 +410,7 @@ llm.stream_chat(messages) → 分片生成
 | `llm/prompts.py`（system prompt 组装） | **复用改造**（确信度措辞注入） |
 | `core/learning.py`、`core/review.py` | **复用** |
 
-**重写清单**：agent.py 核心循环（Filter 层）、通道适配器（新）、社交博弈 patience（新）、视觉注意力（新）、桌宠端（全新 Tauri 应用）。
+**重写清单**：agent.py 核心循环（Filter 层）、通道适配器（新）、社交博弈 patience（新）、视觉注意力（新，attention 包）、桌宠端（Electron 壳，2026-08 定案）。
 
 ---
 

@@ -1,8 +1,8 @@
 # M3 专项细化：桌宠端 MVP（docs/M3_SPEC.md）
 
 > 依据：DESIGN.md 3.1（桌宠前端选型风险）、4.6（视觉注意力）、4.7（时空沉浸）、4.8（跨通道共享）
-> 进程架构已定（2026-08）：**A 方案——Python 核心进程 + Tauri 纯 UI 壳**。
-> 分两阶段：**M3a 纯 Python 逻辑**（时空沉浸/通道互斥/无缝衔接，QQ 端独立验证）→ **M3b 桌宠本体**（Tauri UI + TTS + 在场检测）。
+> 进程架构已定（2026-08）：**A 方案——Python 核心进程 + Electron 纯 UI 壳**（2026-08-19 实测定型：Electron 34 + koodo-reader node_modules 复用；Tauri 弃选）。
+> 分两阶段：**M3a 纯 Python 逻辑**（时空沉浸/通道互斥/无缝衔接，QQ 端独立验证）→ **M3b 桌宠本体**（Electron UI + TTS + 在场检测）。
 
 ---
 
@@ -15,11 +15,11 @@
 │  ├─ 时空沉浸引擎（M3a：场景锁 + 后台心跳 + 主动发起仲裁）                     │
 │  ├─ 在场检测器（M3b：键盘/鼠标系统事件，L0 零 token）                        │
 │  └─ 通道互斥器（M3a：某通道活跃 → 其他通道感知降功耗）                       │
-│  └─ 桌宠服务端（M3b：HTTP/WS，供 Tauri 壳连接）                             │
+│  └─ 桌宠服务端（M3b：HTTP/WS 8765，供 Electron 壳连接）                       │
 └────────────────────────────────────────────────────────────────────────────┘
                                     │ WS/HTTP（本地，127.0.0.1）
 ┌────────────────────────────────────────────────────────────────────────────┐
-│  Tauri 纯 UI 壳（独立进程）                                                  │
+│  Electron 纯 UI 壳（独立进程）                                               │
 │  - 窗口/桌宠形象/状态气泡（显示「在想你」等）                                 │
 │  - 语音播放（接收 TTS 音频流）                                               │
 │  - 无业务逻辑，一切转发给 Python 核心                                        │
@@ -99,8 +99,10 @@
 
 ### 3.2 TTS 链路
 
-- 复用 MacroPhonic `server.py`（Qwen3-TTS sidecar，已验证）——独立进程，Python 核心 HTTP 调 `/tts`
-- 流程：Agent 回复 → TTS 标签解析（`<语速>`/`[pause]`）→ 调 sidecar 合成 → 音频流发给 Tauri 壳播放
+> **实现状态（2026-08-19）**：Qwen3-TTS 已弃用（延迟不可接受）。当前 = **GPT-SoVITS v4 本地日语合成**（`tts/gpt-sovits/api_v2.py`，端口 9880，壳 spawn；微调音色 yuki-e15 + 参考音频 prompt_text）；**整段合成**（用户拍板：`speak()` 一次合成推一条消息，逐句链路 bug 全灭）。
+
+- ~~复用 MacroPhonic `server.py`（Qwen3-TTS sidecar，已验证）~~ → GPT-SoVITS api_v2.py（整合包拷贝自 sakura：runtime + GPT_SoVITS + tools；spawn 编码方案无 `-I` + `PYTHONIOENCODING=utf-8`）
+- 流程：Agent 回复（双语：ja 送 TTS / zh 显示）→ 整段调 sidecar 合成（POST /tts 9880）→ 音频随 speak 消息发给 Electron 壳播放
 - 打断：用户新消息 → 停止当前播放（壳执行，核心发 `stop_speak`）
 - 缓存：相同文本 hash 缓存音频（`data/tts_cache/`），避免重复合成
 
