@@ -44,7 +44,29 @@ function pushLog(tag, line) {
 }
 
 // ---------- spawn 核心（M3_SPEC 3.6 进程模型） ----------
+// 启动核心前清理孤儿进程：占 8765/9880 且命令行含 pet_server/tts.server 才杀。
+// 根因：壳被强杀/双实例时 Windows 不回收 spawn 的子进程，孤儿占端口 → 新核心
+// bind 失败 → 崩溃重启死循环（Errno 10048 实测）。
+function preflightPorts() {
+  try {
+    const { execSync } = require('child_process');
+    const out = execSync('netstat -ano', { encoding: 'buffer' }).toString('latin1');
+    const lines = out.split(/\r?\n/).filter((l) => /:8765\s|:9880\s/.test(l) && /LISTENING/.test(l));
+    const pids = [...new Set(lines.map((l) => l.trim().split(/\s+/).pop()).filter(Boolean))];
+    for (const pid of pids) {
+      const cmd = execSync(
+        `powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter \\"ProcessId=${pid}\\").CommandLine"`,
+        { encoding: 'buffer' }).toString('latin1') || '';
+      if (cmd.includes('pet_server') || cmd.includes('tts.server')) {
+        execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore' });
+        console.log(`[shell] killed orphan pid ${pid} (${cmd.includes('pet_server') ? 'core' : 'tts'})`);
+      }
+    }
+  } catch (e) { /* netstat/powershell 失败不阻塞启动 */ }
+}
+
 function startCore() {
+  preflightPorts();  // 清孤儿（防 8765 被占 bind 失败死循环）
   const py = process.env.VERANIMA_PY || path.join(__dirname, '..', '.venv', 'Scripts', 'python.exe');
   const srcDir = path.join(__dirname, '..', 'src');
   pushLog('shell', `spawning core: ${py} -m veranima.pet_server`);
@@ -118,7 +140,7 @@ function stopCore() {
 function restartCore() {
   stopCore();
   const waitMs = 3000;  // 旧 python 进程退出 + 端口释放通常 <3s
-  setTimeout(() => { startCore(); }, waitMs);
+  setTimeout(() => { preflightPorts(); startCore(); }, waitMs);
 }
 
 // ---------- 位置持久化（airi config.json 同款，M3_SPEC 3.6） ----------
