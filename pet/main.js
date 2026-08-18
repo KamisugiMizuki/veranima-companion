@@ -46,7 +46,7 @@ function pushLog(tag, line) {
 }
 
 // ---------- spawn 核心（M3_SPEC 3.6 进程模型） ----------
-// 启动核心前清理孤儿进程：占 8765/9880 且命令行含 pet_server/tts.server 才杀。
+// 启动核心前清理孤儿进程：占 8765/9880 且命令行含 pet_server/tts.server/api_v2.py 才杀。
 // 根因：壳被强杀/双实例时 Windows 不回收 spawn 的子进程，孤儿占端口 → 新核心
 // bind 失败 → 崩溃重启死循环（Errno 10048 实测）。
 // 关键：只杀「父进程不是本壳」的进程——自己 spawn 的核心/TTS 父进程 = 本
@@ -65,7 +65,7 @@ function preflightPorts() {
       const info = execSync(
         `powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter \\\"ProcessId=${pid}\\\").CommandLine"`,
         { encoding: 'buffer' }).toString('latin1') || '';
-      if (info.includes('pet_server') || info.includes('tts.server')) {
+      if (info.includes('pet_server') || info.includes('tts.server') || info.includes('api_v2.py')) {
         execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore' });
         console.log(`[shell] killed orphan pid ${pid} (${info.includes('pet_server') ? 'core' : 'tts'})`);
       }
@@ -121,16 +121,17 @@ function startCore() {
   });
 }
 
-// ---------- spawn 本地 TTS 服务（OpenAI 兼容 /v1/audio/speech，Qwen3-TTS 1.7B） ----------
+// ---------- spawn 本地 TTS 服务（GPT-SoVITS api_v2.py，端口 9880） ----------
+// 2026-08-19：Qwen3-TTS 1.7B → GPT-SoVITS（实时率 ~0.5x，快 3 倍）
 function startTTS() {
-  const py = process.env.VERANIMA_PY || path.join(__dirname, '..', '.venv', 'Scripts', 'python.exe');
-  const srcDir = path.join(__dirname, '..', 'src');
-  pushLog('shell', 'spawning tts server (Qwen3-TTS 1.7B, port 9880)');
+  const gptDir = path.join(__dirname, '..', 'tts', 'gpt-sovits');
+  const gptPy = path.join(gptDir, 'runtime', 'python.exe');
+  pushLog('shell', 'spawning tts server (GPT-SoVITS, port 9880)');
   try {
-    ttsProc = spawn(py, ['-m', 'veranima.tts.server', '--port', '9880'], {
-      cwd: path.join(__dirname, '..'),
+    ttsProc = spawn(gptPy, ['-I', 'api_v2.py', '-a', '127.0.0.1', '-p', '9880'], {
+      cwd: gptDir,
       windowsHide: true,   // 不弹控制台窗口
-      env: { ...process.env, PYTHONPATH: srcDir, PYTHONIOENCODING: 'utf-8' },
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (e) {
