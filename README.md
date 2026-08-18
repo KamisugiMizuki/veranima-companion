@@ -1,120 +1,123 @@
 # Veranima Companion
 
-一个给予用户真实感的情感陪伴 agent：拥有较为固定的行为模式、性格、语言方式，具备长期记忆与遗忘机制，并随与用户的逐步交流进行学习式自我修改。
+AI 陪伴系统：QQ bot + Windows 桌宠双端。固定的性格与行为模式、长期记忆与遗忘、视觉注意力、双语日语配音。
+
+## 功能概览
+
+| 端 | 能力 |
+|---|---|
+| **QQ bot** | OneBot v11 私聊（NapCatQQ）、定时问候/节庆、离线思考（"迟来的回应"）、贴纸、多角色切换 |
+| **桌宠** | 透明置顶立绘、点击/拖拽、QQ 风格独立聊天窗口（记录持久化）、右键菜单、四态形象 + 表情标签驱动、流式打字机、无缝衔接（回到电脑前接续 QQ 话题） |
+| **语音** | GPT-SoVITS v4 本地日语合成（微调音色）、整段合成一次出声、双语输出（ja 配音 / zh 显示） |
+| **视觉注意力** | 扫视-注视状态机 + 显著度地图（运动/对比/结构）+ 鼠标焦点 + 前台窗口追踪 + 习惯化 + 分层观察冷却（详见 docs/VISION_SPEC.md） |
+| **记忆** | SQLite（FTS5 + bge-m3 embedding 本地化）、分层检索、遗忘衰减、事件记忆提取 |
+
+## 架构
+
+```
+Electron 壳 (pet/)                    Python 核心 (src/veranima/)
+├─ 主窗口（透明置顶立绘）             ├─ pet_server  WS 127.0.0.1:8765
+├─ 聊天窗口（QQ 风格，独立窗口）      ├─ agent（人格/记忆/打断/双语）
+├─ 设置/日志窗口                      ├─ qq bot  WS 127.0.0.1:8099 (OneBot v11)
+└─ spawn ────────────────>           └─ attention 包（视觉注意力循环）
+        │
+        └─ spawn GPT-SoVITS api_v2.py（127.0.0.1:9880，本地日语 TTS）
+```
+
+- 启动器：`run_pet.bat`（项目根，双击）或 `.venv\Scripts\python.exe scripts\run_pet.py`——壳自动 spawn 核心 + TTS；`qq.enabled: true` 时连带拉起 QQ bot（后台无窗口，退出一起停）
+- 日志按模块落盘：`logs/core.log`（核心）/ `logs/tts.log`（TTS 原始输出，带时间戳）/ `logs/shell.log`（壳）
+- 聊天记录持久化：`%APPDATA%\veranima-pet\chat.json`（右键菜单可清空）
 
 ## 文档索引
 
 | 文档 | 内容 |
 |---|---|
 | [docs/DESIGN.md](docs/DESIGN.md) | 主设计文档（方案唯一权威） |
-| [docs/M1_SPEC.md](docs/M1_SPEC.md) | M1 Filter 仿生层专项细化（记忆断片/打断/表达瑕疵） |
-| [docs/M2_SPEC.md](docs/M2_SPEC.md) | M2 通道适配层专项细化（IM/TTS 双通道表达） |
-| [docs/M3_SPEC.md](docs/M3_SPEC.md) | M3 桌宠专项细化（airi 式多窗口/进程模型/TTS/前台） |
-| [docs/M4_SPEC.md](docs/M4_SPEC.md) | M4 视觉注意力/表情标签驱动专项细化 |
-| [docs/M5_SPEC.md](docs/M5_SPEC.md) | M5 需求翻译层/桌面 Agent 专项细化（DeepSeek Harness 独立模块，装在 dsh/） |
-| [config/character.example.json](config/character.example.json) | 角色卡示例（字段说明见 DESIGN.md 4.8 / CHARACTER 相关章节） |
+| [docs/M1_SPEC.md](docs/M1_SPEC.md) | M1 Filter 仿生层（记忆断片/打断/表达瑕疵） |
+| [docs/M2_SPEC.md](docs/M2_SPEC.md) | M2 通道适配层（IM/TTS 双通道表达） |
+| [docs/M3_SPEC.md](docs/M3_SPEC.md) | M3 桌宠专项（多窗口/进程模型/TTS/前台） |
+| [docs/M4_SPEC.md](docs/M4_SPEC.md) | M4 表情标签驱动（视觉注意力已独立，见下） |
+| [docs/M5_SPEC.md](docs/M5_SPEC.md) | M5 需求翻译层/桌面 Agent（DeepSeek Harness） |
+| [docs/VISION_SPEC.md](docs/VISION_SPEC.md) | **视觉注意力模块**（仿生模型：三层感知/显著度/扫视-注视/习惯化） |
+| [config/character.example.json](config/character.example.json) | 角色卡示例（字段说明见 DESIGN.md 4.8） |
 
-## 技术栈
-
-Python + SQLite(sqlite-vec/FTS5) + 远程 OpenAI 兼容 LLM（DeepSeek/通义/硅基流动等）+ bge-m3 embedding（本地）+ Electron 桌宠壳 + Qwen3-TTS 1.7B（本地语音）+ STT 接口就绪（OpenAI 兼容，未接模型）
-
-## 快速开始（CLI / QQ）
+## 快速开始（CLI）
 
 ```bash
-# 1. 环境（Python 3.11+）
-python -m venv .venv
-.venv/Scripts/pip install -e .
+# 1. 环境（Python 3.11+，推荐 uv）
+uv venv .venv
+.venv/Scripts/python.exe -m pip install -e .
 
 # 2. 配置（远程 OpenAI 兼容 API）
 cp config/config.example.yaml config/config.yaml
-# 编辑 config.yaml：llm.base_url / llm.api_key / llm.model（如 DeepSeek/通义/硅基流动）
+# 编辑 config.yaml：llm.base_url / llm.api_key / llm.model
+# 角色卡：config.yaml 的 character_card 指向 characters/<name>/character.json
 
-# 3. 角色卡
-cp config/character.example.json config/character.json
-# 编辑 config/character.json 自定义角色；字段参考 config/character.example.json（含 veranima 扩展段：capabilities/fillers/tones 等）
-
-# 4. 运行（CLI 对话）
-.venv/Scripts/python -m veranima.cli
-
-# 多角色管理（characters/ 目录，见 DESIGN 4.11）
-.venv/Scripts/python -m veranima.cli roles list          # 列出角色
-.venv/Scripts/python -m veranima.cli roles switch <id>   # 切换激活角色（重启生效）
+# 3. 运行（CLI 对话入口：多角色管理 / M5 任务管道）
+.venv/Scripts/python.exe -m veranima.cli roles list          # 列出角色（当前激活 yuki）
+.venv/Scripts/python.exe -m veranima.cli roles switch <id>   # 切换激活角色（重启生效）
+.venv/Scripts/python.exe -m veranima.cli task "帮我查一下今天的天气"   # M5 任务管道（需 dsh）
 ```
 
 ## QQ 接入（NapCatQQ，OneBot v11）
 
 ```bash
-# 1. 登录 NapCatQQ（或任意 OneBot v11 实现），配置"反向 WebSocket 客户端"
-#    连接 ws://127.0.0.1:8099/ws（与 config.yaml 的 qq.ws_host/ws_port 对应）
-# 2. config/config.yaml 的 [qq] 段：
-#    enabled: true
-#    allowed_qq: [你的QQ号]      # 白名单必填（1v1 私聊），空 = 拒绝所有消息
+# 1. 登录 NapCatQQ，配置「反向 WebSocket 客户端」→ ws://127.0.0.1:8099/ws
+# 2. config.yaml 的 [qq] 段：enabled: true、allowed_qq: [你的QQ号]（白名单必填）
 # 3. 启动
-.venv/Scripts/python -m veranima.qq
+.venv/Scripts/python.exe -m veranima.qq
 ```
 
-QQ 形态额外启用：定时问候/节庆纪念主动消息、离线思考（静默 30 分钟后低概率"迟来的回应"，可配置）。
+QQ 形态额外启用：定时问候/节庆、离线思考（静默 30 分钟后低概率"迟来的回应"）。
 
-## 桌宠（Electron + 本地 TTS）
+## 桌宠（Electron + GPT-SoVITS）
 
 ```bash
-# 1. 本地 TTS 模型（clone 后需手动放入 data/models/qwen3-tts/，gitignore 排除）：
-#    从 ModelScope/HF 下载：
-#      Qwen3-TTS-12Hz-1.7B-CustomVoice/（内置 9 种音色，无需参考音频，~4.5GB）
-#      Qwen3-TTS-Tokenizer-12Hz/（分词器）
-
-# 2. 依赖（含 CUDA torch；无 GPU 则 CPU 可用但慢）
-.venv/Scripts/pip install -e . torch --index-url https://download.pytorch.org/whl/cu128
-
-# 3. 启动桌宠（壳 spawn 核心 + TTS 服务两个子进程，日志在日志窗口可看）
-.venv/Scripts/python.exe scripts/run_pet.py
-# 注：run_pet.py 只是 Electron 壳启动器；壳 spawn 的核心/TTS 默认用 .venv/Scripts/python.exe
-#   （可用环境变量 VERANIMA_PY 覆盖 python 路径）
-#   config.yaml 的 qq.enabled=true 时，桌宠启动会连带拉起 QQ bot（后台无窗口，退出一起停）
+# 启动（双击 run_pet.bat，或：）
+.venv/Scripts/python.exe scripts\run_pet.py
 ```
 
-- 桌宠三进程：Electron 壳（UI，主窗口+设置窗+日志窗）+ Python 核心（WS 8765，Agent/时空/在场）+ Qwen3-TTS 服务（9880），崩溃自动重启
-- TTS 接口为 **OpenAI 兼容 /v1/audio/speech**（远程/本地统一）：config.yaml `tts.base_url` 指向本地 `http://127.0.0.1:9880/v1`，也可改成任意远程 OpenAI 兼容 TTS API
-- 桌宠能力：四态形象 + 表情标签驱动（LLM 输出 portrait → 表情图）、流式打字机、点击穿透拖拽、位置持久化、无缝衔接（回到电脑前自动接续 QQ 话题）、视觉注意力（L0 在场检测 → L3 屏幕理解 → 联想式主动）
+- **聊天**：点击形象打开 QQ 风格独立聊天窗口（右侧用户绿泡/左侧桌宠白泡+立绘头像，Enter 发送，记录跨重启保留，右键菜单可清空）
+- **右键菜单**：戳一下 / 打开聊天 / 清空聊天记录 / 显示隐藏 / 设置 / 日志 / 重启核心 / 退出
+- **TTS**：GPT-SoVITS v4 本地日语合成（端口 9880）。模型权重 + 参考音频在 `characters/yuki/voice/`（gitignore），配置在 config.yaml `[tts]` 段
+- **视觉注意力**：自动运行（logs/core.log 可看事件：window_switch / fixation_shift / 观察注入 / 联想主动发起），参数在 config.yaml `[attention]` 段
+
+### 桌宠所需的外部资源（gitignore，clone 后手动准备）
+
+| 资源 | 位置 | 说明 |
+|---|---|---|
+| GPT-SoVITS 整合包 | `tts/gpt-sovits/`（~12G） | 从 sakura 整合包整体拷贝（含 runtime、pretrained_models v4、api_v2.py） |
+| 桌宠壳依赖 | `pet/node_modules/` | electron + ws；可建 junction 复用其他项目（run_pet.py 有缺失检测提示） |
 
 ## 角色包（.char 导出/导入）
 
 ```bash
-# 导出角色目录 → .char zip（含安全检查，DESIGN 4.11）
-.venv/Scripts/python -m veranima.cli roles export <id>
-# 导入 .char（zip bomb/路径穿越防护 + 重名自动改名 + 立绘说明.txt 批量映射表情标签）
-.venv/Scripts/python -m veranima.cli roles import <file.char>
+.venv/Scripts/python.exe -m veranima.cli roles export <id>       # 导出角色目录 → .char zip
+.venv/Scripts/python.exe -m veranima.cli roles import <file.char> # 导入（zip 防护 + 立绘批量映射）
+```
+
+## 测试
+
+```bash
+.venv/Scripts/python.exe -m pytest tests/ -q    # 251 passed
 ```
 
 ## 状态
 
-**M0-M5 全部完成**：
+**M0-M5 全部完成；视觉注意力模块（VISION_SPEC）V1-V3 已完成**：
 
 | 里程碑 | 内容 |
 |---|---|
-| M0 | 仓库初始化 + 设计文档 + 可复用模块拷贝（bge-m3 embedding 本地化） |
-| M1 | Filter 仿生层：记忆断片（四档确信度+噪声注入+追问可逆）/ 打断决策（话题复现 L0-L3 分级+自愈冷却）/ 表达瑕疵（撤回限频+延迟纠错） |
-| M2 | 通道适配层：handle(channel) 通道感知 + IM 渲染器 + 跨通道共享核心 + 现实行动边界 + 能力匹配层（擅长/略知/完全不懂） |
-| M3 | 桌宠 MVP：Electron 壳（airi 式多窗口）+ 本地 TTS（Qwen3-TTS 1.7B）+ 时空沉浸（场景锁/心跳/互斥）+ 角色包/多角色 + 流式输出 + 无缝衔接 |
-| M4 | 视觉注意力（锚点/三态/L0-L3 分级）+ 表情标签驱动（portrait/tone 结构化输出 + 立绘说明.txt 批量映射） |
-| M5 | 需求翻译层（LLM 意图补全 + 工单协议）+ 桌面 Agent（DeepSeek Harness 独立模块，装在 dsh/，API 独立）+ 任务结果角色化转述 |
+| M0 | 仓库初始化 + 设计文档 + bge-m3 embedding 本地化 |
+| M1 | Filter 仿生层：记忆断片 / 打断决策 / 表达瑕疵 |
+| M2 | 通道适配层：handle(channel) + 跨通道共享核心 + 能力匹配 |
+| M3 | 桌宠 MVP：Electron 壳 + 本地 TTS + 时空沉浸 + 角色包 + 流式 + 无缝衔接 |
+| M4 | 表情标签驱动（portrait/tone 结构化输出 + 立绘映射） |
+| M5 | 需求翻译层 + 桌面 Agent（DeepSeek Harness，dsh/）+ 任务结果转述 |
+| VISION V1-V3 | attention 包（显著度/扫视-注视/鼠标焦点/习惯化/分层冷却）替代旧 vision.py（已删） |
 
-测试基线 252 passed。M5 之后：studio（角色工作室 GUI）为独立子模块暂缓，触发条件见 DESIGN 4.12。
+## 已知约束
 
-## 桌面 Agent（M5，dsh）
-
-```bash
-# 1. 安装 dsh 到项目 dsh/ 目录（gitignore，clone 后需手动装）
-cd dsh
-npm install @deepseek-ai/dsh@0.1.0-rc.6
-
-# 2. 设置 dsh 独立 API（不读 veranima config.yaml）
-#    环境变量：DEEPSEEK_BASE_URL / DEEPSEEK_API_KEY
-
-# 3. 使用（CLI 任务管道：指令 → 工单 → dsh 执行）
-.venv/Scripts/python -m veranima.cli task "帮我查一下今天的天气"
-```
-
-## STT 语音输入（OpenAI 兼容接口，未接模型）
-
-config.yaml `stt` 段已就绪（`base_url` 留空 = 未接入，不报错返回空）：填远程/本地 OpenAI 兼容 `/v1/audio/transcriptions` 端点后即可使用。
+- 角色语音为日语（GPT-SoVITS 微调音色 yuki）；`bilingual.enabled` 角色缺日语台词时只显示不合成（防中文送日语模型）
+- STT 段已就绪（OpenAI 兼容 `/v1/audio/transcriptions`），未接模型（base_url 留空不报错）
+- 桌宠核心 WS 为单客户端设计（8765）；TTS 服务常驻（模型加载 ~60s，单句推理实时）
