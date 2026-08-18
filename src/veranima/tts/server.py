@@ -22,8 +22,9 @@ from starlette.requests import Request
 
 logger = logging.getLogger("veranima.tts.server")
 
-# 模型路径（相对项目根）：1.7B-Base = 声音克隆模型（需参考音频）
-_MODEL_DIR = "data/models/qwen3-tts/Qwen3-TTS-12Hz-1.7B-Base"
+# 模型路径（相对项目根）：0.6B-Base = 声音克隆模型（需参考音频）
+# 2026-08-19 从 1.7B 切 0.6B：1.7B 克隆 AR 解码慢，对话句间间隔过长
+_MODEL_DIR = "data/models/qwen3-tts/Qwen3-TTS-12Hz-0.6B-Base"
 _SPEECH_TOKENIZER_DIR = "data/models/qwen3-tts/Qwen3-TTS-Tokenizer-12Hz"
 # 默认参考音频（克隆音色来源；voice 参数可覆盖）
 _DEFAULT_REF_AUDIO = os.environ.get(
@@ -34,6 +35,19 @@ _DEFAULT_REF_AUDIO = os.environ.get(
 _model = None
 _tokenizer = None
 _device = None
+_clone_prompt = None      # 克隆 prompt 缓存（参考音频固定 → 只构建一次）
+_clone_prompt_ref = None  # 已缓存的参考音频路径
+
+
+def _get_clone_prompt(ref_audio: str):
+    """克隆 prompt 缓存：参考音频不变则复用（x-vector 提取只做一次）。"""
+    global _clone_prompt, _clone_prompt_ref
+    if _clone_prompt is not None and _clone_prompt_ref == ref_audio:
+        return _clone_prompt
+    model, _tok, _ = _load_model()
+    _clone_prompt = model.create_voice_clone_prompt(ref_audio, x_vector_only_mode=True)
+    _clone_prompt_ref = ref_audio
+    return _clone_prompt
 
 
 def _load_model():
@@ -71,12 +85,12 @@ def synthesize(text: str, voice: str = "") -> bytes:
     # voice 参数 = 参考音频路径；空/默认值 → 用默认样本
     ref_audio = voice if voice and os.path.exists(voice) else str(ROOT / _DEFAULT_REF_AUDIO)
     logger.info("clone voice ref_audio=%s (voice param=%r)", ref_audio, voice)
-    # 克隆生成（x_vector_only：纯音色特征，无需参考文本）
+    # 克隆生成（x_vector_only：纯音色特征，无需参考文本；prompt 缓存复用）
     wavs, sr = model.generate_voice_clone(
         text=text,
         language="Auto",
-        ref_audio=ref_audio,
-        x_vector_only_mode=True,
+        voice_clone_prompt=_get_clone_prompt(ref_audio),
+        non_streaming_mode=True,  # 整句一次性生成（False 模拟流式输入，实测更慢）
     )
     audio = np.asarray(wavs[0], dtype=np.float32)
     # 转 WAV（16bit PCM）
