@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import re
 
-_SEGMENTS_RE = re.compile(r"\{[^{}]*\"text\"[^{}]*\}")
+_SEGMENTS_RE = re.compile(r"\{[^{}]*\"(?:text|ja|zh)\"[^{}]*\}")  # 双语 segment 无 text 键（ja/zh）
 
 
 def extract_segments(reply: str, *, bilingual: bool = False) -> tuple[str, str, str, str]:
