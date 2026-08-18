@@ -11,7 +11,14 @@ rem       systems; non-ASCII bytes corrupt line endings.
 rem ============================================================
 setlocal
 
-cd /d %~dp0
+rem locate project root: run from scripts/ (one level up) or project root (copy)
+if exist ".venv\Scripts\python.exe" goto :found
+cd /d %~dp0..
+if exist ".venv\Scripts\python.exe" goto :found
+echo [ERROR] .venv not found (looked in %CD% and %~dp0). Run from project root.
+pause & exit /b 1
+:found
+echo [INFO] project root: %CD%
 
 rem ---- 0. sanity checks ----
 if not exist ".venv\Scripts\python.exe" (
