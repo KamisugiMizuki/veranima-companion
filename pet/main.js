@@ -173,13 +173,24 @@ function startCore() {
 // 文件 logs/tts.log——编辑器自动检测编码，永远正确。窗口只保留 shell 日志。
 const ttsLogPath = path.join(__dirname, '..', 'logs', 'tts.log');
 let ttsLogStream = null;
+let ttsLineBuf = Buffer.alloc(0);  // 跨 chunk 的行缓冲（按 \n 切行，多字节安全）
 function appendTtsLog(buf) {
   try {
     if (!ttsLogStream) {
       fs.mkdirSync(path.dirname(ttsLogPath), { recursive: true });
       ttsLogStream = fs.createWriteStream(ttsLogPath, { flags: 'a', encoding: null });
     }
-    ttsLogStream.write(buf);
+    // 每行首加 [HH:MM:SS.mmm] 时间戳（ASCII，不破坏编码；跨 chunk 切断的
+    // 多字节留在缓冲里等下个 chunk，按 \n 切行不会切断字节序列）
+    ttsLineBuf = Buffer.concat([ttsLineBuf, buf]);
+    let nl;
+    while ((nl = ttsLineBuf.indexOf(10)) !== -1) {  // \n
+      const line = ttsLineBuf.subarray(0, nl + 1);
+      ttsLineBuf = ttsLineBuf.subarray(nl + 1);
+      const ts = new Date().toISOString().slice(11, 23);
+      ttsLogStream.write(`[${ts}] `);
+      ttsLogStream.write(line);
+    }
   } catch (e) { /* 日志写入失败不阻塞 TTS */ }
 }
 function startTTS() {

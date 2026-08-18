@@ -624,6 +624,8 @@ class Agent:
                 task
                 + '\n用日语说这句台词（yuki 说日语），并给出中文翻译。'
                   '只输出 JSON：{"segments":[{"ja":"日语台词","zh":"中文翻译","tone":"中性","portrait":"微笑"}]}'
+                  '直接输出最终答案的 JSON，禁止输出草稿、多个选项、思考过程、'
+                  '解释或对指令的复述——只要一段 JSON，不要 markdown 代码块。'
             )
         system = build_system_prompt(self.card, self.state, self.memory)
         reply = self.llm.chat(
