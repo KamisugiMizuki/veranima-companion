@@ -17,6 +17,7 @@ import argparse
 import io
 import logging
 import os
+import threading
 
 from starlette.requests import Request
 
@@ -75,8 +76,22 @@ def _load_model():
     return _model, _tokenizer, _device
 
 
+# 合成全局锁：qwen_tts 模型推理线程不安全（多请求并发 → 互相阻塞/超时实测）
+# ponytail: 全局串行锁，若多并发合成成为瓶颈再换队列+双实例
+_synth_lock = threading.Lock()
+
+
 def synthesize(text: str, voice: str = "") -> bytes:
     """文本 → WAV bytes。voice = 参考音频路径（克隆音色）；空 → 默认 yuki.mp3。"""
+    import io as _io
+    import numpy as np
+    from veranima.config import ROOT
+
+    with _synth_lock:  # 串行化模型推理
+        return _synthesize_locked(text, voice)
+
+
+def _synthesize_locked(text: str, voice: str) -> bytes:
     import io as _io
     import numpy as np
     from veranima.config import ROOT

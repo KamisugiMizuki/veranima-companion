@@ -33,6 +33,7 @@ class PetServer:
         self.port = port
         self._client: websockets.ServerConnection | None = None
         self._agent = None  # 后续接 Agent；PoC 阶段 None
+        self._agent_lock = asyncio.Lock()  # agent.handle 串行化（SQLite 游标非线程安全，并发实测 "no more rows available"）
         self._tts = None    # TTSClient（可选；未配置则桌宠只显气泡不发声）
         self._presence_was_absent = False  # M3 衔接：在场转变检测
 
@@ -68,6 +69,11 @@ class PetServer:
         return False
 
     # ---------- 对外发送 ----------
+    async def _call_agent(self, text: str):
+        """agent.handle 串行化调用（SQLite 游标非线程安全；桌宠/QQ 并发实测冲突）。"""
+        async with self._agent_lock:
+            return await asyncio.to_thread(self._agent.handle, text, channel="tts")
+
     async def speak(self, text: str, tags: list | None = None, tts_text: str | None = None) -> bool:
         """推送回复（逐句合成+播放，M5 性能优化：第一句 ~3s 出声，后续边播边生成）。
 
@@ -145,7 +151,7 @@ class PetServer:
                     if self._agent is not None:
                         # 正式版：agent 生成一句互动（channel=tts 语音风格 + 表情标签）
                         try:
-                            r = await asyncio.to_thread(self._agent.handle, "（用户戳了戳桌宠）", channel="tts")
+                            r = await self._call_agent("（用户戳了戳桌宠）")
                             await self.speak(r.reply, tags=[r.portrait] if r.portrait else None, tts_text=r.ja_text or None)
                         except Exception as e:
                             logger.warning("poke agent failed: %s", e)
@@ -165,7 +171,7 @@ class PetServer:
                         # 构建消息 → 流式生成（agent 的 messages 由 handle 内部构建；
                         # PoC：直接调 llm.stream_chat 需要消息列表——走 agent 的简化路径：
                         # 用一次性 handle 拿完整回复再按句推（保证与 agent 状态一致）
-                        r = await asyncio.to_thread(self._agent.handle, msg_text, channel="tts")
+                        r = await self._call_agent(msg_text)
                         for sent in _split_sentences(r.reply):
                             await self.speak_chunk(sent)
                         await self.speak_done()
