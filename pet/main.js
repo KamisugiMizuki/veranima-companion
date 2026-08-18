@@ -20,15 +20,17 @@ let reconnectDelay = 1000;
 let suppressCoreRestart = false;  // 预期停止标志：stopCore/退出时不自动重启
 let coreRestartTimer = null;      // restartCore 定时器（防重入：多次保存只重启一次）
 let logRing = [];                 // 内存环形缓冲（转发给日志窗口）
-let logFile = null;               // 文件日志句柄
+let moduleLogStreams = {};        // 模块日志流：core.log / shell.log（tts.log 走原始字节）
 
-// ---------- 日志（汇聚 + 落盘） ----------
+// ---------- 日志（汇聚 + 按模块落盘到 logs/） ----------
 function openLogFile() {
   try {
-    const dir = app.getPath('userData');
+    const dir = path.join(__dirname, '..', 'logs');
     fs.mkdirSync(dir, { recursive: true });
-    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    logFile = fs.createWriteStream(path.join(dir, `veranima-${ts}.log`), { flags: 'a' });
+    // 按模块分开：core.log / shell.log（tts.log 在 startTTS 里用原始字节写）
+    for (const name of ['core.log', 'shell.log']) {
+      moduleLogStreams[name] = fs.createWriteStream(path.join(dir, name), { flags: 'a' });
+    }
   } catch (e) { console.error('log file open failed:', e.message); }
 }
 
@@ -37,7 +39,10 @@ function pushLog(tag, line) {
   const entry = `[${ts}] [${tag}] ${line}`;
   logRing.push(entry);
   if (logRing.length > LOG_RING_MAX) logRing.shift();
-  if (logFile) logFile.write(entry + '\n');
+  // 按模块分文件写本地：core-err→core.log，其余→shell.log（TTS 已走 tts.log 原始字节）
+  const tagFile = tag === 'core-err' || tag === 'core' ? 'core.log' : 'shell.log';
+  const stream = moduleLogStreams[tagFile];
+  if (stream) stream.write(entry + '\n');
   if (logWin && !logWin.isDestroyed()) {
     logWin.webContents.send('log-line', entry);
   }
@@ -127,6 +132,19 @@ function startCore() {
 // PYTHONIOENCODING → 输出编码随系统环境漂移）；显式移除 PYTHONUTF8（用户
 // 环境若设了 1 会让 Python 3.7+ 强制 UTF-8 输出，与 PYTHONIOENCODING 混用
 // 时 stdout/stderr 编码不一致）+ PYTHONIOENCODING=utf-8 → 输出固定 UTF-8。
+// 日志：窗口显示跨 chunk 解码易乱码（实测多轮），改为原始字节直接写本地
+// 文件 logs/tts.log——编辑器自动检测编码，永远正确。窗口只保留 shell 日志。
+const ttsLogPath = path.join(__dirname, '..', 'logs', 'tts.log');
+let ttsLogStream = null;
+function appendTtsLog(buf) {
+  try {
+    if (!ttsLogStream) {
+      fs.mkdirSync(path.dirname(ttsLogPath), { recursive: true });
+      ttsLogStream = fs.createWriteStream(ttsLogPath, { flags: 'a', encoding: null });
+    }
+    ttsLogStream.write(buf);
+  } catch (e) { /* 日志写入失败不阻塞 TTS */ }
+}
 function startTTS() {
   const gptDir = path.join(__dirname, '..', 'tts', 'gpt-sovits');
   const gptPy = path.join(gptDir, 'runtime', 'python.exe');
@@ -145,8 +163,8 @@ function startTTS() {
     scheduleTTSRestart();
     return;
   }
-  ttsProc.stdout.on('data', (d) => pushLog('tts', d.toString('utf8').trimEnd()));
-  ttsProc.stderr.on('data', (d) => pushLog('tts-err', d.toString('utf8').trimEnd()));
+  ttsProc.stdout.on('data', (d) => appendTtsLog(d));   // 原始字节写 logs/tts.log
+  ttsProc.stderr.on('data', (d) => appendTtsLog(d));   // 同上（含 tqdm 进度）
   ttsProc.on('exit', (code, signal) => {
     pushLog('shell', `tts exited (code=${code}, signal=${signal}); restarting in ${reconnectDelay}ms`);
     ttsProc = null;
