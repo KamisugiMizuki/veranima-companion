@@ -35,11 +35,18 @@ class PetServer:
         self._agent = None  # 后续接 Agent；PoC 阶段 None
         self._agent_lock = asyncio.Lock()  # agent.handle 串行化（SQLite 游标非线程安全，并发实测 "no more rows available"）
         self._tts = None    # TTSClient（可选；未配置则桌宠只显气泡不发声）
+        self._bilingual = False  # 角色双语（character.json veranima.bilingual.enabled）
         self._presence_was_absent = False  # M3 衔接：在场转变检测
 
     def connect_agent(self, agent) -> None:
         """接入 Agent（正式版：poke/speak 走 agent.handle(channel='tts')）。"""
         self._agent = agent
+        # 双语标志：ja_text 为空时防御（中文送日语模型会怪音，2026-08-19 实测）
+        try:
+            card = (agent.card or {})
+            self._bilingual = bool(((card.veranima or {}).get("bilingual") or {}).get("enabled"))
+        except Exception:
+            self._bilingual = False
 
     def connect_tts(self, tts) -> None:
         """接入 TTS（远程/本地统一 OpenAI 兼容接口；未配置则跳过合成）。"""
@@ -85,6 +92,10 @@ class PetServer:
         speak_text = (tts_text or text).strip()
         if self._tts is None or not speak_text:
             # 无 TTS：一次性纯气泡
+            return await self._send({"type": "speak", "text": text, "tags": tags or []})
+        if self._bilingual and not tts_text:
+            # 双语角色缺日语台词（LLM 输出异常/thinking 截断）：中文送日语模型
+            # 会怪音（2026-08-19 实测）→ 只推气泡不合成
             return await self._send({"type": "speak", "text": text, "tags": tags or []})
 
         # 逐句：合成一句 → 立即推送（AR 自回归是串行瓶颈，但播放可以与生成重叠）

@@ -397,7 +397,7 @@ class Agent:
             "顺便问问现在的情况。只发消息本身。"
         )
         try:
-            reply = self._short_task(task, max_tokens=200)
+            reply = self._short_task(task, max_tokens=512)
         except Exception as e:
             logger.warning("proactive_from_visual failed: %s", e)
             return ""
@@ -429,7 +429,7 @@ class Agent:
             "只说这一句，不要展开。"
         )
         try:
-            reply = self._short_task(task, max_tokens=120)
+            reply = self._short_task(task, max_tokens=512)
         except Exception as e:
             logger.warning("seamless_greeting failed: %s", e)
             return ""
@@ -461,7 +461,7 @@ class Agent:
                 "请用你的口吻向用户转述：简短说结果要点。别用'助手'这个词太多次，"
                 "像你自己经手办的一样。最多 3 句。"
             )
-            reply = self._short_task(task, max_tokens=200)
+            reply = self._short_task(task, max_tokens=512)
             return reply or output
         except Exception as e:
             logger.warning("task_result_story failed: %s", e)
