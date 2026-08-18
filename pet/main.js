@@ -347,20 +347,48 @@ ipcMain.on('core-restart', () => { restartCore(); });
 // （M4_SPEC 2.2：表情标签驱动；角色切换后立绘跟着换，不再写死 assets/）
 function pushAvatarMap() {
   try {
+    // 优先本地读 config.yaml（不等核心启动——启动 ~7s 内立绘应是 yuki 而非 zima 默认图）
+    const cardPath = localCharacterCard() || '';
+    if (cardPath) { pushAvatarMapFrom(cardPath); return; }
     wsRequest('get_config').then((resp) => {
-      const cardPath = resp && resp.data && resp.data.character_card;
-      if (!cardPath) return;
-      const full = path.join(__dirname, '..', cardPath);
-      const cj = JSON.parse(fs.readFileSync(full, 'utf-8'));
-      const exprs = (((cj.extensions || {}).veranima || {}).avatar || {}).expressions || {};
-      const map = {};
-      for (const [label, rel] of Object.entries(exprs)) {
-        map[label] = require('url').pathToFileURL(path.join(path.dirname(full), rel)).href;
-      }
-      win && win.webContents.send('avatar-map', map);
-      console.log('[shell] avatar map updated:', Object.keys(map).length, 'expressions');
+      const cp = resp && resp.data && resp.data.character_card;
+      if (cp) pushAvatarMapFrom(cp);
     }).catch((e) => console.warn('[shell] avatar map failed:', e.message));
   } catch (e) { console.warn('[shell] avatar map failed:', e.message); }
+}
+
+// 从 config.yaml 直接读 character_card（顶层字符串键）
+function localCharacterCard() {
+  try {
+    const cfg = fs.readFileSync(path.join(__dirname, '..', 'config', 'config.yaml'), 'utf-8');
+    const m = cfg.match(/^character_card:\s*["']?([^"'\s#]+)/m);
+    return m ? m[1] : '';
+  } catch { return ''; }
+}
+
+function pushAvatarMapFrom(cardPath) {
+  try {
+    const full = path.join(__dirname, '..', cardPath);
+    const cj = JSON.parse(fs.readFileSync(full, 'utf-8'));
+    const exprs = (((cj.extensions || {}).veranima || {}).avatar || {}).expressions || {};
+    const map = {};
+    for (const [label, rel] of Object.entries(exprs)) {
+      map[label] = require('url').pathToFileURL(path.join(path.dirname(full), rel)).href;
+    }
+    win && win.webContents.send('avatar-map', map);
+    // 启动时同步立绘尺寸（设置页 avatar_height；默认 200）
+    const ah = localAvatarHeight();
+    if (ah > 0) win && win.webContents.send('avatar-height', Number(ah));
+    console.log('[shell] avatar map updated:', Object.keys(map).length, 'expressions');
+  } catch (e) { console.warn('[shell] avatar map failed:', e.message); }
+}
+
+function localAvatarHeight() {
+  try {
+    const cfg = fs.readFileSync(path.join(__dirname, '..', 'config', 'config.yaml'), 'utf-8');
+    const m = cfg.match(/avatar_height:\s*(\d+)/);
+    return m ? parseInt(m[1], 10) : 0;
+  } catch { return 0; }
 }
 
 // ---------- 托盘 ----------
