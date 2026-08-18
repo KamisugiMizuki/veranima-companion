@@ -36,6 +36,7 @@ class PetServer:
         self._agent_lock = asyncio.Lock()  # agent.handle 串行化（SQLite 游标非线程安全，并发实测 "no more rows available"）
         self._tts = None    # TTSClient（可选；未配置则桌宠只显气泡不发声）
         self._bilingual = False  # 角色双语（character.json veranima.bilingual.enabled）
+        self.attention_cfg = {}  # 视觉注意力配置（VISION_SPEC 4，config.yaml attention: 段）
         self._presence_was_absent = False  # M3 衔接：在场转变检测
 
     def connect_agent(self, agent) -> None:
@@ -273,7 +274,8 @@ class PetServer:
             # 替代 M4_SPEC 1.x 的 VisualAttention（vision.py 过渡实现）
             async def _visual_loop():
                 from veranima.core.attention import AttentionScheduler
-                att = AttentionScheduler(llm=getattr(self._agent, "llm", None))
+                att = AttentionScheduler(llm=getattr(self._agent, "llm", None),
+                                         config=self.attention_cfg)
                 await asyncio.sleep(10)  # 启动后延迟（等核心就绪）
                 logger.info("visual: 注意力循环启动（VISION_SPEC V1）")
                 while True:
@@ -325,6 +327,8 @@ def main() -> None:
     cfg = load_config()
     srv.connect_agent(create_agent(cfg))
     logger.info("agent connected (character_card=%s)", cfg.get("character_card", ""))
+    # 视觉注意力配置（VISION_SPEC 4：config.yaml attention: 段 → AttentionScheduler）
+    srv.attention_cfg = cfg.get("attention", {}) or {}
     # TTS（远程/本地统一 OpenAI 兼容接口；未配置 base_url 则桌宠只显气泡）
     from veranima.tts.client import TTSClient
     tts_cfg = cfg.get("tts", {})
