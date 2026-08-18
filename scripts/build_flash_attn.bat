@@ -65,6 +65,24 @@ rem parallel compile cap: 8 for 32GB RAM, drop to 4 on OOM
 set "MAX_JOBS=8"
 rem parallel nvcc threads
 set "NVCC_APPEND_FLAGS=--threads 8"
+rem System has CUDA 12.6/12.9/13.2 but torch is cu128 (needs 12.8).
+rem Use closest 12.9: minor-version compatible (12.9 build runs on 12.8 runtime).
+set "CUDA_HOME=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9"
+set "CUDA_PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9"
+set "PATH=%CUDA_HOME%\bin;%PATH%"
+rem Hermes desktop injects PYTHONPATH into child processes; clear it so
+rem pip/torch resolve to THIS venv, not the agent's.
+set "PYTHONPATH="
+rem torch: use the activated VC env without re-activation
+set "DISTUTILS_USE_SDK=1"
+
+rem ---- 3.5 patch torch CUDA version check (raise -> warning) ----
+rem torch requires exact CUDA match (12.8); we use 12.9. Patch is idempotent.
+.venv\Scripts\python.exe scripts\patch_torch_cuda_check.py
+if errorlevel 1 (
+    echo [ERROR] torch patch failed
+    pause & exit /b 1
+)
 
 rem ---- 4. build & install (log to file; survives crash) ----
 echo [INFO] building flash-attn (~40 min), log: build_flash_attn.log
