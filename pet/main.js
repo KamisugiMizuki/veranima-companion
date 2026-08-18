@@ -17,6 +17,30 @@ const LOG_RING_MAX = 500;         // 内存环形缓冲行数
 
 let win = null;
 let logWin = null;
+let chatWin = null;
+let activePetStreaming = false;  // 聊天窗口：桌宠回复流式进行中（chunk 合并/去重）
+// 聊天记录：会话内数组 + userData/chat.json 持久化（跨重启保留）
+let chatHistory = [];
+const chatLogPath = () => path.join(app.getPath('userData'), 'chat.json');
+function loadChatHistory() {
+  try { chatHistory = JSON.parse(fs.readFileSync(chatLogPath(), 'utf-8')) || []; }
+  catch { chatHistory = []; }
+  if (!Array.isArray(chatHistory)) chatHistory = [];
+}
+function saveChatHistory() {
+  try { fs.writeFileSync(chatLogPath(), JSON.stringify(chatHistory.slice(-500)), 'utf-8'); }
+  catch { /* 写失败不阻塞聊天 */ }
+}
+function pushChat(role, text, opts = {}) {
+  const m = { role, text, ts: Date.now() };
+  chatHistory.push(m);
+  saveChatHistory();
+  // 广播给聊天窗口：历史消息直接 append；流式走 streaming/finish 增量
+  if (chatWin && !chatWin.isDestroyed()) {
+    chatWin.webContents.send('chat-line', { ...m, streaming: !!opts.streaming, finish: !!opts.finish });
+  }
+  return m;
+}
 let tray = null;
 let ws = null;
 let coreProc = null;
@@ -426,6 +450,7 @@ function localAvatarHeight() {
 function buildContextMenu() {
   return Menu.buildFromTemplate([
     { label: '戳一下', click: () => { win && win.webContents.send('menu-poke'); } },
+    { label: '打开聊天', click: () => openChatWindow() },
     { label: '显示/隐藏桌宠', click: () => { win ? (win.isVisible() ? win.hide() : win.show()) : createWindow(); } },
     { type: 'separator' },
     { label: '打开设置', click: () => openSettingsWindow() },
@@ -497,12 +522,30 @@ function handleCoreMsg(msg) {
       break;
     case 'speak':
       win && win.webContents.send('speak', { text: msg.text, text_zh: msg.text_zh || '', tags: msg.tags || [], audioB64: msg.audio_b64 || '' });
+      // 聊天窗口：主动对话（无 chunk 前缀）直接成条；stream_talk 路径 chunk 已显示
+      // → speak 到达时流式已结束，不重复（main 侧 activePetStreaming 判断）
+      if (!activePetStreaming) pushChat('pet', msg.text_zh || msg.text || '');
       break;
     case 'speak_chunk':
       win && win.webContents.send('speak-chunk', { text: msg.text });
+      // 聊天窗口：流式追加（chunk 合成为一条桌宠消息）
+      if (!activePetStreaming) { activePetStreaming = true; chatHistory.push({ role: 'pet', text: '', ts: Date.now() }); }
+      const lastPet = chatHistory[chatHistory.length - 1];
+      if (lastPet && lastPet.role === 'pet') lastPet.text += msg.text;
+      saveChatHistory();
+      if (chatWin && !chatWin.isDestroyed()) {
+        chatWin.webContents.send('chat-line', { role: 'pet', text: msg.text, streaming: true });
+      }
       break;
     case 'speak_done':
       win && win.webContents.send('speak-done', {});
+      if (activePetStreaming) {
+        activePetStreaming = false;
+        if (chatWin && !chatWin.isDestroyed()) {
+          chatWin.webContents.send('chat-line', { role: 'pet', text: '', finish: true, ts: Date.now() });
+        }
+        saveChatHistory();
+      }
       break;
     case 'bubble':
       win && win.webContents.send('bubble', { text: msg.text });
@@ -515,8 +558,51 @@ function handleCoreMsg(msg) {
   }
 }
 
+// ---------- 聊天窗口（QQ 风格对话框，独立窗口，复用模式 hide 不销毁） ----------
+function openChatWindow() {
+  loadChatHistory();
+  if (chatWin && !chatWin.isDestroyed()) { chatWin.show(); chatWin.focus(); return; }
+  chatWin = new BrowserWindow({
+    width: 380, height: 560,
+    title: 'Veranima 聊天',
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+    },
+  });
+  chatWin.loadFile('chat.html');
+  chatWin.on('close', (e) => { e.preventDefault(); chatWin.hide(); }); // 复用模式
+  chatWin.on('ready-to-show', () => {
+    chatWin.show();
+    chatWin.webContents.send('chat-history', chatHistory);  // 补发历史
+  });
+  chatWin.on('closed', () => { chatWin = null; });
+}
+// 聊天窗口 IPC：发送 → WS stream_talk + 本地记录用户消息
+ipcMain.on('chat-send', (e, text) => {
+  const t = String(text || '').trim();
+  if (!t) return;
+  pushChat('user', t);
+  if (ws && ws.readyState === 1) {
+    ws.send(JSON.stringify({ type: 'stream_talk', text: t }));
+  } else {
+    pushChat('pet', '（核心未连接）');
+  }
+});
+
 // ---------- renderer → 核心 ----------
 ipcMain.on('pet-event', (e, payload) => {
+  if (payload && payload.type === 'open-chat') { openChatWindow(); return; }
+  if (payload && payload.type === 'stream_talk') {
+    // 主窗口发消息：记录聊天 + 转发（聊天窗口 UI 已接管主入口，保留兼容）
+    const t = String(payload.text || '').trim();
+    if (t) {
+      pushChat('user', t);
+      if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'stream_talk', text: t }));
+    }
+    return;
+  }
   if (payload && (payload.type === 'drag-start' || payload.type === 'drag-end')) {
     pushLog('shell', `[pet-event] ${payload.type}`);  // 【诊断】拖拽信号
     // 拖拽：main 进程轮询全局鼠标位置移动窗口（renderer mousemove 在透明置顶窗不可靠；

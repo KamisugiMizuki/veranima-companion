@@ -180,7 +180,8 @@ window.addEventListener('mouseup', (e) => {
     // 点击判定：按下/松开距离 < 5px = 点击（不用 click 事件——拖动窗口后
     // 按下/松开位置不同，click 会丢失；实测 drag-start 轮询哪怕移动 1px 就没 click）
     if (downPos && Math.abs(e.screenX - downPos.x) < 5 && Math.abs(e.screenY - downPos.y) < 5) {
-      openChatInput();
+      // 2026-08-19：点击形象 → 打开 QQ 风格独立聊天窗口（替代旧内嵌输入框）
+      window.pet.sendEvent({ type: 'open-chat' });
     }
     downPos = null;
   }
@@ -192,31 +193,7 @@ window.addEventListener('contextmenu', (e) => {
   window.pet.sendEvent({ type: 'menu' });
 });
 
-// ---------- 聊天输入框（用户指定交互：点击形象 → 弹输入框 → LLM 回复气泡+TTS） ----------
-let chatInput = null;
-function openChatInput() {
-  if (chatInput) { chatInput.focus(); return; }
-  chatInput = document.createElement('input');
-  chatInput.id = 'chat-input';
-  chatInput.placeholder = '对她说点什么…';
-  chatInput.style.cssText = [
-    'position:absolute; bottom:36px; left:8px; width:204px; padding:6px 10px;',
-    'border:1px solid #d8dce3; border-radius:8px; font-size:13px;',
-    'background:rgba(255,255,255,.97); outline:none; z-index:10;',
-  ].join('');
-  document.getElementById('pet').appendChild(chatInput);
-  chatInput.focus();
-  const send = () => {
-    const text = chatInput.value.trim();
-    if (!text) return;
-    window.pet.sendEvent({ type: 'stream_talk', text });  // 核心流式回复（speak_chunk→done）
-    setState('thinking');
-    showBubble('……', 2000);
-    chatInput.remove();
-    chatInput = null;
-  };
-  chatInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') send();
-    if (e.key === 'Escape') { chatInput.remove(); chatInput = null; }
-  });
-}
+// ---------- 聊天入口（2026-08-19：QQ 风格独立聊天窗口；点击形象 → 打开） ----------
+// 旧的内嵌输入框（openChatInput）已废弃：交互统一走 chat.html 独立窗口
+// （显示聊天记录 + 流式回复，main 进程持有历史持久化）。点击判定在 mouseup
+// 拖动逻辑里（L183），此处不再重复注册 click。空块保留结构注释。
