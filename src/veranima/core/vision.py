@@ -28,6 +28,7 @@ STABLE_INTERVAL = 30.0     # 稳定期：30s 低频
 TRIGGER_INTERVAL = 5.0     # 触发期：5s 高频
 WANDER_INTERVAL = 120.0    # 游离期：2min 低分辨率全屏
 CHI2_THRESHOLD = 0.2       # 直方图卡方距离阈值（显著变化）
+PIXEL_CHANGE_THRESHOLD = 0.05  # 像素差>30 的占比阈值：窗口切换 ~5%+，打字 <3%
 TRIGGER_RESET_COUNT = 3    # 触发期连续 N 次无变化回稳定
 
 
@@ -61,6 +62,7 @@ class VisualAttention:
         self.focus: dict = {}          # {"tag": str, "since": ts}
         self.observations: list = []   # 环形 10 条（M4_SPEC 1.4）
         self._last_capture: dict | None = None   # 上次锚点区域直方图
+        self._last_img = None                    # 上次全屏灰度图（像素差异用，numpy int16）
         self._trigger_count = 0        # 触发期连续无变化计数
         self._last_observe_ts = 0.0    # L3 观察冷却（≥60s，M4_SPEC 1.3）
 
@@ -120,23 +122,34 @@ class VisualAttention:
         return sum(((a - b) ** 2) / (a + b + 1e-9) for a, b in zip(h1, h2)) / len(h1)
 
     def significant_change(self) -> bool:
-        """锚点区域是否有显著变化（直方图卡方距离 > 阈值）。"""
-        cur = self.capture_anchor_histogram()
-        if cur is None:
+        """屏幕是否有显著变化（像素差占比 > 阈值）。
+
+        2026-08-19 实测修正：灰度直方图卡方对「白底应用切换」（浏览器/编辑器
+        都是白底黑字）不敏感——窗口切换卡方 < 0.2 永远不触发。改像素差异占比：
+        窗口切换 = 大面积像素变化（>5%），打字/滚动 = 文字区域小面积（<3%），
+        区分度远好于直方图。
+        """
+        if not _CAN_CAPTURE:
             return False
-        if self._last_capture is None:
-            self._last_capture = cur
+        try:
+            import numpy as np
+            img = ImageGrab.grab().convert("L")
+            if self._last_img is None:
+                self._last_img = np.array(img, dtype=np.int16)
+                return False
+            cur = np.array(img, dtype=np.int16)
+            # 全屏像素差 > 30 的占比（灰度级）
+            ratio = float((np.abs(cur - self._last_img) > 30).mean())
+            self._last_img = cur
+            changed = ratio > PIXEL_CHANGE_THRESHOLD
+            if changed:
+                self._trigger_count = 0
+                if self.state == "stable":
+                    self.state = "trigger"
+                logger.info("visual: 像素变化占比 %.2f%% 触发", ratio * 100)
+            return changed
+        except Exception:
             return False
-        changed = any(
-            self.chi2_distance(a, b) > CHI2_THRESHOLD
-            for a, b in zip(cur, self._last_capture)
-        )
-        self._last_capture = cur
-        if changed:
-            self._trigger_count = 0
-            if self.state == "stable":
-                self.state = "trigger"
-        return changed
 
     # ---------- 观察（L3 结果注入） ----------
 
