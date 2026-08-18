@@ -32,6 +32,14 @@ function saveChatHistory() {
   catch { /* 写失败不阻塞聊天 */ }
 }
 function pushChat(role, text, opts = {}) {
+  // 主动对话 speak 逐句推送 N 条（每条 text=整段，音频不同）→ 聊天记录
+  // 去重：同角色同文本的连续消息合并（只更新时间戳），避免「重复三遍」（实测）
+  const last = chatHistory[chatHistory.length - 1];
+  if (last && last.role === role && last.text === text && !opts.streaming) {
+    last.ts = Date.now();
+    saveChatHistory();
+    return last;
+  }
   const m = { role, text, ts: Date.now() };
   chatHistory.push(m);
   saveChatHistory();

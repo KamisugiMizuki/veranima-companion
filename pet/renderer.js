@@ -102,8 +102,9 @@ function playAudio(b64, text) {
 }
 function playNext(item) {
   currentAudio = item.audio;
-  // 气泡跟随播放：显示本句文本，音频时长=气泡时长
-  if (item.text) {
+  // 气泡跟随播放：显示本句文本，音频时长=气泡时长。
+  // 去重：主动对话逐句推送（每条 text=整段）→ 同一文本不重复渲染（音频照播）
+  if (item.text && item.text !== bubble.textContent) {
     bubble.textContent = item.text;
     bubble.classList.add('show');
   }
