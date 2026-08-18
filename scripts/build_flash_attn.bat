@@ -61,10 +61,11 @@ where ninja
 rem ---- 3. key params (drive build time) ----
 rem RTX 4070 Ti SUPER = Ada sm_89. Build only this arch.
 set "TORCH_CUDA_ARCH_LIST=8.9"
-rem parallel compile cap: 8 for 32GB RAM, drop to 4 on OOM
-set "MAX_JOBS=8"
-rem parallel nvcc threads
-set "NVCC_APPEND_FLAGS=--threads 8"
+rem Parallel compile cap. CRITICAL: flash_bwd .cu files are template monsters
+rem (5-8GB RAM each during nvcc). MAX_JOBS=8 + --threads 8 OOMs on 32GB RAM
+rem ("catastrophic error: out of memory" in cute/layout.hpp). 2 is safe.
+set "MAX_JOBS=2"
+rem NO NVCC_APPEND_FLAGS: nvcc --threads N multiplies per-file RAM too.
 rem System has CUDA 12.6/12.9/13.2 but torch is cu128 (needs 12.8).
 rem Use closest 12.9: minor-version compatible (12.9 build runs on 12.8 runtime).
 set "CUDA_HOME=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9"
