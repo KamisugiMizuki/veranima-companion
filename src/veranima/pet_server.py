@@ -183,22 +183,47 @@ class PetServer:
                     llm = cfg.get("llm", {})
                     key = llm.get("api_key", "")
                     masked = (key[:4] + "****" + key[-4:]) if len(key) > 8 else ("****" if key else "")
+                    qq = cfg.get("qq", {})
                     await self._send({"type": "config", "id": msg.get("id"), "data": {
                         "llm": {"base_url": llm.get("base_url", ""), "model": llm.get("model", ""),
-                                "api_key": masked},
-                        "qq": {"allowed": cfg.get("allowed_qq", [])},
+                                "temperature": llm.get("temperature", 0.8), "api_key": masked},
+                        "tts": {"base_url": cfg.get("tts", {}).get("base_url", ""),
+                                "model": cfg.get("tts", {}).get("model", ""),
+                                "voice": cfg.get("tts", {}).get("voice", "")},
+                        "stt": {"base_url": cfg.get("stt", {}).get("base_url", ""),
+                                "model": cfg.get("stt", {}).get("model", ""),
+                                "language": cfg.get("stt", {}).get("language", "")},
+                        "qq": {"allowed": qq.get("allowed", qq.get("allowed_qq", [])),
+                               "proactive": qq.get("proactive", False),
+                               "offline_think": {"enabled": (qq.get("offline_think") or {}).get("enabled", False)}},
+                        "character_card": cfg.get("character_card", ""),
                     }})
                 elif mtype == "save_config":
-                    # 设置窗口保存：只允许更新白名单字段
+                    # 设置窗口保存：白名单字段更新（全字段——之前只处理 llm/qq.allowed，
+                    # character_card/tts/stt 等被静默丢弃，设置页形同虚设）
                     cfg = load_config()
                     d = msg.get("data", {})
                     llm = d.get("llm", {})
-                    if "base_url" in llm:
-                        cfg.setdefault("llm", {})["base_url"] = llm["base_url"]
-                    if "model" in llm:
-                        cfg.setdefault("llm", {})["model"] = llm["model"]
-                    if "allowed" in d.get("qq", {}):
-                        cfg["allowed_qq"] = d["qq"]["allowed"]
+                    for k in ("base_url", "model", "temperature"):
+                        if k in llm:
+                            cfg.setdefault("llm", {})[k] = llm[k]
+                    tts = d.get("tts", {})
+                    for k in ("base_url", "model", "voice"):
+                        if k in tts:
+                            cfg.setdefault("tts", {})[k] = tts[k]
+                    stt = d.get("stt", {})
+                    for k in ("base_url", "model", "language"):
+                        if k in stt:
+                            cfg.setdefault("stt", {})[k] = stt[k]
+                    qq = d.get("qq", {})
+                    if "allowed" in qq:
+                        cfg.setdefault("qq", {})["allowed_qq"] = qq["allowed"]
+                    if "proactive" in qq:
+                        cfg.setdefault("qq", {})["proactive"] = qq["proactive"]
+                    if "offline_think" in qq:
+                        cfg.setdefault("qq", {})["offline_think"] = qq["offline_think"]
+                    if "character_card" in d and d["character_card"]:
+                        cfg["character_card"] = d["character_card"]
                     save_config(cfg)
                     await self._send({"type": "config_saved", "id": msg.get("id"), "ok": True,
                                      "restart": "重启核心生效"})
