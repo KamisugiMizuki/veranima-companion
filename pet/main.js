@@ -17,6 +17,8 @@ let ws = null;
 let coreProc = null;
 let ttsProc = null;  // 本地 TTS 服务子进程（Qwen3-TTS 1.7B，OpenAI 兼容）
 let reconnectDelay = 1000;
+let suppressCoreRestart = false;  // 预期停止标志：stopCore/退出时不自动重启
+let coreRestartTimer = null;      // restartCore 定时器（防重入：多次保存只重启一次）
 let logRing = [];                 // 内存环形缓冲（转发给日志窗口）
 let logFile = null;               // 文件日志句柄
 
@@ -47,26 +49,53 @@ function pushLog(tag, line) {
 // 启动核心前清理孤儿进程：占 8765/9880 且命令行含 pet_server/tts.server 才杀。
 // 根因：壳被强杀/双实例时 Windows 不回收 spawn 的子进程，孤儿占端口 → 新核心
 // bind 失败 → 崩溃重启死循环（Errno 10048 实测）。
+// 关键：只杀「父进程不是本壳」的进程——自己 spawn 的核心/TTS 父进程 = 本
+// electron 主进程，跳过（否则 restartCore 的 preflight 会误杀正在跑的 TTS，
+// 实测 `killed orphan pid xxx (tts)` 导致 TTS 崩溃重启）。
 function preflightPorts() {
   try {
     const { execSync } = require('child_process');
+    const myPid = String(process.pid);
     const out = execSync('netstat -ano', { encoding: 'buffer' }).toString('latin1');
     const lines = out.split(/\r?\n/).filter((l) => /:8765\s|:9880\s/.test(l) && /LISTENING/.test(l));
     const pids = [...new Set(lines.map((l) => l.trim().split(/\s+/).pop()).filter(Boolean))];
     for (const pid of pids) {
-      const cmd = execSync(
-        `powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter \\"ProcessId=${pid}\\").CommandLine"`,
+      if (pid === myPid) continue;
+      if (isOurDescendant(pid, execSync, myPid)) continue;  // 自己 spawn 的进程树（含 uv launcher 两层）
+      const info = execSync(
+        `powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter \\\"ProcessId=${pid}\\\").CommandLine"`,
         { encoding: 'buffer' }).toString('latin1') || '';
-      if (cmd.includes('pet_server') || cmd.includes('tts.server')) {
+      if (info.includes('pet_server') || info.includes('tts.server')) {
         execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore' });
-        console.log(`[shell] killed orphan pid ${pid} (${cmd.includes('pet_server') ? 'core' : 'tts'})`);
+        console.log(`[shell] killed orphan pid ${pid} (${info.includes('pet_server') ? 'core' : 'tts'})`);
       }
     }
   } catch (e) { /* netstat/powershell 失败不阻塞启动 */ }
 }
 
+// 沿父进程链向上找（最多 10 层）：祖先链含本壳主进程 → 是自己的子进程树
+// （uv 的 venv python.exe 是 launcher，会再 spawn 真实解释器——监听端口的
+//  是第二层，父进程是 launcher 不是壳，直接比 ParentProcessId 会漏判）
+function isOurDescendant(pid, execSync, myPid) {
+  let cur = pid;
+  for (let i = 0; i < 10; i++) {
+    if (String(cur) === myPid) return true;
+    let info = '';
+    try {
+      info = execSync(
+        `powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter \\\"ProcessId=${cur}\\\").ParentProcessId"`,
+        { encoding: 'buffer' }).toString('latin1') || '';
+    } catch (e) { return false; }
+    const m = info.match(/\d+/);
+    if (!m) return false;
+    cur = m[0].trim();
+  }
+  return false;
+}
+
 function startCore() {
-  preflightPorts();  // 清孤儿（防 8765 被占 bind 失败死循环）
+  suppressCoreRestart = false;  // 新进程：崩溃仍走自动重启（restartCore 的定时器会先置 true）
+  preflightPorts();  // 清孤儿（父进程非本壳的残留；自己的子进程自动跳过）
   const py = process.env.VERANIMA_PY || path.join(__dirname, '..', '.venv', 'Scripts', 'python.exe');
   const srcDir = path.join(__dirname, '..', 'src');
   pushLog('shell', `spawning core: ${py} -m veranima.pet_server`);
@@ -74,7 +103,7 @@ function startCore() {
     coreProc = spawn(py, ['-m', 'veranima.pet_server', '--port', '8765'], {
       cwd: path.join(__dirname, '..'),
       windowsHide: true,   // 不弹控制台窗口（用户要求单窗口启动）
-      env: { ...process.env, PYTHONPATH: srcDir },
+      env: { ...process.env, PYTHONPATH: srcDir, PYTHONIOENCODING: 'utf-8' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (e) {
@@ -85,8 +114,9 @@ function startCore() {
   coreProc.stdout.on('data', (d) => pushLog('core', d.toString().trimEnd()));
   coreProc.stderr.on('data', (d) => pushLog('core-err', d.toString().trimEnd()));
   coreProc.on('exit', (code, signal) => {
-    pushLog('shell', `core exited (code=${code}, signal=${signal}); restarting in ${reconnectDelay}ms`);
+    pushLog('shell', `core exited (code=${code}, signal=${signal}); ${suppressCoreRestart ? '预期停止，不自动重启' : `restarting in ${reconnectDelay}ms`}`);
     coreProc = null;
+    if (suppressCoreRestart) return;  // stopCore/退出路径：等 restartCore 定时器或退出
     scheduleCoreRestart();
   });
 }
@@ -100,7 +130,7 @@ function startTTS() {
     ttsProc = spawn(py, ['-m', 'veranima.tts.server', '--port', '9880'], {
       cwd: path.join(__dirname, '..'),
       windowsHide: true,   // 不弹控制台窗口
-      env: { ...process.env, PYTHONPATH: srcDir },
+      env: { ...process.env, PYTHONPATH: srcDir, PYTHONIOENCODING: 'utf-8' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (e) {
@@ -132,15 +162,24 @@ function scheduleCoreRestart() {
 }
 
 function stopCore() {
+  suppressCoreRestart = true;  // 预期停止：exit 回调不再自动重启（防双 spawn）
   if (coreProc) { coreProc.kill(); coreProc = null; }
 }
 
 // 重启核心（设置保存后）：kill 旧进程 → 等端口释放 → spawn 新的。
-// 直接 kill 后立即 start 会撞上旧进程端口未释放（Errno 10048 实测）。
+// 防重入：多次保存只保留最后一个定时器（否则多个 startCore 排队 → 双核心抢 8765）。
+// 防双 spawn：stopCore 置 suppress 后，exit 事件不再触发崩溃重启路径；
+// 只有本定时器 spawn 一次。
 function restartCore() {
   stopCore();
+  saveWindowPos();  // 重启前落盘窗口位置/尺寸（用户要求）
+  if (coreRestartTimer) clearTimeout(coreRestartTimer);
   const waitMs = 3000;  // 旧 python 进程退出 + 端口释放通常 <3s
-  setTimeout(() => { preflightPorts(); startCore(); }, waitMs);
+  coreRestartTimer = setTimeout(() => {
+    coreRestartTimer = null;
+    preflightPorts();   // 清真孤儿（父进程非本壳的残留；自己的子进程自动跳过）
+    startCore();        // startCore 内部 suppressCoreRestart = false
+  }, waitMs);
 }
 
 // ---------- 位置持久化（airi config.json 同款，M3_SPEC 3.6） ----------
