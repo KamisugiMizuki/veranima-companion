@@ -123,15 +123,21 @@ function startCore() {
 
 // ---------- spawn 本地 TTS 服务（GPT-SoVITS api_v2.py，端口 9880） ----------
 // 2026-08-19：Qwen3-TTS 1.7B → GPT-SoVITS（实时率 ~0.5x，快 3 倍）
+// 编码：参考 sakura tts_service.py 的做法——不用 -I（隔离模式忽略
+// PYTHONIOENCODING → 输出编码随系统环境漂移）；显式移除 PYTHONUTF8（用户
+// 环境若设了 1 会让 Python 3.7+ 强制 UTF-8 输出，与 PYTHONIOENCODING 混用
+// 时 stdout/stderr 编码不一致）+ PYTHONIOENCODING=utf-8 → 输出固定 UTF-8。
 function startTTS() {
   const gptDir = path.join(__dirname, '..', 'tts', 'gpt-sovits');
   const gptPy = path.join(gptDir, 'runtime', 'python.exe');
   pushLog('shell', 'spawning tts server (GPT-SoVITS, port 9880)');
   try {
-    ttsProc = spawn(gptPy, ['-I', 'api_v2.py', '-a', '127.0.0.1', '-p', '9880'], {
+    const ttsEnv = { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONPATH: '' };
+    delete ttsEnv.PYTHONUTF8;  // 强制 stdout/stderr 统一 UTF-8（sakura 同款）
+    ttsProc = spawn(gptPy, ['api_v2.py', '-a', '127.0.0.1', '-p', '9880'], {
       cwd: gptDir,
       windowsHide: true,   // 不弹控制台窗口
-      env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+      env: ttsEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (e) {
@@ -139,15 +145,8 @@ function startTTS() {
     scheduleTTSRestart();
     return;
   }
-  // GPT-SoVITS 输出编码不稳定（实测同一环境有时 GBK 有时 UTF-8）：
-  // 自动检测——UTF-8 严格解码成功则用 UTF-8，否则 GBK（中文+日文假名）。
-  const ttsDec8 = new TextDecoder('utf-8', { fatal: true });
-  const ttsDecGbk = new TextDecoder('gbk');
-  const ttsDecode = (d) => {
-    try { return ttsDec8.decode(d); } catch { return ttsDecGbk.decode(d); }
-  };
-  ttsProc.stdout.on('data', (d) => pushLog('tts', ttsDecode(d).trimEnd()));
-  ttsProc.stderr.on('data', (d) => pushLog('tts-err', ttsDecode(d).trimEnd()));
+  ttsProc.stdout.on('data', (d) => pushLog('tts', d.toString('utf8').trimEnd()));
+  ttsProc.stderr.on('data', (d) => pushLog('tts-err', d.toString('utf8').trimEnd()));
   ttsProc.on('exit', (code, signal) => {
     pushLog('shell', `tts exited (code=${code}, signal=${signal}); restarting in ${reconnectDelay}ms`);
     ttsProc = null;

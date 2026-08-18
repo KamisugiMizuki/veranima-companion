@@ -89,13 +89,13 @@ class PetServer:
 
         # 逐句：合成一句 → 立即推送（AR 自回归是串行瓶颈，但播放可以与生成重叠）
         sentences = _split_sentences(speak_text) or [speak_text]
-        display_sentences = _split_sentences(text) or [text]
         ok = True
+        # 气泡固定显示整段文本（text/text_zh），播放期间不随句切换——避免
+        # 日语句数>中文句数时 disp 越界变空、气泡闪成 "…"（实测）
         for i, sent in enumerate(sentences):
-            disp = display_sentences[i] if i < len(display_sentences) else (text if i == 0 else "")
-            msg: dict = {"type": "speak", "text": disp or sent, "tags": tags or []}
+            msg: dict = {"type": "speak", "text": text, "tags": tags or []}
             if tts_text:
-                msg["text_zh"] = disp or text  # 双语：气泡显示中文
+                msg["text_zh"] = text  # 双语：气泡显示整段中文
             try:
                 audio = await asyncio.to_thread(self._tts.synthesize, sent)
                 if audio:
