@@ -28,6 +28,28 @@ function applyExpression(label) {
   return false;
 }
 
+// ---------- 立绘尺寸（按原图比例；高度优先固定，宽度自适应） ----------
+// 用户可调：设置页 avatar_height（px）→ main 下发；默认 200
+let avatarHeight = 200;
+window.pet.onAvatarHeight((h) => {
+  avatarHeight = h > 0 ? h : 200;
+  fitAvatar();
+});
+// 立绘加载完成 → 按原图比例缩放：高度固定、宽度按比例，窗口宽度自适应（高度不变）
+function fitAvatar() {
+  const img = avatar;
+  if (!img.complete || !img.naturalWidth) { img.onload = fitAvatar; return; }
+  const h = avatarHeight;
+  const w = Math.round(h * img.naturalWidth / img.naturalHeight);
+  img.style.width = w + 'px';
+  img.style.height = h + 'px';
+  document.getElementById('pet').style.width = (w + 20) + 'px';
+  document.getElementById('pet').style.height = (h + 60) + 'px';
+  // 通知 main：窗口高度保持 h+60（切换立绘时高度不变，宽度跟随比例）
+  window.pet.sendEvent({ type: 'fit-window', width: w + 20, height: h + 60 });
+}
+avatar.addEventListener('load', fitAvatar);
+
 // ---------- 四态切换 ----------
 function setState(s) {
   if (!STATES.includes(s)) s = 'idle';

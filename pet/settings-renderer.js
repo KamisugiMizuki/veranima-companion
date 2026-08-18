@@ -34,6 +34,7 @@ window.pet.getConfig().then((cfg) => {
   // 角色与布局
   renderRoles(cfg);
   $('card-path').textContent = cfg.character_card || '（未设置）';
+  $('avatar-height').value = (cfg.pet && cfg.pet.avatar_height) || '';
   $('llm-summary').textContent = `${llm.base_url || '?'} · ${llm.model || '?'}`;
   // 模型供应商
   $('llm-base').value = llm.base_url || '';
@@ -80,6 +81,8 @@ $('save').addEventListener('click', async () => {
   };
   const role = $('role-select').value;
   if (role) data.character_card = `characters/${role}/character.json`;
+  const ah = parseInt($('avatar-height').value, 10);
+  if (ah > 0) data.pet = { avatar_height: ah };
   const ok = await window.pet.saveConfig(data);
   if (ok) {
     showMsg('已保存，正在重启核心…', true);

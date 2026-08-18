@@ -1,12 +1,13 @@
 """Qwen3-TTS OpenAI 兼容服务（远程/本地统一接口的本地实现）。
 
 起一个 FastAPI 服务，暴露 OpenAI 格式的 POST /v1/audio/speech：
-  {"model": "...", "input": "文本", "voice": "...", "response_format": "wav"}
+  {"model": "...", "input": "文本", "voice": "<参考音频路径>", "response_format": "wav"}
   → 音频 bytes
 
-模型：data/models/qwen3-tts/Qwen3-TTS-12Hz-1.7B-CustomVoice
-（qwen-tts 包；CustomVoice 内置 9 种音色，无需参考音频。
-  音色映射：alloy→Vivian（中文明亮女声）、echo→Serena（温柔女声）等，未识别回退 Vivian）
+模型：data/models/qwen3-tts/Qwen3-TTS-12Hz-1.7B-Base（声音克隆模型）
+voice 字段 = 参考音频路径（克隆音色；x_vector_only_mode 纯音色特征，无需参考文本）。
+默认参考音频：characters/yuki/example_voices/yuki.mp3（可用环境变量
+VERANIMA_TTS_REF_AUDIO 覆盖）。
 
 启动：python -m veranima.tts.server --port 9880
 """
@@ -15,24 +16,20 @@ from __future__ import annotations
 import argparse
 import io
 import logging
+import os
 
 from starlette.requests import Request
 
 logger = logging.getLogger("veranima.tts.server")
 
-# 模型路径（相对项目根）
-_MODEL_DIR = "data/models/qwen3-tts/Qwen3-TTS-12Hz-1.7B-CustomVoice"
+# 模型路径（相对项目根）：1.7B-Base = 声音克隆模型（需参考音频）
+_MODEL_DIR = "data/models/qwen3-tts/Qwen3-TTS-12Hz-1.7B-Base"
 _SPEECH_TOKENIZER_DIR = "data/models/qwen3-tts/Qwen3-TTS-Tokenizer-12Hz"
-
-# OpenAI voice → Qwen3-TTS speaker 映射（CustomVoice 内置音色）
-VOICE_MAP = {
-    "alloy": "Vivian",     # 明亮、略带锐利的年轻女声（中文）
-    "echo": "Serena",      # 温暖柔和的年轻女声（中文）
-    "fable": "Vivian",
-    "onyx": "Uncle_Fu",    # 低沉圆润的男声
-    "nova": "Serena",
-    "shimmer": "Vivian",
-}
+# 默认参考音频（克隆音色来源；voice 参数可覆盖）
+_DEFAULT_REF_AUDIO = os.environ.get(
+    "VERANIMA_TTS_REF_AUDIO",
+    "characters/yuki/example_voices/yuki.mp3",
+)
 
 _model = None
 _tokenizer = None
@@ -51,7 +48,7 @@ def _load_model():
     model_path = ROOT / _MODEL_DIR
     tok_path = ROOT / _SPEECH_TOKENIZER_DIR
     _device = "cuda" if torch.cuda.is_available() else "cpu"
-    logger.info("loading Qwen3-TTS CustomVoice from %s (device=%s) ...", model_path, _device)
+    logger.info("loading Qwen3-TTS Base(clone) from %s (device=%s) ...", model_path, _device)
     _tokenizer = Qwen3TTSTokenizer.from_pretrained(tok_path)
     _model = Qwen3TTSModel.from_pretrained(
         model_path,
@@ -64,18 +61,22 @@ def _load_model():
     return _model, _tokenizer, _device
 
 
-def synthesize(text: str, voice: str = "alloy") -> bytes:
-    """文本 → WAV bytes。voice 用 CustomVoice 内置音色。"""
+def synthesize(text: str, voice: str = "") -> bytes:
+    """文本 → WAV bytes。voice = 参考音频路径（克隆音色）；空 → 默认 yuki.mp3。"""
     import io as _io
     import numpy as np
+    from veranima.config import ROOT
 
     model, _tok, _ = _load_model()
-    speaker = VOICE_MAP.get(voice, "Vivian")
-    # CustomVoice 生成（中文；auto 语言自适应）
-    wavs, sr = model.generate_custom_voice(
+    # voice 参数 = 参考音频路径；空/默认值 → 用默认样本
+    ref_audio = voice if voice and os.path.exists(voice) else str(ROOT / _DEFAULT_REF_AUDIO)
+    logger.info("clone voice ref_audio=%s (voice param=%r)", ref_audio, voice)
+    # 克隆生成（x_vector_only：纯音色特征，无需参考文本）
+    wavs, sr = model.generate_voice_clone(
         text=text,
-        language="Chinese",
-        speaker=speaker,
+        language="Auto",
+        ref_audio=ref_audio,
+        x_vector_only_mode=True,
     )
     audio = np.asarray(wavs[0], dtype=np.float32)
     # 转 WAV（16bit PCM）

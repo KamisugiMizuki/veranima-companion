@@ -53,6 +53,11 @@
           <label>桌宠位置</label>
           <div class="readonly">拖动形象移动；位置自动保存</div>
         </div>
+        <div class="field">
+          <label>立绘高度（px，保持原图比例）</label>
+          <input id="avatar-height" type="number" min="50" max="600" placeholder="200">
+          <div class="hint">切换立绘时桌宠框高度不变，宽度按比例自适应</div>
+        </div>
       </div>
 
       <!-- 模型供应商 -->
@@ -86,11 +91,11 @@
         </div>
         <div class="field">
           <label>TTS 模型</label>
-          <input id="tts-model" placeholder="Qwen3-TTS-12Hz-1.7B-CustomVoice">
+          <input id="tts-model" placeholder="Qwen3-TTS-12Hz-1.7B-Base">
         </div>
         <div class="field">
-          <label>音色</label>
-          <input id="tts-voice" placeholder="alloy">
+          <label>参考音频路径（克隆音色）</label>
+          <input id="tts-voice" placeholder="characters/yuki/example_voices/yuki.mp3">
         </div>
         <h2>STT（语音输入）</h2>
         <div class="field">

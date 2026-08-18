@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('pet', {
   onStopSpeak: (cb) => ipcRenderer.on('stop-speak', () => cb()),
   onMenuPoke: (cb) => ipcRenderer.on('menu-poke', () => cb()),
   onAvatarMap: (cb) => ipcRenderer.on('avatar-map', (e, map) => cb(map)),
+  onAvatarHeight: (cb) => ipcRenderer.on('avatar-height', (e, h) => cb(h)),
   // 日志窗口通道
   onLogLine: (cb) => ipcRenderer.on('log-line', (e, m) => cb(m)),
   onLogHistory: (cb) => ipcRenderer.on('log-history', (e, m) => cb(m)),

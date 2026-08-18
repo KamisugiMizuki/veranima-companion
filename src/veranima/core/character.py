@@ -124,14 +124,15 @@ class CharacterCard:
                 for k in keys:
                     val = v.get(k)
                     if val:
-                        subs.append(val if isinstance(val, str) else "、".join(str(x) for x in val))
+                        # float（如 initial_affection: 0.5）不是 list——直接 str
+                        subs.append(val if isinstance(val, str) else ("、".join(str(x) for x in val) if isinstance(val, (list, tuple)) else str(val)))
                 if subs:
                     parts.append(f"【{label}】{'；'.join(subs)}")
                 continue
             for k in keys:
                 val = v.get(k)
                 if val:
-                    parts.append(f"【{label}】{val if isinstance(val, str) else '、'.join(str(x) for x in val)}")
+                    parts.append(f"【{label}】{val if isinstance(val, str) else ('、'.join(str(x) for x in val) if isinstance(val, (list, tuple)) else str(val))}")
                     break
         if self.tones:
             parts.append(f"【语气标签】可用语气：{'/'.join(self.tones)}。")

@@ -295,7 +295,11 @@ ipcMain.handle('settings-get-config', async () => {
 ipcMain.handle('settings-save-config', async (e, data) => {
   const resp = await wsRequest('save_config', data);
   const ok = !!(resp && resp.type === 'config_saved' && resp.ok);
-  if (ok) pushAvatarMap();  // 角色可能变了 → 刷新立绘映射
+  if (ok) {
+    pushAvatarMap();  // 角色可能变了 → 刷新立绘映射
+    const h = data && data.pet && data.pet.avatar_height;
+    if (h) win && win.webContents.send('avatar-height', Number(h));  // 立绘尺寸
+  }
   return ok;
 });
 ipcMain.on('core-restart', () => { restartCore(); });
@@ -424,6 +428,14 @@ ipcMain.on('pet-event', (e, payload) => {
       startDragPoll();
     } else {
       stopDragPoll();
+    }
+    return;
+  }
+  if (payload && payload.type === 'fit-window') {
+    // 立绘按比例显示：窗口尺寸跟随（高度不变，宽度按立绘比例自适应）
+    if (win && !win.isDestroyed() && payload.width > 0 && payload.height > 0) {
+      const b = win.getBounds();
+      win.setBounds({ x: b.x, y: b.y, width: payload.width, height: payload.height });
     }
     return;
   }

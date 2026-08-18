@@ -197,6 +197,7 @@ class PetServer:
                                "proactive": qq.get("proactive", False),
                                "offline_think": {"enabled": (qq.get("offline_think") or {}).get("enabled", False)}},
                         "character_card": cfg.get("character_card", ""),
+                        "pet": {"avatar_height": (cfg.get("pet") or {}).get("avatar_height", 200)},
                     }})
                 elif mtype == "save_config":
                     # 设置窗口保存：白名单字段更新（全字段——之前只处理 llm/qq.allowed，
@@ -224,6 +225,9 @@ class PetServer:
                         cfg.setdefault("qq", {})["offline_think"] = qq["offline_think"]
                     if "character_card" in d and d["character_card"]:
                         cfg["character_card"] = d["character_card"]
+                    pet = d.get("pet", {})
+                    if "avatar_height" in pet:
+                        cfg.setdefault("pet", {})["avatar_height"] = pet["avatar_height"]
                     save_config(cfg)
                     await self._send({"type": "config_saved", "id": msg.get("id"), "ok": True,
                                      "restart": "重启核心生效"})
@@ -278,10 +282,15 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=PORT)
     args = ap.parse_args()
     srv = PetServer(port=args.port)
-    # TTS（远程/本地统一 OpenAI 兼容接口；未配置 base_url 则桌宠只显气泡）
+    # Agent（与 QQ 端同一工厂：人格/记忆/打断全链路；未接则 stream_talk 无法工作）
+    from veranima.app import create_agent
     from veranima.config import load_config
+    cfg = load_config()
+    srv.connect_agent(create_agent(cfg))
+    logger.info("agent connected (character_card=%s)", cfg.get("character_card", ""))
+    # TTS（远程/本地统一 OpenAI 兼容接口；未配置 base_url 则桌宠只显气泡）
     from veranima.tts.client import TTSClient
-    tts_cfg = load_config().get("tts", {})
+    tts_cfg = cfg.get("tts", {})
     if tts_cfg.get("base_url"):
         srv.connect_tts(TTSClient(tts_cfg))
         logger.info("TTS enabled: %s", tts_cfg["base_url"])
