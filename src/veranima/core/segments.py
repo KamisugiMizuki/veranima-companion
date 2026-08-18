@@ -37,18 +37,22 @@ def extract_segments(reply: str, *, bilingual: bool = False) -> tuple[str, str, 
         tone = str(first.get("tone") or "").strip()
         portrait = str(first.get("portrait") or "").strip()
     except json.JSONDecodeError:
-        # 容错：模型可能包了 markdown 代码块或多段，找第一个含 text 的对象
-        m = _SEGMENTS_RE.search(reply)
-        if m:
+        # 容错：模型可能包了 markdown 代码块、重复输出多段 JSON 或残缺开头
+        # → 找所有候选对象逐个尝试，第一个可解析的生效（2026-08-19 实测
+        #   LLM 输出两段 segments，第一段残缺 → 只试第一个会失败）
+        for m in _SEGMENTS_RE.finditer(reply):
             try:
                 obj = json.loads(m.group(0))
-                if bilingual:
-                    text = str(obj.get("zh") or obj.get("text") or reply).strip()
-                    ja_text = str(obj.get("ja") or "").strip()
-                else:
-                    text = str(obj.get("text") or reply).strip()
-                tone = str(obj.get("tone") or "").strip()
-                portrait = str(obj.get("portrait") or "").strip()
             except json.JSONDecodeError:
-                pass
+                continue
+            if not isinstance(obj, dict):
+                continue
+            if bilingual:
+                text = str(obj.get("zh") or obj.get("text") or reply).strip()
+                ja_text = str(obj.get("ja") or "").strip()
+            else:
+                text = str(obj.get("text") or reply).strip()
+            tone = str(obj.get("tone") or "").strip()
+            portrait = str(obj.get("portrait") or "").strip()
+            break  # 第一个可解析的对象生效
     return text, tone, portrait, ja_text

@@ -397,7 +397,7 @@ class Agent:
             "顺便问问现在的情况。只发消息本身。"
         )
         try:
-            reply, ja = self._short_task(task, max_tokens=512, bilingual=True)
+            reply, ja = self._short_task(task, max_tokens=1024, bilingual=True)
         except Exception as e:
             logger.warning("proactive_from_visual failed: %s", e)
             return "", ""
@@ -429,7 +429,7 @@ class Agent:
             "只说这一句，不要展开。"
         )
         try:
-            reply, ja = self._short_task(task, max_tokens=512, bilingual=True)
+            reply, ja = self._short_task(task, max_tokens=1024, bilingual=True)
         except Exception as e:
             logger.warning("seamless_greeting failed: %s", e)
             return "", ""

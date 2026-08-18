@@ -14,6 +14,7 @@ import argparse
 import asyncio
 import json
 import logging
+import time
 
 import websockets
 
@@ -37,6 +38,7 @@ class PetServer:
         self._tts = None    # TTSClient（可选；未配置则桌宠只显气泡不发声）
         self._bilingual = False  # 角色双语（character.json veranima.bilingual.enabled）
         self.attention_cfg = {}  # 视觉注意力配置（VISION_SPEC 4，config.yaml attention: 段）
+        self._last_proactive_ts = 0.0  # 联想主动发起冷却（实测每 15-30s 搭话一次，真人不会这样）
         self._presence_was_absent = False  # M3 衔接：在场转变检测
 
     def connect_agent(self, agent) -> None:
@@ -301,9 +303,14 @@ class PetServer:
                                         category="screen",
                                     )
                                     logger.info("visual: 观察注入记忆 tag=%s", ev.tag)
+                                    # 联想主动发起冷却 120s（真人不会每 15s 搭话；
+                                    # 高频 LLM 调用也导致输出截断/残缺，实测）
+                                    if time.time() - self._last_proactive_ts < 120:
+                                        continue
                                     proactive, ja = await asyncio.to_thread(
                                         self._agent.proactive_from_visual, ev.tag)
                                     if proactive:
+                                        self._last_proactive_ts = time.time()
                                         logger.info("visual: 联想主动发起: %s", proactive[:60])
                                         await self.speak(proactive, tts_text=ja or None)
                                 except Exception as e:
