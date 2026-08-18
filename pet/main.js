@@ -195,6 +195,9 @@ function createWindow() {
   win.loadFile('index.html');
   // 鼠标：整窗捕获（不穿透）——形象可拖拽/右键/点击；sakura 同款
   // （注：Electron 的 setIgnoreMouseEvents forward 仅在 macOS 有效，Windows 穿透会锁死交互）
+  // 角色立绘映射：renderer 加载完成后推一次（connect 的 ws open 可能早于
+  // renderer 监听注册——事件竞态导致 avatar-map 丢失，立绘显示 zima 默认图）
+  win.webContents.on('did-finish-load', () => { pushAvatarMap(); });
   // 位置持久化：move/resize → 存 userData/win-pos.json
   win.on('move', saveWindowPos);
   win.on('resize', saveWindowPos);
@@ -414,6 +417,7 @@ function handleCoreMsg(msg) {
 // ---------- renderer → 核心 ----------
 ipcMain.on('pet-event', (e, payload) => {
   if (payload && (payload.type === 'drag-start' || payload.type === 'drag-end')) {
+    pushLog('shell', `[pet-event] ${payload.type}`);  // 【诊断】拖拽信号
     // 拖拽：main 进程轮询全局鼠标位置移动窗口（renderer mousemove 在透明置顶窗不可靠；
     // sakura 同款方案——跨屏、跨窗口层级稳定）
     if (payload.type === 'drag-start') {

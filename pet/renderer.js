@@ -99,7 +99,8 @@ window.pet.onSpeakDone(() => {
 });
 
 // ---------- 形象区域交互（整窗捕获：拖拽/点击/右键；sakura 同款） ----------
-const pet = document.getElementById('pet');
+// 注意：不能声明 const pet——preload 已 exposeInMainWorld('pet')，同名全局声明
+// 会 SyntaxError 导致整个 renderer 不执行（立绘/点击/拖拽全挂的根因）
 
 // 拖拽：mousedown/mouseup 只发 start/end 信号，main 进程用 setInterval 轮询
 // 全局鼠标位置移动窗口（Windows 透明置顶窗的 renderer mousemove 投递不可靠——
