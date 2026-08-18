@@ -274,7 +274,25 @@ class PetServer:
                             # L3：远程多模态理解屏幕（QQ 活跃时跳过——通道互斥）
                             qq_active = self._agent.activity.active("qq") if self._agent.activity else False
                             if not qq_active:
-                                await asyncio.to_thread(va.observe_screen, self._agent.llm)
+                                obs = await asyncio.to_thread(va.observe_screen, self._agent.llm)
+                                if obs and obs.note:
+                                    # 接入（2026-08-19 补）：观察注入 episodic 记忆 →
+                                    # 对话时检索自动带出（prompts 层语义/情节注入）；
+                                    # 并按 tag 触发联想式主动发起（agent.proactive_from_visual）
+                                    try:
+                                        self._agent.memory.store(
+                                            "episodic",
+                                            f"[屏幕观察] {obs.note}（{obs.tag}）",
+                                            importance=0.5, confidence=0.7,
+                                            provenance="visual-attention",
+                                            category="screen",
+                                        )
+                                        proactive = await asyncio.to_thread(
+                                            self._agent.proactive_from_visual, obs.tag)
+                                        if proactive:
+                                            await self.speak(proactive)
+                                    except Exception as e:
+                                        logger.warning("visual observe inject failed: %s", e)
                     except Exception as e:
                         logger.warning("visual tick failed: %s", e)
                     await asyncio.sleep(va.interval())
