@@ -77,44 +77,61 @@ window.pet.onCoreState((m) => {
 
 // TTS 播放队列：逐句合成快（GPT-SoVITS ~1s/句）时新音频不能打断当前播放
 // （实测第一句没放完第二句就 pause 掉 → 跳句）。串行播放：队列为空立即播，
-// 否则排队等 onended。
+// 否则排队等 onended。气泡跟随音频：轮到播放才显示对应文本（显示时长=音频
+// 时长），避免前几句气泡在排队时 3s 就消失、只有最后一句停留。
 let audioQueue = [];
 let currentAudio = null;
-function playAudio(b64) {
+function playAudio(b64, text) {
   const a = new Audio(`data:audio/wav;base64,${b64}`);
   a.onended = () => {
     currentAudio = null;
+    hideBubble();
     const next = audioQueue.shift();
     if (next) {
-      currentAudio = next;
-      currentAudio.play().catch(() => { currentAudio = null; audioQueue = []; setState('idle'); });
+      playNext(next);
     } else if (currentState === 'speaking') {
       setState('idle');
     }
   };
+  const item = { audio: a, text };
   if (currentAudio) {
-    audioQueue.push(a);
+    audioQueue.push(item);
   } else {
-    currentAudio = a;
-    a.play().catch(() => { currentAudio = null; audioQueue = []; /* 播放失败（无音频设备）→ 按文本时长回 idle */ });
+    playNext(item);
   }
+}
+function playNext(item) {
+  currentAudio = item.audio;
+  // 气泡跟随播放：显示本句文本，音频时长=气泡时长
+  if (item.text) {
+    bubble.textContent = item.text;
+    bubble.classList.add('show');
+  }
+  item.audio.play().catch(() => {
+    currentAudio = null; audioQueue = [];
+    hideBubble();
+    /* 播放失败（无音频设备）→ 按文本时长回 idle */
+  });
+}
+function hideBubble() {
+  bubble.classList.remove('show');
+  clearTimeout(bubbleTimer);
 }
 
 window.pet.onSpeak((m) => {
   setState('speaking');
   // 双语（M5_SPEC 由岐日语）：ja 播 TTS，zh 显示气泡
   const displayText = m.text_zh || m.text || '…';
-  showBubble(displayText);
   // M4 表情标签驱动：tags 携带 portrait 标签 → 映射表情图（M4_SPEC 2.4）
   if (m.tags && m.tags.length > 0) {
     applyExpression(m.tags[0]);
   }
-  // TTS 播放（M3_SPEC 3.2）：有 audioB64 播放真实语音（串行队列），否则模拟 2.5s
+  // TTS 播放（M3_SPEC 3.2）：有 audioB64 播放真实语音（串行队列，气泡跟随
+  // 音频显示），否则模拟 2.5s 显示
   if (m.audioB64) {
-    playAudio(m.audioB64);
+    playAudio(m.audioB64, displayText);
   } else {
-    // 模拟播放时长后回 idle（MVP 无真实音频；TTS 接入后由 audio.onended 控制）
-    setTimeout(() => { if (currentState === 'speaking') setState('idle'); }, 2500);
+    showBubble(displayText);
   }
 });
 
@@ -122,6 +139,7 @@ window.pet.onSpeak((m) => {
 window.pet.onStopSpeak(() => {
   if (currentAudio) { currentAudio.pause(); currentAudio = null; }
   audioQueue = [];
+  hideBubble();
   setState('idle');
 });
 

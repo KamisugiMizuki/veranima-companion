@@ -139,12 +139,15 @@ function startTTS() {
     scheduleTTSRestart();
     return;
   }
-  // GPT-SoVITS runtime 输出按系统 GBK（-I 隔离模式忽略 PYTHONIOENCODING）；
-  // 按 UTF-8 解会变锟斤拷（中文+日文假名混杂）。TextDecoder('gbk') 还原。
-  // stream:true 处理跨 chunk 的多字节字符（否则切断处出 replacement char）。
-  const ttsDec = new TextDecoder('gbk');
-  ttsProc.stdout.on('data', (d) => pushLog('tts', ttsDec.decode(d, { stream: true }).trimEnd()));
-  ttsProc.stderr.on('data', (d) => pushLog('tts-err', ttsDec.decode(d, { stream: true }).trimEnd()));
+  // GPT-SoVITS 输出编码不稳定（实测同一环境有时 GBK 有时 UTF-8）：
+  // 自动检测——UTF-8 严格解码成功则用 UTF-8，否则 GBK（中文+日文假名）。
+  const ttsDec8 = new TextDecoder('utf-8', { fatal: true });
+  const ttsDecGbk = new TextDecoder('gbk');
+  const ttsDecode = (d) => {
+    try { return ttsDec8.decode(d); } catch { return ttsDecGbk.decode(d); }
+  };
+  ttsProc.stdout.on('data', (d) => pushLog('tts', ttsDecode(d).trimEnd()));
+  ttsProc.stderr.on('data', (d) => pushLog('tts-err', ttsDecode(d).trimEnd()));
   ttsProc.on('exit', (code, signal) => {
     pushLog('shell', `tts exited (code=${code}, signal=${signal}); restarting in ${reconnectDelay}ms`);
     ttsProc = null;
