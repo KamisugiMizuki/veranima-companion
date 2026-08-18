@@ -1,10 +1,9 @@
-"""M4 测试：表情标签驱动（segments 解析/词表校验/渲染链）+ 视觉注意力（三态/像素差异）。"""
+"""M4 测试：表情标签驱动（segments 解析/词表校验/渲染链）+ 联想式主动。"""
 import sys
 
 import pytest
 
 from veranima.core.segments import extract_segments
-from veranima.core.vision import Anchor, VisualAttention
 
 
 @pytest.fixture
@@ -64,52 +63,7 @@ def test_extract_segments_bilingual():
     assert text2 == "普通回复" and ja2 == ""
 
 
-# ---------- 视觉注意力（M4_SPEC 1.2） ----------
-
-def test_visual_states_transition():
-    va = VisualAttention(now=1000.0)
-    assert va.state == "stable"
-    assert va.interval() == 30.0
-    # 不在场 → 游离
-    va.tick(presence=False)
-    assert va.state == "wander"
-    assert va.interval() == 120.0
-    # 在场恢复 → 稳定
-    va.tick(presence=True)
-    assert va.state == "stable"
-
-
-def test_visual_trigger_reset():
-    va = VisualAttention(now=1000.0)
-    va.state = "trigger"
-    # 连续 TRIGGER_RESET_COUNT 次无变化 → 回稳定
-    for _ in range(3):
-        va.tick(presence=True)
-    assert va.state == "stable"
-
-
-def test_chi2_distance():
-    """相同直方图距离 0，完全不同距离大。"""
-    h1 = [1.0] * 64
-    h2 = [1.0] * 64
-    assert VisualAttention.chi2_distance(h1, h2) == 0.0
-    h3 = [0.0] * 64
-    h3[0] = 1.0
-    assert VisualAttention.chi2_distance(h1, h3) > 0.5
-
-
-def test_observe_ring_and_cooldown():
-    va = VisualAttention(now=1000.0)
-    assert va.note_observe("游戏", "在打游戏") is True
-    assert va.focus == {"tag": "游戏", "since": 1000.0}
-    # 60s 冷却内不记录
-    assert va.note_observe("办公") is False
-    va._now = 1100.0  # 100s 后
-    assert va.note_observe("办公") is True
-    assert len(va.observations) == 2
-
-
-# ---------- M4 1.3/1.4：L0 在场 + L3 观察 + 联想式主动 ----------
+# ---------- M4 1.3/1.4：L0 在场 + 联想式主动（旧 VisualAttention 测试随 vision.py 删除，VISION_SPEC V3） ----------
 
 def test_presence_non_windows():
     """非 Windows 降级：恒在场、前台空。"""
@@ -117,15 +71,6 @@ def test_presence_non_windows():
     if sys.platform != "win32":
         assert presence() is True
         assert foreground_app() == ""
-
-
-def test_observe_screen_mock(monkeypatch):
-    """observe_screen：mock LLM 返回 JSON → 解析 tag/note 注入缓冲。"""
-    from veranima.core import vision as vision_mod
-    va = VisualAttention(now=2000.0)
-    monkeypatch.setattr(vision_mod, "_CAN_CAPTURE", False)  # 无截屏环境降级
-    # 直接测 note_observe 路径（observe_screen 无截屏返回 None 是设计）
-    assert va.note_observe("游戏", "在打游戏") is True
 
 
 def test_proactive_from_visual(agent, monkeypatch):
