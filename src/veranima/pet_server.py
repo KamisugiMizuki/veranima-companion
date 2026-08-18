@@ -85,10 +85,12 @@ class PetServer:
             return await asyncio.to_thread(self._agent.handle, text, channel="tts")
 
     async def speak(self, text: str, tags: list | None = None, tts_text: str | None = None) -> bool:
-        """推送回复（逐句合成+播放，M5 性能优化：第一句 ~3s 出声，后续边播边生成）。
+        """推送回复（整段合成一次 + 一条消息，2026-08-19 用户拍板）。
 
         tts_text 指定时用它合成音频（M5 双语：ja 配音 / zh 显示）。
-        句子拆分：TTS 用句读（。！？…），显示用原文对应句——拆不出就整段降级。
+        整段方案：一次 POST /tts 合成整段 → 一条 speak 消息（音频+文本）。
+        代价：首句延迟 = 整段合成时间（~0.57x 实时率）；换来分句链路的
+        bug 全灭（重复推送/气泡…/队列去重——实测逐句方案引发多种问题）。
         """
         import base64
 
@@ -101,23 +103,16 @@ class PetServer:
             # 会怪音（2026-08-19 实测）→ 只推气泡不合成
             return await self._send({"type": "speak", "text": text, "tags": tags or []})
 
-        # 逐句：合成一句 → 立即推送（AR 自回归是串行瓶颈，但播放可以与生成重叠）
-        sentences = _split_sentences(speak_text) or [speak_text]
-        ok = True
-        # 气泡固定显示整段文本（text/text_zh），播放期间不随句切换——避免
-        # 日语句数>中文句数时 disp 越界变空、气泡闪成 "…"（实测）
-        for i, sent in enumerate(sentences):
-            msg: dict = {"type": "speak", "text": text, "tags": tags or []}
-            if tts_text:
-                msg["text_zh"] = text  # 双语：气泡显示整段中文
-            try:
-                audio = await asyncio.to_thread(self._tts.synthesize, sent)
-                if audio:
-                    msg["audio_b64"] = base64.b64encode(audio).decode()
-            except Exception as e:
-                logger.warning("tts synthesize failed (bubble only): %s", e)
-            ok = await self._send(msg) and ok
-        return ok
+        msg: dict = {"type": "speak", "text": text, "tags": tags or []}
+        if tts_text:
+            msg["text_zh"] = text  # 双语：气泡显示整段中文
+        try:
+            audio = await asyncio.to_thread(self._tts.synthesize, speak_text)
+            if audio:
+                msg["audio_b64"] = base64.b64encode(audio).decode()
+        except Exception as e:
+            logger.warning("tts synthesize failed (bubble only): %s", e)
+        return await self._send(msg)
 
     async def speak_chunk(self, text: str) -> bool:
         """流式分片推送（DESIGN 4.13 打字机）。"""
