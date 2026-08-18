@@ -379,7 +379,7 @@ class Agent:
         无匹配 / 模型不可用 → 返回 ""。
         """
         if not tag or self.state.energy < 30:
-            return ""
+            return "", ""
         # 检索 episodic 层含 tag 的记忆
         try:
             hits = [
@@ -389,7 +389,7 @@ class Agent:
         except Exception:
             hits = []
         if not hits:
-            return ""
+            return "", ""
         old = hits[-1].content[:120]
         task = (
             f"你看到用户正在{tag}（屏幕焦点）。突然想起一件旧事：\"{old}\"。"
@@ -397,15 +397,15 @@ class Agent:
             "顺便问问现在的情况。只发消息本身。"
         )
         try:
-            reply = self._short_task(task, max_tokens=512)
+            reply, ja = self._short_task(task, max_tokens=512, bilingual=True)
         except Exception as e:
             logger.warning("proactive_from_visual failed: %s", e)
-            return ""
+            return "", ""
         if not reply:
-            return ""
+            return "", ""
         self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
         self._history.append({"role": "assistant", "content": reply})
-        return reply
+        return reply, ja
 
     def seamless_greeting(self) -> str:
         """M3 无缝衔接（DESIGN 4.8）：用户回到电脑前 → 从共享历史接续最近话题。
@@ -413,7 +413,7 @@ class Agent:
         取最近对话（跨通道共享），生成「你刚才说…」衔接语；无历史/低精力返回 ""。
         """
         if self.state.energy < 30:
-            return ""
+            return "", ""
         recent = self.memory.recent_messages(limit=6)
         # 找最近一条用户消息（可能是 QQ 通道的）
         last_user = ""
@@ -422,22 +422,22 @@ class Agent:
                 last_user = str(m.get("content") or "")[:80]
                 break
         if not last_user:
-            return ""
+            return "", ""
         task = (
             f"用户刚回到电脑前。他之前在别的端说过：\"{last_user}\"。"
             "发一条简短的衔接语，自然地提起这件事（比如'你刚才说的那个…后来怎么样了？'）。"
             "只说这一句，不要展开。"
         )
         try:
-            reply = self._short_task(task, max_tokens=512)
+            reply, ja = self._short_task(task, max_tokens=512, bilingual=True)
         except Exception as e:
             logger.warning("seamless_greeting failed: %s", e)
-            return ""
+            return "", ""
         if not reply:
-            return ""
+            return "", ""
         self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
         self._history.append({"role": "assistant", "content": reply})
-        return reply
+        return reply, ja
 
     def task_result_story(self, result: dict) -> str:
         """M5 任务结果角色化转述（M5_SPEC 3.3：超时/失败 → 角色化转述）。
@@ -608,22 +608,35 @@ class Agent:
 
     # ---------- 内部 ----------
 
-    def _short_task(self, task: str, max_tokens: int = 512) -> str:
+    def _short_task(self, task: str, max_tokens: int = 512, bilingual: bool = False) -> str | tuple[str, str]:
         """短任务生成：带完整 system prompt（角色锚定）。
 
         实测（2026-08，qwen3-8b）：thinking 模型对裸 user prompt 的短任务
         会把全部 token 预算耗在 reasoning 上（≤80 token 必空；512 也常跑偏），
         带完整 system prompt 后 thinking 收敛、输出正常角色化回复。
         空/异常由调用方回退模板。
+
+        bilingual=True：任务要求输出双语 JSON（ja 台词/zh 翻译），返回
+        (zh, ja)；非双语返回纯文本字符串。
         """
+        if bilingual:
+            task = (
+                task
+                + '\n用日语说这句台词（yuki 说日语），并给出中文翻译。'
+                  '只输出 JSON：{"segments":[{"ja":"日语台词","zh":"中文翻译","tone":"中性","portrait":"微笑"}]}'
+            )
         system = build_system_prompt(self.card, self.state, self.memory)
-        return self.llm.chat(
+        reply = self.llm.chat(
             [
                 {"role": "system", "content": system},
                 {"role": "user", "content": task},
             ],
             max_tokens=max_tokens,
         )
+        if not bilingual:
+            return reply
+        text, _tone, _portrait, ja = extract_segments(reply, bilingual=True)
+        return text, ja
 
     def _time_greeting(self) -> str:
         import datetime

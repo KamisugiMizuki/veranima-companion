@@ -103,9 +103,11 @@ def test_seamless_greeting_uses_last_user_msg(agent, monkeypatch):
     memory.store_message("user", "明天要出差去上海了，好烦", 70, "neutral")
     a = Agent(card=card, memory=memory, llm=None, state=AgentState(), config={})
     a.state.energy = 80
-    monkeypatch.setattr(a, "_short_task", lambda task, max_tokens=120: "你刚才说明天要去上海？一路顺风。")
+    monkeypatch.setattr(a, "_short_task",
+                        lambda task, max_tokens=512, bilingual=False:
+                        ("你刚才说明天要去上海？一路顺风。", "明日上海に行くんだって？気をつけてね。"))
     msg = a.seamless_greeting()
-    assert "上海" in msg
+    assert "上海" in msg[0]
     assert len(a._history) == 2  # 恢复的 user 消息 + 衔接语
 
 
@@ -116,7 +118,7 @@ def test_seamless_greeting_empty_history(agent):
     card, memory = agent
     a = Agent(card=card, memory=memory, llm=None, state=AgentState(), config={})
     a.state.energy = 80
-    assert a.seamless_greeting() == ""
+    assert a.seamless_greeting() == ("", "")
 
 
 def test_pet_server_presence_tick(agent, monkeypatch):
@@ -129,7 +131,9 @@ def test_pet_server_presence_tick(agent, monkeypatch):
     memory.store_message("user", "刚才说的那个方案你觉得怎么样", 70, "neutral")
     a = Agent(card=card, memory=memory, llm=None, state=AgentState(), config={})
     a.state.energy = 80
-    monkeypatch.setattr(a, "_short_task", lambda task, max_tokens=120: "那个方案啊，我觉得可行")
+    monkeypatch.setattr(a, "_short_task",
+                        lambda task, max_tokens=512, bilingual=False:
+                        ("那个方案啊，我觉得可行", "あの案は、いいと思うよ"))
 
     import veranima.core.presence as presence_mod
     monkeypatch.setattr(presence_mod, "presence", lambda: False)
@@ -139,7 +143,7 @@ def test_pet_server_presence_tick(agent, monkeypatch):
     assert asyncio.run(srv.tick_presence()) is False
     # 用户回来 → 触发衔接语（mock speak 异步）
     sent = []
-    async def fake_speak(text, tags=None):
+    async def fake_speak(text, tags=None, tts_text=None):
         sent.append(text)
         return True
     monkeypatch.setattr(srv, "speak", fake_speak)

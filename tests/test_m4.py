@@ -137,10 +137,12 @@ def test_proactive_from_visual(agent, monkeypatch):
     memory.store(layer="episodic", content="用户上次打游戏打到凌晨三点，第二天上班迟到了", provenance="test")
     a = Agent(card=card, memory=memory, llm=None, state=AgentState(), config={})
     a.state.energy = 80
-    # mock _short_task 返回消息
-    monkeypatch.setattr(a, "_short_task", lambda task, max_tokens=200: "咦，你又在打游戏？上次通宵的事忘了？")
+    # mock _short_task 返回 (中文, 日语) 双语（2026-08-19：主动发起双语化）
+    monkeypatch.setattr(a, "_short_task",
+                        lambda task, max_tokens=512, bilingual=False:
+                        ("咦，你又在打游戏？上次通宵的事忘了？", "またゲーム？"))
     reply = a.proactive_from_visual("游戏")
-    assert "游戏" in reply
+    assert "游戏" in reply[0]
     assert len(a._history) == 1
 
 
@@ -151,7 +153,7 @@ def test_proactive_from_visual_no_memory(agent):
     card, memory = agent
     a = Agent(card=card, memory=memory, llm=None, state=AgentState(), config={})
     a.state.energy = 80
-    assert a.proactive_from_visual("办公") == ""
+    assert a.proactive_from_visual("办公") == ("", "")
 
 
 # ---------- 表情词表校验（M4_SPEC 2.2，走 agent） ----------

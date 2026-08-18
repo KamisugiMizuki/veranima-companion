@@ -64,9 +64,9 @@ class PetServer:
         if now_present and self._presence_was_absent:
             self._presence_was_absent = False
             try:
-                msg = await asyncio.to_thread(self._agent.seamless_greeting)
+                msg, ja = await asyncio.to_thread(self._agent.seamless_greeting)
                 if msg:
-                    await self.speak(msg)
+                    await self.speak(msg, tts_text=ja or None)
                     return True
             except Exception as e:
                 logger.warning("seamless greeting failed: %s", e)
@@ -299,11 +299,11 @@ class PetServer:
                                         category="screen",
                                     )
                                     logger.info("visual: 观察注入记忆 tag=%s", ev.tag)
-                                    proactive = await asyncio.to_thread(
+                                    proactive, ja = await asyncio.to_thread(
                                         self._agent.proactive_from_visual, ev.tag)
                                     if proactive:
                                         logger.info("visual: 联想主动发起: %s", proactive[:60])
-                                        await self.speak(proactive)
+                                        await self.speak(proactive, tts_text=ja or None)
                                 except Exception as e:
                                     logger.warning("visual observe inject failed: %s", e)
                     except Exception as e:
