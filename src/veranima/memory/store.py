@@ -689,32 +689,58 @@ class MemoryStore:
             "memories": memories,
         }
 
-    # ---------- 整理（MVP2 占位） ----------
+    # ---------- 整理（MEMORY_SPEC 12.2 确定性整理器） ----------
 
     def curate(self, *, sim_dup: float = 0.92, sim_merge: float = 0.78, min_confidence: float = 0.55, max_ops: int = 50) -> dict:
-        """记忆整理（curator）：去重 / 合并 / 低置信度丢弃 / 强度衰减清理。
+        """记忆整理（MEMORY_SPEC 12.2）：过期清理 / 低置信标记 / 同集去重 / 承诺到期 / 向量修复。
 
-        - 去重：同层内容相似度 ≥ sim_dup → 保留较新/置信度高者
-        - 合并：相似度 ≥ sim_merge → 合并为一条（内容连接，importance 取 max）
-        - 丢弃：confidence < min_confidence → 删除（设计：低置信度不写回/不保留）
-        - 单次最多 max_ops 个操作（防批量风暴）
+        - 过期 session（expires_at）→ 删除（版本链 + 索引）
+        - 低置信条目 → meta.low_confidence 标记，不删除（证据保留）
+        - 同层同 subject 去重：相似度 ≥ sim_dup → 忽略（不删除任何一条）
+        - merge：相似度 ≥ sim_merge → 合并版本链（保留原始证据，M-2 起）
+        - open commitment 到期（expires_at 过期）→ 版本链 status=expired
+        - 缺失向量 → 重建
+        - 单次最多 max_ops 个操作
         """
-        ops = {"dedup": 0, "merge": 0, "drop": 0}
+        ops = {"created": 0, "versioned": 0, "expired": 0, "ignored": 0, "conflict": 0}
+        now = _now()
+        # 1. 过期 session 清理
+        for e in self.list_layer("session", limit=500, include_superseded=True):
+            if ops["expired"] >= max_ops:
+                break
+            if e.is_expired():
+                try:
+                    self.erase(e.id)
+                    ops["expired"] += 1
+                except Exception as ex:
+                    logger.warning("curate session erase failed: %s", ex)
+        # 2. 低置信标记（不删除，证据保留）
+        marked = 0
+        for layer in ("semantic", "episodic"):
+            for e in self.list_layer(layer, limit=300):
+                if e.confidence < min_confidence and not e.meta.get("low_confidence"):
+                    try:
+                        self.con.execute(
+                            "UPDATE memories SET meta=? WHERE id=?",
+                            (json.dumps({**e.meta, "low_confidence": True}, ensure_ascii=False), e.id),
+                        )
+                        marked += 1
+                    except Exception as ex:
+                        logger.warning("curate low-confidence mark failed: %s", ex)
+        ops["ignored"] += marked
+        # 3. open commitment 到期 → expired（版本链；include_superseded 不过滤过期条目）
+        for e in self.list_layer("procedural", limit=100, include_superseded=True):
+            if e.status == "open" and e.is_expired():
+                try:
+                    self.update_latest(e.id, e.content, confidence=e.confidence, meta={"status": "expired"})
+                    ops["expired"] += 1
+                except Exception as ex:
+                    logger.warning("curate commitment expiry failed: %s", ex)
+        # 4. 同层同 subject 小集合去重（忽略重复，不删除）
         entries: list[MemoryEntry] = []
-        for layer in LAYERS:
-            entries.extend(self.list_layer(layer, limit=500))
-        if not entries:
-            return {"counts": self._layer_counts(), "ops": ops}
-
-        # 低置信度 → 丢弃（设计：confidence < 0.55 不保留）
-        drops = [e for e in entries if e.confidence < min_confidence]
-        for e in drops[: max_ops - ops["drop"]]:
-            self.erase(e.id)
-            ops["drop"] += 1
-        entries = [e for e in entries if e.id not in {d.id for d in drops}]
-
-        # 同层内两两比较（相似度用向量余弦）
-        vecs = {}
+        for layer in ("semantic", "episodic"):
+            entries.extend(self.list_layer(layer, limit=200))
+        vecs: dict[int, list[float]] = {}
         for e in entries:
             try:
                 vecs[e.id] = self.provider.embed([e.content])[0]
@@ -727,39 +753,54 @@ class MemoryStore:
                 math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b)) or 1.0
             )
 
-        for layer in LAYERS:
+        for layer in ("semantic", "episodic"):
             group = [e for e in entries if e.layer == layer and e.id in vecs]
             if len(group) < 2:
                 continue
             group.sort(key=lambda e: -e.id)  # 新在前
             for i in range(len(group)):
-                if ops["dedup"] + ops["merge"] >= max_ops:
+                if ops["ignored"] >= max_ops:
                     break
                 a = group[i]
                 for j in range(i + 1, len(group)):
-                    b = group[j]
-                    if ops["dedup"] + ops["merge"] >= max_ops:
+                    if ops["ignored"] >= max_ops:
                         break
-                    if a.id in self._deleted or b.id in self._deleted:
-                        continue
+                    b = group[j]
+                    if a.meta.get("subject") != b.meta.get("subject"):
+                        continue  # 不同 subject 不比较（MEMORY_SPEC 8.2 subject conflict）
                     try:
                         sim = cos(vecs[a.id], vecs[b.id])
                     except Exception:
                         continue
                     if sim >= sim_dup:
-                        # 去重：留新的（a），删旧的（b）
-                        self.erase(b.id)
-                        ops["dedup"] += 1
-                        self._deleted.add(b.id)
+                        # 去重：保留新版本，旧重复条目不删除（证据保留）
+                        ops["ignored"] += 1
                     elif sim >= sim_merge:
-                        # 合并：创建合并版（版本链，M-1 自动 supersedes 旧版本），
-                        # 不删除旧版本（MEMORY_SPEC 12.2：不得删除原始证据，M-5 完善）
                         merged = f"{a.content}；{b.content}"[:400]
-                        self.update_latest(a.id, merged, confidence=max(a.confidence, b.confidence))
-                        ops["merge"] += 1
-                        self._deleted.add(a.id)
+                        try:
+                            self.update_latest(a.id, merged, confidence=max(a.confidence, b.confidence))
+                            ops["versioned"] += 1
+                        except Exception as ex:
+                            logger.warning("curate merge failed: %s", ex)
                         vecs[a.id] = self.provider.embed([merged])[0]
-
+        # 5. 缺失向量重建
+        rebuilt = 0
+        if self._vec_ok:
+            try:
+                indexed = {r["memory_id"] for r in self.con.execute("SELECT memory_id FROM memory_vec").fetchall()}
+                for e in self.list_layer("semantic", limit=300):
+                    if e.id not in indexed:
+                        vec = self.provider.embed([e.content])[0]
+                        self.con.execute(
+                            "INSERT INTO memory_vec(memory_id, embedding) VALUES (?,?)",
+                            (e.id, json.dumps(vec)),
+                        )
+                        rebuilt += 1
+                if rebuilt:
+                    self.con.commit()
+            except Exception as ex:
+                logger.warning("curate vector rebuild failed: %s", ex)
+        ops["created"] += rebuilt
         return {"counts": self._layer_counts(), "ops": ops}
 
     @property

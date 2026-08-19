@@ -1,9 +1,10 @@
-"""MVP2 curator 整理测试：去重 / 合并 / 低置信度丢弃 / 操作上限。
+"""MEMORY_SPEC 12.2 curator 整理测试：过期清理 / 低置信标记 / 去重忽略 / 合并版本链 / 承诺到期。
 
 用字符袋假 embedding（相似文本 → 相似向量），验证相似度阈值逻辑。
 """
-
 from __future__ import annotations
+
+import datetime
 
 import pytest
 
@@ -34,43 +35,66 @@ def store(tmp_path):
 
 
 def test_curate_dedup_similar(store):
-    """高度相似（≥0.92）→ 去重，保留新的。"""
-    a = store.store("semantic", "我喜欢下雨天", importance=0.7, confidence=0.8)
-    b = store.store("semantic", "我喜欢下雨天", importance=0.7, confidence=0.8)
+    """高度相似（≥0.92）→ 忽略重复，不删除任何一条（12.2 证据保留）。"""
+    store.store("semantic", "我喜欢下雨天", importance=0.7, confidence=0.8)
+    store.store("semantic", "我喜欢下雨天", importance=0.7, confidence=0.8)
     r = store.curate(sim_dup=0.9, sim_merge=0.7)
-    assert r["ops"]["dedup"] >= 1
-    assert len(store.list_layer("semantic")) == 1
+    assert r["ops"]["ignored"] >= 1
+    assert len(store.list_layer("semantic")) == 2  # 两条都保留
 
 
 def test_curate_merge_similar(store):
-    """中等相似（≥merge，<dup）→ 合并版本链（M-1/MEMORY_SPEC 12.2：保留证据）。"""
+    """中等相似（≥merge，<dup）→ 合并版本链（保留证据）。"""
     a = store.store("semantic", "我养了一只猫叫团子", importance=0.6, confidence=0.8)
     b = store.store("semantic", "我养了一只猫", importance=0.6, confidence=0.8)
     r = store.curate(sim_dup=0.99, sim_merge=0.6)
-    assert r["ops"]["merge"] >= 1
+    assert r["ops"]["versioned"] >= 1
     entries = store.list_layer("semantic")
-    assert len(entries) == 2  # 合并新版本 + 原始证据 b（不再删除证据）
+    assert len(entries) == 2  # 合并新版本 + 原始证据 b
     assert any("团子" in e.content for e in entries)
     merged = max(entries, key=lambda e: e.version)
-    assert merged.meta.get("supersedes") == b.id  # 版本链指向被合并的新条目（curate 取新在前）
+    assert merged.meta.get("supersedes") == b.id
 
 
-def test_curate_drop_low_confidence(store):
-    """低置信度 + 低强度 → 丢弃。"""
+def test_curate_marks_low_confidence(store):
+    """低置信度 → 标记 low_confidence，不删除（12.2 证据保留）。"""
     store.store("semantic", "不重要的猜测", importance=0.3, confidence=0.3)
     r = store.curate()
-    assert r["ops"]["drop"] >= 1
-    assert len(store.list_layer("semantic")) == 0
+    assert r["ops"]["ignored"] >= 1
+    entries = store.list_layer("semantic")
+    assert len(entries) == 1
+    assert entries[0].meta.get("low_confidence") is True
 
 
 def test_curate_keeps_high_confidence(store):
-    """高置信度即使低强度也不丢。"""
+    """高置信度不标记。"""
     store.store("semantic", "重要的事", importance=0.3, confidence=0.9)
     r = store.curate()
-    assert r["ops"]["drop"] == 0
+    assert r["ops"]["ignored"] == 0
     assert len(store.list_layer("semantic")) == 1
+
+
+def test_curate_expires_session(store):
+    """过期 session → 清理。"""
+    past = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=2)).isoformat(timespec="seconds")
+    store.store("session", "过期任务", meta={"expires_at": past})
+    r = store.curate()
+    assert r["ops"]["expired"] >= 1
+    assert store.list_layer("session") == []
+
+
+def test_curate_expires_open_commitment(store):
+    """open commitment 到期 → 版本链 status=expired。"""
+    past = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=2)).isoformat(timespec="seconds")
+    e = store.store("procedural", "承诺：周五交报告", meta={"promise": True, "status": "open", "expires_at": past})
+    r = store.curate()
+    assert r["ops"]["expired"] >= 1
+    # 过期承诺不再出现在普通召回（默认过滤），链中可见终态
+    current = [x for x in store.list_layer("procedural", include_superseded=True)
+               if x.meta.get("status") == "expired"][0]
+    assert current.status == "expired"
 
 
 def test_curate_no_ops_when_empty(store):
     r = store.curate()
-    assert r["ops"] == {"dedup": 0, "merge": 0, "drop": 0}
+    assert r["ops"] == {"created": 0, "versioned": 0, "expired": 0, "ignored": 0, "conflict": 0}
