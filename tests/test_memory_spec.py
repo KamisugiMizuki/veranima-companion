@@ -180,3 +180,63 @@ def test_subject_match_user_query(tmp_path):
     s.store("semantic", "角色喜欢蓝色", meta={"kind": "user_fact", "subject": "character"})
     hits = s.recall("我喜欢什么颜色", top_k=5)
     assert hits[0].id == user_fact.id  # "我" → subject=user 优先
+
+
+# ---------- M-4 Context Brief（MEMORY_SPEC 10.4/9） ----------
+
+def test_build_brief_budget_and_labels(tmp_path):
+    from veranima.memory.brief import build_brief, format_brief
+    from veranima.memory.store import MemoryEntry
+    sems = [
+        MemoryEntry(id=1, layer="semantic", content="用户喜欢喝咖啡", confidence=0.9, meta={"kind": "user_fact"}),
+        MemoryEntry(id=2, layer="semantic", content="用户养了一只橘猫，叫咪咪", confidence=0.6, meta={"kind": "user_fact", "event_time": "2026-06-01T00:00:00+00:00"}),
+    ]
+    items = build_brief(semantic=sems, budgets={"semantic": 100, "episodic": 100})
+    assert items[0].memory_id == 1
+    assert items[0].confidence_label == "高"
+    assert items[1].confidence_label == "中"
+    assert items[1].temporal_label == "过去"
+    out = format_brief(items)
+    assert "【长期事实】" in out
+    assert "用户喜欢喝咖啡" in out
+
+
+def test_build_brief_full_item_truncation(tmp_path):
+    from veranima.memory.brief import build_brief
+    from veranima.memory.store import MemoryEntry
+    long = MemoryEntry(id=1, layer="semantic", content="用" * 300, confidence=0.9, meta={"kind": "user_fact"})
+    short = MemoryEntry(id=2, layer="semantic", content="短事实", confidence=0.9, meta={"kind": "user_fact"})
+    items = build_brief(semantic=[long, short], budgets={"semantic": 290})
+    # 第一条超预算 → 完整丢弃（不硬截断），第二条进来
+    assert [i.memory_id for i in items] == [2]
+
+
+def test_history_compaction_writes_summary(tmp_path):
+    a = _agent_with_memory(tmp_path)
+    # 手工撑大历史（超过 2×history_max_messages=40）
+    a._history = []
+    for i in range(22):
+        a._history.append({"role": "user", "content": f"第{i}条消息"})
+        a._history.append({"role": "assistant", "content": f"回复{i}"})
+    a._short_task = lambda task, max_tokens=None, bilingual=False: "用户聊了二十二轮日常话题，没有特别承诺。"
+    a._compact_history()
+    assert len(a._history) <= 21  # 截断到最近 history_max_messages 轮内
+    assert a._history[0]["role"] == "user"  # 序列保护
+    sems = a.memory.list_layer("session")
+    assert any(e.meta.get("kind") == "history_summary" for e in sems)
+
+
+def test_history_compaction_failure_truncates(tmp_path):
+    a = _agent_with_memory(tmp_path)
+    a._history = []
+    for i in range(22):
+        a._history.append({"role": "user", "content": f"第{i}条"})
+        a._history.append({"role": "assistant", "content": f"回{i}"})
+
+    def boom(task, max_tokens=None, bilingual=False):
+        raise RuntimeError("llm down")
+
+    a._short_task = boom
+    a._compact_history()  # 不抛异常
+    assert len(a._history) <= 21
+    assert a._history[0]["role"] == "user"

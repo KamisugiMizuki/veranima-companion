@@ -381,6 +381,12 @@ class Agent:
         # 9.5 状态持久化（重启续接）
         self._persist_state()
 
+        # 9.6 MEMORY_SPEC 9 历史压缩（超长时摘要最旧部分）
+        try:
+            self._compact_history()
+        except Exception as e:
+            logger.warning("history compaction failed (non-blocking): %s", e)
+
         return TurnResult(
             reply=reply,
             recalled=[],
@@ -393,6 +399,62 @@ class Agent:
             ja_text=ja_text,
             reply_obj=turn_reply,
         )
+
+    def _compact_history(self) -> None:
+        """MEMORY_SPEC 9：历史超长时把最旧部分压成摘要（session 层 history_summary）。
+
+        - 保留最近完整 user/assistant 对（history_max_messages 轮）
+        - 摘要只记录已出现信息，不生成新事实（prompt 约束）
+        - LLM 失败 → 直接截断内存历史，不阻断对话
+        - 摘要带消息区间（from/to message id）与 source_count
+        """
+        max_hist = int((self.config.get("chat", {}) or {}).get("history_max_messages", 20))
+        if len(self._history) <= max_hist * 2:
+            return
+        half = len(self._history) - max_hist
+        old_part = self._history[:half]
+        new_part = self._history[half:]
+        # 消息区间：从 messages 表反查旧部分最后一条 user 消息 id
+        from_msg = to_msg = 0
+        try:
+            msgs = self.memory.recent_messages(limit=max_hist * 4)
+            old_user_texts = {m["content"] for m in old_part if m["role"] == "user"}
+            ids = [m["id"] for m in msgs if m["role"] == "user" and m["content"] in old_user_texts]
+            if ids:
+                from_msg, to_msg = min(ids), max(ids)
+        except Exception:
+            pass
+        summary = ""
+        try:
+            transcript = "\n".join(
+                f"{'用户' if m['role'] == 'user' else '我'}: {m['content']}"
+                for m in old_part
+            )
+            summary = self._short_task(
+                "把下面的对话压缩成 3-5 句中文摘要。只保留已出现的事实、承诺、情绪变化和未完成话题，"
+                "绝对不要编造新内容：\n" + transcript,
+            )
+        except Exception as e:
+            logger.warning("history compaction failed, truncating: %s", e)
+        if summary and len(summary) > 10:
+            try:
+                self.memory.store(
+                    "session",
+                    f"【更早的对话】{summary[:400]}",
+                    importance=0.4,
+                    confidence=0.7,
+                    meta={
+                        "kind": "history_summary",
+                        "from_message_id": from_msg,
+                        "to_message_id": to_msg,
+                        "source_count": len(old_part) // 2,
+                    },
+                )
+            except Exception as e:
+                logger.warning("history summary store failed: %s", e)
+        self._history = new_part
+        while self._history and self._history[0]["role"] != "user":
+            self._history.pop(0)  # 保证序列 [user, ...]（jinja 400 防护）
 
     def _portrait_valid(self, label: str) -> bool:
         """R2：portrait 标签必须在角色卡 expressions 词表内（防 OOC 标签，R2_SPEC 2）。"""
