@@ -42,6 +42,7 @@ class TurnResult:
     tone: str = ""       # R2：语气标签（R2_SPEC 1，TTS 预留）
     ja_text: str = ""    # R2 双语：日语台词（送 TTS）；空=非双语角色（R2_SPEC 1）
     reply_obj: object = None  # R2 统一 Reply（adapter 逐步消费；TurnResult 字段保留兼容）
+    style_hint: str = ""  # P-9：PAD 渲染提示（short/normal/long，adapter 可选消费）
 
 
 @dataclass(frozen=True)
@@ -155,6 +156,12 @@ class Agent:
         # P-7 冲突跟踪（随 state.relationship 持久化；重启恢复）
         from .persona import ConflictTracker
         self._conflicts = ConflictTracker.from_dict(self.state.relationship.get("conflicts") if isinstance(self.state.relationship, dict) else None)
+
+        # P-6/P-9 状态：框架引用冷却（8 轮）、表层印记、轮次计数
+        from .persona import ImprintTracker, ReuseCooldown
+        self._reuse_cd = ReuseCooldown()
+        self._imprints = ImprintTracker()
+        self._turn_n = 0
 
         # MVP2 学习组件（持久化到 data/，随对话更新）
         root = self.config.get("root", ".")
@@ -330,11 +337,37 @@ class Agent:
         # ===== R0 阶段 2: build_turn_prompt（R0_SPEC 5）=====
         # 记忆检索（预算内注入）+ MVP2 附加块（风格/镜像/承诺）+ 打断指令
         query_hint = user_text or "图片"
+        # P-6/P-9：预构建 PersonaBrief 选回用动作与表达计划（prompts 内会再次构建——轻量，接受重复）
+        reuse_action = ""
+        response_plan = None
+        try:
+            from .persona import build_persona_brief, build_response_plan, choose_reuse_action
+            # 冲突压力同步到 state（choose_reuse_action/build_response_plan 从 state 读；
+            # conflict_tension 真值在 relationship）
+            self.state.conflict_tension = self.relationship.conflict_tension
+            pre_brief = build_persona_brief(query_hint, self.card, self.relationship, self.state, self.memory)
+            action = choose_reuse_action(pre_brief, user_text, self.state)
+            if action != "none" and pre_brief.relevant_user_frameworks:
+                key = pre_brief.relevant_user_frameworks[0]["content"][:20]
+                if self._reuse_cd.allow(key, self._turn_n):
+                    reuse_action = action
+            response_plan = build_response_plan({"user_text": user_text}, pre_brief, self.state)
+        except Exception as e:
+            logger.debug("persona reuse/plan skipped: %s", e)
+        self._turn_n += 1
         extra_blocks = [
             self.style.to_prompt_block(),  # M-6：参数 + 文风画像合并块
             self.mirror.to_prompt_block(),
             self.promises.to_prompt_block(query_hint=query_hint),
         ]
+        if response_plan is not None:
+            # P-9：表达意图注入（不暴露内部思考；只给意图与开场）
+            plan_bits = [f"intent={response_plan.intent}"]
+            if response_plan.opening_move:
+                plan_bits.append(f"开场={response_plan.opening_move}")
+            if response_plan.conflict:
+                plan_bits.append(response_plan.conflict)
+            extra_blocks.append(f"【表达意图】{'；'.join(plan_bits)}")
         if interrupt_level > 0:
             extra_blocks.append(_interrupt_prompt(interrupt_level))
         system = build_system_prompt(
@@ -347,6 +380,7 @@ class Agent:
             clarification=is_clarification(user_text),  # R1 可逆性：追问 → 精确值（R1_SPEC 3）
             extra_blocks=extra_blocks,
             relationship=self.relationship,  # P-4：PersonaBrief 接入口
+            reuse_action=reuse_action,       # P-6：本轮回用动作
         )
 
         # 4. 组装对话（历史 + 当前）；当前轮含图时用多模态 content 数组
@@ -451,6 +485,11 @@ class Agent:
         self.style.observe(sig, user_text)   # M-6：feedback 快变量 + 文风画像慢变量
         self.mirror.observe(user_text)
         self.promises.record(user_text)
+        # P-9：表层人格印记（正反馈 → candidate；纠正 → 拒绝方向）
+        if sig.positive:
+            self._imprints.note("depth", 1.0, user_msg_id, scope="对话")
+        if sig.correction:
+            self._imprints.note("depth", -1.0, user_msg_id)
         # curator 整理（每 8 轮）+ 持久化（每 20 轮）
         if self.state.total_messages % 8 == 0:
             result = self.memory.curate()
@@ -520,6 +559,16 @@ class Agent:
         except Exception as e:
             logger.warning("history compaction failed (non-blocking): %s", e)
 
+        # P-9：PAD 渲染提示（确定性；adapter 可选消费，TTS 短句/IM 标点）
+        style_hint = ""
+        try:
+            from .persona import render_authenticity
+            style_hint = render_authenticity(
+                reply, {"valence": self.state.valence, "arousal": self.state.arousal}, channel,
+            )["style_hint"]
+        except Exception:
+            pass
+
         return TurnResult(
             reply=reply,
             recalled=[],
@@ -531,6 +580,7 @@ class Agent:
             tone=tone,
             ja_text=ja_text,
             reply_obj=turn_reply,
+            style_hint=style_hint,
         )
 
     def _maybe_reflect(self) -> None:

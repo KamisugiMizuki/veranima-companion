@@ -83,6 +83,7 @@ def build_system_prompt(
     channel: str = "im",
     clarification: bool = False,  # R1 可逆性：用户追问细节 → 记忆行不模糊化（R1_SPEC 3）
     relationship=None,  # P-4（PERSONA_LOOP_SPEC）：PersonaBrief 接入口；None=不注入
+    reuse_action: str = "",  # P-6：本轮回用动作（extend/contrast/question/apply/remember）
 ) -> str:
     """按预算组装系统 prompt。记忆按层注入，超出预算截断。extra_blocks 为附加块（学习参数/镜像/承诺）。
 
@@ -113,6 +114,17 @@ def build_system_prompt(
         ))
         if persona_text:
             parts.append(persona_text)
+        # P-6：本轮回用动作约束（agent 计算；动作非 none 时追加）
+        if reuse_action and reuse_action != "none":
+            action_guide = {
+                "extend": "用新情境扩展该观点",
+                "contrast": "对照你的不同观点，保留分歧",
+                "question": "先确认适用边界再讨论",
+                "apply": "把该观点应用到当前问题",
+                "remember": "自然地提起那次共同经历",
+            }.get(reuse_action, "")
+            if action_guide:
+                parts.append(f"【回用动作】{action_guide}（不要逐字复述用户原句）")
 
     brief_items = build_brief(
         core_profile=memory.list_layer("core_profile", limit=20),
