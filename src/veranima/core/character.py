@@ -46,6 +46,51 @@ class CharacterCard:
     # veranima 专属（extensions.veranima）
     veranima: dict[str, Any] = field(default_factory=dict)
 
+    # P-0（PERSONA_LOOP_SPEC）：角色核心慢变量字段（普通对话/文风学习不得覆写）
+    CORE_FIELDS = ("core_drives", "value_order", "inner_tensions", "long_term_desires", "relationship_expectation")
+
+    @property
+    def core_profile(self) -> dict[str, Any]:
+        """P-0：稳定核心字段只读视图。
+
+        结构校验：字符串列表只保留 str 项；inner_tensions 只保留 {left,right} 且均为非空 str。
+        非法项丢弃并记日志，不抛错（缺字段卡与旧卡照常工作）。
+        """
+        v = self.veranima or {}
+
+        def _str_list(key: str) -> list[str]:
+            raw = v.get(key) or []
+            if not isinstance(raw, (list, tuple)):
+                logger.warning("core_profile.%s 非列表，忽略", key)
+                return []
+            out = [x for x in raw if isinstance(x, str) and x.strip()]
+            if len(out) != len(raw):
+                logger.warning("core_profile.%s 含非字符串项，已丢弃", key)
+            return out
+
+        tensions: list[dict[str, str]] = []
+        raw_t = v.get("inner_tensions") or []
+        if isinstance(raw_t, (list, tuple)):
+            for t in raw_t:
+                if not isinstance(t, dict):
+                    logger.warning("core_profile.inner_tensions 含非对象项，已丢弃")
+                    continue
+                left, right = t.get("left"), t.get("right")
+                if isinstance(left, str) and left.strip() and isinstance(right, str) and right.strip():
+                    tensions.append({"left": left.strip(), "right": right.strip()})
+                else:
+                    logger.warning("core_profile.inner_tensions 含非法 {left,right} 项，已丢弃")
+
+        rel = v.get("relationship_expectation")
+        rel = rel if isinstance(rel, str) else ""
+        return {
+            "core_drives": _str_list("core_drives"),
+            "value_order": _str_list("value_order"),
+            "inner_tensions": tensions,
+            "long_term_desires": _str_list("long_term_desires"),
+            "relationship_expectation": rel,
+        }
+
     @classmethod
     def from_file(cls, path: str | Path) -> "CharacterCard":
         path = Path(path)
@@ -113,11 +158,22 @@ class CharacterCard:
             "禁忌话题": ["taboos"],
             "恐惧/回避": ["fears", "恐惧"],
             "价值观底线": ["values"],
+            "长期驱动力": ["core_drives"],
+            "价值排序": ["value_order"],
+            "内在张力": ["inner_tensions"],
+            "长期欲求": ["long_term_desires"],
             "关系期许": ["relationship_expectation"],
             "初始好感": ["initial_affection"],
             "身体设定": ["body_setting", "physical_setting"],
         }
         for label, keys in vkey.items():
+            if label == "内在张力":
+                # P-0：list[dict] 特殊格式化（left / right；多组用分号）
+                tensions = self.core_profile["inner_tensions"]
+                if tensions:
+                    rendered = "；".join(f"{t['left']} / {t['right']}" for t in tensions)
+                    parts.append(f"【内在张力】{rendered}")
+                continue
             if label == "语言风格":
                 # 聚合多个语言细节字段（句长/语气词/表情/修辞）
                 subs = []
@@ -171,6 +227,19 @@ def validate_character_prompt(card: "CharacterCard", prompt: str) -> list[str]:
     for other in ("Yuki", "Zima", "由岐", "司书"):
         if other in IDENTITY_BLOCK:
             issues.append(f"IDENTITY_BLOCK 泄漏角色锚点「{other}」")
+    # P-0：角色核心结构合法性（非法项会被 core_profile 丢弃 → 检查丢弃是否发生）
+    cp = card.core_profile
+    for key in ("core_drives", "value_order", "long_term_desires"):
+        for item in (card.veranima or {}).get(key) or []:
+            if not (isinstance(item, str) and item.strip()):
+                issues.append(f"core_profile.{key} 含非法项（应为非空字符串）")
+    for t in (card.veranima or {}).get("inner_tensions") or []:
+        if not (isinstance(t, dict) and isinstance(t.get("left"), str) and t.get("left").strip()
+                and isinstance(t.get("right"), str) and t.get("right").strip()):
+            issues.append(f"core_profile.inner_tensions 含非法项（应为 {{left,right}} 非空字符串）")
+    rel = (card.veranima or {}).get("relationship_expectation")
+    if rel is not None and not isinstance(rel, str):
+        issues.append("core_profile.relationship_expectation 应为字符串")
     # 换卡验收：其他角色名不应出现在角色卡自己的 prompt 段（旧角色关键词泄漏检查）
     # —— 这里只检查 IDENTITY_BLOCK；角色卡自身内容不强制（用户可能故意引用）
     return issues
