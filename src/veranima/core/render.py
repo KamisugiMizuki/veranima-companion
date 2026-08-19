@@ -61,11 +61,61 @@ def _strip_emoji(text: str) -> str:
     return _EMOJI.sub("", text)
 
 
-def render_im(text: str, attachment: float = 0.5, emoji_frequency: str = "low") -> str:
-    """IM 通道渲染入口。规则顺序：换行压缩 → 波浪号 → 感叹号 → 表情。"""
+def render_im(reply, state=None, **old_kwargs) -> str:
+    """IM 通道渲染入口（R2_SPEC 3）：`render_im(reply, state) -> str`。
+
+    兼容旧调用 `render_im(text, attachment=..., emoji_frequency=...)`：
+    传 Reply 时读 reply.text + state.attachment + 角色卡 emoji_frequency。
+    规则顺序：换行压缩 → 波浪号 → 感叹号 → 表情。
+    只做可逆清理，不随机改写事实（R2_SPEC 3）。
+    """
+    from .reply import Reply
+
+    if isinstance(reply, Reply):
+        text = reply.text
+        attachment = state.attachment if state is not None else 0.5
+        emoji_frequency = "low"
+        try:
+            emoji_frequency = (reply._card.veranima or {}).get("emoji_frequency", "low") \
+                if getattr(reply, "_card", None) else "low"
+        except Exception:
+            pass
+    else:
+        # 旧签名兼容（text 字符串）
+        text = reply
+        attachment = old_kwargs.get("attachment", 0.5)
+        emoji_frequency = old_kwargs.get("emoji_frequency", "low")
+
     t = _compress_newlines(text)
-    t = _strip_tildes_below_threshold(t, attachment)
+    t = _strip_tildes_below_threshold(t, float(attachment))
     t = _limit_exclamations(t)
     if emoji_frequency == "never":
         t = _strip_emoji(t)
     return t.strip()
+
+
+def render_tts(reply, state=None) -> list:
+    """TTS 通道渲染（R2_SPEC 3）：`render_tts(reply, state) -> list[SpeechSegment]`。
+
+    每个 ReplySegment → SpeechSegment：
+    - 双语：text=ja（送 TTS），display_text=zh 或 translation（气泡显示）
+    - 单语：text=原文，display_text 空
+    - suppress_tts（缺 ja）：仍生成 display_text 供静默显示，调用方不合成
+    """
+    from .reply import SpeechSegment
+
+    out = []
+    for seg in reply.segments:
+        if seg.suppress_tts:
+            out.append(SpeechSegment(
+                text=seg.ja_text or seg.text, tone=seg.tone, portrait=seg.portrait,
+                display_text=seg.translation or seg.text,
+            ))
+        elif seg.ja_text:
+            out.append(SpeechSegment(
+                text=seg.ja_text, tone=seg.tone, portrait=seg.portrait,
+                display_text=seg.translation or seg.text,
+            ))
+        else:
+            out.append(SpeechSegment(text=seg.text, tone=seg.tone, portrait=seg.portrait))
+    return out

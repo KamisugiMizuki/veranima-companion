@@ -20,8 +20,9 @@ llm:
 # R0 统一 Reply 输出契约（R0_SPEC 6）
 output:
   max_segments: 6                  # TTS JSON segments 最多段数
-  max_reply_chars: 1200            # 单段/整条回复截断上限（字符）
+  max_text_chars: 1200             # 单段/整条回复文本截断上限（字符）
   parse_retry: 1                   # 解析重试次数（当前解析器确定性，保留配置位）
+  keep_text_on_tts_failure: true   # TTS 失败保留文字气泡（R2_SPEC 6）
 
 # TTS（桌宠语音；当前生产实现为本地 GPT-SoVITS v4 HTTP 服务）
 # 壳启动时拉起 tts/gpt-sovits/api_v2.py，默认监听 http://127.0.0.1:9880。
@@ -34,6 +35,7 @@ tts:
   api_key: ""                           # 远程必填；本地服务通常不需要
   response_format: "wav"                # wav/mp3/opus（GPT-SoVITS 当前使用 wav）
   timeout: 60
+  segment_mode: whole                   # 整段合成（R2_SPEC 6；分句模式已废弃）
 
 # STT 语音输入（OpenAI 兼容 /v1/audio/transcriptions；未配置 = 未接入，接口就绪模型后接）
 stt:

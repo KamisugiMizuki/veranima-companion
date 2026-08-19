@@ -34,6 +34,15 @@ class ReplySegment:
 
 
 @dataclass
+class SpeechSegment:
+    """TTS 渲染结果（R2_SPEC 3）：display_text 与语音必须同一 segment。"""
+    text: str            # 送 TTS 合成的文本（ja）
+    tone: str = "中性"
+    portrait: str = ""
+    display_text: str = ""   # 气泡显示文本（zh）；空 = 用 text
+
+
+@dataclass
 class Reply:
     segments: list[ReplySegment] = field(default_factory=list)
     stance: str = ""

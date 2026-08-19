@@ -40,6 +40,7 @@ class TurnResult:
     portrait: str = ""   # R2 表情标签驱动：情绪表情标签（如"开心脸红"），空=回退 idle（R2_SPEC 1）
     tone: str = ""       # R2：语气标签（R2_SPEC 1，TTS 预留）
     ja_text: str = ""    # R2 双语：日语台词（送 TTS）；空=非双语角色（R2_SPEC 1）
+    reply_obj: object = None  # R2 统一 Reply（adapter 逐步消费；TurnResult 字段保留兼容）
 
 
 def _interrupt_prompt(level: int) -> str:
@@ -317,13 +318,25 @@ class Agent:
         portrait = ""
         tone = ""
         ja_text = ""
+        turn_reply = None
         if channel == "tts":
             bilingual = bool(((self.card.veranima or {}).get("bilingual") or {}).get("enabled"))
-            reply, tone, portrait, ja_text = extract_segments(
-                reply, bilingual=bilingual, card=self.card,
+            from .reply import parse_reply
+            parsed = parse_reply(
+                reply, channel="tts", card=self.card, bilingual=bilingual,
+                max_segments=int((self.config.get("output", {}) or {}).get("max_segments", 6)),
+                max_chars=int((self.config.get("output", {}) or {}).get("max_text_chars", 1200)),
             )
+            turn_reply = parsed
+            reply = parsed.text or reply
+            tone = parsed.tone
+            portrait = parsed.portrait
+            ja_text = parsed.ja_text
             if portrait and not self._portrait_valid(portrait):
                 portrait = ""  # 词表外标签回退（防 OOC）
+        else:
+            from .reply import Reply, ReplySegment
+            turn_reply = Reply(segments=[ReplySegment(text=reply)])
 
         # ===== R0 阶段 5: persist_turn（R0_SPEC 5）=====
         # 回复入库 + 历史更新
@@ -382,6 +395,7 @@ class Agent:
             portrait=portrait,
             tone=tone,
             ja_text=ja_text,
+            reply_obj=turn_reply,
         )
 
     def _portrait_valid(self, label: str) -> bool:

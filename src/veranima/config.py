@@ -53,9 +53,9 @@ def validate_config(data: dict) -> list[str]:
     max_segments = out.get("max_segments")
     if max_segments is not None and (not isinstance(max_segments, int) or not 1 <= max_segments <= 10):
         issues.append("output.max_segments 必须在 1-10")
-    max_chars = out.get("max_reply_chars")
+    max_chars = out.get("max_text_chars")
     if max_chars is not None and (not isinstance(max_chars, int) or not 100 <= max_chars <= 8000):
-        issues.append("output.max_reply_chars 必须在 100-8000")
+        issues.append("output.max_text_chars 必须在 100-8000")
     parse_retry = out.get("parse_retry")
     if parse_retry is not None and (not isinstance(parse_retry, int) or parse_retry < 0):
         issues.append("output.parse_retry 必须为非负整数")

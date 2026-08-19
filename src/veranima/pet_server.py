@@ -35,6 +35,10 @@ class PetServer:
         self._client: websockets.ServerConnection | None = None
         self._agent = None  # 后续接 Agent；PoC 阶段 None
         self._agent_lock = asyncio.Lock()  # agent.handle 串行化（SQLite 游标非线程安全，并发实测 "no more rows available"）
+        # R2 状态与取消（R2_SPEC 5）：递增 turn_id；新输入打断时旧 turn 的
+        # 迟到结果由壳端按 turn_id 丢弃（低成本递增，不引入任务编排库）
+        self._turn_seq = 0
+        self._current_turn = 0
         self._tts = None    # TTSClient（可选；未配置则桌宠只显气泡不发声）
         self._bilingual = False  # 角色双语（character.json veranima.bilingual.enabled）
         self.attention_cfg = {}  # 视觉注意力配置（VISION_SPEC 4，config.yaml attention: 段）
@@ -84,6 +88,11 @@ class PetServer:
         async with self._agent_lock:
             return await asyncio.to_thread(self._agent.handle, text, channel="tts")
 
+    def _next_turn(self) -> int:
+        """R2 递增 turn_id（R2_SPEC 5：低成本递增，不引入任务编排库）。"""
+        self._turn_seq += 1
+        return self._turn_seq
+
     async def speak(self, text: str, tags: list | None = None, tts_text: str | None = None) -> bool:
         """推送回复（整段合成一次 + 一条消息，2026-08-19 用户拍板）。
 
@@ -97,13 +106,20 @@ class PetServer:
         speak_text = (tts_text or text).strip()
         if self._tts is None or not speak_text:
             # 无 TTS：一次性纯气泡
-            return await self._send({"type": "speak", "text": text, "tags": tags or []})
+            return await self._send({
+                "type": "speak", "text": text, "tags": tags or [],
+                "turn_id": self._current_turn,
+            })
         if self._bilingual and not tts_text:
             # 双语角色缺日语台词（LLM 输出异常/thinking 截断）：中文送日语模型
             # 会怪音（2026-08-19 实测）→ 只推气泡不合成
-            return await self._send({"type": "speak", "text": text, "tags": tags or []})
+            return await self._send({
+                "type": "speak", "text": text, "tags": tags or [],
+                "turn_id": self._current_turn,
+            })
 
         msg: dict = {"type": "speak", "text": text, "tags": tags or []}
+        msg["turn_id"] = self._current_turn  # R2：壳端按 turn_id 丢弃迟到结果
         if tts_text:
             msg["text_zh"] = text  # 双语：气泡显示整段中文
         try:
@@ -116,10 +132,10 @@ class PetServer:
 
     async def speak_chunk(self, text: str) -> bool:
         """流式分片推送（DESIGN 4.13 打字机）。"""
-        return await self._send({"type": "speak_chunk", "text": text})
+        return await self._send({"type": "speak_chunk", "text": text, "turn_id": self._current_turn})
 
     async def speak_done(self) -> bool:
-        return await self._send({"type": "speak_done"})
+        return await self._send({"type": "speak_done", "turn_id": self._current_turn})
 
     async def bubble(self, text: str) -> bool:
         return await self._send({"type": "bubble", "text": text})
@@ -155,6 +171,7 @@ class PetServer:
                 if mtype in ("poke", "stream_talk"):
                     # R3 TTS 打断（R3_SPEC 1）：用户新互动 → 停止当前播放
                     await self.stop_speak()
+                    self._current_turn = self._next_turn()  # R2：新 turn
                 if mtype == "poke":
                     logger.info("poke received")
                     if self._agent is not None:

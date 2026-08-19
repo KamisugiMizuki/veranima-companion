@@ -108,7 +108,7 @@ llm:
   timeout: 120
 output:
   max_segments: 6
-  max_reply_chars: 1200
+  max_text_chars: 1200
   parse_retry: 1
 ```
 
