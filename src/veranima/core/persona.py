@@ -546,7 +546,10 @@ def format_persona_brief(brief: PersonaBrief) -> str:
         parts.append(f"【当下状态】情绪{ins['valence']}、状态{ins['arousal']}、{ins['dominance']}感。")
     if brief.relevant_user_frameworks:
         lines = "\n".join(f"- {f['content']}" for f in brief.relevant_user_frameworks)
-        parts.append(f"【理解用户】用户表达过以下观点/框架（引用时保持原意，可扩展、对照或追问适用边界）：\n{lines}")
+        parts.append(
+            f"【理解用户】用户表达过以下观点/框架（回用时执行扩展、对照、限定适用边界或应用到当前问题，"
+            f"不要逐字复述用户原句，不要每轮都提起）：\n{lines}"
+        )
     if brief.relevant_character_beliefs:
         lines = "\n".join(f"- {f['content']}" for f in brief.relevant_character_beliefs)
         parts.append(f"【角色观点】你形成过的观点：\n{lines}")
@@ -554,6 +557,52 @@ def format_persona_brief(brief: PersonaBrief) -> str:
         lines = "\n".join(f"- {f['content']}" for f in brief.shared_meanings)
         parts.append(f"【共同意义】你们对某些共同经历的解释：\n{lines}")
     return "\n".join(parts)
+
+
+# ---------- P-6 回用与防回声室 ----------
+
+REUSE_ACTIONS = ("extend", "contrast", "question", "apply", "remember", "none")
+REUSE_COOLDOWN_TURNS = 8  # 同一框架显式引用冷却（PERSONA_LOOP_SPEC 9.2）
+
+
+class ReuseCooldown:
+    """P-6：框架引用冷却（frame_id → 上次引用轮次，满 N 轮恢复）。"""
+
+    def __init__(self, turns: int = REUSE_COOLDOWN_TURNS):
+        self.turns = turns
+        self._last_turn: dict[str, int] = {}
+
+    def allow(self, frame_id: str, turn: int) -> bool:
+        last = self._last_turn.get(frame_id)
+        if last is None or turn - last >= self.turns:
+            self._last_turn[frame_id] = turn
+            return True
+        return False
+
+
+def choose_reuse_action(brief: PersonaBrief, query: str, state) -> str:
+    """P-6：从注入的人格上下文中选回用动作（默认 apply，绝不为 repeat）。
+
+    - 无相关框架/共同意义 → none
+    - 低愉悦（valence<0.4）→ question（先确认边界，不直接断言）
+    - 关系冲突（conflict_tension>0.5）→ contrast（保留分歧）
+    - 用户直接回溯共同事件 → remember（"你还记得……"类）
+    - 其余 → apply（用于当前具体问题）
+    """
+    has_fw = bool(brief.relevant_user_frameworks) or bool(brief.relevant_character_beliefs)
+    has_sm = bool(brief.shared_meanings)
+    if not has_fw and not has_sm:
+        return "none"
+    if has_sm and query and any(k in query for k in ("记得", "那晚", "上次", "那次", "当时")):
+        return "remember"
+    if has_fw and not has_sm:
+        valence = float(getattr(state, "valence", 0.5))
+        conflict = float(getattr(state, "conflict_tension", 0.0))
+        if conflict > 0.5:
+            return "contrast"
+        if valence < 0.4:
+            return "question"
+    return "apply"
 
 
 # ---------- PersonaCandidate → MemoryCandidate 转换 ----------
