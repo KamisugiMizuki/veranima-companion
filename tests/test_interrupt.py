@@ -1,4 +1,4 @@
-"""M1 打断决策/表达瑕疵 + M3 无缝衔接测试。"""
+"""R0 打断决策 + 历史表达瑕疵 + R1 无缝衔接测试。"""
 import pytest
 
 from veranima.core.interrupt import InterruptDecider, TopicFrequency
@@ -13,7 +13,7 @@ def agent(tmp_path):
     return card, mem
 
 
-# ---------- M1 打断决策（DESIGN 4.5） ----------
+# ---------- R0 打断决策（R0_SPEC 5） ----------
 
 def test_topic_frequency_counts():
     """话题指纹：重复提及同一话题累计计数。"""
@@ -67,7 +67,7 @@ def test_interrupt_prompt_content():
     assert "新" in _interrupt_prompt(2)
 
 
-# ---------- M1 表达瑕疵（DESIGN 4.9） ----------
+# ---------- 历史表达瑕疵（新设计非目标，待 R2 清理） ----------
 
 def test_withdraw_skipped_high_energy():
     """高精力/高确信 → 不撤回。"""
@@ -93,7 +93,7 @@ def test_withdraw_short_reply_skip():
     assert _maybe_withdraw("嗯", S(), 0.01) == "嗯"
 
 
-# ---------- M3 无缝衔接（DESIGN 4.8） ----------
+# ---------- R1 无缝衔接（R1_SPEC 4.召回） ----------
 
 def test_seamless_greeting_uses_last_user_msg(agent, monkeypatch):
     """衔接语引用最近用户消息（跨通道共享历史）。"""
@@ -182,7 +182,7 @@ def test_task_result_story_failure_gentle(agent, monkeypatch):
     assert "卡住" in a.task_result_story({"task_id": "x", "output": "timeout", "ok": False})
 
 
-# ---------- M1 可逆性 + M3 TTS 打断 ----------
+# ---------- R1 可逆性 + R3 TTS 打断 ----------
 
 def test_clarification_detection():
     """追问检测：细节追问词命中。"""
@@ -193,7 +193,7 @@ def test_clarification_detection():
 
 
 def test_format_memory_clarification_gives_exact():
-    """追问时低确信记忆不模糊化（M1_SPEC 2.2 可逆性）。"""
+    """追问时低确信记忆不模糊化（R1_SPEC 2.2 可逆性）。"""
     from veranima.core.prompts import format_memory_line
     from veranima.memory.store import MemoryEntry
     e = MemoryEntry(id=1, layer="episodic", content="三天前下午三点在星巴克见面", importance=0.5,
@@ -207,7 +207,7 @@ def test_format_memory_clarification_gives_exact():
 
 
 def test_tts_interrupt_on_new_message(monkeypatch):
-    """新互动（poke/stream_talk）→ 先 stop_speak（M3 3.2 TTS 打断）。"""
+    """新互动（poke/stream_talk）→ 先 stop_speak（R3_SPEC 1 TTS 打断）。"""
     import asyncio
     from veranima.pet_server import PetServer
     srv = PetServer()

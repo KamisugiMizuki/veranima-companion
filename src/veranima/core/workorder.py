@@ -1,4 +1,4 @@
-"""M5 需求翻译层（DESIGN 4.2 + M5_SPEC 2）：模糊指令 → 结构化任务工单。
+"""R5 需求翻译层（R5_SPEC 2：WorkOrder）：模糊指令 → 结构化任务工单。
 
 - 意图补完五维：目标澄清 / 来源路径 / 用户偏好注入 / 优先级约束 / 异常预案
 - 信息不足主动追问（附带猜测建议）
@@ -13,7 +13,7 @@ import uuid
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
-# 可转交任务类型清单（M5_SPEC 2.3 触发条件；config.yaml task_types 可配置）
+# 可转交任务类型清单（R5_SPEC 2.3 触发条件；config.yaml task_types 可配置）
 DEFAULT_TASK_TYPES = ("文档处理", "信息检索", "系统操作", "自动化流程")
 
 # 触发关键词（能力匹配层判定：命中 → 任务管道）
@@ -25,7 +25,7 @@ _TASK_TRIGGERS = (
 
 @dataclass
 class WorkOrder:
-    """TASK_TRANSFER_PROTOCOL 工单（M5_SPEC 2.2 JSON 格式）。"""
+    """TASK_TRANSFER_PROTOCOL 工单（R5_SPEC 2.2 JSON 格式）。"""
 
     goal: str                       # 目标澄清：可验证的结果
     context: str = ""               # 补充上下文（来源路径/用户偏好）
@@ -42,7 +42,7 @@ class WorkOrder:
 
 
 def is_task_request(user_text: str) -> bool:
-    """能力匹配层判定（M5_SPEC 2.3）：任务意图 → 转交任务管道。
+    """能力匹配层判定（R5_SPEC 2.3）：任务意图 → 转交任务管道。
 
     规则：明确任务前缀（帮我/整理/转成等）优先——闲聊词仅在无任务前缀时生效。
     """
@@ -83,7 +83,7 @@ def extract_format_pref(user_text: str) -> str:
 
 
 def build_workorder_llm(llm, user_text: str, *, task_type: str = "") -> WorkOrder:
-    """LLM 版意图补全（M5_SPEC 2.1）：模型直接补全五维，替换规则提取。
+    """LLM 版意图补全（R5_SPEC 2.1）：模型直接补全五维，替换规则提取。
 
     LLM 不可用/输出异常 → 降级规则版 build_workorder（调用方无感）。
     """
@@ -116,7 +116,7 @@ def build_workorder_llm(llm, user_text: str, *, task_type: str = "") -> WorkOrde
 
 
 def build_workorder(user_text: str, *, username: str = "", task_types: tuple = DEFAULT_TASK_TYPES) -> WorkOrder:
-    """模糊指令 → 工单（M5_SPEC 2.1 意图补完五维，规则版）。
+    """模糊指令 → 工单（R5_SPEC 2.1 意图补完五维，规则版）。
 
     LLM 版见 build_workorder_llm（可用时替换本函数）。
     """
@@ -138,7 +138,7 @@ def build_workorder(user_text: str, *, username: str = "", task_types: tuple = D
     if username:
         wo.context += f"用户：{username}。"
 
-    # 缺失维度标记（M5_SPEC 2.1：信息不足主动追问）
+    # 缺失维度标记（R5_SPEC 2.1：信息不足主动追问）
     if not src and any(k in user_text for k in ("这个", "那个", "那份", "桌面", "文件")):
         wo.needs_clarification.append("来源路径")
     if not fmt and any(k in user_text for k in ("转成", "转换成", "做成", "导出")):
@@ -149,7 +149,7 @@ def build_workorder(user_text: str, *, username: str = "", task_types: tuple = D
 
 
 def clarification_question(wo: WorkOrder) -> str:
-    """针对缺失维度生成追问（附带猜测建议，M5_SPEC 2.1）。"""
+    """针对缺失维度生成追问（附带猜测建议，R5_SPEC 2.1）。"""
     if not wo.needs_clarification:
         return ""
     parts = []

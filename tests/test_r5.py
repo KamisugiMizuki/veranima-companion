@@ -1,4 +1,4 @@
-"""M5 测试：需求翻译层（工单/触发/追问）+ dsh 薄壳。"""
+"""R5 测试：需求翻译层（工单/触发/追问）+ dsh 薄壳。"""
 import json
 
 import pytest
@@ -13,7 +13,7 @@ from veranima.core.workorder import (
 from veranima.tools.dsh_bridge import dsh_available
 
 
-# ---------- M5 2.3 触发条件 ----------
+# ---------- R5 1.触发契约 ----------
 
 def test_task_triggers():
     """任务意图 → 转交；闲聊 → 不转交。"""
@@ -23,7 +23,7 @@ def test_task_triggers():
     assert is_task_request("在吗？") is False
 
 
-# ---------- M5 2.1 意图补完 ----------
+# ---------- R5 2.WorkOrder 意图补完 ----------
 
 def test_workorder_llm_completion(monkeypatch):
     """LLM 版补全：模型 JSON → 工单字段。"""
@@ -93,7 +93,7 @@ def test_extract_helpers():
     assert extract_format_pref("转成 PDF 看看") == "pdf"
 
 
-# ---------- M5 3.3 薄壳 ----------
+# ---------- R5 4.dsh bridge 薄壳 ----------
 
 def test_dsh_bridge_available():
     """dsh 已安装到 dsh/（真实环境验证）。"""

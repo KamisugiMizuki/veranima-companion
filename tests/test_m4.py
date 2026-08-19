@@ -1,4 +1,4 @@
-"""M4 测试：表情标签驱动（segments 解析/词表校验/渲染链）+ 联想式主动。"""
+"""R2+R4 测试：表情标签驱动（segments 解析/词表校验/渲染链）+ 联想式主动。"""
 import sys
 
 import pytest
@@ -15,7 +15,7 @@ def agent(tmp_path):
     return card, mem
 
 
-# ---------- 表情标签驱动（M4_SPEC 2.1） ----------
+# ---------- 表情标签驱动（R4_SPEC 2.1） ----------
 
 def test_extract_segments_normal_json():
     reply = '{"segments":[{"text":"你好呀","tone":"温柔","portrait":"开心脸红"}]}'
@@ -51,7 +51,7 @@ def test_extract_segments_missing_text_key():
 
 
 def test_extract_segments_bilingual():
-    """双语模式：ja 送 TTS / zh 显示（M5 由岐日语配音）。"""
+    """双语模式：ja 送 TTS / zh 显示（R2 由岐日语配音）。"""
     reply = '{"segments":[{"ja":"こんにちは","zh":"你好","tone":"平静","portrait":"微笑"}]}'
     text, tone, portrait, ja = extract_segments(reply, bilingual=True)
     assert text == "你好"
@@ -63,7 +63,7 @@ def test_extract_segments_bilingual():
     assert text2 == "普通回复" and ja2 == ""
 
 
-# ---------- M4 1.3/1.4：L0 在场 + 联想式主动（旧 VisualAttention 测试随 vision.py 删除，VISION_SPEC V3） ----------
+# ---------- R4：L0 在场 + 联想式主动（旧 VisualAttention 测试随 vision.py 删除，VISION_SPEC） ----------
 
 def test_presence_non_windows():
     """非 Windows 降级：恒在场、前台空。"""
@@ -101,7 +101,7 @@ def test_proactive_from_visual_no_memory(agent):
     assert a.proactive_from_visual("办公") == ("", "")
 
 
-# ---------- 表情词表校验（M4_SPEC 2.2，走 agent） ----------
+# ---------- 表情词表校验（R4_SPEC 2.2，走 agent） ----------
 
 def test_portrait_valid_from_card(agent):
     """agent 校验 portrait 标签：词表内通过，词表外拒绝。"""

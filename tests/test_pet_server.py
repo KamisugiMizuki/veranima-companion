@@ -1,4 +1,4 @@
-"""PetServer 协议测试（M3_SPEC 3 通信协议）：连接 / speak / bubble / poke / ping。"""
+"""PetServer 协议测试（R3_SPEC 3 通信协议）：连接 / speak / bubble / poke / ping。"""
 import asyncio
 import json
 

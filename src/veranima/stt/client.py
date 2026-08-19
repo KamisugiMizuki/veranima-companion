@@ -5,7 +5,7 @@
 - 本地：本地 Whisper/FunASR 兼容服务（base_url 指向 127.0.0.1:端口）
 
 与 llm/client.py、tts/client.py 同一模式：base_url 决定远程还是本地，接口不变。
-当前阶段（M5 前置）：仅提供接口，不绑定任何模型/服务。
+当前阶段（R5 前置）：仅提供接口，不绑定任何模型/服务。
 """
 from __future__ import annotations
 

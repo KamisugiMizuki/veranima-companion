@@ -1,4 +1,4 @@
-"""M5 桌面 Agent 薄壳（M5_SPEC 3.3）：工单 → dsh headless CLI → 结果。
+"""R5 桌面 Agent 薄壳（R5_SPEC 4.dsh bridge）：工单 → dsh headless CLI → 结果。
 
 veranima 侧唯一接触 dsh 的文件。dsh 装在项目 dsh/ 目录（gitignore，
 clone 后需 npm install @deepseek-ai/dsh@0.1.0-rc.6 到该目录）。
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 DSH_DIR = Path(__file__).resolve().parents[3] / "dsh"  # 项目根/dsh
 DSH_BIN = DSH_DIR / "node_modules" / "@deepseek-ai" / "dsh" / "lib" / "bin.js"
-DEFAULT_TIMEOUT = 600  # 10min（M5_SPEC 3.3 默认超时）
+DEFAULT_TIMEOUT = 600  # 10min（R5_SPEC 3.3 默认超时）
 
 
 def dsh_available() -> bool:
@@ -43,7 +43,7 @@ def run_dsh_task(workorder: dict, *, timeout: int = DEFAULT_TIMEOUT) -> dict:
         result["output"] = "dsh 未安装（项目 dsh/ 目录为空）——请先 npm install @deepseek-ai/dsh@0.1.0-rc.6"
         logger.warning(result["output"])
         return result
-    # 工单 → dsh prompt（goal + constraints 拼自然语言；M5_SPEC 2.2）
+    # 工单 → dsh prompt（goal + constraints 拼自然语言；R5_SPEC 2.2）
     prompt = workorder.get("goal", "")
     if workorder.get("context"):
         prompt += f"\n补充：{workorder['context']}"
@@ -52,7 +52,7 @@ def run_dsh_task(workorder: dict, *, timeout: int = DEFAULT_TIMEOUT) -> dict:
     if workorder.get("fallback"):
         prompt += f"\n异常时：{workorder['fallback']}"
     try:
-        # Windows：.js 无 shebang，需 node 显式调用（M5_SPEC 3.3）
+        # Windows：.js 无 shebang，需 node 显式调用（R5_SPEC 3.3）
         node = os.environ.get("NODE_BIN", "") or shutil.which("node") or r"C:\Program Files\nodejs\node.exe"
         cmd = [node, str(DSH_BIN), "--profile", "headless"]
         patch_file = DSH_DIR / "patch.yml"

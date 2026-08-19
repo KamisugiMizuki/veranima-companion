@@ -33,11 +33,13 @@ Electron 壳 (pet/)                    Python 核心 (src/veranima/)
 | 文档 | 内容 |
 |---|---|
 | [docs/DESIGN.md](docs/DESIGN.md) | 主设计文档（方案唯一权威） |
-| [docs/M1_SPEC.md](docs/M1_SPEC.md) | M1 Filter 仿生层（记忆断片/打断/表达瑕疵） |
-| [docs/M2_SPEC.md](docs/M2_SPEC.md) | M2 通道适配层（IM/TTS 双通道表达） |
-| [docs/M3_SPEC.md](docs/M3_SPEC.md) | M3 桌宠专项（多窗口/进程模型/TTS/前台） |
-| [docs/M4_SPEC.md](docs/M4_SPEC.md) | M4 表情标签驱动（视觉注意力已独立，见下） |
-| [docs/M5_SPEC.md](docs/M5_SPEC.md) | M5 需求翻译层/桌面 Agent（DeepSeek Harness） |
+| [docs/R0_SPEC.md](docs/R0_SPEC.md) | R0 角色内核与统一 Reply（角色卡真值/prompt 分层/解析契约） |
+| [docs/R1_SPEC.md](docs/R1_SPEC.md) | R1 共同经历与状态连续性（记忆/状态/跨重启一致） |
+| [docs/R2_SPEC.md](docs/R2_SPEC.md) | R2 同一个人的表达（IM/TTS 事实立场一致 + 失败降级） |
+| [docs/R3_SPEC.md](docs/R3_SPEC.md) | R3 桌宠作为「在场的人」（Electron/聊天/状态闭环） |
+| [docs/R4_SPEC.md](docs/R4_SPEC.md) | R4 有分寸的在场与主动性（Presence/Attention/主动发起） |
+| [docs/R5_SPEC.md](docs/R5_SPEC.md) | R5 外部任务协作（dsh 可选能力，不属陪伴核心） |
+| [docs/GUI_SPEC.md](docs/GUI_SPEC.md) | **GUI 实现契约**（窗口/组件/状态/动效/无障碍/分批实现） |
 | [docs/VISION_SPEC.md](docs/VISION_SPEC.md) | **视觉注意力模块**（仿生模型：三层感知/显著度/扫视-注视/习惯化） |
 | [config/character.example.json](config/character.example.json) | 角色卡示例（字段说明见 DESIGN.md 4.8） |
 
@@ -53,10 +55,10 @@ cp config/config.example.yaml config/config.yaml
 # 编辑 config.yaml：llm.base_url / llm.api_key / llm.model
 # 角色卡：config.yaml 的 character_card 指向 characters/<name>/character.json
 
-# 3. 运行（CLI 对话入口：多角色管理 / M5 任务管道）
+# 3. 运行（CLI 对话入口：多角色管理 / R5 任务管道）
 .venv/Scripts/python.exe -m veranima.cli roles list          # 列出角色（当前激活 yuki）
 .venv/Scripts/python.exe -m veranima.cli roles switch <id>   # 切换激活角色（重启生效）
-.venv/Scripts/python.exe -m veranima.cli task "帮我查一下今天的天气"   # M5 任务管道（需 dsh）
+.venv/Scripts/python.exe -m veranima.cli task "帮我查一下今天的天气"   # R5 任务管道（需 dsh）
 ```
 
 ## QQ 接入（NapCatQQ，OneBot v11）
@@ -104,17 +106,18 @@ QQ 形态额外启用：定时问候/节庆、离线思考（静默 30 分钟后
 
 ## 状态
 
-**M0-M5 全部完成；视觉注意力模块（VISION_SPEC）V1-V3 已完成**：
+**设计基线：v2.1（2026-08-19 重构，人物中心）**。实现按 `docs/DESIGN.md` 的 R0-R5 顺序分批推进：
 
-| 里程碑 | 内容 |
-|---|---|
-| M0 | 仓库初始化 + 设计文档 + bge-m3 embedding 本地化 |
-| M1 | Filter 仿生层：记忆断片 / 打断决策 / 表达瑕疵 |
-| M2 | 通道适配层：handle(channel) + 跨通道共享核心 + 能力匹配 |
-| M3 | 桌宠 MVP：Electron 壳 + 本地 TTS + 时空沉浸 + 角色包 + 流式 + 无缝衔接 |
-| M4 | 表情标签驱动（portrait/tone 结构化输出 + 立绘映射） |
-| M5 | 需求翻译层 + 桌面 Agent（DeepSeek Harness，dsh/）+ 任务结果转述 |
-| VISION V1-V3 | attention 包（显著度/扫视-注视/鼠标焦点/习惯化/分层冷却）替代旧 vision.py（已删） |
+| 里程碑 | 内容 | 状态 |
+|---|---|---|
+| R0 | 角色内核与统一 Reply（角色卡真值/prompt 分层/Reply 解析） | 契约已定，待实现 |
+| R1 | 共同经历与状态连续性（记忆分类/状态字段/版本链） | 契约已定，待实现 |
+| R2 | 同一个人的表达（Reply DTO/IM/TTS 降级/turn_id 取消） | 契约已定，待实现 |
+| R3 | 桌宠闭环（状态广播/聊天真实状态/错误恢复/历史分批） | 契约已定，待实现 |
+| R4 | 有分寸的在场（Presence/Attention/主动仲裁） | 契约已定，R0-R3 验收后扩展 |
+| R5 | 外部任务协作（dsh 可选） | 契约已定，R0-R3 验收后扩展 |
+
+已实现（历史功能，与新契约兼容演进中）：QQ bot 双端、透明置顶桌宠壳、QQ 风格独立聊天窗、GPT-SoVITS v4 日语合成、attention 包 V1（显著度/扫视-注视/鼠标焦点/习惯化/分层冷却，`docs/VISION_SPEC.md`）。
 
 ## 已知约束
 

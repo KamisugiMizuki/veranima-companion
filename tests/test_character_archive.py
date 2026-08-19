@@ -121,7 +121,7 @@ def test_import_rejects_zip_bomb(tmp_path):
 
 
 def test_apply_portrait_description(tmp_path):
-    """立绘说明.txt 前缀批量映射 → avatar.expressions（M4_SPEC 2.3）。"""
+    """立绘说明.txt 前缀批量映射 → avatar.expressions（R4_SPEC 2.3）。"""
     d = _make_character_dir(tmp_path)
     # 覆盖立绘说明
     portraits = d / "portraits"

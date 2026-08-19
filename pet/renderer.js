@@ -1,4 +1,4 @@
-// Veranima 桌宠 renderer（M3_SPEC 3.5）
+// Veranima 桌宠 renderer（R3_SPEC 1.进程与协议）
 // 职责：四态切换、气泡显示、形象区域交互（拖拽/点击弹输入框/右键菜单）
 const avatar = document.getElementById('avatar');
 const bubble = document.getElementById('bubble');
@@ -10,7 +10,7 @@ let isDragging = false;
 let dragStart = null;
 
 const STATES = ['idle', 'speaking', 'thinking', 'sleeping'];
-// M4 表情标签 → 立绘文件（默认 zima assets/；角色卡 avatar.expressions 到达后优先）
+// R2 表情标签 → 立绘文件（默认 zima assets/；角色卡 avatar.expressions 到达后优先）
 const EXPRESSION_FILES = {
   '站立待机': 'stand', '开心脸红': 'happy', '疑惑': 'puzzled', '难过': 'sad', '惊讶': 'surprised',
 };
@@ -121,13 +121,13 @@ function hideBubble() {
 
 window.pet.onSpeak((m) => {
   setState('speaking');
-  // 双语（M5_SPEC 由岐日语）：ja 播 TTS，zh 显示气泡
+  // R2 双语（R2_SPEC 2 由岐日语）：ja 播 TTS，zh 显示气泡
   const displayText = m.text_zh || m.text || '…';
-  // M4 表情标签驱动：tags 携带 portrait 标签 → 映射表情图（M4_SPEC 2.4）
+  // R2 表情标签驱动：tags 携带 portrait 标签 → 映射表情图（R2_SPEC 2）
   if (m.tags && m.tags.length > 0) {
     applyExpression(m.tags[0]);
   }
-  // TTS 播放（M3_SPEC 3.2）：有 audioB64 播放真实语音（串行队列，气泡跟随
+  // TTS 播放（R3_SPEC 1.进程与协议）：有 audioB64 播放真实语音（串行队列，气泡跟随
   // 音频显示），否则模拟 2.5s 显示
   if (m.audioB64) {
     playAudio(m.audioB64, displayText);
@@ -136,7 +136,7 @@ window.pet.onSpeak((m) => {
   }
 });
 
-// TTS 打断：停止当前播放并清空队列（M3 3.2）
+// TTS 打断：停止当前播放并清空队列（R3_SPEC 1）
 window.pet.onStopSpeak(() => {
   if (currentAudio) { currentAudio.pause(); currentAudio = null; }
   audioQueue = [];

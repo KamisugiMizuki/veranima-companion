@@ -1,6 +1,6 @@
-"""桌宠核心 WS 服务端（M3_SPEC 1 进程架构 A + 3 通信协议）。
+"""桌宠核心 WS 服务端（R3_SPEC 1 进程架构 A + 3 通信协议）。
 
-最小实现（M3b PoC）：
+最小实现（R3 PoC）：
 - 监听 127.0.0.1:8765，接受桌宠壳连接（单客户端）
 - 收：poke（戳一下）、drag（拖拽）、ping
 - 发：speak / bubble / state / stop_speak
@@ -39,7 +39,7 @@ class PetServer:
         self._bilingual = False  # 角色双语（character.json veranima.bilingual.enabled）
         self.attention_cfg = {}  # 视觉注意力配置（VISION_SPEC 4，config.yaml attention: 段）
         self._last_proactive_ts = 0.0  # 联想主动发起冷却（实测每 15-30s 搭话一次，真人不会这样）
-        self._presence_was_absent = False  # M3 衔接：在场转变检测
+        self._presence_was_absent = False  # R4 在场转变检测（VISION_SPEC L0）
 
     def connect_agent(self, agent) -> None:
         """接入 Agent（正式版：poke/speak 走 agent.handle(channel='tts')）。"""
@@ -56,7 +56,7 @@ class PetServer:
         self._tts = tts
 
     async def tick_presence(self) -> bool:
-        """M3 无缝衔接（DESIGN 4.8）：L0 在场检测 → absent→present 转变 → 衔接语。
+        """R1 无缝衔接（R1_SPEC 4.召回）：L0 在场检测 → absent→present 转变 → 衔接语。
 
         返回是否发送了衔接语。无 agent / 用户仍在场 / 从未 absent 不触发。
         """
@@ -87,7 +87,7 @@ class PetServer:
     async def speak(self, text: str, tags: list | None = None, tts_text: str | None = None) -> bool:
         """推送回复（整段合成一次 + 一条消息，2026-08-19 用户拍板）。
 
-        tts_text 指定时用它合成音频（M5 双语：ja 配音 / zh 显示）。
+        tts_text 指定时用它合成音频（R2 双语：ja 配音 / zh 显示）。
         整段方案：一次 POST /tts 合成整段 → 一条 speak 消息（音频+文本）。
         代价：首句延迟 = 整段合成时间（~0.57x 实时率）；换来分句链路的
         bug 全灭（重复推送/气泡…/队列去重——实测逐句方案引发多种问题）。
@@ -153,7 +153,7 @@ class PetServer:
                     continue
                 mtype = msg.get("type")
                 if mtype in ("poke", "stream_talk"):
-                    # M3 3.2 TTS 打断：用户新互动 → 停止当前播放
+                    # R3 TTS 打断（R3_SPEC 1）：用户新互动 → 停止当前播放
                     await self.stop_speak()
                 if mtype == "poke":
                     logger.info("poke received")
@@ -184,7 +184,7 @@ class PetServer:
                         for sent in _split_sentences(r.reply):
                             await self.speak_chunk(sent)
                         await self.speak_done()
-                        # M5 双语：日语台词合成音频播放（显示已流式，音频补发）
+                        # R2 双语：日语台词合成音频播放（显示已流式，音频补发）
                         if r.ja_text:
                             await self.speak(r.reply, tts_text=r.ja_text)
                     except Exception as e:
@@ -257,7 +257,7 @@ class PetServer:
     async def run(self) -> None:
         logger.info("pet server on ws://%s:%d", self.host, self.port)
         async with websockets.serve(self._handle, self.host, self.port):
-            # M3 无缝衔接：30s 一次 L0 在场检测（absent→present → 衔接语）
+            # R1 无缝衔接：30s 一次 L0 在场检测（absent→present → 衔接语）
             async def _presence_loop():
                 while True:
                     try:
@@ -268,7 +268,7 @@ class PetServer:
             asyncio.create_task(_presence_loop())
 
             # 视觉注意力（VISION_SPEC V1：AttentionScheduler 扫视-注视状态机）
-            # 替代 M4_SPEC 1.x 的 VisualAttention（vision.py 过渡实现）
+            # 替代 R4_SPEC 1.x 的 VisualAttention（vision.py 过渡实现）
             async def _visual_loop():
                 from veranima.core.attention import AttentionScheduler
                 att = AttentionScheduler(llm=getattr(self._agent, "llm", None),
@@ -282,7 +282,7 @@ class PetServer:
                                         ev.note or ev.tag or "")
                             if self._agent is None:
                                 continue
-                            # QQ 通道互斥（沿用 M4_SPEC 1.3）：QQ 活跃跳过观察
+                            # QQ 通道互斥（沿用 R4_SPEC 1.3）：QQ 活跃跳过观察
                             qq_active = self._agent.activity.active("qq") if self._agent.activity else False
                             if qq_active:
                                 logger.info("visual: QQ 活跃，跳过观察")

@@ -1,4 +1,4 @@
-"""M4 表情标签驱动（M4_SPEC 2.1）：LLM 结构化回复解析。
+"""R2 表情标签驱动（R2_SPEC 2）：LLM 结构化回复解析。
 
 channel=tts 时 prompt 要求 JSON 输出：
   {"segments":[{"text":"回复内容","tone":"中性","portrait":"开心脸红"}]}
@@ -15,7 +15,7 @@ _SEGMENTS_RE = re.compile(r"\{[^{}]*\"(?:text|ja|zh)\"[^{}]*\}")  # 双语 segme
 def extract_segments(reply: str, *, bilingual: bool = False) -> tuple[str, str, str, str]:
     """从 LLM 回复提取 (text, tone, portrait, ja_text)。
 
-    双语模式（bilingual=True，M5 由岐日语配音）：segment 含 ja/zh 两个文本——
+    双语模式（bilingual=True，R2 由岐日语配音）：segment 含 ja/zh 两个文本——
       {"segments":[{"ja":"日本語","zh":"中文","tone":"...","portrait":"..."}]}
     返回的 text = zh（显示），ja_text = ja（送 TTS）。非双语时 ja_text 空。
     失败时 text=原文，tone/portrait/ja_text 空。

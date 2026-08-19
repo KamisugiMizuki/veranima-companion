@@ -114,7 +114,7 @@ class LLMClient:
         return _split_sentences(text)
 
     def observe_image(self, image_b64: str, *, prompt: str | None = None) -> str:
-        """M4 L3 大模型观察（M4_SPEC 1.3）：截图 → 结构化理解。
+        """VISION_SPEC L3 大模型观察：截图 → 结构化理解。
 
         image_b64：无头 base64（PNG）。返回模型文本；失败返回 ""（调用方降级）。
         """

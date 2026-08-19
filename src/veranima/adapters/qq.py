@@ -168,7 +168,7 @@ class QQAdapter:
             await asyncio.to_thread(self._ingest_stickers, [raw for _, raw in images])
         # 串行处理：agent 内部状态（历史/记忆/学习）有顺序依赖，禁止并发写
         async with self._lock:
-            # M3a 通道互斥：QQ 消息到达 → 记 QQ 通道活跃（桌宠感知降功耗）
+            # R4 通道互斥（DESIGN 5.4）：QQ 消息到达 → 记 QQ 通道活跃（桌宠感知降功耗）
             try:
                 self.agent.activity.touch("qq")
             except Exception:
@@ -362,7 +362,7 @@ class QQAdapter:
         return now.hour >= start or now.hour < end  # 跨午夜
 
     def _tick_offline_think(self, loop: asyncio.AbstractEventLoop) -> None:
-        """8.7.4 离线思考 + M3a 心跳：静默窗口命中 → late_reply 优先 → heartbeat 兜底。"""
+        """R4 离线思考 + 心跳：静默窗口命中 → late_reply 优先 → heartbeat 兜底（R4_SPEC 1）。"""
         if self._in_quiet_hours():
             return
         if not self.offline.due(time.time(), self._last_user_activity):

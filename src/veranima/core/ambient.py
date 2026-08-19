@@ -1,6 +1,6 @@
-"""时空沉浸引擎（DESIGN 4.7 + M3_SPEC 2.1/2.2）：场景状态锁 + 通道互斥 + 主动发起仲裁最小版。
+"""时空沉浸引擎（DESIGN 5.规则优先级 + R4_SPEC 1）：场景状态锁 + 通道互斥 + 主动发起仲裁最小版。
 
-M3a 最小实现（ponytail: 仲裁只做拦截+排序，不做权重公式——等实测需要再加）：
+R4 最小实现（ponytail: 仲裁只做拦截+排序，不做权重公式——等实测需要再加）：
 - SceneLock：normal → busy（慢回/短回/禁主动）→ 自动恢复（2h 无触碰）
 - ChannelActivityTracker：30min 活跃窗口，供互斥查询
 - Arbitrator：五机制请求汇入 → 场景/互斥/频率拦截 → 优先级排序
@@ -103,7 +103,7 @@ class SceneLock:
 
 
 class ChannelActivityTracker:
-    """通道互斥（M3_SPEC 2.2）：各通道最近活动时间，30min 窗口。"""
+    """通道互斥（DESIGN 5.4 通道互斥）：各通道最近活动时间，30min 窗口。"""
 
     WINDOW_SECONDS = 30 * 60
 
@@ -136,7 +136,7 @@ class ChannelActivityTracker:
 
 
 class Arbitrator:
-    """主动发起仲裁器最小版（M3_SPEC 2.1）：拦截 + 排序，不做权重。
+    """主动发起仲裁器最小版（R4_SPEC 2.确定性闸门顺序）：拦截 + 排序，不做权重。
 
     优先级：conflict > ritual > associative > fatigue > idle（DESIGN 4.7）。
     """

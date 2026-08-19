@@ -37,13 +37,13 @@ class TurnResult:
     proactive_msg: str = ""
     energy: float = 0.0
     mood: str = ""
-    portrait: str = ""   # M4 表情标签驱动：情绪表情标签（如"开心脸红"），空=回退 idle
-    tone: str = ""       # M4：语气标签（TTS 预留）
-    ja_text: str = ""    # M5 双语：日语台词（送 TTS）；空=非双语角色
+    portrait: str = ""   # R2 表情标签驱动：情绪表情标签（如"开心脸红"），空=回退 idle（R2_SPEC 1）
+    tone: str = ""       # R2：语气标签（R2_SPEC 1，TTS 预留）
+    ja_text: str = ""    # R2 双语：日语台词（送 TTS）；空=非双语角色（R2_SPEC 1）
 
 
 def _interrupt_prompt(level: int) -> str:
-    """M1 打断指令（DESIGN 4.5）：L1 轻推 / L2 转移+新出口，收尾协议。
+    """R0 打断指令（R0_SPEC 5）：L1 轻推 / L2 转移+新出口，收尾协议。
 
     L1 = 委婉提醒用户重复说过（40~60% 概率触发）
     L2 = 主动转移话题 + 必须附带「新出口」（方案/新话题/问题）
@@ -69,7 +69,7 @@ def _interrupt_prompt(level: int) -> str:
 
 
 def _maybe_withdraw(reply: str, state, rand: float) -> str:
-    """M1 表达瑕疵（DESIGN 4.9 IM 通道）：低确信/疲劳时撤回限频 15~25%。
+    """历史功能：表达瑕疵撤回（限频 15~25%）；新设计非目标「随机错误模拟器」（DESIGN.md §1），待 R2 清理。
 
     条件：低确信（<0.6）或低精力（<40）且回复含具体细节（长度 > 20）且概率命中。
     """
@@ -101,7 +101,7 @@ class Agent:
         self._history: list[dict] = []
         self._last_reply_ts: float | None = None  # 上一条回复时间（延迟信号用）
 
-        # M1 打断决策（DESIGN 4.5）：共享话题频率表 + 分级决策器
+        # R0 打断决策（R0_SPEC 5）：共享话题频率表 + 分级决策器
         self.topic_freq = TopicFrequency()
         self.interrupt_decider = InterruptDecider()
 
@@ -137,7 +137,7 @@ class Agent:
         self.greeter = GreetingScheduler()
         self.occasion = OccasionChecker()
 
-        # M3a 时空沉浸：场景锁 + 通道互斥 + 主动仲裁（最小版）
+        # R4 时空沉浸：场景锁 + 通道互斥 + 主动仲裁（最小版，R4_SPEC 1）
         self.scene_lock = SceneLock()
         self.activity = ChannelActivityTracker()
         self.arbitrator = Arbitrator()
@@ -221,12 +221,12 @@ class Agent:
         self.state.tick(self.config.get("state", {}).get("energy_decay_per_minute", 0.02))
         self.state.on_user_message(recover_per_message=self.config.get("state", {}).get("energy_recover_per_message", 3.0))
 
-        # 1.5 M3a 场景锁：用户消息进来时更新场景（进入/退出 busy/away）
+        # 1.5 R4 场景锁：用户消息进来时更新场景（进入/退出 busy/away）
         scene = self.scene_lock.note(user_text)
         if scene != "normal":
             logger.info("scene active: %s", scene)
 
-        # 1.6 M1 打断决策：话题复现计数 → L0-L3 分级（DESIGN 4.5）
+        # 1.6 R0 打断决策：话题复现计数 → L0-L3 分级（R0_SPEC 5）
         topic_count = self.topic_freq.note(user_text)
         interrupt_level = self.interrupt_decider.decide(topic_count)
         if interrupt_level > 0:
@@ -250,7 +250,7 @@ class Agent:
             section_budget=self.config.get("memory", {}).get("section_budget", 2400),
             session_budget=self.config.get("memory", {}).get("session_budget", 600),
             channel=channel,
-            clarification=is_clarification(user_text),  # M1 可逆性：追问 → 精确值
+            clarification=is_clarification(user_text),  # R1 可逆性：追问 → 精确值（R1_SPEC 3）
             extra_blocks=extra_blocks,
         )
 
@@ -300,14 +300,14 @@ class Agent:
             logger.error("chat failed: %s", e)
             reply = "（我这边有点卡……让我缓一下，你再说一遍？）"
 
-        # 5.5 场景锁（M3a）：busy 场景截短回复（模拟"在忙，简单回一句"）
+        # 5.5 场景锁（R4）：busy 场景截短回复（模拟"在忙，简单回一句"）
         max_len = self.scene_lock.max_len()
         if max_len and len(reply) > max_len:
             cut = reply[:max_len].rstrip("，。！？ ")
             reply = cut + "……（我这边有点忙，回头细说）"
 
-        # 5.6 M4 表情标签驱动：tts 通道解析结构化输出（text/tone/portrait）
-        #     M5 双语（角色卡 bilingual.enabled）：ja_text 送 TTS / reply(zh) 显示
+        # 5.6 R2 表情标签驱动：tts 通道解析结构化输出（text/tone/portrait）（R2_SPEC 2）
+        #     R2 双语（角色卡 bilingual.enabled）：ja_text 送 TTS / reply(zh) 显示（R2_SPEC 2）
         portrait = ""
         tone = ""
         ja_text = ""
@@ -368,12 +368,12 @@ class Agent:
         )
 
     def _portrait_valid(self, label: str) -> bool:
-        """M4：portrait 标签必须在角色卡 expressions 词表内（防 OOC 标签）。"""
+        """R2：portrait 标签必须在角色卡 expressions 词表内（防 OOC 标签，R2_SPEC 2）。"""
         exprs = (self.card.veranima or {}).get("avatar", {}).get("expressions", {})
         return label in exprs
 
     def proactive_from_visual(self, tag: str) -> str:
-        """M4 联想式主动发起（4.7 联想机制 + M4_SPEC 1.4）。
+        """R4 联想式主动发起（R4_SPEC 1.三段式决策）。
 
         屏幕 focus.tag × 事件记忆模糊匹配：episodic 层含 tag 关键词 → 生成联想消息。
         无匹配 / 模型不可用 → 返回 ""。
@@ -408,7 +408,7 @@ class Agent:
         return reply, ja
 
     def seamless_greeting(self) -> str:
-        """M3 无缝衔接（DESIGN 4.8）：用户回到电脑前 → 从共享历史接续最近话题。
+        """R1 无缝衔接（R1_SPEC 4.召回）：用户回到电脑前 → 从共享历史接续最近话题。
 
         取最近对话（跨通道共享），生成「你刚才说…」衔接语；无历史/低精力返回 ""。
         """
@@ -440,7 +440,7 @@ class Agent:
         return reply, ja
 
     def task_result_story(self, result: dict) -> str:
-        """M5 任务结果角色化转述（M5_SPEC 3.3：超时/失败 → 角色化转述）。
+        """R5 任务结果角色化转述（R5_SPEC 3.生命周期：超时/失败 → 角色化转述）。
 
         成功：简要转述结果要点；失败：角色化说明（「那事我让助手去办了，它说卡住了」）。
         无 LLM（mock/未配置）→ 返回原始结果文本（不丢信息）。
@@ -451,7 +451,7 @@ class Agent:
         if not output:
             return "（任务没有任何输出……估计是没跑起来，我再看看）"
         if not ok:
-            # 失败文案无需 LLM：固定角色化（M5_SPEC 3.3「那事我让助手去办了，它说卡住了」）
+            # 失败文案无需 LLM：固定角色化（R5_SPEC 3「那事我让助手去办了，它说卡住了」）
             return f"那事我让助手去办了，它说卡住了（{task_id}）。我再看看怎么回事。"
         if self.llm is None or not getattr(self.llm, "base_url", ""):
             return output  # 无 LLM 直接给原文（成功场景不丢信息）
@@ -486,7 +486,7 @@ class Agent:
         返回本次应发送的主动消息列表（已入档 memory）；adapter（CLI/QQ）
         负责展示/发送。供后台 tick 线程调用，幂等。``now`` 注入便于测试。
 
-        M3a：主动发起前过仲裁器——场景非 normal / 其他通道活跃 / 冷却 / 日上限则拦截。
+        R4：主动发起前过仲裁器——场景非 normal / 其他通道活跃 / 冷却 / 日上限则拦截（R4_SPEC 2）。
         """
         msgs: list[str] = []
         if not self.arbitrator.request("ritual", scene=self.scene_lock.current(),
@@ -508,7 +508,7 @@ class Agent:
         return msgs
 
     def heartbeat(self) -> str:
-        """M3a 后台心跳（M3_SPEC 2.1）：对话已闭合 + 静默 → 「离线整理」破冰。
+        """R4 后台心跳（R4_SPEC 1）：对话已闭合 + 静默 → 主动发起破冰。
 
         与 late_reply 互补：late_reply 要求对话未闭合（有没回完的话），
         心跳要求已闭合（无事发生太久，主动找话说）。返回空串=不触发。

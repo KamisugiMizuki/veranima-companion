@@ -48,7 +48,7 @@ class Observation:
 | L2 | Pillow crop + 窗口元数据 | 生成低成本观察输入 | 自动发言 |
 | L3 | `LLMClient.observe_image()` | 输出结构化 Observation | 写 memories/调用 speak |
 | policy | `VisibilityPolicy` 纯函数 | 敏感分类、暂停、过期 | 依赖 UI |
-| consumer | `ProactiveEngine` | 将 Observation 变候选并仲裁 | 绕过 M4 闸门 |
+| consumer | `ProactiveEngine` | 将 Observation 变候选并仲裁 | 绕过 R4 闸门 |
 
 不引入 OpenCV、本地视觉模型或眼动 SDK。现有 Pillow/numpy 足够完成 MVP。
 

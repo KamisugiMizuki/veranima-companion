@@ -6,7 +6,7 @@ prompt 引导负责「生成时就带通道风格」，这里只做机械可逆�
 - 连续换行压缩（3+ 空行压成 1 个——禁止用空行模拟「正在输入」）
 - 表情限频（emoji_frequency=never 时全删；low/high 靠 prompt 引导）
 
-纯函数、无 IO、无状态，M2 只有 IM 渲染器；TTS 渲染器等 M3 桌宠存在时实现。
+纯函数、无 IO、无状态，R2 只有 IM 渲染器；TTS 渲染器见 R2_SPEC 3.Renderer 接口。
 """
 from __future__ import annotations
 

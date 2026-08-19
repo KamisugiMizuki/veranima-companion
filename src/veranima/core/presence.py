@@ -1,4 +1,4 @@
-"""M4 L0 在场检测（M4_SPEC 1.3）：零 token 系统状态。
+"""R4 L0 在场检测（VISION_SPEC L0-L3）：零 token 系统状态。
 
 Windows 实现（ctypes，零依赖）：
 - 用户在场 = GetLastInputInfo 空闲时间 < 阈值
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sys
 
-PRESENCE_IDLE_THRESHOLD_MS = 5 * 60 * 1000  # 5min 无输入 = 离开（M4_SPEC L0）
+PRESENCE_IDLE_THRESHOLD_MS = 5 * 60 * 1000  # 5min 无输入 = 离开（VISION_SPEC L0）
 
 _is_windows = sys.platform == "win32"
 if _is_windows:
@@ -54,7 +54,7 @@ def foreground_app() -> str:
 
 
 def foreground_tag(anchors_tags: list[str] | None = None) -> str:
-    """前台窗口 → 锚点 tag（M4_SPEC 1.4 联想式匹配）。
+    """前台窗口 → 锚点 tag（VISION_SPEC 2.5 焦点判定）。
 
     简化：标题包含关键词 → 返回 tag；无匹配返回 ""。
     """

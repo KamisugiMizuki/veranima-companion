@@ -1,4 +1,4 @@
-"""M3a 时空沉浸测试：场景锁 / 通道互斥 / 仲裁器最小版 / 心跳。"""
+"""R4 时空沉浸测试：场景锁 / 通道互斥 / 仲裁器最小版 / 心跳。"""
 import pytest
 
 from veranima.core.agent import Agent

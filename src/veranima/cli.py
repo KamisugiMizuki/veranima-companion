@@ -69,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("roles_action", choices=["list", "switch", "clone", "export", "import"])
     rp.add_argument("role_id", nargs="?")
     rp.add_argument("new_id", nargs="?")
-    tp = sub.add_parser("task", help="M5 任务管道：模糊指令 → 工单 → dsh")
+    tp = sub.add_parser("task", help="R5 任务管道：模糊指令 → 工单 → dsh")
     tp.add_argument("text", nargs="+", help="任务描述")
     args = ap.parse_args(argv)
 
@@ -95,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _task_cmd(args) -> int:
-    """M5 任务管道（M5_SPEC 2/3）：指令 → 工单 → 追问或转交 dsh。"""
+    """R5 任务管道（R5_SPEC 2/3）：指令 → 工单 → 追问或转交 dsh。"""
     from .core.workorder import build_workorder, build_workorder_llm, clarification_question, is_task_request
     from .tools.dsh_bridge import dsh_available, run_dsh_task
 

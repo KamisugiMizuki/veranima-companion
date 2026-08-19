@@ -1,4 +1,4 @@
-// Veranima 桌宠壳 main 进程（M3_SPEC 3.5/3.6）
+// Veranima 桌宠壳 main 进程（R3_SPEC 1.进程与协议）
 // 职责：窗口管理（主窗口/日志窗口）、spawn 核心、WS 连核心、日志汇聚、health 自愈
 const { app, BrowserWindow, Tray, Menu, ipcMain, powerSaveBlocker, screen } = require('electron');
 
@@ -11,7 +11,7 @@ const fs = require('fs');
 const path = require('path');
 
 const CORE_WS = process.env.VERANIMA_PET_WS || 'ws://127.0.0.1:8765';
-const MEMORY_LIMIT_MB = 400;      // 渲染进程 RSS 阈值（M3_SPEC 3.4 缺陷1）
+const MEMORY_LIMIT_MB = 400;      // 渲染进程 RSS 阈值（R3_SPEC 1.进程与协议）
 const HEALTH_INTERVAL_MS = 5 * 60 * 1000; // 5min 采样
 const LOG_RING_MAX = 500;         // 内存环形缓冲行数
 
@@ -87,7 +87,7 @@ function pushLog(tag, line) {
   console.log(entry);
 }
 
-// ---------- spawn 核心（M3_SPEC 3.6 进程模型） ----------
+// ---------- spawn 核心（R3_SPEC 1.进程与协议） ----------
 // 启动核心前清理孤儿进程：占 8765/9880 且命令行含 pet_server/tts.server/api_v2.py 才杀。
 // 根因：壳被强杀/双实例时 Windows 不回收 spawn 的子进程，孤儿占端口 → 新核心
 // bind 失败 → 崩溃重启死循环（Errno 10048 实测）。
@@ -255,7 +255,7 @@ function restartCore() {
   }, waitMs);
 }
 
-// ---------- 位置持久化（airi config.json 同款，M3_SPEC 3.6） ----------
+// ---------- 位置持久化（airi config.json 同款，R3_SPEC 3.6） ----------
 function loadWindowPos() {
   try {
     const p = path.join(app.getPath('userData'), 'win-pos.json');
@@ -316,7 +316,7 @@ function createWindow() {
 
   win.webContents.on('render-process-gone', (e, details) => {
     console.error('[health] renderer gone:', details.reason);
-    setTimeout(() => { win && win.reload(); }, 2000); // 自愈重建（M3_SPEC 3.4 缺陷2）
+    setTimeout(() => { win && win.reload(); }, 2000); // 自愈重建（R3_SPEC 1.进程与协议）
   });
   // airi allowClose 模式：关窗=隐藏（托盘常驻），托盘「退出」才真关
   win.on('close', (e) => { e.preventDefault(); win.hide(); });
@@ -417,7 +417,7 @@ ipcMain.handle('settings-save-config', async (e, data) => {
 ipcMain.on('core-restart', () => { restartCore(); });
 
 // 角色立绘映射：读当前角色卡 avatar.expressions → {标签: 绝对路径} → renderer
-// （M4_SPEC 2.2：表情标签驱动；角色切换后立绘跟着换，不再写死 assets/）
+// （R2_SPEC 2：表情标签驱动；角色切换后立绘跟着换，不再写死 assets/）
 function pushAvatarMap() {
   try {
     // 优先本地读 config.yaml（不等核心启动——启动 ~7s 内立绘应是 yuki 而非 zima 默认图）
@@ -702,7 +702,7 @@ function healthCheck() {
 }
 
 // ---------- 生命周期 ----------
-const gotLock = app.requestSingleInstanceLock(); // M3_SPEC 3.4 缺陷6
+const gotLock = app.requestSingleInstanceLock(); // R3_SPEC 1 缺陷6
 if (!gotLock) {
   app.quit();
 } else {
@@ -711,9 +711,9 @@ if (!gotLock) {
     win && win.show();
   });
   app.whenReady().then(() => {
-    powerSaveBlocker.start('prevent-app-suspension'); // M3_SPEC 3.4 缺陷4
+    powerSaveBlocker.start('prevent-app-suspension'); // R3_SPEC 1 缺陷4
     openLogFile();
-    startCore();                // 壳 spawn 核心（M3_SPEC 3.6）
+    startCore();                // 壳 spawn 核心（R3_SPEC 1.进程与协议）
     startTTS();                 // 壳 spawn 本地 TTS（Qwen3-TTS 1.7B）
     createWindow();
     createTray();

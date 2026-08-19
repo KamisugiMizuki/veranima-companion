@@ -98,7 +98,7 @@ def _validate_zip_members(zf: zipfile.ZipFile) -> None:
 
 
 def apply_portrait_description(char_dir: Path) -> dict[str, str]:
-    """应用立绘说明.txt（M4_SPEC 2.3）：按前缀批量绑定表情标签 → avatar.expressions。
+    """应用立绘说明.txt（R4_SPEC 2.3）：按前缀批量绑定表情标签 → avatar.expressions。
 
     立绘说明.txt 每行「文件前缀 标签」（空格分隔）；匹配：portraits/ 下文件名以
     前缀开头 → 绑定标签。写回 character.json 的 avatar.expressions。返回映射。
@@ -170,7 +170,7 @@ def import_character(archive_path: Path, characters_dir: Path) -> Path:
             if not src.is_dir():
                 raise CharacterArchiveError("角色包缺少 character/ 根目录")
             shutil.copytree(src, target_dir)
-            # M4_SPEC 2.3：导入时自动应用立绘说明.txt（批量绑定表情标签）
+            # R4_SPEC 2.3：导入时自动应用立绘说明.txt（批量绑定表情标签）
             apply_portrait_description(target_dir)
             # manifest 的 display_name 若被改名，写回 character.json
             if target_name != display_name:

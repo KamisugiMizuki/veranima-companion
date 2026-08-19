@@ -1,10 +1,10 @@
-"""生成桌宠立绘（M4_SPEC 2.2/2.3）：四态基础图 + 表情词表图 + 立绘说明.txt。
+"""生成桌宠立绘（R4_SPEC 2.2/2.3）：四态基础图 + 表情词表图 + 立绘说明.txt。
 
 Pillow 程序化绘制：圆脸角色 + 眼睛/嘴形区分。
 - 四态（渲染回退链基础态）：idle（睁眼微笑）/ speaking（张嘴）/ thinking（侧视+省略号）/ sleeping（闭眼）
 - 表情（avatar.expressions 词表）：stand（站立待机=idle 同款）/ happy（开心脸红）/ puzzled（疑惑）/
   sad（难过）/ surprised（惊讶）
-- 立绘说明.txt：每行「文件前缀 标签」，供批量映射（M4_SPEC 2.3）
+- 立绘说明.txt：每行「文件前缀 标签」，供批量映射（R4_SPEC 2.3）
 
 输出到 assets/pet/*.png + assets/pet/立绘说明.txt，200x200 透明底。
 """
@@ -15,7 +15,7 @@ OUT = os.path.join(os.path.dirname(__file__), "..", "assets", "pet")
 SIZE = 200
 CENTER = (100, 100)
 
-# 立绘说明.txt 内容（M4_SPEC 2.3：每行「文件前缀 标签」）
+# 立绘说明.txt 内容（R4_SPEC 2.3：每行「文件前缀 标签」）
 PORTRAIT_DESCRIPTION = """stand 站立待机
 happy 开心脸红
 puzzled 疑惑
@@ -105,7 +105,7 @@ CONFIGS = {
     "speaking": ("idle", "speaking", False),
     "thinking": ("thinking", "thinking", False),
     "sleeping": ("sleeping", "sleeping", False),
-    # 表情词表（M4_SPEC 2.2）
+    # 表情词表（R4_SPEC 2.2）
     "stand": ("idle", "idle", False),          # 站立待机 = 默认状态
     "happy": ("happy", "happy", True),         # 开心脸红
     "puzzled": ("puzzled", "puzzled", False),  # 疑惑
@@ -126,7 +126,7 @@ def main():
         path = os.path.join(OUT, f"{name}.png")
         img.save(path)
         print("wrote", path)
-    # 立绘说明.txt（M4_SPEC 2.3）
+    # 立绘说明.txt（R4_SPEC 2.3）
     desc = os.path.join(OUT, "立绘说明.txt")
     with open(desc, "w", encoding="utf-8") as f:
         f.write(PORTRAIT_DESCRIPTION)

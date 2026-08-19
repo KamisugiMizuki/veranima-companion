@@ -22,7 +22,7 @@ CHANNEL_CONTEXT = {
            "自我修正和重复；像面对面聊天一样自然。",
 }
 
-# M1 追问检测（M1_SPEC 2.2 噪声注入可逆性）：用户追问细节 → 跳过模糊化给精确值
+# R1 追问检测（R1_SPEC 3.去重与修正）：用户追问细节 → 跳过模糊化给精确值
 CLARIFY_PATTERNS = (
     "什么时候", "几点", "哪一天", "哪个星期", "几号", "多久", "多少", "具体是", "到底是",
     "再想想", "仔细想想", "记清楚", "具体时间", "具体地点", "在哪", "哪里",
@@ -42,7 +42,7 @@ REALITY_BOUNDARY = (
     "（例如「见面的话……还是算了，线上聊就挺好」）。不虚构自己参与过现实活动。"
 )
 
-# M4 表情标签驱动（M4_SPEC 2.1/2.2）：tts 通道要求结构化 JSON 输出
+# R2 表情标签驱动（R2_SPEC 2）：tts 通道要求结构化 JSON 输出
 SEGMENTED_OUTPUT_INSTRUCTION = (
     "【输出格式】语音对话时，你的回复必须以 JSON 输出："
     '{"segments":[{"text":"回复内容","tone":"语气标签","portrait":"表情标签"}]}'
@@ -50,7 +50,7 @@ SEGMENTED_OUTPUT_INSTRUCTION = (
     "不要输出 JSON 以外的任何内容。"
 )
 
-# M5 双语输出（角色卡 bilingual.enabled 时生效；如由岐：日语配音 + 中文显示）
+# R2 双语输出（角色卡 bilingual.enabled 时生效；如由岐：日语配音 + 中文显示）
 BILINGUAL_OUTPUT_INSTRUCTION = (
     "【双语输出】你的回复必须同时提供日语与中文："
     '{"segments":[{"ja":"日本語のセリフ（声優役・TTS用）","zh":"中文对照（显示用）","tone":"语气标签","portrait":"表情标签"}]}'
@@ -60,7 +60,7 @@ BILINGUAL_OUTPUT_INSTRUCTION = (
 
 
 def _expression_prompt(card) -> str:
-    """从角色卡提取可用表情标签列表（M4_SPEC 2.2：prompt 注入词表防 OOC）。"""
+    """从角色卡提取可用表情标签列表（R4_SPEC 2.2：prompt 注入词表防 OOC）。"""
     ver = getattr(card, "veranima", None) or {}
     avatar = ver.get("avatar") or {}
     exprs = avatar.get("expressions") or {}
@@ -80,7 +80,7 @@ def build_system_prompt(
     session_budget: int = 600,
     extra_blocks: list[str] | None = None,
     channel: str = "im",
-    clarification: bool = False,  # M1 可逆性：用户追问细节 → 记忆行不模糊化
+    clarification: bool = False,  # R1 可逆性：用户追问细节 → 记忆行不模糊化（R1_SPEC 3）
 ) -> str:
     """按预算组装系统 prompt。记忆按层注入，超出预算截断。extra_blocks 为附加块（学习参数/镜像/承诺）。
 
@@ -90,12 +90,12 @@ def build_system_prompt(
     parts.append(state.to_prompt_block())
     parts.append(CHANNEL_CONTEXT.get(channel, CHANNEL_CONTEXT["im"]))
     parts.append(REALITY_BOUNDARY)
-    # M4：tts 通道注入表情词表 + 结构化输出要求（M4_SPEC 2.1/2.2）
+    # R2：tts 通道注入表情词表 + 结构化输出要求（R2_SPEC 2）
     if channel == "tts":
         expr_prompt = _expression_prompt(card)
         if expr_prompt:
             parts.append(expr_prompt)
-        # M5 双语（角色卡 bilingual.enabled）：ja 送 TTS / zh 显示
+        # R2 双语（角色卡 bilingual.enabled）：ja 送 TTS / zh 显示
         bilingual = bool(((card.veranima or {}).get("bilingual") or {}).get("enabled"))
         parts.append(BILINGUAL_OUTPUT_INSTRUCTION if bilingual else SEGMENTED_OUTPUT_INSTRUCTION)
 
@@ -125,7 +125,7 @@ def build_system_prompt(
             if len(joined) > section_budget:
                 joined = joined[:section_budget] + "…"
             parts.append(label + "\n" + joined)
-            # M1 延迟纠错（M1_SPEC 2.3，prompt 引导）：低确信记忆允许偶发自我修正
+            # R1 延迟纠错（R1_SPEC 3，prompt 引导）：低确信记忆允许偶发自我修正
             if any(e.strength < 0.85 for e in entries):
                 parts.append("（你可以偶尔说'等一下，我刚才记错了，应该是……'——人回忆时会有延迟纠错，但不要每轮都用）")
 
@@ -168,7 +168,7 @@ def _fuzzy_ify(text: str) -> str:
 def format_memory_line(entry, *, clarification: bool = False) -> str:
     """记忆行格式化（4.4 确信度分级）：按 strength 四档措辞 + 噪声注入。
 
-    - strength ≥0.85：自信调用「我记得你……」——**追问（clarification）时跳过模糊化直接给精确值**（M1_SPEC 2.2 可逆性）
+    - strength ≥0.85：自信调用「我记得你……」——**追问（clarification）时跳过模糊化直接给精确值**（R1_SPEC 2.2 可逆性）
     - 0.6~0.85：试探性调用「我好像记得……是……吗？还是我记串了？」
     - 0.35~0.6：模糊关联「我记得好像有这么回事……细节全糊了，你能再跟我说说吗？」+ 数字模糊化
     - <0.35：隐约记得（基本不注入，build_system_prompt 已过滤）
@@ -182,7 +182,7 @@ def format_memory_line(entry, *, clarification: bool = False) -> str:
         content = entry.content + "……是……吗？还是我记串了？"
     elif entry.strength >= 0.35:
         verb = "我记得好像有这么回事"
-        # M1 可逆性：追问细节时给精确值（不模糊化），否则模糊化
+        # R1 可逆性：追问细节时给精确值（不模糊化），否则模糊化
         content = entry.content if clarification else _fuzzy_ify(entry.content)
         content += "……细节全糊了，你能再跟我说说吗？" if not clarification else ""
     else:
