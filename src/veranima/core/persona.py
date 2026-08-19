@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import datetime
 import logging
 import re
 from dataclasses import dataclass, field
@@ -603,6 +604,103 @@ def choose_reuse_action(brief: PersonaBrief, query: str, state) -> str:
         if valence < 0.4:
             return "question"
     return "apply"
+
+
+# ---------- P-7 关系冲突闭环 ----------
+
+CONFLICT_STATES = ("open", "acknowledged", "clarifying", "repairing", "closed", "boundary_held")
+
+
+class ConflictTracker:
+    """P-7：关系冲突状态机（open→acknowledged→clarifying→repairing→closed / boundary_held）。
+
+    用户澄清只推进状态，不自动清零余波（需显式 repair）；关闭后不持续惩罚。
+    """
+
+    def __init__(self):
+        self._conflicts: dict[str, dict] = {}
+
+    def open(self, conflict_id: str, *, cause: str, evidence_ids: list[int] | None = None) -> None:
+        self._conflicts[conflict_id] = {
+            "id": conflict_id, "status": "open", "cause": cause,
+            "evidence_ids": list(evidence_ids or []),
+            "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+        }
+        logger.info("conflict open: %s (%s)", conflict_id, cause)
+
+    def _transition(self, conflict_id: str, status: str) -> None:
+        c = self._conflicts.get(conflict_id)
+        if c is None:
+            logger.warning("conflict %s 不存在，忽略 %s", conflict_id, status)
+            return
+        c["status"] = status
+        c["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+    def acknowledge(self, conflict_id: str) -> None:
+        self._transition(conflict_id, "acknowledged")
+
+    def clarify(self, conflict_id: str) -> None:
+        c = self._conflicts.get(conflict_id)
+        if c is None:
+            return
+        c["clarify_count"] = int(c.get("clarify_count", 0)) + 1
+        self._transition(conflict_id, "clarifying")
+
+    def repair(self, conflict_id: str) -> None:
+        self._transition(conflict_id, "repairing")
+
+    def close(self, conflict_id: str) -> None:
+        self._transition(conflict_id, "closed")
+
+    def hold_boundary(self, conflict_id: str) -> None:
+        self._transition(conflict_id, "boundary_held")
+
+    def status(self, conflict_id: str) -> str | None:
+        c = self._conflicts.get(conflict_id)
+        return c["status"] if c else None
+
+    def open_conflicts(self) -> list[dict]:
+        """未闭合冲突（boundary_held 视为未解决张力，仍列入）。"""
+        return [c for c in self._conflicts.values()
+                if c["status"] not in ("closed",)]
+
+    def to_dict(self) -> dict:
+        return dict(self._conflicts)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ConflictTracker":
+        t = cls()
+        for cid, c in (data or {}).items():
+            if isinstance(c, dict) and c.get("status") in CONFLICT_STATES:
+                t._conflicts[cid] = dict(c)
+        return t
+
+
+# 用户澄清/道歉模式（推进冲突）与越界反馈模式（新开冲突）
+APOLOGY_PATTERNS = ("对不起", "抱歉", "不是那个意思", "开玩笑的", "别生气", "我错了", "误会")
+VIOLATION_PATTERNS = ("你太过分", "你越界", "你烦不烦", "你让我不舒服", "别这样", "停一下")
+
+
+def note_conflict_from_user_text(tracker: ConflictTracker, text: str) -> str | None:
+    """P-7：从用户消息检测冲突信号。
+
+    - 道歉/澄清 → 把所有 open 冲突推进到 clarifying（不自动 closed）
+    - 越界反馈 → 新开冲突（id 用时间戳）
+    返回触发的动作（"clarify"/"violation"/None）。
+    """
+    if not text:
+        return None
+    if any(p in text for p in APOLOGY_PATTERNS):
+        for c in tracker.open_conflicts():
+            if c["status"] in ("open", "acknowledged"):
+                tracker.clarify(c["id"])
+        return "clarify"
+    if any(p in text for p in VIOLATION_PATTERNS):
+        import time as _time
+        cid = f"violation-{int(_time.time() * 1000)}"
+        tracker.open(cid, cause=text[:40], evidence_ids=[])
+        return "violation"
+    return None
 
 
 # ---------- PersonaCandidate → MemoryCandidate 转换 ----------

@@ -151,6 +151,10 @@ class Agent:
         # P-5 反思计数器（每 20 个有效人格候选触发一次整合）
         self._reflection_counters = {"persona_candidates": 0, "high_emotion_events": 0, "user_corrections": 0}
 
+        # P-7 冲突跟踪（随 state.relationship 持久化；重启恢复）
+        from .persona import ConflictTracker
+        self._conflicts = ConflictTracker.from_dict(self.state.relationship.get("conflicts") if isinstance(self.state.relationship, dict) else None)
+
         # MVP2 学习组件（持久化到 data/，随对话更新）
         root = self.config.get("root", ".")
         self.style = StyleLearner(persist_path=str(Path(root) / "data" / "style.json"))
@@ -228,8 +232,10 @@ class Agent:
     def _persist_state(self) -> None:
         """状态持久化（重启续接）：状态变更后写入 SQLite agent_state 单行。"""
         try:
-            # P-3：关系模型快照同步进 AgentState
-            self.state.relationship = self.relationship.to_dict()
+            # P-3：关系模型快照同步进 AgentState；P-7：冲突状态随关系快照
+            rel = self.relationship.to_dict()
+            rel["conflicts"] = self._conflicts.to_dict()
+            self.state.relationship = rel
             self.memory.save_state(self.state.to_snapshot())
         except Exception as e:
             logger.debug("state persist failed: %s", e)
@@ -278,6 +284,28 @@ class Agent:
         scene = self.scene_lock.note(user_text)
         if scene != "normal":
             logger.info("scene active: %s", scene)
+
+        # 1.5.1 P-7 冲突信号检测（澄清推进/越界新开 + 关系事件联动）
+        try:
+            from .persona import apply_relationship_event, note_conflict_from_user_text
+            action = note_conflict_from_user_text(self._conflicts, user_text)
+            if action == "violation":
+                self.relationship = apply_relationship_event(
+                    self.relationship, {"type": "user_violation", "cause": "用户表达越界反感", "event_id": "violation"}
+                )
+            elif action == "clarify":
+                repaired = False
+                for c in self._conflicts.open_conflicts():
+                    if c.get("clarify_count", 0) >= 2 and c["status"] == "clarifying":
+                        self._conflicts.repair(c["id"])
+                        self._conflicts.close(c["id"])
+                        repaired = True
+                if repaired:
+                    self.relationship = apply_relationship_event(
+                        self.relationship, {"type": "conflict_repaired", "cause": "用户澄清后关系修复", "event_id": "repair"}
+                    )
+        except Exception as e:
+            logger.warning("conflict detection failed (non-blocking): %s", e)
 
         # DESIGN 4.1 TurnContext：统一输入协议（handle 内部构造，adapter 签名不变）
         ctx = TurnContext(
@@ -906,6 +934,21 @@ class Agent:
             "memory_counts": self.memory.curate().get("counts", {}),
         }
 
+    def persona_proactive_blocked(self, source: str) -> bool:
+        """P-7：人格来源主动闸门（PERSONA_LOOP_SPEC 11 额外闸门）。
+
+        - shared_meaning/open_tension/reflection：未闭合冲突时禁止（不加重关系压力）
+        - boundary_held 存在时：除 commitment 外一律禁止
+        - commitment 永不因冲突禁止（承诺提醒是任务不是情绪负担）
+        """
+        heavy = ("shared_meaning", "open_tension", "reflection", "shared_project", "ritual")
+        open_c = self._conflicts.open_conflicts()
+        if not open_c:
+            return False
+        if any(c["status"] == "boundary_held" for c in open_c):
+            return source != "commitment"
+        return source in heavy
+
     def tick_proactive(self, now=None) -> list[str]:
         """定时问候 + 节庆纪念检查（每日去重）。
 
@@ -914,6 +957,9 @@ class Agent:
 
         R4：统一主动入口——ProactiveCandidate(ritual) → ProactiveGate 9 闸门（R4_SPEC 1/2）。
         """
+        # P-7：未闭合冲突时禁止 ritual 主动（不加重关系压力）
+        if self.persona_proactive_blocked("ritual"):
+            return []
         msgs: list[str] = []
         cand = ProactiveCandidate(
             source="ritual", reason="定时问候/节庆纪念",
