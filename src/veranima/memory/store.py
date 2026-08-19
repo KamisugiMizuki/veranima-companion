@@ -85,6 +85,37 @@ class MemoryEntry:
     created_at: str = ""
     updated_at: str = ""
 
+    # ---------- M-1 数据真值（MEMORY_SPEC 8） ----------
+
+    def is_expired(self, now: str | None = None) -> bool:
+        """expires_at / valid_to 已过 → 过期（session 强制，其他类型可选）。"""
+        from datetime import datetime
+
+        now = now or _now()
+        try:
+            now_dt = datetime.fromisoformat(now)
+        except ValueError:
+            now_dt = None
+        for key in ("expires_at", "valid_to"):
+            val = self.meta.get(key)
+            if not val:
+                continue
+            try:
+                val_dt = datetime.fromisoformat(val)
+            except (ValueError, TypeError):
+                return True  # 非法时间按过期处理（防脏数据流入召回）
+            if now_dt is not None and val_dt <= now_dt:
+                return True
+        return False
+
+    @property
+    def chain_id(self) -> int:
+        return int(self.meta.get("chain_id") or self.id)
+
+    @property
+    def status(self) -> str:
+        return self.meta.get("status", "active")
+
 
 class MemoryStore:
     def __init__(
@@ -235,12 +266,60 @@ class MemoryStore:
         row = self.con.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
         return self._row_to_entry(row) if row else None
 
-    def list_layer(self, layer: str, limit: int = 100) -> list[MemoryEntry]:
+    def _superseded_ids(self) -> set[int]:
+        """被版本链引用的旧 id 集合（M-1：current 判定）。"""
+        try:
+            rows = self.con.execute(
+                "SELECT json_extract(meta, '$.supersedes') AS sid FROM memories"
+                " WHERE meta LIKE '%supersedes%' AND json_valid(meta)"
+            ).fetchall()
+        except Exception:
+            return set()
+        return {int(r["sid"]) for r in rows if r["sid"]}
+
+    def get_history(self, memory_id: int) -> list[MemoryEntry]:
+        """版本链（旧→新，MEMORY_SPEC 8.2：审计/解释用，不参与普通召回）。"""
+        chain: dict[int, MemoryEntry] = {}
+        seen: set[int] = set()
+
+        def walk(mid: int, direction: int) -> None:
+            if mid in seen:
+                return
+            seen.add(mid)
+            e = self.get(mid)
+            if e is None:
+                return
+            chain[mid] = e
+            if direction <= 0:
+                old_id = e.meta.get("supersedes")
+                if old_id:
+                    try:
+                        walk(int(old_id), -1)
+                    except (TypeError, ValueError):
+                        pass
+            if direction >= 0:
+                rows = self.con.execute(
+                    "SELECT id FROM memories WHERE json_extract(meta,'$.supersedes')=?",
+                    (mid,),
+                ).fetchall()
+                for r in rows:
+                    walk(r["id"], +1)
+
+        walk(memory_id, 0)
+        return [chain[k] for k in sorted(chain)]
+
+    def list_layer(self, layer: str, limit: int = 100, include_superseded: bool = False) -> list[MemoryEntry]:
         rows = self.con.execute(
             "SELECT * FROM memories WHERE layer=? ORDER BY updated_at DESC LIMIT ?",
-            (layer, limit),
+            (layer, limit * 4 if not include_superseded else limit),
         ).fetchall()
-        return [self._row_to_entry(r) for r in rows]
+        entries = [self._row_to_entry(r) for r in rows]
+        if include_superseded:
+            return entries[:limit]
+        superseded = self._superseded_ids()
+        # M-1：默认只返回版本链 current + 未过期（session TTL 硬过滤）
+        current = [e for e in entries if e.id not in superseded and not e.is_expired()]
+        return current[:limit]
 
     def recent_messages(self, limit: int = 20) -> list[dict]:
         rows = self.con.execute(
@@ -350,6 +429,15 @@ class MemoryStore:
                 logger.debug("recall keyword fallback failed: %s", e2)
         if not pool:
             return []
+        # M-1 硬过滤先于排序（MEMORY_SPEC 10.3）：非 current 版本 / 过期条目
+        superseded = self._superseded_ids()
+        pool = {
+            mid: (e, sim)
+            for mid, (e, sim) in pool.items()
+            if mid not in superseded and not e.is_expired()
+        }
+        if not pool:
+            return []
         # R1 权重评分（缺项归一化）
         scored: dict[int, float] = {}
         for mid, (entry, sim) in pool.items():
@@ -422,13 +510,18 @@ class MemoryStore:
     # ---------- 删除 ----------
 
     def erase(self, memory_id: int | None = None, *, content_contains: str | None = None, layer: str | None = None) -> int:
-        """级联删除：记忆 + 向量 + 关联消息（DESIGN.md 隐私擦除）。"""
+        """删除记忆：整条版本链（记忆 + 向量），原始 messages 保留（MEMORY_SPEC 14.2：
+        原文删除单独询问，不在记忆删除时静默级联）。"""
         if memory_id is not None:
-            self.con.execute("DELETE FROM memories WHERE id=?", (memory_id,))
+            # M-1：链上所有版本一起删（supersedes 双向）
+            chain = self.get_history(memory_id)
+            ids = [e.id for e in chain] or [memory_id]
+            ph = ",".join("?" * len(ids))
+            self.con.execute(f"DELETE FROM memories WHERE id IN ({ph})", ids)
             if self._vec_ok:
-                self.con.execute("DELETE FROM memory_vec WHERE memory_id=?", (memory_id,))
+                self.con.execute(f"DELETE FROM memory_vec WHERE memory_id IN ({ph})", ids)
             self.con.commit()
-            return 1
+            return len(ids)
         where, params = [], []
         if content_contains:
             where.append("content LIKE ?")
@@ -444,6 +537,11 @@ class MemoryStore:
         ids = [r["id"] for r in rows]
         if not ids:
             return 0
+        # 批量路径也扩展到链（content/layer 命中的旧版本连同新版本一起删）
+        chained: set[int] = set(ids)
+        for mid in list(ids):
+            chained.update(e.id for e in self.get_history(mid))
+        ids = sorted(chained)
         ph = ",".join("?" * len(ids))
         self.con.execute(f"DELETE FROM memories WHERE id IN ({ph})", ids)
         if self._vec_ok:

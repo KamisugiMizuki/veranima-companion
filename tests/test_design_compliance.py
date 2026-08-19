@@ -73,7 +73,11 @@ def test_candidate_version_chain_supersedes(tmp_path):
     a._store_candidate({"kind": "user_fact", "content": "用户养了一只猫，叫咪咪，是只橘猫",
                         "confidence": 0.8, "source": "rule_extract", "source_message_id": 1})
     entries = a.memory.list_layer("semantic")
-    assert len(entries) == 2  # 旧版本保留，新版本入链
+    assert len(entries) == 1  # M-1：默认只返回 current 版本
+    assert entries[0].content == "用户养了一只猫，叫咪咪，是只橘猫"
+    chain = a.memory.get_history(old.id)  # 旧版本保留在链中（审计可追溯）
+    assert len(chain) == 2
+    assert chain[0].id == old.id
     newest = max(entries, key=lambda e: e.id)
     assert newest.meta.get("supersedes") == old.id
     assert "橘猫" in newest.content
