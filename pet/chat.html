@@ -10,7 +10,7 @@
     background: #fff; border-bottom: 1px solid #e4e6eb; }
   #header .dot { width: 8px; height: 8px; border-radius: 50%; background: #95ec69; }
   #header .name { font-weight: 600; }
-  #header .status { font-size: 11px; color: #999; }
+  #header .status { font-size: 11px; color: #666; }  /* GUI_SPEC 11：对比度 >=4.5:1 */
   #msgs { height: calc(100vh - 44px - 60px); overflow-y: auto; padding: 12px; }
   .msg { display: flex; margin-bottom: 14px; }
   .msg.user { justify-content: flex-end; }
@@ -22,16 +22,24 @@
   .bubble { padding: 8px 12px; border-radius: 8px; word-break: break-word; white-space: pre-wrap; }
   .msg.pet .bubble { background: #fff; border: 1px solid #e4e6eb; border-top-left-radius: 2px; }
   .msg.user .bubble { background: #95ec69; border-top-right-radius: 2px; }
-  .ts { font-size: 10px; color: #b0b3b8; margin-top: 2px; }
+  .ts { font-size: 10px; color: #767676; margin-top: 2px; }  /* 对比度修正 */
   .msg.user .ts { text-align: right; }
   #inputbar { height: 60px; background: #fff; border-top: 1px solid #e4e6eb;
     display: flex; align-items: center; gap: 8px; padding: 0 12px; }
   #input { flex: 1; height: 34px; padding: 0 12px; border: 1px solid #d8dce3; border-radius: 6px;
-    outline: none; font-size: 13px; }
+    font-size: 13px; }
+  #input:focus-visible { outline: 2px solid #4e9bf7; outline-offset: 1px; }  /* GUI_SPEC 11 */
+  #send:focus-visible { outline: 2px solid #2b6cb0; outline-offset: 2px; }
   #send { height: 34px; padding: 0 18px; border: none; border-radius: 6px; background: #4e9bf7;
     color: #fff; cursor: pointer; font-size: 13px; }
   #send:disabled { background: #c9d4e0; cursor: default; }
-  .typing { color: #999; font-size: 12px; }
+  .typing { color: #666; font-size: 12px; }
+  .empty { color: #666; text-align: center; margin-top: 48px; font-size: 12px; }  /* 空态 */
+  /* GUI_SPEC 10/11：reduced motion + 允许复制 */
+  .msg .bubble { user-select: text; }
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
 </style>
 </head>
 <body>

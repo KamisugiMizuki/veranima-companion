@@ -21,11 +21,28 @@ window.pet.onAvatarMap((map) => {
   if (avatarMap) applyExpression(Object.keys(avatarMap)[0] || '');
 });
 // 表情 → 立绘路径：角色卡优先，fallback 默认 assets/
+let crossfadeTimer = null;
 function applyExpression(label) {
-  if (avatarMap && avatarMap[label]) { avatar.src = avatarMap[label]; return true; }
-  const f = EXPRESSION_FILES[label];
-  if (f) { avatar.src = `assets/${f}.png`; return true; }
-  return false;
+  let src = '';
+  if (avatarMap && avatarMap[label]) src = avatarMap[label];
+  else if (EXPRESSION_FILES[label]) src = `assets/${EXPRESSION_FILES[label]}.png`;
+  if (!src || src === avatar.src) return false;  // 同一资源不动画（GUI_SPEC 4.1）
+  const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (reduced) { avatar.src = src; return true; }  // reduced motion：立即切换
+  // 300ms 交叉淡入（GUI_SPEC 4.1）：avatar-next 预载 → 淡出当前 → 切换 → 淡入
+  const next = new Image();
+  next.onload = () => {
+    avatar.style.transition = 'opacity 240ms';
+    avatar.style.opacity = '0';
+    clearTimeout(crossfadeTimer);
+    crossfadeTimer = setTimeout(() => {
+      avatar.src = src;
+      avatar.style.transition = 'opacity 240ms';
+      avatar.style.opacity = '1';
+    }, 240);
+  };
+  next.src = src;
+  return true;
 }
 
 // ---------- 立绘尺寸（按原图比例；高度优先固定，宽度自适应） ----------

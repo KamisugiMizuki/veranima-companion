@@ -647,6 +647,14 @@ function openChatWindow() {
   chatWin.on('closed', () => { chatWin = null; });
 }
 function clearChatHistory() {
+  // GUI_SPEC 6：清空二次确认（防误删 500 条历史）
+  if (!chatWin || chatWin.isDestroyed()) return;
+  const { dialog } = require('electron');
+  const btn = dialog.showMessageBoxSync(chatWin, {
+    type: 'question', buttons: ['取消', '清空'], defaultId: 0, cancelId: 0,
+    title: '清空聊天记录', message: '确定清空全部聊天记录吗？', detail: '此操作不可撤销。',
+  });
+  if (btn !== 1) return;
   chatHistory = [];
   saveChatHistory();
   if (chatWin && !chatWin.isDestroyed()) {

@@ -16,6 +16,7 @@ function tsStr(ts) {
 function appendMsg(m) {
   const wrap = document.createElement('div');
   wrap.className = `msg ${m.role}`;
+  if (m.role === 'error') wrap.setAttribute('role', 'alert');  // GUI_SPEC 11
   const avatar = document.createElement('div');
   avatar.className = 'avatar';
   if (m.role === 'pet') {
@@ -65,16 +66,40 @@ function finishPetMsg(ts) {
 }
 
 // main → 本窗口
+// 历史分批渲染（GUI_SPEC 6：数据一次读取，UI 每批 40 条让出事件循环；
+// 刷新/清空时 renderGeneration 使旧批次失效）
+const RENDER_BATCH = 40;
+let renderGeneration = 0;
+function renderHistory(list, generation) {
+  if (!list || !list.length) {
+    const empty = document.createElement('div');
+    empty.className = 'empty';
+    empty.textContent = '还没有聊天记录，戳戳她说句话吧';
+    msgsEl.appendChild(empty);
+    return;
+  }
+  let i = 0;
+  const step = () => {
+    if (generation !== renderGeneration) return; // 旧批次失效
+    const end = Math.min(i + RENDER_BATCH, list.length);
+    for (; i < end; i++) appendMsg(list[i]);
+    msgsEl.scrollTop = msgsEl.scrollHeight;
+    if (i < list.length) setTimeout(step, 0);
+  };
+  step();
+}
 window.pet.onChatHistory((list) => {
+  renderGeneration += 1;
   msgsEl.innerHTML = '';
   activePetMsg = null;
-  (list || []).forEach(appendMsg);
+  renderHistory(list || [], renderGeneration);
 });
 window.pet.onChatLine((m) => {
   if (m.role === 'pet' && m.streaming) { appendChunk(m.text); return; }
   if (m.role === 'pet' && m.finish) { finishPetMsg(m.ts); return; }
   appendMsg(m);
 });
+// 清空确认：main 侧右键菜单已带确认，无 renderer 侧逻辑（GUI_SPEC 6）
 // R3_SPEC 2/4：状态机 → 状态点/文案/输入/按钮
 const STATUS_UI = {
   connecting: { dot: '#f0a020', text: '连接中…', btn: '发送' },
