@@ -13,11 +13,19 @@ import datetime
 
 import pytest
 
+from veranima.core.agent import Agent
+from veranima.core.character import CharacterCard
 from veranima.memory.store import MemoryStore
 
 
 def _store(tmp_path) -> MemoryStore:
     return MemoryStore(db_path=str(tmp_path / "m.db"), config={"embedding_model": "none"})
+
+
+def _agent_with_memory(tmp_path) -> Agent:
+    card = CharacterCard(name="测试卡", veranima={})
+    store = MemoryStore(db_path=str(tmp_path / "mem.db"), config={"embedding_model": "none"})
+    return Agent(card=card, memory=store, llm=None, state=None, config={})
 
 
 def _ts(days: int = 0) -> str:
@@ -81,3 +89,67 @@ def test_erase_batch_expands_chain(tmp_path):
     n = s.erase(content_contains="香菜")
     assert n == 2
     assert s.get(a.id) is None and s.get(b.id) is None
+
+
+# ---------- M-2 写入契约（MEMORY_SPEC 5/6/8） ----------
+
+def test_validate_candidate_requires_source_and_meta(tmp_path):
+    from veranima.memory.store import validate_candidate
+    assert validate_candidate({"kind": "user_fact", "content": "X", "confidence": 0.8})  # 缺 source/message_id
+    assert not validate_candidate({
+        "kind": "user_fact", "content": "用户喜欢下雨天", "confidence": 0.8,
+        "source": "rule_extract", "source_message_id": 3,
+    })
+    # 敏感信息拒绝
+    assert validate_candidate({
+        "kind": "user_fact", "content": "我的密码是 abc123", "confidence": 0.9,
+        "source": "rule_extract", "source_message_id": 3,
+    })
+    # session 必须带 expires_at
+    assert validate_candidate({
+        "kind": "session", "content": "正在写周报", "source": "rule_extract", "source_message_id": 3,
+    })
+    # 非法 status
+    assert validate_candidate({
+        "kind": "user_fact", "content": "X", "status": "weird",
+        "source": "rule_extract", "source_message_id": 3,
+    })
+
+
+def test_rule_extract_colloquial_variants():
+    """口语变体全覆盖（'我特别喜欢' 必须命中，技能教训）。"""
+    a = object.__new__(Agent)
+    hits = a._rule_extract("我特别喜欢下雨天", 1)
+    assert any(c["kind"] == "user_fact" for c in hits)
+
+
+def test_rule_extract_correction_overrides():
+    """显式纠正 → 高置信候选 + correction 标记 + 必须走版本链。"""
+    a = object.__new__(Agent)
+    hits = a._rule_extract("不是，我说的是周三，不是周二", 1)
+    corr = [c for c in hits if c.get("needs_confirmation") is False and c["confidence"] >= 0.85]
+    assert corr, hits
+
+
+def test_store_candidate_correction_forces_version_chain(tmp_path):
+    a = _agent_with_memory(tmp_path)
+    old = a.memory.store("semantic", "用户周二开会", meta={"kind": "user_fact"})
+    a._store_candidate({
+        "kind": "user_fact", "content": "用户周三开会",
+        "confidence": 0.85, "source": "rule_extract", "source_message_id": 1,
+        "correction": True,
+    })
+    chain = a.memory.get_history(old.id)
+    assert len(chain) == 2  # 纠正强制新版本（即使相似度不足 0.78）
+    assert chain[-1].meta.get("correction") is True
+
+
+def test_promise_mark_cancelled_status(tmp_path):
+    from veranima.core.promises import PromiseBook
+    s = _store(tmp_path)
+    book = PromiseBook(s)
+    pid = book.record("下周记得提醒我买猫粮")
+    book.mark_cancelled(pid)
+    assert not book.open_promises()  # cancelled 不再显示为 open
+    chain = s.get_history(pid)
+    assert chain[-1].meta.get("status") == "cancelled"

@@ -399,24 +399,37 @@ class Agent:
         exprs = (self.card.veranima or {}).get("avatar", {}).get("expressions", {})
         return label in exprs
 
-    # ---------- R1 候选记忆（R1_SPEC 2：低成本第一版规则提取） ----------
+    # ---------- R1 候选记忆（R1_SPEC 2 / MEMORY_SPEC 5-6） ----------
 
     _R1_RULES = (
-        (("记住", "以后记得", "我喜欢", "我讨厌", "我不喜欢", "我最爱"), "user_fact"),
-        (("我们一起", "刚才", "上次", "那天"), "shared_episode"),
-        (("以后提醒", "下次记得", "你答应", "说好了", "别忘了"), "commitment"),
+        # 口语变体必须覆盖（"我特别喜欢" 不包含 "我喜欢"）
+        (("记住", "以后记得", "别忘了", "记住啊"), "user_fact", 0.85),
+        (("我喜欢", "我很喜欢", "我特别喜欢", "我最喜欢", "我最爱", "我超爱", "我讨厌", "我不喜欢", "我特别讨厌", "我受不了"), "user_fact", 0.8),
+        (("我不吃", "我不能吃", "过敏"), "user_fact", 0.85),
+        (("我们一起", "刚才", "上次", "那天", "上次我们"), "shared_episode", 0.75),
+        (("以后提醒", "下次记得", "你答应", "说好了", "别忘了提醒", "记得提醒"), "commitment", 0.85),
+    )
+    # 显式纠正（MEMORY_SPEC 8.2 correction：必须新版本 + 提升置信度）
+    _CORRECTION_RULES = (
+        ("不是", "user_fact"),
+        ("其实是", "user_fact"),
+        ("我说的是", "user_fact"),
+        ("错了", "user_fact"),
+        ("纠正一下", "user_fact"),
+        ("不是我们", "shared_episode"),
     )
 
     def _rule_extract(self, user_text: str, source_message_id: int) -> list[dict]:
-        """从用户消息规则提取候选记忆（R1_SPEC 2）。
+        """从用户消息规则提取候选记忆（R1_SPEC 2 / MEMORY_SPEC 6）。
 
-        - “记住/以后/我喜欢/我讨厌/我不喜欢” → user_fact
+        - “记住/以后/我喜欢/我讨厌/我不喜欢” → user_fact（口语变体全覆盖）
         - “我们一起/刚才/上次……结果” → shared_episode（仅当有事件/结果表达）
         - “以后提醒/下次记得/你答应” → commitment（问句不命中）
+        - 显式纠正 → 对应 kind，confidence 提升 + meta.correction=True
         候选提取失败不影响回复；写入失败只记录日志（调用方已包 try）。
         """
         candidates: list[dict] = []
-        for keywords, kind in self._R1_RULES:
+        for keywords, kind, conf in self._R1_RULES:
             if not any(k in user_text for k in keywords):
                 continue
             if kind == "commitment" and user_text.rstrip().endswith("？"):
@@ -431,15 +444,32 @@ class Agent:
             candidates.append({
                 "kind": kind,
                 "content": content,
-                "confidence": 0.7,
+                "confidence": conf,
                 "importance": 0.6,
-                "source": "rule_extract",  # R1_SPEC 2 候选 JSON 契约：source 必填
+                "source": "rule_extract",
                 "source_message_id": source_message_id,
+                "subject": "user",
             })
+        # 显式纠正：检测到纠正 → 追加高置信候选（无论是否命中常规规则）
+        for marker, kind in self._CORRECTION_RULES:
+            if marker in user_text:
+                content = user_text.strip()[:200]
+                if content:
+                    candidates.append({
+                        "kind": kind,
+                        "content": content,
+                        "confidence": 0.85,
+                        "importance": 0.7,
+                        "source": "rule_extract",
+                        "source_message_id": source_message_id,
+                        "subject": "user",
+                        "needs_confirmation": False,
+                    })
+                break
         return candidates
 
     def _store_candidate(self, cand: dict) -> None:
-        """校验 → 去重 → 写入/版本链（R1_SPEC 1.2/3）。"""
+        """校验 → 去重 → 写入/版本链（R1_SPEC 1.2/3，MEMORY_SPEC 5-8）。"""
         from ..memory.store import validate_candidate
         issues = validate_candidate(cand)
         if issues:
@@ -448,23 +478,34 @@ class Agent:
         kind = cand["kind"]
         layer = self.memory_store_layer(kind)
         content = cand["content"]
+        # meta 透传扩展字段（MEMORY_SPEC 5 候选契约）
+        meta = {
+            "kind": kind,
+            "source_message_id": cand.get("source_message_id"),
+            "subject": cand.get("subject", "user"),
+            "event_time": cand.get("event_time"),
+            "emotion": cand.get("emotion"),
+            "expires_at": cand.get("expires_at"),
+            "status": cand.get("status", "active"),
+            "needs_confirmation": bool(cand.get("needs_confirmation", False)),
+            "correction": bool(cand.get("correction", False)),
+        }
+        meta = {k: v for k, v in meta.items() if v is not None and v is not False}
         # 去重：同层已有高度重叠记忆
         existing = self.memory.list_layer(layer, limit=50)
         for e in existing:
             sim = self._text_similarity(content, e.content)
-            if sim >= 0.92:
+            if sim >= 0.92 and not cand.get("correction"):
                 logger.debug("candidate dup ignored (sim=%.2f): %s", sim, content[:30])
                 return
-            if sim >= 0.78:
+            if sim >= 0.78 or cand.get("correction"):
                 # 保留新版本，旧版本入链（R1_SPEC 3：meta.supersedes=old_id）
-                meta = {**e.meta, "supersedes": e.id,
-                        "kind": kind, "source_message_id": cand.get("source_message_id")}
+                merged = {**e.meta, "supersedes": e.id, **meta}
                 new = self.memory.update_latest(
-                    e.id, content, confidence=float(cand.get("confidence", 0.7)), meta=meta,
+                    e.id, content, confidence=float(cand.get("confidence", 0.7)), meta=merged,
                 )
                 logger.info("R1 memory versioned: old=%s new=%s", e.id, new.id)
                 return
-        meta = {"kind": kind, "source_message_id": cand.get("source_message_id")}
         self.memory.store(
             layer, content,
             importance=float(cand.get("importance", 0.6)),

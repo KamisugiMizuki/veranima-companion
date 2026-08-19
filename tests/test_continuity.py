@@ -26,7 +26,7 @@ def _store(tmp_path) -> MemoryStore:
 
 def test_validate_candidate_ok():
     cand = {"kind": "user_fact", "content": "用户喜欢下雨天", "confidence": 0.8,
-            "importance": 0.6, "source_message_id": 1}
+            "importance": 0.6, "source": "rule_extract", "source_message_id": 1}
     assert validate_candidate(cand) == []
 
 

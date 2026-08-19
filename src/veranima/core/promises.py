@@ -113,3 +113,11 @@ class PromiseBook:
             raise KeyError(promise_id)
         self.memory.update_latest(promise_id, entry.content, confidence=1.0, meta={"status": "done"})
         logger.info("promise #%s marked done", promise_id)
+
+    def mark_cancelled(self, promise_id: int) -> None:
+        """取消标记（MEMORY_SPEC 8.3：cancelled 必须来自用户/确定性取消事件）。"""
+        entry = self.memory.get(promise_id)
+        if entry is None:
+            raise KeyError(promise_id)
+        self.memory.update_latest(promise_id, entry.content, confidence=1.0, meta={"status": "cancelled"})
+        logger.info("promise #%s marked cancelled", promise_id)

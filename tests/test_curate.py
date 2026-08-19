@@ -43,14 +43,16 @@ def test_curate_dedup_similar(store):
 
 
 def test_curate_merge_similar(store):
-    """中等相似（≥merge，<dup）→ 合并内容。"""
+    """中等相似（≥merge，<dup）→ 合并版本链（M-1/MEMORY_SPEC 12.2：保留证据）。"""
     a = store.store("semantic", "我养了一只猫叫团子", importance=0.6, confidence=0.8)
     b = store.store("semantic", "我养了一只猫", importance=0.6, confidence=0.8)
     r = store.curate(sim_dup=0.99, sim_merge=0.6)
     assert r["ops"]["merge"] >= 1
     entries = store.list_layer("semantic")
-    assert len(entries) == 1
-    assert "团子" in entries[0].content
+    assert len(entries) == 2  # 合并新版本 + 原始证据 b（不再删除证据）
+    assert any("团子" in e.content for e in entries)
+    merged = max(entries, key=lambda e: e.version)
+    assert merged.meta.get("supersedes") == b.id  # 版本链指向被合并的新条目（curate 取新在前）
 
 
 def test_curate_drop_low_confidence(store):

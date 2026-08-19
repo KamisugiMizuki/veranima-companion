@@ -34,8 +34,13 @@ LAYER_R1_MAP = {
 }
 LAYER_R1_REVERSE = {v: k for k, v in LAYER_R1_MAP.items()}
 
-# 候选记忆校验（R1_SPEC 1.2）：kind 白名单
-CANDIDATE_KINDS = ("user_fact", "shared_episode", "commitment")
+# 候选记忆校验（R1_SPEC 1.2 / MEMORY_SPEC 5）：kind 白名单
+CANDIDATE_KINDS = ("user_fact", "shared_episode", "commitment", "session")
+VALID_STATUS = ("active", "open", "done", "cancelled", "expired")
+SECRET_PATTERNS = (
+    "password", "passwd", "api_key", "apikey", "secret", "token",
+    "验证码", "密码", "私钥", "密钥", "支付密码", "卡号",
+)
 
 
 def _now() -> str:
@@ -65,8 +70,29 @@ def validate_candidate(cand: dict) -> list[str]:
                     issues.append(f"{key} 超出 0-1: {val!r}")
             except (TypeError, ValueError):
                 issues.append(f"{key} 不是数字: {val!r}")
+    if not cand.get("source"):
+        issues.append("source 缺失（rule_extract|llm_extract|manual|agent_confirmed）")
     if not cand.get("source_message_id"):
         issues.append("source_message_id 缺失")
+    # MEMORY_SPEC 5.4：时间字段 ISO 校验
+    for key in ("event_time", "valid_from", "valid_to", "expires_at"):
+        val = cand.get(key)
+        if val:
+            try:
+                from datetime import datetime
+                datetime.fromisoformat(str(val))
+            except ValueError:
+                issues.append(f"{key} 不是合法 ISO 时间: {val!r}")
+    # MEMORY_SPEC 5.6：敏感信息直接拒绝
+    low = content.lower()
+    if any(p in low for p in SECRET_PATTERNS):
+        issues.append("content 含敏感信息（密钥/密码/验证码），拒绝写入")
+    # MEMORY_SPEC 5.8：session 必须带 expires_at
+    if kind == "session" and not cand.get("expires_at"):
+        issues.append("session 必须带 expires_at")
+    status = cand.get("status")
+    if status is not None and status not in VALID_STATUS:
+        issues.append(f"status 非法: {status!r}")
     return issues
 
 
@@ -232,11 +258,16 @@ class MemoryStore:
         return dict(row) if row else None
 
     def update_latest(self, memory_id: int, new_content: str, *, confidence: float = 1.0, meta: dict | None = None) -> MemoryEntry:
-        """显式版本链：修正不覆盖——新版本入链，旧版本保留（DESIGN.md 写入与检索节）。"""
+        """显式版本链：修正不覆盖——新版本入链，旧版本保留（DESIGN.md 写入与检索节）。
+
+        M-2（MEMORY_SPEC 8.2）：自动写入 meta.supersedes=old_id，保证任何调用方
+        （promises/候选修正）都形成可追溯链条；调用方显式传入的 supersedes 优先。
+        """
         old = self.get(memory_id)
         if old is None:
             raise KeyError(memory_id)
         ts = _now()
+        merged_meta = {**old.meta, "supersedes": old.id, **(meta or {})}
         cur = self.con.execute(
             """INSERT INTO memories
                (layer, content, importance, confidence, provenance, version,
@@ -244,7 +275,7 @@ class MemoryStore:
                VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (old.layer, new_content, old.importance, confidence, old.provenance,
              old.version + 1, old.strength, old.category,
-             json.dumps({**old.meta, **(meta or {})}, ensure_ascii=False), old.created_at, ts),
+             json.dumps(merged_meta, ensure_ascii=False), old.created_at, ts),
         )
         mid = cur.lastrowid
         self.con.commit()
@@ -628,14 +659,12 @@ class MemoryStore:
                         ops["dedup"] += 1
                         self._deleted.add(b.id)
                     elif sim >= sim_merge:
-                        # 合并：创建合并版（版本链），删除双方旧版本，仅保留合并结果
+                        # 合并：创建合并版（版本链，M-1 自动 supersedes 旧版本），
+                        # 不删除旧版本（MEMORY_SPEC 12.2：不得删除原始证据，M-5 完善）
                         merged = f"{a.content}；{b.content}"[:400]
                         self.update_latest(a.id, merged, confidence=max(a.confidence, b.confidence))
-                        self.erase(a.id)   # a 的旧版本（update_latest 已生成新版本）
-                        self.erase(b.id)   # b 全部
                         ops["merge"] += 1
                         self._deleted.add(a.id)
-                        self._deleted.add(b.id)
                         vecs[a.id] = self.provider.embed([merged])[0]
 
         return {"counts": self._layer_counts(), "ops": ops}
