@@ -465,7 +465,9 @@ function pushAvatarMapFrom(cardPath) {
     for (const [label, rel] of Object.entries(exprs)) {
       map[label] = require('url').pathToFileURL(path.join(path.dirname(full), rel)).href;
     }
+    // 主窗 + 聊天窗都收（聊天窗桌宠头像用角色卡立绘，不再写死 zima idle）
     win && win.webContents.send('avatar-map', map);
+    if (chatWin && !chatWin.isDestroyed()) chatWin.webContents.send('avatar-map', map);
     // 启动时同步立绘尺寸（设置页 avatar_height；默认 200）
     const ah = localAvatarHeight();
     if (ah > 0) win && win.webContents.send('avatar-height', Number(ah));
@@ -580,11 +582,9 @@ function handleCoreMsg(msg) {
     case 'reply_segment': {
       // 主窗：气泡 + 音频（沿用旧 IPC 通道，renderer 无需改协议）
       win && win.webContents.send('speak', {
-        text: payload.text, text_zh: payload.text_zh || '', tags: [], audioB64: payload.audio_b64 || '',
+        text: payload.text, text_zh: payload.text_zh || '',
+        tags: [], portrait: payload.portrait || '', audioB64: payload.audio_b64 || '',
       });
-      if (payload.portrait) {
-        win && win.webContents.send('portrait', { label: payload.portrait });
-      }
       // 聊天窗口：主动对话直接成条；stream_talk 后无重复（speak 只在 reply_segment 发一次）
       const display = payload.text_zh || payload.text || '';
       if (display) {

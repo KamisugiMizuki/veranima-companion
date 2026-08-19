@@ -5,6 +5,12 @@ const sendBtn = document.getElementById('send');
 const statusText = document.getElementById('statusText');
 const charName = document.getElementById('charName');
 let activePetMsg = null;   // 流式进行中的桌宠气泡元素（speak_chunk 追加）
+let petAvatarSrc = 'assets/idle.png';  // 角色卡立绘（main 推来）；默认 zima
+window.pet.onAvatarMap((map) => {
+  if (map && Object.keys(map).length) {
+    petAvatarSrc = map[Object.keys(map)[0]] || petAvatarSrc;  // 首表情作头像
+  }
+});
 
 function esc(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -21,7 +27,7 @@ function appendMsg(m) {
   avatar.className = 'avatar';
   if (m.role === 'pet') {
     const img = document.createElement('img');
-    img.src = 'assets/idle.png';
+    img.src = petAvatarSrc;
     img.onerror = () => { avatar.textContent = '由'; };
     avatar.appendChild(img);
   } else {

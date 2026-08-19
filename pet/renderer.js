@@ -29,20 +29,28 @@ function applyExpression(label) {
   if (!src || src === avatar.src) return false;  // 同一资源不动画（GUI_SPEC 4.1）
   const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   if (reduced) { avatar.src = src; return true; }  // reduced motion：立即切换
-  // 300ms 交叉淡入（GUI_SPEC 4.1）：avatar-next 预载 → 淡出当前 → 切换 → 淡入
-  const next = new Image();
-  next.onload = () => {
-    avatar.style.transition = 'opacity 240ms';
-    avatar.style.opacity = '0';
-    clearTimeout(crossfadeTimer);
-    crossfadeTimer = setTimeout(() => {
-      avatar.src = src;
-      avatar.style.transition = 'opacity 240ms';
-      avatar.style.opacity = '1';
-    }, 240);
-  };
-  next.src = src;
+  // 真交叉淡入（无空窗）：新图淡入同时旧图淡出
+  crossfadeTo(src);
   return true;
+}
+
+// ---------- 四态切换 ----------
+function setState(s) {
+  if (!STATES.includes(s)) s = 'idle';
+  currentState = s;
+  // 角色卡模式（avatarMap 非空）：状态图从角色卡取，找不到则保持当前立绘
+  // （绝不再 fallback zima 图——那会造成 yuki 会话中闪 zima）
+  if (avatarMap) {
+    const alias = { idle: ['闲置', '站立待机'], speaking: ['微笑', '说话'], thinking: ['疑惑', '好奇'] };
+    for (const tag of (alias[s] || [])) {
+      if (avatarMap[tag]) { applyExpression(tag); return; }
+    }
+    return;  // 角色卡无对应标签 → 保持当前立绘
+  }
+  // 默认 zima 主题：fallback assets/ 状态图
+  if (s === 'idle') { avatar.src = 'assets/idle.png'; return; }
+  if (s === 'speaking') { avatar.src = 'assets/speaking.png'; return; }
+  avatar.src = `assets/${s}.png`;
 }
 
 // ---------- GUI_SPEC 4.2 布局：立绘底边为锚点，气泡增长时窗口向上扩 ----------
@@ -94,7 +102,8 @@ window.pet.onAvatarHeight((h) => {
   avatarHeight = h > 0 ? h : 200;
   fitAvatar();
 });
-// 立绘加载完成 → 按原图比例缩放：高度固定、宽度按比例，窗口宽度自适应（高度不变）
+// 立绘加载完成 → 只按比例设置 avatar 自身尺寸；窗口/定位全权交给 relayout
+// （GUI_SPEC 4.2：单一布局来源，避免 fit-window 与 resizePet 双轨打架）
 function fitAvatar() {
   const img = avatar;
   if (!img.complete || !img.naturalWidth) { img.onload = fitAvatar; return; }
@@ -102,21 +111,45 @@ function fitAvatar() {
   const w = Math.round(h * img.naturalWidth / img.naturalHeight);
   img.style.width = w + 'px';
   img.style.height = h + 'px';
-  document.getElementById('pet').style.width = (w + 20) + 'px';
-  document.getElementById('pet').style.height = (h + 60) + 'px';
-  // 通知 main：窗口高度保持 h+60（切换立绘时高度不变，宽度跟随比例）
-  window.pet.sendEvent({ type: 'fit-window', width: w + 20, height: h + 60 });
+  relayout();  // 尺寸变了 → 重新布局（含窗口高度）
 }
 avatar.addEventListener('load', fitAvatar);
 
-// ---------- 四态切换 ----------
-function setState(s) {
-  if (!STATES.includes(s)) s = 'idle';
-  currentState = s;
-  // 立绘：角色卡表情映射优先（闲置/微笑…），fallback assets/ 状态图（zima 默认）
-  if (s === 'idle') { applyExpression('闲置') || (avatar.src = `assets/idle.png`); return; }
-  if (s === 'speaking') { applyExpression('微笑') || (avatar.src = `assets/speaking.png`); return; }
-  avatar.src = `assets/${s}.png`;
+// ---------- 真交叉淡入（GUI_SPEC 4.1）：双层 img，无淡出空窗（不闪） ----------
+let avatarNext = null;
+function crossfadeTo(src) {
+  if (!avatarNext) {
+    avatarNext = document.createElement('img');
+    avatarNext.id = 'avatar-next';
+    avatarNext.style.cssText = 'position:absolute;top:0;left:0;opacity:0;transition:opacity 240ms;pointer-events:none;image-rendering:pixelated;';
+    petEl.appendChild(avatarNext);
+  }
+  avatarNext.src = src;
+  // 强制重排后淡入新图，同时旧图淡出（交叉，无空窗）
+  requestAnimationFrame(() => {
+    avatarNext.style.opacity = '1';
+    avatar.style.transition = 'opacity 240ms';
+    avatar.style.opacity = '0';
+  });
+  clearTimeout(crossfadeTimer);
+  crossfadeTimer = setTimeout(() => {
+    avatar.src = src;              // 新图就位
+    avatar.style.opacity = '1';
+    avatar.style.transition = 'opacity 0ms';
+    avatarNext.style.opacity = '0';
+    avatarNext.style.transition = 'opacity 0ms';
+    avatarNext.removeAttribute('src');
+  }, 260);
+  // 立绘切换后同步尺寸（新图比例可能不同）
+  const probe = new Image();
+  probe.onload = () => {
+    const h = avatarHeight;
+    const w = Math.round(h * probe.naturalWidth / probe.naturalHeight);
+    avatar.style.width = w + 'px';
+    avatar.style.height = h + 'px';
+    relayout();
+  };
+  probe.src = src;
 }
 
 // ---------- 气泡 ----------
@@ -183,7 +216,9 @@ window.pet.onSpeak((m) => {
   // R2 双语（R2_SPEC 2 由岐日语）：ja 播 TTS，zh 显示气泡
   const displayText = m.text_zh || m.text || '…';
   // R2 表情标签驱动：tags 携带 portrait 标签 → 映射表情图（R2_SPEC 2）
-  if (m.tags && m.tags.length > 0) {
+  if (m.portrait) {
+    applyExpression(m.portrait);  // LLM portrait（reply.py 已按角色卡词表白名单校验）
+  } else if (m.tags && m.tags.length > 0) {
     applyExpression(m.tags[0]);
   }
   // TTS 播放（R3_SPEC 1.进程与协议）：有 audioB64 播放真实语音（串行队列，气泡跟随
