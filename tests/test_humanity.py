@@ -85,21 +85,21 @@ def test_proactive_fallback_when_no_memory(agent):
 def test_format_memory_high_strength():
     e = MemoryEntryStub(strength=0.9, content="你喜欢下雨天", meta={})
     line = format_memory_line(e)
-    assert line.startswith("- 我记得")
+    assert line.startswith("[记忆|置信度:高] 我记得")  # R1_SPEC 4 注入格式
     assert "下雨天" in line
 
 
 def test_format_memory_tentative_strength():
     e = MemoryEntryStub(strength=0.7, content="你喜欢下雨天", meta={})
     line = format_memory_line(e)
-    assert line.startswith("- 我好像记得")
+    assert line.startswith("[记忆|置信度:中] 我好像记得")
     assert "记串了" in line
 
 
 def test_format_memory_fuzzy_strength():
     e = MemoryEntryStub(strength=0.5, content="你上周三说加班3小时", meta={})
     line = format_memory_line(e)
-    assert line.startswith("- 我记得好像有这么回事")
+    assert line.startswith("[记忆|置信度:低] 我记得好像有这么回事")
     assert "细节全糊了" in line
     assert "上周三" not in line  # 噪声注入：精确日期已模糊化
     assert "3小时" not in line   # 噪声注入：精确时长已模糊化
@@ -107,7 +107,7 @@ def test_format_memory_fuzzy_strength():
 
 def test_format_memory_low_strength():
     e = MemoryEntryStub(strength=0.3, content="你喜欢下雨天", meta={})
-    assert format_memory_line(e).startswith("- 我隐约记得")
+    assert format_memory_line(e).startswith("[记忆|置信度:低] 我隐约记得")
 
 
 def test_format_memory_with_emotion():

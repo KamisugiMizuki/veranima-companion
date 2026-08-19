@@ -24,9 +24,50 @@ from .embedding import EmbeddingProvider, make_provider
 
 logger = logging.getLogger(__name__)
 
+# R1 记忆类型 → 旧 layer 映射（R1_SPEC 1.1：不立刻改表 CHECK，做映射层）
+LAYER_R1_MAP = {
+    "identity": "core_profile",
+    "user_fact": "semantic",
+    "shared_episode": "episodic",
+    "commitment": "procedural",
+    "session": "session",
+}
+LAYER_R1_REVERSE = {v: k for k, v in LAYER_R1_MAP.items()}
+
+# 候选记忆校验（R1_SPEC 1.2）：kind 白名单
+CANDIDATE_KINDS = ("user_fact", "shared_episode", "commitment")
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def validate_candidate(cand: dict) -> list[str]:
+    """候选记忆程序校验（R1_SPEC 1.2）：LLM 不得直接执行 SQL，先过本函数。
+
+    返回问题列表，空列表 = 通过。
+    """
+    issues: list[str] = []
+    kind = cand.get("kind")
+    if kind not in CANDIDATE_KINDS:
+        issues.append(f"kind 不在白名单: {kind!r}")
+    content = cand.get("content") or ""
+    if not content.strip():
+        issues.append("content 为空")
+    elif len(content) > 500:
+        issues.append("content 超过 500 字")
+    for key in ("confidence", "importance"):
+        val = cand.get(key)
+        if val is not None:
+            try:
+                fv = float(val)
+                if not 0.0 <= fv <= 1.0:
+                    issues.append(f"{key} 超出 0-1: {val!r}")
+            except (TypeError, ValueError):
+                issues.append(f"{key} 不是数字: {val!r}")
+    if not cand.get("source_message_id"):
+        issues.append("source_message_id 缺失")
+    return issues
 
 
 @dataclass
@@ -80,6 +121,7 @@ class MemoryStore:
         meta: dict | None = None,
     ) -> MemoryEntry:
         """ADD-only 写入：只新增，不覆盖（修正走版本链，见 update_latest）。"""
+        layer = LAYER_R1_MAP.get(layer, layer)  # R1 类型名 → 旧 layer（R1_SPEC 1.1）
         if layer not in LAYERS:
             raise ValueError(f"unknown layer: {layer}")
         ts = _now()
@@ -124,24 +166,37 @@ class MemoryStore:
     # ---------- Agent 状态持久化（2026-08-04 重启续接） ----------
 
     def save_state(self, snapshot: dict) -> None:
-        """Agent 内在状态（依恋度/精力/情绪/计数）单行 upsert。"""
+        """Agent 内在状态（依恋度/精力/情绪/计数/R1 字段）单行 upsert。"""
         self.con.execute(
-            """INSERT INTO agent_state (id, energy, mood, attachment, mood_score, total_messages, updated_at)
-               VALUES (1, ?, ?, ?, ?, ?, ?)
+            """INSERT INTO agent_state (id, energy, mood, attachment, mood_score, total_messages,
+                     social_appetite, attention_topic, attention_scene,
+                     last_interaction_channel, last_cause, updated_at)
+               VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
-                 energy=excluded.energy, mood=excluded.mood, attachment=excluded.attachment,
-                 mood_score=excluded.mood_score, total_messages=excluded.total_messages,
-                 updated_at=excluded.updated_at""",
+                energy=excluded.energy, mood=excluded.mood, attachment=excluded.attachment,
+                mood_score=excluded.mood_score, total_messages=excluded.total_messages,
+                social_appetite=excluded.social_appetite, attention_topic=excluded.attention_topic,
+                attention_scene=excluded.attention_scene,
+                last_interaction_channel=excluded.last_interaction_channel,
+                last_cause=excluded.last_cause,
+                updated_at=excluded.updated_at""",
             (snapshot.get("energy", 100.0), snapshot.get("mood", "平静"),
              snapshot.get("attachment", 0.5), snapshot.get("mood_score", 0.0),
-             snapshot.get("total_messages", 0), _now()),
+             snapshot.get("total_messages", 0),
+             snapshot.get("social_appetite", 0.8), snapshot.get("attention_topic", ""),
+             snapshot.get("attention_scene", "normal"),
+             snapshot.get("last_interaction_channel", ""), snapshot.get("last_cause", "startup"),
+             _now()),
         )
         self.con.commit()
 
     def load_state(self) -> dict | None:
         """读取持久化的 Agent 状态；无记录（新库/旧库未初始化）返回 None。"""
         row = self.con.execute(
-            "SELECT energy, mood, attachment, mood_score, total_messages FROM agent_state WHERE id=1"
+            "SELECT energy, mood, attachment, mood_score, total_messages,"
+            " social_appetite, attention_topic, attention_scene,"
+            " last_interaction_channel, last_cause"
+            " FROM agent_state WHERE id=1"
         ).fetchone()
         return dict(row) if row else None
 
@@ -207,38 +262,42 @@ class MemoryStore:
     # ---------- 混合检索 ----------
 
     def recall(self, query: str, *, top_k: int = 5, layer: str | None = None) -> list[MemoryEntry]:
-        """混合信号：语义向量 + 时间加权；FTS5（BM25）命中消息反查关联记忆作为补充。
+        """混合检索（R1_SPEC 4 排序公式）。
 
-        score = 0.6*向量相似度 + 0.4*新鲜度(1/(1+days_old))
+        score = 0.45*semantic_sim + 0.20*FTS_relevance + 0.15*freshness
+                + 0.10*importance + 0.10*confidence
+        某项不可得时归一化剩余权重，不补随机分。
         """
-        scored: dict[int, float] = {}
+        layer = LAYER_R1_MAP.get(layer, layer) if layer else None  # R1 类型名 → 旧 layer
+        # (entry, sim|None) 候选池；fts 命中 id 集合
+        pool: dict[int, tuple[MemoryEntry, float | None]] = {}
+        fts_hits: set[int] = set()
         if self._vec_ok:
             try:
                 vec = self.provider.embed([query])[0]
                 rows = self.con.execute(
                     "SELECT memory_id, distance FROM memory_vec WHERE embedding MATCH ? AND k = ?",
-                    (json.dumps(vec), top_k * 2),
+                    (json.dumps(vec), top_k * 4),
                 ).fetchall()
                 for r in rows:
-                    sim = 1.0 - r["distance"]
                     entry = self.get(r["memory_id"])
                     if entry is None:
                         continue
                     if layer and entry.layer != layer:
                         continue
-                    age_days = self._age_days(entry.updated_at)
-                    recency = 1.0 / (1.0 + age_days)
-                    scored[entry.id] = 0.6 * max(sim, 0.0) + 0.4 * recency
+                    pool[entry.id] = (entry, 1.0 - r["distance"])
             except Exception as e:
                 logger.warning("vector recall failed: %s", e)
-        # FTS5 补充：命中消息 → 关联 provenance 的记忆
+        # FTS5 补充：命中消息 → 关联 provenance 的记忆（relevance 信号）
         try:
-            fts_hits = self.con.execute(
-                "SELECT rowid FROM messages_fts WHERE messages_fts MATCH ? LIMIT 10",
-                (self._fts_query(query),),
-            ).fetchall()
+            fts_hits = set(
+                r["rowid"] for r in self.con.execute(
+                    "SELECT rowid FROM messages_fts WHERE messages_fts MATCH ? LIMIT 10",
+                    (self._fts_query(query),),
+                ).fetchall()
+            )
             if fts_hits:
-                ids = [r["rowid"] for r in fts_hits]
+                ids = list(fts_hits)
                 ph = ",".join("?" * len(ids))
                 mems = self.con.execute(
                     f"SELECT * FROM memories WHERE provenance IN ({ph})",
@@ -248,11 +307,35 @@ class MemoryStore:
                     entry = self._row_to_entry(m)
                     if layer and entry.layer != layer:
                         continue
-                    scored[entry.id] = scored.get(entry.id, 0.0) + 0.5
+                    pool.setdefault(entry.id, (entry, None))
         except Exception as e:
             logger.debug("fts recall failed: %s", e)
-        if not scored:
+        if not pool:
+            # 兜底：无向量且无 FTS 命中时，同层全量按关键词包含匹配
+            # （ponytail: 低成本近似，精准度低于向量/BM25；embedding 可用后自然淘汰）
+            try:
+                words = [w for w in query.replace('"', " ").split() if len(w) >= 2]
+                for entry in self.list_layer(layer or "semantic", limit=200):
+                    if words and all(w in entry.content for w in words[:3]):
+                        pool[entry.id] = (entry, None)
+            except Exception as e2:
+                logger.debug("recall keyword fallback failed: %s", e2)
+        if not pool:
             return []
+        # R1 权重评分（缺项归一化）
+        scored: dict[int, float] = {}
+        for mid, (entry, sim) in pool.items():
+            parts: list[float] = []
+            weights: list[float] = []
+            if sim is not None:
+                parts.append(max(sim, 0.0)); weights.append(0.45)
+            if mid in fts_hits or entry.provenance in {str(x) for x in fts_hits}:
+                parts.append(1.0); weights.append(0.20)
+            parts.append(1.0 / (1.0 + self._age_days(entry.updated_at))); weights.append(0.15)
+            parts.append(max(0.0, min(1.0, entry.importance))); weights.append(0.10)
+            parts.append(max(0.0, min(1.0, entry.confidence))); weights.append(0.10)
+            wsum = sum(weights)
+            scored[mid] = sum(p * (w / wsum) for p, w in zip(parts, weights)) if wsum else 0.0
         ranked = sorted(scored.items(), key=lambda kv: kv[1], reverse=True)[:top_k]
         # 更新访问时间（触发唤醒的时间信号）
         now = _now()

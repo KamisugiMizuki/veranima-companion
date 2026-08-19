@@ -24,6 +24,12 @@ class AgentState:
     attachment: float = 0.0
     # 初始依恋度（DESIGN.md 第 6 章 2026-08：默认 0.5 半亲密起步，跳过初识期）
     initial_attachment: float = 0.5
+    # R1 状态契约（R1_SPEC 5）：社会性/注意力/因果可解释
+    social_appetite: float = 0.8       # 社交欲 0-1：随时间衰减，互动恢复
+    attention_topic: str = ""          # 当前注意力话题（视觉焦点/最近话题）
+    attention_scene: str = "normal"    # 场景：normal/busy/away
+    last_interaction_channel: str = "" # 最近互动通道：im/tts/qq
+    last_cause: str = "startup"        # 最近一次状态变更原因
     # 内部
     _last_tick: float = field(default=0.0, repr=False)
     _mood_score: float = field(default=0.0, repr=False)   # 近期互动累积
@@ -34,24 +40,60 @@ class AgentState:
         if self.attachment == 0.0:
             self.attachment = max(0.0, min(0.95, self.initial_attachment))
 
+    # ---------- R1 状态变更（R1_SPEC 5） ----------
+
+    def apply(self, event: str, delta: dict | None = None, *, cause: str = "") -> None:
+        """统一状态变更入口：记录原因 + debug 日志（R1_SPEC 5）。
+
+        event: user_message|assistant_reply|time_decay|scene_change|user_feedback
+        delta: 可更新的字段子集（energy/mood/social_appetite/attention_topic/...）
+        cause: 人类可读原因（如 "用户提到加班"），默认取 event。
+        """
+        delta = delta or {}
+        self.last_cause = cause or event
+        for key, val in delta.items():
+            if key == "energy":
+                self.energy = max(0.0, min(100.0, float(val)))
+            elif key == "social_appetite":
+                self.social_appetite = max(0.0, min(1.0, float(val)))
+            elif key == "attention_topic":
+                self.attention_topic = str(val or "")
+            elif key == "attention_scene":
+                self.attention_scene = str(val or "normal")
+            elif key == "last_interaction_channel":
+                self.last_interaction_channel = str(val or "")
+            else:
+                logger.debug("apply: unknown delta key %r (ignored)", key)
+        logger.debug("state changed cause=%s event=%s", self.last_cause, event)
+
     # ---------- 时间推进 ----------
 
-    def tick(self, decay_per_minute: float = 0.02) -> None:
-        """按流逝时间衰减精力（调用方定期触发，如每条消息前）。"""
+    def tick(self, decay_per_minute: float = 0.02, social_decay_per_minute: float = 0.005) -> None:
+        """按流逝时间衰减精力（调用方定期触发，如每条消息前）。
+
+        R1：social_appetite 同步缓慢衰减（互动恢复，R1_SPEC 5）。
+        """
         now = time.time()
         dt_min = (now - self._last_tick) / 60.0
         self._last_tick = now
         self.energy = max(0.0, min(100.0, self.energy - decay_per_minute * dt_min))
+        self.social_appetite = max(0.0, min(1.0, self.social_appetite - social_decay_per_minute * dt_min))
+        if dt_min > 1.0:
+            self.apply("time_decay", cause="时间流逝")
 
     # ---------- 对话反馈 ----------
 
-    def on_user_message(self, *, positive: bool = True, recover_per_message: float = 3.0) -> None:
-        """用户消息反馈：恢复精力，累积情绪分。"""
+    def on_user_message(self, *, positive: bool = True, recover_per_message: float = 3.0, channel: str = "") -> None:
+        """用户消息反馈：恢复精力，累积情绪分；R1 恢复社交欲并记录通道。"""
         self.energy = min(100.0, self.energy + recover_per_message)
+        self.social_appetite = min(1.0, self.social_appetite + 0.1)
         self._mood_score += 1.0 if positive else -1.0
         self._total_messages += 1
         self._update_mood()
         self._update_attachment()
+        if channel:
+            self.last_interaction_channel = channel
+        self.apply("user_message", cause="收到用户消息")
 
     def on_assistant_message(self) -> None:
         self._total_messages += 1
@@ -119,11 +161,20 @@ class AgentState:
             "attachment": round(self.attachment, 4),
             "mood_score": round(self._mood_score, 2),
             "total_messages": self._total_messages,
+            # R1 字段（R1_SPEC 5：旧库缺列时 from_snapshot 用 .get 默认）
+            "social_appetite": round(self.social_appetite, 3),
+            "attention_topic": self.attention_topic,
+            "attention_scene": self.attention_scene,
+            "last_interaction_channel": self.last_interaction_channel,
+            "last_cause": self.last_cause,
         }
 
     @classmethod
     def from_snapshot(cls, data: dict, *, initial_attachment: float = 0.5) -> "AgentState":
-        """持久化 dict → 状态。缺失字段用默认；_last_tick 重置为当前时间。"""
+        """持久化 dict → 状态。缺失字段用默认；_last_tick 重置为当前时间。
+
+        R1：.get() 默认值 → 旧 SQLite 自动兼容（R1_SPEC 5）。
+        """
         st = cls(initial_attachment=initial_attachment)
         st.energy = max(0.0, min(100.0, float(data.get("energy", st.energy))))
         mood = data.get("mood", st.mood)
@@ -131,6 +182,11 @@ class AgentState:
         st.attachment = max(0.0, min(0.95, float(data.get("attachment", st.attachment))))
         st._mood_score = float(data.get("mood_score", 0.0))
         st._total_messages = max(0, int(data.get("total_messages", 0)))
+        st.social_appetite = max(0.0, min(1.0, float(data.get("social_appetite", st.social_appetite))))
+        st.attention_topic = str(data.get("attention_topic", st.attention_topic) or "")
+        st.attention_scene = str(data.get("attention_scene", st.attention_scene) or "normal")
+        st.last_interaction_channel = str(data.get("last_interaction_channel", st.last_interaction_channel) or "")
+        st.last_cause = str(data.get("last_cause", st.last_cause) or "startup")
         return st
 
     @property

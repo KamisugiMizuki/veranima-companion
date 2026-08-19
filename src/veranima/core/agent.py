@@ -236,7 +236,7 @@ class Agent:
             logger.info("interrupt L%d (topic count=%d)", interrupt_level, topic_count)
 
         # 2. 零开销摄入：消息立即入库（FTS5 同步索引）
-        self.memory.store_message("user", store_text, self.state.energy, self.state.mood)
+        user_msg_id = self.memory.store_message("user", store_text, self.state.energy, self.state.mood)
 
         # ===== R0 阶段 2: build_turn_prompt（R0_SPEC 5）=====
         # 记忆检索（预算内注入）+ MVP2 附加块（风格/镜像/承诺）+ 打断指令
@@ -361,6 +361,14 @@ class Agent:
         if random.random() < float(self.config.get("chat", {}).get("proactive_message_prob", 0.1)):
             proactive_msg = self._try_proactive()
 
+        # 9.3 R1 候选记忆写入（R1_SPEC 2 固定顺序：store assistant → rule_extract
+        #      → validate → dedupe → store/update_latest）
+        try:
+            for cand in self._rule_extract(store_text, user_msg_id):
+                self._store_candidate(cand)
+        except Exception as e:
+            logger.warning("candidate memory extraction failed (non-blocking): %s", e)
+
         # 9.5 状态持久化（重启续接）
         self._persist_state()
 
@@ -380,6 +388,92 @@ class Agent:
         """R2：portrait 标签必须在角色卡 expressions 词表内（防 OOC 标签，R2_SPEC 2）。"""
         exprs = (self.card.veranima or {}).get("avatar", {}).get("expressions", {})
         return label in exprs
+
+    # ---------- R1 候选记忆（R1_SPEC 2：低成本第一版规则提取） ----------
+
+    _R1_RULES = (
+        (("记住", "以后记得", "我喜欢", "我讨厌", "我不喜欢", "我最爱"), "user_fact"),
+        (("我们一起", "刚才", "上次", "那天"), "shared_episode"),
+        (("以后提醒", "下次记得", "你答应", "说好了", "别忘了"), "commitment"),
+    )
+
+    def _rule_extract(self, user_text: str, source_message_id: int) -> list[dict]:
+        """从用户消息规则提取候选记忆（R1_SPEC 2）。
+
+        - “记住/以后/我喜欢/我讨厌/我不喜欢” → user_fact
+        - “我们一起/刚才/上次……结果” → shared_episode（仅当有事件/结果表达）
+        - “以后提醒/下次记得/你答应” → commitment（问句不命中）
+        候选提取失败不影响回复；写入失败只记录日志（调用方已包 try）。
+        """
+        candidates: list[dict] = []
+        for keywords, kind in self._R1_RULES:
+            if not any(k in user_text for k in keywords):
+                continue
+            if kind == "commitment" and user_text.rstrip().endswith("？"):
+                continue  # 问句不命中承诺
+            if kind == "shared_episode" and not any(
+                k in user_text for k in ("了", "结果", "之后", "后来")
+            ):
+                continue  # 无事件/结果表达不提取（"一起"只是触发词）
+            content = user_text.strip()[:200]
+            if not content:
+                continue
+            candidates.append({
+                "kind": kind,
+                "content": content,
+                "confidence": 0.7,
+                "importance": 0.6,
+                "source_message_id": source_message_id,
+            })
+        return candidates
+
+    def _store_candidate(self, cand: dict) -> None:
+        """校验 → 去重 → 写入/版本链（R1_SPEC 1.2/3）。"""
+        from ..memory.store import validate_candidate
+        issues = validate_candidate(cand)
+        if issues:
+            logger.debug("candidate rejected: %s", issues)
+            return
+        kind = cand["kind"]
+        layer = self.memory_store_layer(kind)
+        content = cand["content"]
+        # 去重：同层已有高度重叠记忆
+        existing = self.memory.list_layer(layer, limit=50)
+        for e in existing:
+            sim = self._text_similarity(content, e.content)
+            if sim >= 0.92:
+                logger.debug("candidate dup ignored (sim=%.2f): %s", sim, content[:30])
+                return
+            if sim >= 0.78:
+                # 保留新版本，旧版本入链（R1_SPEC 3：meta.supersedes=old_id）
+                meta = {**e.meta, "supersedes": e.id,
+                        "kind": kind, "source_message_id": cand.get("source_message_id")}
+                new = self.memory.update_latest(
+                    e.id, content, confidence=float(cand.get("confidence", 0.7)), meta=meta,
+                )
+                logger.info("R1 memory versioned: old=%s new=%s", e.id, new.id)
+                return
+        meta = {"kind": kind, "source_message_id": cand.get("source_message_id")}
+        self.memory.store(
+            layer, content,
+            importance=float(cand.get("importance", 0.6)),
+            confidence=float(cand.get("confidence", 0.7)),
+            meta=meta,
+        )
+        logger.info("R1 memory stored: %s → %s", kind, content[:40])
+
+    @staticmethod
+    def memory_store_layer(kind: str) -> str:
+        """R1 类型 → 旧 layer（与 store.LAYER_R1_MAP 一致，集中在此避免双份映射）。"""
+        from ..memory.store import LAYER_R1_MAP
+        return LAYER_R1_MAP.get(kind, kind)
+
+    @staticmethod
+    def _text_similarity(a: str, b: str) -> float:
+        """文本相似度（0-1）：去重用轻量近似（ponytail: 未用 embedding 余弦，
+        长文本重叠场景够用；若误去重明显再换向量相似度）。"""
+        import difflib
+        return difflib.SequenceMatcher(None, a, b).ratio()
 
     def proactive_from_visual(self, tag: str) -> str:
         """R4 联想式主动发起（R4_SPEC 1.三段式决策）。

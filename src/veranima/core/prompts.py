@@ -175,24 +175,52 @@ def format_memory_line(entry, *, clarification: bool = False) -> str:
     - meta.emotion 存在时附加（"你提起时听起来很开心"）
     """
     if entry.strength >= 0.85:
+        conf = "高"
         verb = "我记得"
         content = entry.content
     elif entry.strength >= 0.6:
+        conf = "中"
         verb = "我好像记得"
         content = entry.content + "……是……吗？还是我记串了？"
     elif entry.strength >= 0.35:
+        conf = "低"
         verb = "我记得好像有这么回事"
         # R1 可逆性：追问细节时给精确值（不模糊化），否则模糊化
         content = entry.content if clarification else _fuzzy_ify(entry.content)
         content += "……细节全糊了，你能再跟我说说吗？" if not clarification else ""
     else:
+        conf = "低"
         verb = "我隐约记得"
         content = entry.content
-    line = f"- {verb}：{content}"
+    # R1_SPEC 4 注入格式：[类型|置信度|时间] 内容
+    kind = (entry.meta or {}).get("kind") or _kind_from_layer(getattr(entry, "layer", ""))
+    type_label = {
+        "identity": "身份档案",
+        "user_fact": "用户事实",
+        "shared_episode": "共同经历",
+        "commitment": "承诺",
+        "session": "本次会话",
+    }.get(kind, "记忆")
+    time_part = ""
+    event_time = (entry.meta or {}).get("event_time")
+    if event_time:
+        time_part = f"|时间:{event_time}"
+    line = f"[{type_label}|置信度:{conf}{time_part}] {verb}：{content}"
     emotion = (entry.meta or {}).get("emotion")
     if emotion:
         line += f"（你提起时听起来{emotion}）"
     return line
+
+
+def _kind_from_layer(layer: str) -> str:
+    """旧 layer → R1 类型标签（旧记忆无 kind meta 时推断）。"""
+    return {
+        "core_profile": "identity",
+        "semantic": "user_fact",
+        "episodic": "shared_episode",
+        "procedural": "commitment",
+        "session": "session",
+    }.get(layer, layer)
 
 
 def _latest_query(memory: MemoryStore) -> str:

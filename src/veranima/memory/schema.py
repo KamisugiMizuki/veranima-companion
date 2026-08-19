@@ -51,6 +51,12 @@ CREATE TABLE IF NOT EXISTS agent_state (
     attachment     REAL NOT NULL DEFAULT 0.5,
     mood_score     REAL NOT NULL DEFAULT 0.0,
     total_messages INTEGER NOT NULL DEFAULT 0,
+    -- R1 状态契约（R1_SPEC 5）：旧库由 init_db 迁移补列
+    social_appetite        REAL NOT NULL DEFAULT 0.8,
+    attention_topic        TEXT NOT NULL DEFAULT '',
+    attention_scene        TEXT NOT NULL DEFAULT 'normal',
+    last_interaction_channel TEXT NOT NULL DEFAULT '',
+    last_cause             TEXT NOT NULL DEFAULT 'startup',
     updated_at     TEXT NOT NULL
 );
 
@@ -121,5 +127,20 @@ def init_db(db_path: str | Path, dim: int = EMBEDDING_DIM, provider=None) -> sql
                 logger.info("re-embedded %s memories after migration", reembedded)
     except Exception as e:
         logger.warning("memory_vec migration check failed: %s", e)
+    # 迁移：agent_state 补 R1 列（R1_SPEC 5，旧库无新列）
+    try:
+        cols = {r["name"] for r in con.execute("PRAGMA table_info(agent_state)").fetchall()}
+        for name, ddl in (
+            ("social_appetite", "REAL NOT NULL DEFAULT 0.8"),
+            ("attention_topic", "TEXT NOT NULL DEFAULT ''"),
+            ("attention_scene", "TEXT NOT NULL DEFAULT 'normal'"),
+            ("last_interaction_channel", "TEXT NOT NULL DEFAULT ''"),
+            ("last_cause", "TEXT NOT NULL DEFAULT 'startup'"),
+        ):
+            if name not in cols:
+                con.execute(f"ALTER TABLE agent_state ADD COLUMN {name} {ddl}")
+                logger.info("agent_state migration: added column %s", name)
+    except Exception as e:
+        logger.warning("agent_state migration check failed: %s", e)
     con.commit()
     return con

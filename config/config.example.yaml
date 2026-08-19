@@ -62,6 +62,9 @@ memory:
   embedding_model: "local:data/models/bge-m3"   # 默认本地（多数远程 API 不提供 embeddings 接口；需先放置模型或从 object_design 拷贝）
   recall_top_k: 5
   recall_threshold: 0.3
+  max_injected_chars: 5600              # R1：记忆注入总预算（R1_SPEC 4）
+  candidate_extraction: rules           # R1：候选记忆提取模式（rules=规则提取，llm=LLM 提取）
+  correction_enabled: true              # R1：用户纠正写新版本链（R1_SPEC 3）
   core_profile_budget: 2000             # 字符预算（远程 API 上调；本地小 context 改回 1200）
   section_budget: 2400
   session_budget: 1200
@@ -77,6 +80,7 @@ state:
   energy_recover_per_message: 3.0       # 每条消息恢复
   attachment_growth: 0.05               # 每轮依恋度增长
   initial_attachment: 0.5               # 初始依恋度（0=初识 0.5=半亲密 0.75=亲密）
+  social_appetite_initial: 0.8          # R1：初始社交欲 0-1（R1_SPEC 5）
 
 # CLI
 cli:
