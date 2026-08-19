@@ -747,20 +747,41 @@ reflection        角色完成一次反思后想表达结论
 
 ### 复用
 
-- `core/character.py`：Character Core。
-- `core/agent.py`：六阶段人格循环编排。
+- `core/character.py`：Character Core 读取、默认值和 prompt 注入。
+- `core/agent.py`：对话主流程编排；只调用 persona/reflection API，不直接拼 Persona SQL。
 - `core/state.py`：InnerState 与关系状态兼容字段。
-- `memory/store.py`：候选校验、版本链、召回、删除。
-- `memory/brief.py`：扩展 Persona Brief。
-- `core/prompts.py`：人格上下文分层注入。
-- `core/learning.py`：只负责文风，不承担思维框架和价值观学习。
+- `memory/store.py`：候选校验、版本链、召回、删除；PersonaCandidate 必须先转换为 MemoryCandidate 再进入这里。
+- `memory/brief.py`：Memory Brief；Persona Brief 不得绕过总预算独立塞入 prompt。
+- `core/prompts.py`：人格上下文分层注入和动作约束。
+- `core/learning.py`：只负责文风，不承担思维框架、关系和价值观学习。
 - `core/ambient.py`：人格来源主动候选仍经过 ProactiveGate。
+
+### 低成本实现的唯一调用方向
+
+```text
+Agent.handle
+  → persona.observe_turn(context, reply, feedback)
+  → persona.extract_candidates(evidence)
+  → persona.validate_candidate(candidate, card, relationship)
+  → MemoryStore.store/update_latest/erase
+  → persona.build_brief(query, card, state, memory)
+  → build_system_prompt(persona_brief, memory_brief, style_block)
+
+scheduled tick
+  → reflection.due(trigger, state)
+  → reflection.propose(evidence)
+  → reflection.validate(proposal)
+  → reflection.apply(proposal)
+  → optional ProactiveCandidate → ProactiveGate
+```
+
+禁止反向依赖：`MemoryStore` 不导入 `Agent`/LLM；`core/learning.py` 不修改人格模型；`reflection.py` 不直接发送消息；`prompt.py` 不写数据库。
 
 ### 最小新增目标文件
 
 ```text
-src/veranima/core/persona.py        # DTO、兼容检查、变化上限、Brief 构造
-src/veranima/core/reflection.py     # 低频反思候选与程序校验
+src/veranima/core/persona.py        # DTO、候选规则、核心兼容、关系/状态更新、PersonaBrief
+src/veranima/core/reflection.py     # 低频触发、反思候选、程序校验、应用结果
 ```
 
 仅在独立表迁移时新增：
@@ -771,43 +792,176 @@ src/veranima/memory/persona_store.py
 
 不要新增通用工作流引擎、事件总线、人格插件框架或独立向量库。
 
-## 16. 实现顺序
+### DTO 序列化与来源规则
 
-```text
-P-0 角色核心扩展
-    core_drives/value_order/inner_tensions/long_term_desires 字段注入与验证
+所有人格 DTO 必须提供：
 
-P-1 用户思维框架
-    PersonaCandidate + user_framework 规则/LLM 候选 + 版本链 + 查询
-
-P-2 共同意义
-    shared_meaning/relationship_event + 证据链接 + 情绪结果
-
-P-3 关系模型
-    多维 RelationshipModel + 确定性事件更新 + 旧 attachment 兼容
-
-P-4 Persona Brief
-    相关框架/角色观点/共同意义/关系状态预算注入
-
-P-5 反思整合
-    PersonaReflection + 低频触发 + 变化上限 + SelfModel 版本
-
-P-6 回用与防回声室
-    extend/contrast/question/apply/remember 动作 + 密度限制 + 分歧状态
-
-P-7 冲突修复与主动性
-    关系冲突闭环 + 人格来源 ProactiveCandidate + 隐私闸门
-
-P-8 离线与体验评测
-    框架提取、版本、独立立场、跨重启、通道一致、非公式化表达
-
-P-9 表达控制面
-    ResponsePlan + PAD 情绪耦合 + Persona Imprint + 有因差异 + 动态输入反馈
+```python
+from_dict(data: dict) -> DTO
+to_dict() -> dict
 ```
 
-P-0 至 P-4 是形成闭环的最小产品；P-5 至 P-9 提升真人交流感。P-9 中 PAD 情绪耦合可与 P-3 同步实现，ResponsePlan 和表层印记待数据契约稳定后接入。每片单独实现、行为测试、全量回归和提交。
+规则：
 
-## 17. 测试与验收
+- 缺字段使用文档指定默认；类型错误拒绝，不静默转字符串。
+- 浮点字段统一 clamp 到 `[0.0, 1.0]`；单次变化超过上限拒绝。
+- 所有候选必须有 `evidence_message_ids` 或 `source_event_id`，空证据不得进入 active。
+- `source_message_id`、memory id、版本号由程序补写；LLM 不得提供可信的 id/版本。
+- DTO 中不得保存原始私密 CoT、API key、密码、完整敏感原文。
+
+### PersonaCandidate → MemoryCandidate 的转换
+
+`PersonaCandidate` 不是 `MemoryStore` 的直接输入。必须由一个窄函数转换：
+
+```python
+persona_candidate_to_memory(candidate, source_message_id) -> dict | None
+```
+
+只允许以下映射：
+
+| PersonaCandidate.kind | MemoryCandidate.kind | layer | 默认置信度 |
+|---|---|---|---:|
+| `user_framework` | `user_framework` | semantic | 0.60 |
+| `character_belief` | `character_belief` | semantic | 0.55 |
+| `shared_meaning` | `shared_meaning` | episodic | 0.65 |
+| `relationship_event` | `relationship_event` | episodic | 0.70 |
+| `interaction_rule` | `interaction_rule` | procedural | 0.80 |
+
+转换失败返回 `None` 并记录 `persona_candidate_rejected`，不得阻断回复。
+
+
+## 16. 实现顺序
+
+以下每个阶段都是独立可提交的垂直切片。除非该阶段明确列出，否则不得改动其他模块。
+
+### P-0 角色核心扩展
+
+**目标**：让 Character Card 能提供稳定核心字段，且字段实际进入 prompt。
+
+- 目标文件：`core/character.py`、`core/prompts.py`、`config/character.example.json`、`tests/test_persona_core.py`。
+- 输入：`extensions.veranima.core_drives/value_order/inner_tensions/long_term_desires/relationship_expectation`。
+- 输出：`CharacterCard.core_profile` 或等价只读属性；prompt 中最多各出现一次对应标签。
+- 规则：缺字段用空列表/空字符串；`inner_tensions` 必须是 `{left,right}`；非字符串项拒绝；不改变旧字段。
+- 禁止：在 `IDENTITY_BLOCK` 写入角色专属词；普通对话修改角色卡；复制另一角色默认值。
+- 测试：完整卡、缺字段卡、类型错误卡、反差卡 prompt 不泄漏旧角色锚点。
+- 完成：测试确认字段读取、注入、换卡隔离；`CharacterCard.from_file()` 真实加载通过。
+
+### P-1 用户思维框架
+
+**目标**：从用户消息提取“定义/比喻/价值判断”，但不把普通事实和引用误判为框架。
+
+- 目标文件：`core/persona.py`、`memory/store.py`（仅扩展 kind 校验）、`core/agent.py`（接入）、`tests/test_persona_framework.py`。
+- 新函数：`extract_framework_candidates(text, message_id) -> list[PersonaCandidate]`；`validate_persona_candidate(candidate, card) -> list[str]`。
+- 规则提取必须覆盖：`我认为/我觉得/对我来说/本质是/与其说不如说/我一直认为`；引用块、URL、代码、反问、纯转述默认拒绝。
+- 单条明确自我定义可 candidate；普通价值判断需两次独立证据或一次陈述+一次确认；未确认不得进入高置信 PersonaBrief。
+- 转换后必须经过 `validate_candidate`、版本链和 `MemoryStore.store/update_latest`。
+- 测试：定义命中、事实不误判、引用不命中、第二次确认提升 stability、明确修正写新版本、敏感内容拒绝。
+- 完成：一条用户消息能产生可审计 candidate；没有候选时回复完全不变。
+
+### P-2 共同意义
+
+**目标**：共同事件同时记录发生了什么、用户如何解释、角色如何解释，不伪造共识。
+
+- 目标文件：`core/persona.py`、`core/agent.py`、`tests/test_shared_meaning.py`。
+- 新函数：`build_shared_meaning_candidate(event, user_interpretation, character_interpretation, evidence_ids)`。
+- 规则：缺事件证据拒绝；缺任一方解释时 `status=candidate`；`agreed_meaning` 只有用户确认或双方明确一致才填写；分歧写 `disagreement`，不强行合并。
+- 情绪只存 `emotional_result` 和事件影响，不生成“用户永久情绪”事实。
+- 测试：完整共识、只有事件、双方分歧、引用旧事件、删除 evidence 后不可召回。
+- 完成：shared_meaning 能影响相关新情境的 PersonaBrief，普通闲聊不注入。
+
+### P-3 关系模型与 PAD 状态
+
+**目标**：关系和情绪从单值 attachment 扩展为可解释状态，普通消息不线性涨亲密度。
+
+- 目标文件：`core/state.py`、`core/persona.py`、`memory/schema.py`（必要时迁移）、`tests/test_relationship_state.py`。
+- DTO：`RelationshipModel`、`InnerState`、`AuthenticityState`；旧 `attachment` 保留为兼容汇总值。
+- 新函数：`apply_relationship_event(model, event) -> model`、`apply_emotion_event(state, event) -> state`、`derive_relationship_stage(model) -> str`。
+- 规则：单维普通事件变化 <=0.05；重大明确事件 <=0.12；每次变化带 cause；PAD 每轮向 baseline 衰减；高 attachment 不突破边界。
+- 初始值：兼容现有 `initial_affection/initial_attachment=0.5`；它只能作为 intimacy/familiarity 先验，不自动提高 trust/safety/reciprocity。
+- 测试：普通消息不升级、共同项目/确认/修复事件更新、越界降低 safety、时间衰减、旧 SQLite 默认值迁移。
+- 完成：重启后状态恢复；同一事件重复应用幂等或有明确去重键。
+
+### P-4 Persona Brief
+
+**目标**：把人格上下文与普通 Memory Brief 分开构造，再按总预算注入。
+
+- 目标文件：`core/persona.py`、`memory/brief.py`、`core/prompts.py`、`tests/test_persona_brief.py`。
+- 新函数：`build_persona_brief(query, card, self_model, relationship, state, memory) -> PersonaBrief`。
+- 输出上限：相关用户框架最多 2 条、角色观点最多 2 条、共同意义最多 2 条；总计最多 6 条；默认 1800 字符。
+- 相关性：当前 query/entity/scene 至少命中一个 scope/entity/trigger；无命中不注入。
+- 注入顺序：Character Core → PersonaBrief → MemoryBrief → Style/Channel；总预算由一个调用方统一控制。
+- 禁止：PersonaBrief 暴露 memory id、confidence 原始数值、内部状态全部字段；不把 contested/unresolved 作为主动建议。
+- 测试：相关/不相关、条数上限、总字符上限、角色观点与用户框架标签分离、空 brief 降级。
+- 完成：`build_system_prompt` 有且只有一个 PersonaBrief 接入口；不再由各模块自行拼人格文本。
+
+### P-5 反思整合与 SelfModel
+
+**目标**：低频把多个证据整合为自传局部变化，不每轮“自省”。
+
+- 目标文件：`core/reflection.py`、`core/persona.py`、`core/agent.py`、`tests/test_reflection.py`。
+- 新函数：`reflection_due(trigger, counters) -> bool`、`propose_reflection(evidence) -> PersonaReflection`、`validate_reflection(reflection, core) -> list[str]`、`apply_reflection(reflection, models)`。
+- 触发：高情绪共同事件、用户纠正、同主题 >=3 个候选、冲突修复、每 20 个有效人格候选；普通消息/随机 tick 不触发。
+- 规则：一次最多改一个局部字段；稳定特征不可自动改；变化带 evidence ids；LLM 失败留 candidate，不更新模型。
+- 测试：触发条件、空证据拒绝、核心冲突 rejected、失败不改变状态、版本链保留旧 SelfModel。
+- 完成：reflection 只产结构化更新，不直接发送；更新结果可从证据反查。
+
+### P-6 回用与防回声室
+
+**目标**：框架回用产生新语义，不逐字复读，且角色可以不同意。
+
+- 目标文件：`core/persona.py`、`core/prompts.py`、`tests/test_persona_reuse.py`。
+- 新函数：`choose_reuse_action(brief, query, state) -> extend|contrast|question|apply|remember|none`、`cooldown_reuse(frame_id, turn_id)`。
+- 规则：同一框架显式引用冷却 8 个自然轮；同一回复最多 1 个框架+1 个 shared_meaning；默认动作不是 repeat；`contested` 必须允许 contrast/question；无证据不写“你以前说过”。
+- 输出约束：prompt 要求扩展、对照、限定边界或应用，不要求“引用用户原话”。
+- 测试：五种动作、冷却、逐字复述拦截、角色不同意、低相关不回用。
+- 完成：新情境能正确迁移框架；评测 `verbatim-copy-rate` 不上升。
+
+### P-7 冲突修复与人格主动性
+
+**目标**：关系冲突有闭环，shared_meaning/shared_project/reflection 主动候选仍走 R4 闸门。
+
+- 目标文件：`core/persona.py`、`core/ambient.py`、`memory/store.py`、`adapters/qq.py`、`pet_server.py`、`tests/test_persona_conflict.py`。
+- 状态：`open/acknowledged/clarifying/repairing/closed/boundary_held`。
+- 规则：用户澄清不自动清零余波；角色越界必须承认具体行为；关闭后不持续惩罚；private/unresolved/contested 不主动引用；每条主动候选带 evidence id。
+- 触发：共同项目真实节点、关系修复完成、已确认 ritual 到期；不以后台意识流伪造等待。
+- 测试：误解→澄清→修复、越界守界、主动闸门拒绝 private、用户忙/睡不发沉重反思。
+- 完成：主动消息可解释 source/reason，忽略反馈进入既有退避链路。
+
+### P-8 离线与体验评测
+
+**目标**：用固定数据集验证人格循环，不能只跑结构 grep。
+
+- 目标文件：`tests/test_persona_bench.py`、`tests/fixtures/persona_cases.jsonl`、必要时 `docs/PERSONA_LOOP_SPEC.md`。
+- 固定场景：定义形成、比喻迁移、观点冲突、关系修复、共同项目、诱导回声、公式化陷阱、删除/换卡隔离。
+- 每个 case 字段：`id/input/history/expected_candidates/expected_reuse_action/forbidden/expected_stage`。
+- 指标：framework precision/recall、role consistency、relationship event precision、reuse success、verbatim-copy-rate、unsupported-empathy-rate、brief chars。
+- 完成阈值：候选 precision >=0.85；核心冲突不覆盖率=1.0；删除后派生引用=0；无证据关系句=0；brief 超预算=0。
+- 测试不调用真实 API；使用 FakeLLM/FakeEmbed；至少另做一次真实入口冒烟。
+
+### P-9 表达控制面
+
+**目标**：将认知计划、PAD、表层印记和有因差异接到表达层，不暴露 CoT。
+
+- 目标文件：`core/persona.py`、`core/render.py`、`core/agent.py`、`pet_server.py`、`tests/test_persona_expression.py`。
+- 新函数：`build_response_plan(context, brief, state) -> ResponsePlan`、`render_authenticity(reply, authenticity, channel)`。
+- 简单事实跳过 ResponsePlan；复杂情绪/冲突/框架回用才启用；计划 <=400 字符且不保存原始思考文本。
+- PAD 映射到句长/节奏/主动性/portrait/TTS 参数；变化必须带 cause，状态按 baseline 衰减。
+- PersonaImprint 单次反馈只 candidate；跨场景证据或明确用户要求才 active；有 scope，不改 Character Core。
+- 自然联想最多每轮一次，有 `association_target`；用户不接立即回主线；禁止固定概率随机跑题。
+- 测试：计划跳过/启用、事实一致、CoT 不落盘、PAD 影响多通道、印记阈值、无因随机行为不存在。
+- 完成：IM/TTS 事实立场一致；TTS 更短；表达变化可从状态和证据解释。
+
+### 阶段提交纪律
+
+每个阶段必须按以下顺序执行：
+
+1. 只读本阶段目标文件和对应测试。
+2. 先写 2-6 个行为测试，测试失败时才改实现。
+3. 只改本阶段列出的目标文件；发现跨阶段依赖时先写兼容 facade，不抢跑后续功能。
+4. 定向测试通过后跑全量 pytest。
+5. 做一次 `git diff --check`、模块导入检查和真实入口冒烟。
+6. 单独提交，提交信息使用 `feat(persona): P-n ...`。
+7. 逐条回填本 SPEC 的完成状态，不用“代码里有类名”代替行为证据。
 
 ### 17.1 行为测试
 
