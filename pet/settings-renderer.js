@@ -53,6 +53,10 @@ window.pet.getConfig().then((cfg) => {
   $('qq-proactive').value = String(qq.proactive ?? true);
   $('qq-offline').value = String((qq.offline_think || {}).enabled ?? true);
   $('mem-embedding').textContent = mem.embedding_model || '?';
+  // GUI-4：隐私与主动性
+  const att = cfg.attention || {}, pro = cfg.proactive || {};
+  $('att-paused').value = String(att.paused ?? false);
+  $('proactive-max').value = pro.max_per_day ?? '';
 }).catch(() => showMsg('读取配置失败', false));
 
 $('save').addEventListener('click', async () => {
@@ -78,6 +82,8 @@ $('save').addEventListener('click', async () => {
       proactive: $('qq-proactive').value === 'true',
       offline_think: { enabled: $('qq-offline').value === 'true' },
     },
+    attention: { paused: $('att-paused').value === 'true' },
+    proactive: { max_per_day: parseInt($('proactive-max').value, 10) || 0 },
   };
   const role = $('role-select').value;
   if (role) data.character_card = `characters/${role}/character.json`;

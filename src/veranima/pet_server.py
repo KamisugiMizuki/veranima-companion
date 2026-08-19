@@ -44,6 +44,8 @@ class PetServer:
         self._bilingual = False  # 角色双语（character.json veranima.bilingual.enabled）
         self.attention_cfg = {}  # 视觉注意力配置（VISION_SPEC 4，config.yaml attention: 段）
         self._obs_cache: dict = {}  # VISION_SPEC 5：观察缓存（120s TTL，region_key → ts）
+        self._obs_budget_day = ""
+        self._obs_budget_count = 0   # VISION_SPEC 5：observe_daily_budget 日预算
         self._presence_was_absent = False  # R4 在场转变检测（VISION_SPEC L0）
 
     def connect_agent(self, agent) -> None:
@@ -100,6 +102,16 @@ class PetServer:
         返回 (summary, category)；失败/敏感返回 ("", "")。不写记忆、不 speak。
         """
         try:
+            # VISION_SPEC 5：日预算（observe_daily_budget 默认 120，超出只保留 L0/L1）
+            import datetime
+            today = datetime.date.today().isoformat()
+            if today != self._obs_budget_day:
+                self._obs_budget_day = today
+                self._obs_budget_count = 0
+            budget = int((self.attention_cfg or {}).get("observe_daily_budget", 120))
+            if self._obs_budget_count >= budget:
+                logger.debug("visual: 日观察预算已用尽 (%d)", budget)
+                return "", ""
             # 敏感窗口策略：命中不发图（VISION_SPEC 4）
             policy = getattr(att, "policy", None)
             if policy is not None:
@@ -116,6 +128,13 @@ class PetServer:
             h, w = frame.shape[:2]
             x0 = int(ev.region[0] * w); y0 = int(ev.region[1] * h)
             x1 = max(x0 + 1, int(ev.region[2] * w)); y1 = max(y0 + 1, int(ev.region[3] * h))
+            # VISION_SPEC 5：区域最大为屏幕短边 30%（crop_ratio）
+            crop_ratio = float((self.attention_cfg or {}).get("crop_ratio", 0.30))
+            short_side = min(h, w) * crop_ratio
+            if (x1 - x0) > short_side:
+                x1 = min(w, x0 + int(short_side))
+            if (y1 - y0) > short_side:
+                y1 = min(h, y0 + int(short_side))
             crop = await asyncio.to_thread(grab_region, frame, x0, y0, x1, y1)
             if not crop:
                 return "", ""
@@ -123,6 +142,7 @@ class PetServer:
                 observe, self._agent.llm, crop, window_title=ev.note or "")
             if not obs.is_valid:
                 return "", ""
+            self._obs_budget_count += 1
             return obs.summary, obs.category
         except Exception as e:
             logger.debug("visual observe failed: %s", e)
@@ -338,6 +358,13 @@ class PetServer:
                     pet = d.get("pet", {})
                     if "avatar_height" in pet:
                         cfg.setdefault("pet", {})["avatar_height"] = pet["avatar_height"]
+                    # GUI-4：隐私与主动性（部分更新，不覆盖整段）
+                    att = d.get("attention", {})
+                    if "paused" in att:
+                        cfg.setdefault("attention", {})["paused"] = att["paused"]
+                    pro = d.get("proactive", {})
+                    if "max_per_day" in pro:
+                        cfg.setdefault("proactive", {})["max_per_day"] = pro["max_per_day"]
                     save_config(cfg)
                     await self._send({"type": "config_saved", "id": msg.get("id"), "ok": True,
                                      "restart": "重启核心生效"})

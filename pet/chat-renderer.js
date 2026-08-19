@@ -104,8 +104,8 @@ window.pet.onChatLine((m) => {
 const STATUS_UI = {
   connecting: { dot: '#f0a020', text: '连接中…', btn: '发送' },
   online:     { dot: '#95ec69', text: '在线', btn: '发送' },
-  generating: { dot: '#4e9bf7', text: '正在想', btn: '发送' },
-  speaking:   { dot: '#4e9bf7', text: '正在说', btn: '发送' },
+  generating: { dot: '#4e9bf7', text: '正在想', btn: '停止' },
+  speaking:   { dot: '#4e9bf7', text: '正在说', btn: '停止' },
   offline:    { dot: '#f44', text: '连接断开', btn: '重试连接' },
   failed:     { dot: '#f44', text: '回复未完成', btn: '重试' },
 };
@@ -119,10 +119,19 @@ window.pet.onCoreState((m) => {
 });
 
 // 发送
+let composing = false;  // IME composition 中不发送（GUI_SPEC 输入契约）
+input.addEventListener('compositionstart', () => { composing = true; });
+input.addEventListener('compositionend', () => { composing = false; });
 function send() {
+  if (composing) return;
   const text = input.value.trim();
   if (curStatus === 'offline') { window.pet.reconnect(); return; }
   if (curStatus === 'failed') { window.pet.reconnect(); return; }
+  if (curStatus === 'generating' || curStatus === 'speaking') {
+    // GUI_SPEC 9：generating/speaking → 停止（取消回复/停止说话）
+    window.pet.stopReply();
+    return;
+  }
   if (!text) return;
   window.pet.sendChat(text);
   input.value = '';

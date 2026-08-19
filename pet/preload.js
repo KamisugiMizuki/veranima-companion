@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('pet', {
   onChatLine: (cb) => ipcRenderer.on('chat-line', (e, m) => cb(m)),
   sendChat: (text) => ipcRenderer.send('chat-send', text),
   reconnect: () => ipcRenderer.send('pet-reconnect'),
+  stopReply: () => ipcRenderer.send('chat-stop'),  // GUI_SPEC 9：停止说话/取消回复
   // 设置窗口通道：请求 → main 转发 WS → 核心响应回传
   getConfig: () => ipcRenderer.invoke('settings-get-config'),
   saveConfig: (data) => ipcRenderer.invoke('settings-save-config', data),

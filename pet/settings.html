@@ -138,6 +138,20 @@
           <label>Embedding 模型</label>
           <div id="mem-embedding" class="readonly"></div>
         </div>
+        <!-- GUI-4：隐私与主动性（GUI_SPEC 6.7） -->
+        <h2>隐私与主动性</h2>
+        <div class="field">
+          <label>视觉注意力暂停（敏感时段/会议）</label>
+          <select id="att-paused">
+            <option value="false">运行</option>
+            <option value="true">暂停</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>主动消息日上限（0=关闭）</label>
+          <input id="proactive-max" type="number" min="0" max="20" placeholder="2">
+        </div>
+        <p class="hint">视觉只做屏幕变化检测，不保存截图；敏感窗口（支付/密码/私聊）自动跳过。</p>
       </div>
 
       <div class="footer">

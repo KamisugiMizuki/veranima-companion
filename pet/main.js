@@ -421,6 +421,10 @@ ipcMain.on('pet-reconnect', () => {
   if (ws) { try { ws.close(); } catch (e) {} ws = null; }
   connect();
 });
+ipcMain.on('chat-stop', () => {
+  // GUI_SPEC 9：generating/speaking → 停止（转发核心 stop_speak → reply_cancelled）
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'stop_speak' }));
+});
 
 // 角色立绘映射：读当前角色卡 avatar.expressions → {标签: 绝对路径} → renderer
 // （R2_SPEC 2：表情标签驱动；角色切换后立绘跟着换，不再写死 assets/）
