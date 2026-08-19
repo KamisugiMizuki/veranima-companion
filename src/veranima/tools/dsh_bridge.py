@@ -24,13 +24,18 @@ def dsh_available() -> bool:
     return DSH_BIN.exists()
 
 
-def run_dsh_task(workorder: dict, *, timeout: int = DEFAULT_TIMEOUT) -> dict:
-    """工单 → dsh headless 子进程 → 结果。
+def run_dsh_task(workorder: dict, cancel_event=None, *, timeout: int = DEFAULT_TIMEOUT,
+                 output_max_chars: int = 12000) -> dict:
+    """工单 → dsh headless 子进程 → 结果（R5_SPEC 4）。
 
-    返回 {"task_id", "output", "exit_code", "ok"}；超时/未安装返回错误码。
-    dsh 会话 JSONL 落盘（dsh 自身管理），与 veranima 记忆库隔离。
+    返回 {"task_id", "status", "output", "exit_code", "ok"}；status ∈
+    running/succeeded/failed/cancelled/timed_out（R5_SPEC 3 生命周期）。
+    - 独立 cwd/env/超时；argv 列表调用，不拼 shell 字符串
+    - 输出截断到 output_max_chars（原始日志由 dsh 自身落盘）
+    - cancel_event：Threading.Event；置位后终止子进程返回 cancelled
+    - 不阻塞核心对话线程：调用方需在 to_thread/async 边界使用
     """
-    result = {"task_id": "", "output": "", "exit_code": -1, "ok": False}
+    result = {"task_id": "", "status": "failed", "output": "", "exit_code": -1, "ok": False}
     if isinstance(workorder, str):
         import json
         try:
@@ -59,18 +64,48 @@ def run_dsh_task(workorder: dict, *, timeout: int = DEFAULT_TIMEOUT) -> dict:
         if patch_file.exists():
             cmd += ["--patch", str(patch_file)]
         cmd.append(prompt)
-        proc = subprocess.run(
+        # Popen + 轮询：支持取消与超时（R5_SPEC 4：非零退出/超时/取消都结构化返回）
+        proc = subprocess.Popen(
             cmd,
-            cwd=str(DSH_DIR), capture_output=True, text=True, timeout=timeout,
+            cwd=str(DSH_DIR), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace",
         )
-        result["exit_code"] = proc.returncode
-        result["output"] = (proc.stdout or "").strip() or (proc.stderr or "").strip()
-        result["ok"] = proc.returncode == 0
+        result["status"] = "running"
+        import time
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                rc = proc.wait(timeout=0.2)
+                break  # 进程结束
+            except subprocess.TimeoutExpired:
+                if cancel_event is not None and cancel_event.is_set():
+                    proc.kill()
+                    proc.wait()
+                    result["status"] = "cancelled"
+                    result["output"] = "任务已取消"
+                    logger.info("dsh task cancelled: %s", result["task_id"])
+                    return result
+                if time.monotonic() > deadline:
+                    proc.kill()
+                    proc.wait()
+                    result["status"] = "timed_out"
+                    result["output"] = f"任务超时（>{timeout}s）"
+                    logger.warning(result["output"])
+                    return result
+        result["exit_code"] = rc
+        out = ""
+        if proc.stdout:
+            try:
+                out = proc.stdout.read().strip()
+            except Exception:
+                out = ""
+        if len(out) > output_max_chars:
+            out = out[:output_max_chars] + f"\n…（截断，共 {len(out)} 字符）"
+        result["output"] = out
+        result["ok"] = rc == 0
+        result["status"] = "succeeded" if result["ok"] else "failed"
         if not result["ok"]:
-            logger.warning("dsh task failed (exit %d): %s", proc.returncode, result["output"][:300])
-    except subprocess.TimeoutExpired:
-        result["output"] = f"任务超时（>{timeout}s）"
-        logger.warning(result["output"])
+            logger.warning("dsh task failed (exit %d): %s", rc, out[:300])
     except OSError as e:
         result["output"] = f"dsh 启动失败: {e}"
         logger.error(result["output"])

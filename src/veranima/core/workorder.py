@@ -25,20 +25,65 @@ _TASK_TRIGGERS = (
 
 @dataclass
 class WorkOrder:
-    """TASK_TRANSFER_PROTOCOL 工单（R5_SPEC 2.2 JSON 格式）。"""
+    """TASK_TRANSFER_PROTOCOL 工单（R5_SPEC 2 JSON 格式）。"""
 
     goal: str                       # 目标澄清：可验证的结果
     context: str = ""               # 补充上下文（来源路径/用户偏好）
+    source: str = ""                # 来源路径（R5_SPEC 2.2；LLM 不能猜绝对路径）
     constraints: dict = field(default_factory=dict)  # 优先级约束（deadline/format 等）
     fallback: str = ""              # 异常预案
+    cancellation_policy: str = "confirm"  # 取消策略（confirm=需用户确认）
     task_id: str = ""               # 自动生成
     task_type: str = ""             # 任务类型（能力匹配层）
     needs_clarification: list[str] = field(default_factory=list)  # 缺失维度
+    status: str = "draft"           # 生命周期（R5_SPEC 3）：draft/needs_clarification/
+                                    #   confirmed/running/succeeded/failed/cancelled/timed_out
+
+    @property
+    def deadline(self) -> str:
+        return str(self.constraints.get("deadline") or "")
 
     def to_json(self) -> str:
         """工单序列化（TASK_TRANSFER_PROTOCOL JSON）。"""
         d = asdict(self)
         return json.dumps(d, ensure_ascii=False, indent=2)
+
+
+# 危险操作（R5_SPEC 2 校验：必须用户确认）
+DANGEROUS_ACTIONS = ("删除", "格式化", "覆盖", "清空", "重置", "卸载", "rm ")
+
+
+def validate_workorder(wo: WorkOrder, *, task_types: tuple = DEFAULT_TASK_TYPES,
+                       confirm_dangerous: bool = True) -> list[str]:
+    """工单发送前程序校验（R5_SPEC 2：JSON 发送前校验）。
+
+    返回问题列表，空列表 = 通过。LLM 不能猜绝对路径；缺路径必须追问。
+    """
+    issues: list[str] = []
+    if not wo.goal or len(wo.goal) > 500:
+        issues.append("goal 为空或超过 500 字")
+    if len(wo.source) > 500:
+        issues.append("source 超过 500 字")
+    if wo.source:
+        p = Path(wo.source)
+        if not p.exists():
+            issues.append(f"来源路径不存在: {wo.source}")
+    if wo.task_type and wo.task_type not in task_types:
+        issues.append(f"task_type 不在白名单: {wo.task_type}")
+    dl = wo.deadline
+    if dl:
+        try:
+            import datetime
+            dl_dt = datetime.datetime.fromisoformat(dl)
+            if dl_dt < datetime.datetime.now():
+                issues.append("deadline 早于当前时间")
+        except ValueError:
+            issues.append(f"deadline 格式非法: {dl}")
+    if confirm_dangerous and any(d in wo.goal for d in DANGEROUS_ACTIONS):
+        issues.append("危险操作需要用户确认")
+    if "来源路径" in wo.needs_clarification and not wo.source:
+        issues.append("缺来源路径（必须追问，LLM 不得猜路径）")
+    return issues
 
 
 def is_task_request(user_text: str) -> bool:
