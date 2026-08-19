@@ -424,6 +424,19 @@ class Agent:
         except Exception as e:
             logger.warning("candidate memory extraction failed (non-blocking): %s", e)
 
+        # 9.3.1 P-1 用户思维框架（PERSONA_LOOP_SPEC P-1：extract → validate → convert → store）
+        try:
+            from .persona import extract_framework_candidates, persona_candidate_to_memory, validate_persona_candidate
+            for pc in extract_framework_candidates(user_text, user_msg_id):
+                if validate_persona_candidate(pc, self.card):
+                    logger.debug("persona candidate rejected: %s", validate_persona_candidate(pc, self.card))
+                    continue
+                mc = persona_candidate_to_memory(pc, source_message_id=user_msg_id)
+                if mc is not None:
+                    self._store_candidate(mc)
+        except Exception as e:
+            logger.warning("persona framework extraction failed (non-blocking): %s", e)
+
         # 9.4 MEMORY_SPEC 6.2：Reply.memory_candidates 低置信候选（仍需程序校验）
         try:
             self._store_llm_candidates(turn_reply, user_msg_id=user_msg_id)
@@ -626,6 +639,14 @@ class Agent:
             "status": cand.get("status", "active"),
             "needs_confirmation": bool(cand.get("needs_confirmation", False)),
             "correction": bool(cand.get("correction", False)),
+            # P-1（PERSONA_LOOP_SPEC）：persona 候选透传字段
+            "title": cand.get("title"),
+            "scope": cand.get("scope"),
+            "stability": cand.get("stability"),
+            "emotional_weight": cand.get("emotional_weight"),
+            "user_confirmed": bool(cand.get("user_confirmed", False)),
+            "role_compatible": bool(cand.get("role_compatible", True)),
+            "evidence_message_ids": cand.get("evidence_message_ids"),
         }
         meta = {k: v for k, v in meta.items() if v is not None and v is not False}
         # 去重：同层已有高度重叠记忆
@@ -637,7 +658,10 @@ class Agent:
                 return
             if sim >= 0.78 or cand.get("correction"):
                 # 保留新版本，旧版本入链（R1_SPEC 3：meta.supersedes=old_id）
+                # P-1：人格 kind 二次确认 → stability 提升（cap 1.0）
                 merged = {**e.meta, "supersedes": e.id, **meta}
+                if kind in ("user_framework", "character_belief", "shared_meaning") and isinstance(e.meta.get("stability"), (int, float)):
+                    merged["stability"] = min(1.0, float(e.meta["stability"]) + 0.1)
                 new = self.memory.update_latest(
                     e.id, content, confidence=float(cand.get("confidence", 0.7)), meta=merged,
                 )

@@ -31,11 +31,21 @@ LAYER_R1_MAP = {
     "shared_episode": "episodic",
     "commitment": "procedural",
     "session": "session",
+    # P-1（PERSONA_LOOP_SPEC 4 数据映射）
+    "user_framework": "semantic",
+    "character_belief": "semantic",
+    "shared_meaning": "episodic",
+    "relationship_event": "episodic",
+    "interaction_rule": "procedural",
 }
 LAYER_R1_REVERSE = {v: k for k, v in LAYER_R1_MAP.items()}
 
 # 候选记忆校验（R1_SPEC 1.2 / MEMORY_SPEC 5）：kind 白名单
-CANDIDATE_KINDS = ("user_fact", "shared_episode", "commitment", "session")
+CANDIDATE_KINDS = (
+    "user_fact", "shared_episode", "commitment", "session",
+    # P-1（PERSONA_LOOP_SPEC 4 数据映射）
+    "user_framework", "character_belief", "shared_meaning", "relationship_event", "interaction_rule",
+)
 VALID_STATUS = ("active", "open", "done", "cancelled", "expired")
 SECRET_PATTERNS = (
     "password", "passwd", "api_key", "apikey", "secret", "token",

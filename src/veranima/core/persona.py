@@ -1,0 +1,245 @@
+"""PERSONA_LOOP_SPEC 人格循环：候选提取、校验与转换（P-1 起）。
+
+本模块只产结构化候选并交给 MemoryStore 校验/写入；不直接写 SQL，
+不修改 Character Core，不依赖 LLM 的唯一决策。
+"""
+from __future__ import annotations
+
+import logging
+import re
+from dataclasses import dataclass, field
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+# 人格候选 kind（PERSONA_LOOP_SPEC 4 数据映射）
+PERSONA_KINDS = (
+    "user_framework", "character_belief", "shared_meaning",
+    "relationship_event", "interaction_rule",
+)
+
+# kind → 默认置信度（PERSONA_LOOP_SPEC 15 转换契约）
+KIND_DEFAULT_CONFIDENCE = {
+    "user_framework": 0.60,
+    "character_belief": 0.55,
+    "shared_meaning": 0.65,
+    "relationship_event": 0.70,
+    "interaction_rule": 0.80,
+}
+
+
+@dataclass
+class PersonaCandidate:
+    """P-1 候选 DTO：证据齐备才可进入校验；id/版本由程序补写。"""
+
+    kind: str
+    title: str
+    content: str
+    evidence_message_ids: list[int] = field(default_factory=list)
+    scope: list[str] = field(default_factory=list)
+    confidence: float = 0.6
+    stability: float = 0.5
+    importance: float = 0.6
+    emotional_weight: float = 0.5
+    user_confirmed: bool = False
+    role_compatible: bool = True
+    needs_confirmation: bool = True
+    subject: str = "user"
+
+    def to_dict(self) -> dict:
+        return {
+            "kind": self.kind,
+            "title": self.title,
+            "content": self.content,
+            "evidence_message_ids": list(self.evidence_message_ids),
+            "scope": list(self.scope),
+            "confidence": round(float(self.confidence), 4),
+            "stability": round(float(self.stability), 4),
+            "importance": round(float(self.importance), 4),
+            "emotional_weight": round(float(self.emotional_weight), 4),
+            "user_confirmed": bool(self.user_confirmed),
+            "role_compatible": bool(self.role_compatible),
+            "needs_confirmation": bool(self.needs_confirmation),
+            "subject": self.subject,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "PersonaCandidate":
+        """缺字段用默认；类型错误拒绝（抛 ValueError，不静默转换）。"""
+        kind = data.get("kind")
+        if kind not in PERSONA_KINDS:
+            raise ValueError(f"unknown persona kind: {kind!r}")
+        content = data.get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("content 必须为非空字符串")
+        ev = data.get("evidence_message_ids")
+        if not isinstance(ev, list) or not all(isinstance(x, int) for x in ev):
+            raise ValueError("evidence_message_ids 必须为 int 列表")
+        title = data.get("title", "")
+        if not isinstance(title, str):
+            raise ValueError("title 必须为字符串")
+        return cls(
+            kind=kind,
+            title=title,
+            content=content,
+            evidence_message_ids=list(ev),
+            scope=[s for s in data.get("scope", []) if isinstance(s, str)],
+            confidence=_clamp01(data.get("confidence", 0.6)),
+            stability=_clamp01(data.get("stability", 0.5)),
+            importance=_clamp01(data.get("importance", 0.6)),
+            emotional_weight=_clamp01(data.get("emotional_weight", 0.5)),
+            user_confirmed=bool(data.get("user_confirmed", False)),
+            role_compatible=bool(data.get("role_compatible", True)),
+            needs_confirmation=bool(data.get("needs_confirmation", True)),
+            subject=data.get("subject", "user") if isinstance(data.get("subject"), str) else "user",
+        )
+
+
+def _clamp01(v: Any) -> float:
+    f = float(v)
+    return max(0.0, min(1.0, f))
+
+
+# ---------- P-1 用户思维框架提取 ----------
+
+# 强信号：用户明确定义/价值判断/因果模型
+FRAMEWORK_PATTERNS = (
+    r"我认为(?P<content>[^。！？!?，,]{4,})",
+    r"我(?:还是|又|也|始终)?觉得(?P<content>[^。！？!?，,]{4,})",
+    r"对我来说[，,]?(?P<content>[^。！？!?]{4,})",
+    r"对我而言[，,]?(?P<content>[^。！？!?]{4,})",
+    r"(?:X|一件事|东西)的本质是(?P<content>[^。！？!?]{4,})",
+    r"本质是(?P<content>[^。！？!?]{4,})",
+    r"与其说[^，,]{1,10}[，,]不如说(?P<content>[^。！？!?]{4,})",
+    r"我一直认为(?P<content>[^。！？!?，,]{4,})",
+    r"我一直觉得(?P<content>[^。！？!?，,]{4,})",
+    r"我的理解是[，,](?P<content>[^。！？!?]{4,})",
+    r"我始终认为(?P<content>[^。！？!?，,]{4,})",
+)
+
+# 拒绝信号：引用他人/引用块/URL/代码/反问
+_REJECT_SUBSTRINGS = (
+    "他说", "她说", "书上", "文章里", "某本书", "视频里", "别人",
+    "https://", "http://", "```", "git ", "pip ", "npm ", "python ",
+)
+_QUOTE_PATTERNS = (
+    re.compile(r"[「『\"“](?:与其说|我认为|我觉得)[^」』\"”]{2,}[」』\"”]"),  # 引用块
+    re.compile(r"(?:的|了)?观点是|认为[^，。]{0,6}说"),                      # 转述
+)
+_RHETORICAL_PATTERNS = (r"你觉得呢", r"对吧[？?]*$", r"是不是[？?]*$", r"你说呢", r"懂吧", r"对吗[？?]*$")
+
+
+def extract_framework_candidates(text: str, message_id: int) -> list[PersonaCandidate]:
+    """P-1：从用户消息提取 user_framework 候选。
+
+    - 强信号短语命中 → 候选（单条自我定义即可 candidate）
+    - 引用他人/引用块/URL/代码/反问 → 拒绝
+    - 普通事实（我喜欢X）不命中 → 空列表
+    """
+    if not text or not isinstance(text, str):
+        return []
+    t = text.strip()
+    if len(t) < 4:
+        return []
+    low = t.lower()
+    if any(s in low for s in _REJECT_SUBSTRINGS):
+        return []
+    if any(q.search(t) for q in _QUOTE_PATTERNS):
+        return []
+    if any(re.search(p, t) for p in _RHETORICAL_PATTERNS):
+        return []
+    cands: list[PersonaCandidate] = []
+    seen: set[str] = set()
+    for pat in FRAMEWORK_PATTERNS:
+        m = re.search(pat, t)
+        if not m:
+            continue
+        content = m.group("content").strip()
+        if not content or content in seen:
+            continue
+        # 以"不是/不"开头的否定式保留原样（用户表达边界）
+        seen.add(content)
+        cands.append(PersonaCandidate(
+            kind="user_framework",
+            title=content[:20],
+            content=f"用户认为：{content}",
+            evidence_message_ids=[message_id],
+            confidence=0.60,
+            stability=0.50,
+            importance=0.60,
+            needs_confirmation=True,
+        ))
+        # 每条消息最多 2 个框架，防同一句多模式重复
+        if len(cands) >= 2:
+            break
+    if cands:
+        logger.info("persona: 提取 %d 个 user_framework 候选 (msg=%d)", len(cands), message_id)
+    return cands
+
+
+def validate_persona_candidate(candidate: PersonaCandidate, card) -> list[str]:
+    """P-1：候选程序校验（不依赖 LLM）。
+
+    返回问题列表，空列表 = 通过。
+    """
+    issues: list[str] = []
+    if candidate.kind not in PERSONA_KINDS:
+        issues.append(f"kind 不在白名单: {candidate.kind!r}")
+    if not candidate.content.strip():
+        issues.append("content 为空")
+    elif len(candidate.content) > 500:
+        issues.append("content 超过 500 字")
+    if not candidate.evidence_message_ids:
+        issues.append("evidence_message_ids 为空（空证据不得进入 active）")
+    for key, val in (("confidence", candidate.confidence), ("stability", candidate.stability),
+                     ("importance", candidate.importance), ("emotional_weight", candidate.emotional_weight)):
+        if not 0.0 <= float(val) <= 1.0:
+            issues.append(f"{key} 超出 0-1: {val!r}")
+    # 敏感性：内容含密钥/验证码等直接拒绝（与 MEMORY_SPEC 5.6 一致）
+    import re as _re
+    if _re.search(r"(?:password|api[_-]?key|token|验证码|支付密码|银行卡|私钥)", candidate.content, _re.I):
+        issues.append("content 疑似敏感信息")
+    return issues
+
+
+# ---------- PersonaCandidate → MemoryCandidate 转换 ----------
+
+def persona_candidate_to_memory(candidate: PersonaCandidate, source_message_id: int) -> dict | None:
+    """P-1：窄转换（PERSONA_LOOP_SPEC 15 映射表）。
+
+    转换失败返回 None 并记日志，不阻断回复。
+    """
+    kind = candidate.kind
+    if kind not in KIND_DEFAULT_CONFIDENCE:
+        logger.warning("persona_candidate_rejected: unknown kind %s", kind)
+        return None
+    layer = {
+        "user_framework": "semantic",
+        "character_belief": "semantic",
+        "shared_meaning": "episodic",
+        "relationship_event": "episodic",
+        "interaction_rule": "procedural",
+    }[kind]
+    meta = {
+        "kind": kind,
+        "title": candidate.title,
+        "scope": list(candidate.scope),
+        "stability": candidate.stability,
+        "emotional_weight": candidate.emotional_weight,
+        "user_confirmed": candidate.user_confirmed,
+        "role_compatible": candidate.role_compatible,
+        "needs_confirmation": candidate.needs_confirmation,
+        "evidence_message_ids": list(candidate.evidence_message_ids),
+    }
+    return {
+        "kind": kind,
+        "layer": layer,
+        "content": candidate.content,
+        "confidence": KIND_DEFAULT_CONFIDENCE[kind],
+        "importance": candidate.importance,
+        "source": "rule_extract",
+        "source_message_id": source_message_id,
+        "subject": candidate.subject,
+        "meta": meta,
+        "needs_confirmation": candidate.needs_confirmation,
+    }
