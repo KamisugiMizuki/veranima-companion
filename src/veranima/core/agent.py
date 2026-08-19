@@ -140,6 +140,14 @@ class Agent:
         except Exception as e:
             logger.warning("state/history restore failed, starting fresh: %s", e)
 
+        # P-3 关系模型（PERSONA_LOOP_SPEC）：从快照恢复，否则用 initial_affection 先验
+        from .persona import RelationshipModel
+        if self.state.relationship:
+            self.relationship = RelationshipModel.from_dict(self.state.relationship)
+        else:
+            ia = float(((self.card.veranima or {}).get("initial_affection") or 0.5))
+            self.relationship = RelationshipModel.from_initial(initial_affection=ia)
+
         # MVP2 学习组件（持久化到 data/，随对话更新）
         root = self.config.get("root", ".")
         self.style = StyleLearner(persist_path=str(Path(root) / "data" / "style.json"))
@@ -217,6 +225,8 @@ class Agent:
     def _persist_state(self) -> None:
         """状态持久化（重启续接）：状态变更后写入 SQLite agent_state 单行。"""
         try:
+            # P-3：关系模型快照同步进 AgentState
+            self.state.relationship = self.relationship.to_dict()
             self.memory.save_state(self.state.to_snapshot())
         except Exception as e:
             logger.debug("state persist failed: %s", e)

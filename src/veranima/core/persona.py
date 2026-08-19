@@ -278,6 +278,158 @@ def extract_shared_meaning_candidates(text: str, message_id: int) -> list[Person
     ]
 
 
+# ---------- P-3 关系模型与 PAD ----------
+
+# 单维变化上限（PERSONA_LOOP_SPEC 7.3/16 P-3）
+REL_NORMAL_DELTA = 0.05
+REL_MAJOR_DELTA = 0.12
+
+# 事件类型 → 维度影响（正值=上升，负值=下降；major=重大事件允许 0.12）
+RELATIONSHIP_EVENTS: dict[str, dict] = {
+    "user_confirm":       {"trust": +0.05, "familiarity": +0.05, "cause_desc": "用户明确确认理解"},
+    "shared_project_done": {"reciprocity": +0.05, "familiarity": +0.05, "cause_desc": "共同完成长期任务"},
+    "boundary_violation": {"safety": -0.05, "conflict_tension": +0.05, "cause_desc": "角色越界"},
+    "user_violation":     {"safety": -0.03, "conflict_tension": +0.05, "cause_desc": "用户越界"},
+    "conflict_repaired":  {"trust": +0.05, "repair_progress": +0.08, "conflict_tension": -0.08, "cause_desc": "冲突修复"},
+    "requested_space":    {"intimacy": 0.0, "cause_desc": "用户要求空间（主动频率下降，亲密不降）"},
+    "long_absence":       {"familiarity": -0.02, "cause_desc": "长期无互动（不清零）"},
+}
+
+# 关系阶段阈值（PERSONA_LOOP_SPEC 3.4：多维派生，非 attachment 单值）
+# 从最高阶段向下匹配"达到该阶段的最小必要条件"
+STAGE_THRESHOLDS = (
+    ("长期共同体", lambda m: m.intimacy >= 0.85 and m.safety >= 0.85 and m.reciprocity >= 0.8 and m.trust >= 0.9),
+    ("亲密伙伴",   lambda m: m.intimacy >= 0.8 and m.safety >= 0.8 and m.reciprocity >= 0.7 and m.trust >= 0.8),
+    ("信任",       lambda m: m.trust >= 0.72 and m.familiarity >= 0.7 and m.safety >= 0.7),
+    ("熟悉",       lambda m: m.trust >= 0.55 and m.familiarity >= 0.55),
+)
+
+
+@dataclass
+class RelationshipModel:
+    """P-3：多维关系状态（attachment 保留为兼容汇总，不再单独驱动阶段）。"""
+
+    trust: float = 0.5
+    familiarity: float = 0.5
+    intimacy: float = 0.5
+    reciprocity: float = 0.5
+    safety: float = 0.5
+    conflict_tension: float = 0.2
+    repair_progress: float = 0.0
+    shared_projects: list[str] = field(default_factory=list)
+    recurring_rituals: list[str] = field(default_factory=list)
+    open_relational_threads: list[str] = field(default_factory=list)
+    last_meaningful_event_id: str = ""
+    updated_at: str = ""
+
+    def to_dict(self) -> dict:
+        import datetime
+        return {
+            "trust": round(self.trust, 4), "familiarity": round(self.familiarity, 4),
+            "intimacy": round(self.intimacy, 4), "reciprocity": round(self.reciprocity, 4),
+            "safety": round(self.safety, 4), "conflict_tension": round(self.conflict_tension, 4),
+            "repair_progress": round(self.repair_progress, 4),
+            "shared_projects": list(self.shared_projects),
+            "recurring_rituals": list(self.recurring_rituals),
+            "open_relational_threads": list(self.open_relational_threads),
+            "last_meaningful_event_id": self.last_meaningful_event_id,
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "RelationshipModel":
+        if not data:
+            return cls()
+        return cls(
+            trust=max(0.0, min(1.0, float(data.get("trust", 0.5)))),
+            familiarity=max(0.0, min(1.0, float(data.get("familiarity", 0.5)))),
+            intimacy=max(0.0, min(1.0, float(data.get("intimacy", 0.5)))),
+            reciprocity=max(0.0, min(1.0, float(data.get("reciprocity", 0.5)))),
+            safety=max(0.0, min(1.0, float(data.get("safety", 0.5)))),
+            conflict_tension=max(0.0, min(1.0, float(data.get("conflict_tension", 0.2)))),
+            repair_progress=max(0.0, min(1.0, float(data.get("repair_progress", 0.0)))),
+            shared_projects=list(data.get("shared_projects") or []),
+            recurring_rituals=list(data.get("recurring_rituals") or []),
+            open_relational_threads=list(data.get("open_relational_threads") or []),
+            last_meaningful_event_id=str(data.get("last_meaningful_event_id") or ""),
+            updated_at=str(data.get("updated_at") or ""),
+        )
+
+    @classmethod
+    def from_initial(cls, initial_affection: float = 0.5) -> "RelationshipModel":
+        """P-3：initial_affection 只做 intimacy/familiarity 先验，不自动 trust/safety。"""
+        ia = max(0.0, min(1.0, float(initial_affection)))
+        return cls(intimacy=ia, familiarity=ia)
+
+
+def apply_relationship_event(model: RelationshipModel, event: dict) -> RelationshipModel:
+    """P-3：确定性关系事件更新（带 event_id 去重、单维变化上限、cause 必填）。
+
+    event: {"type": str, "cause": str, "event_id": str | None, "delta": {dim: ±float} | None}
+    """
+    import datetime
+    etype = event.get("type", "")
+    if etype not in RELATIONSHIP_EVENTS and not event.get("delta"):
+        logger.warning("relationship: 未知事件类型 %r（忽略）", etype)
+        return model
+    eid = event.get("event_id")
+    if eid and eid == model.last_meaningful_event_id:
+        return model  # 幂等：同事件不重放
+    delta = dict(event.get("delta") or {})
+    for dim, d in (RELATIONSHIP_EVENTS.get(etype) or {}).items():
+        if dim != "cause_desc":
+            delta.setdefault(dim, d)
+    # 重大事件（major_event / delta 显式提供）允许 0.12，其余 0.05
+    limit = REL_MAJOR_DELTA if (etype == "major_event" or event.get("delta")) else REL_NORMAL_DELTA
+    out = model.to_dict()
+    for dim, d in delta.items():
+        if dim not in ("trust", "familiarity", "intimacy", "reciprocity", "safety",
+                       "conflict_tension", "repair_progress"):
+            continue
+        step = max(-limit, min(limit, float(d)))
+        out[dim] = max(0.0, min(1.0, getattr(model, dim) + step))
+    if etype == "shared_project_done":
+        cause = event.get("cause", "")
+        if cause and cause not in out["shared_projects"]:
+            out["shared_projects"] = out["shared_projects"] + [cause]
+    if eid:
+        out["last_meaningful_event_id"] = eid
+    out["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    logger.info("relationship event: %s (%s)", etype, event.get("cause", ""))
+    return RelationshipModel.from_dict(out)
+
+
+def derive_relationship_stage(model: RelationshipModel) -> str:
+    """P-3：多维状态 → 关系阶段（STAGE_THRESHOLDS 从高到低，首个满足=最高阶段）。"""
+    for stage, cond in STAGE_THRESHOLDS:
+        if cond(model):
+            return stage
+    return "初识"
+
+
+def apply_emotion_event(state, event: dict) -> None:
+    """P-3：PAD 情绪事件（增量钳制 0.2/次，衰减向 0.5 基线回归）。
+
+    state 需有 valence/arousal/dominance/last_cause 属性（AgentState P-3 字段）。
+    event: {"type", "cause", "delta": {valence/arousal/dominance: ±float}}
+    """
+    delta = event.get("delta") or {}
+    for dim in ("valence", "arousal", "dominance"):
+        d = delta.get(dim)
+        if d is None:
+            continue
+        old = getattr(state, dim, 0.5)
+        step = max(-0.2, min(0.2, float(d)))
+        setattr(state, dim, max(0.0, min(1.0, old + step)))
+    if hasattr(state, "last_cause"):
+        state.last_cause = event.get("cause") or event.get("type", "emotion")
+    # decay：无 delta 时向基线回归 10%
+    if not delta:
+        for dim in ("valence", "arousal", "dominance"):
+            old = getattr(state, dim, 0.5)
+            setattr(state, dim, old + (0.5 - old) * 0.1)
+
+
 # ---------- PersonaCandidate → MemoryCandidate 转换 ----------
 
 def persona_candidate_to_memory(candidate: PersonaCandidate, source_message_id: int) -> dict | None:

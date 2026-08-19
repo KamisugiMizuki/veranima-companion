@@ -243,38 +243,53 @@ class MemoryStore:
 
     def save_state(self, snapshot: dict) -> None:
         """Agent 内在状态（依恋度/精力/情绪/计数/R1 字段）单行 upsert。"""
+        import json as _json
         self.con.execute(
             """INSERT INTO agent_state (id, energy, mood, attachment, mood_score, total_messages,
-                     social_appetite, attention_topic, attention_scene,
-                     last_interaction_channel, last_cause, updated_at)
-               VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(id) DO UPDATE SET
-                energy=excluded.energy, mood=excluded.mood, attachment=excluded.attachment,
-                mood_score=excluded.mood_score, total_messages=excluded.total_messages,
-                social_appetite=excluded.social_appetite, attention_topic=excluded.attention_topic,
-                attention_scene=excluded.attention_scene,
-                last_interaction_channel=excluded.last_interaction_channel,
-                last_cause=excluded.last_cause,
-                updated_at=excluded.updated_at""",
+                    social_appetite, attention_topic, attention_scene,
+                    last_interaction_channel, last_cause,
+                    valence, arousal, dominance, relationship, updated_at)
+              VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              ON CONFLICT(id) DO UPDATE SET
+               energy=excluded.energy, mood=excluded.mood, attachment=excluded.attachment,
+               mood_score=excluded.mood_score, total_messages=excluded.total_messages,
+               social_appetite=excluded.social_appetite, attention_topic=excluded.attention_topic,
+               attention_scene=excluded.attention_scene,
+               last_interaction_channel=excluded.last_interaction_channel,
+               last_cause=excluded.last_cause,
+               valence=excluded.valence, arousal=excluded.arousal, dominance=excluded.dominance,
+               relationship=excluded.relationship,
+               updated_at=excluded.updated_at""",
             (snapshot.get("energy", 100.0), snapshot.get("mood", "平静"),
              snapshot.get("attachment", 0.5), snapshot.get("mood_score", 0.0),
              snapshot.get("total_messages", 0),
              snapshot.get("social_appetite", 0.8), snapshot.get("attention_topic", ""),
              snapshot.get("attention_scene", "normal"),
              snapshot.get("last_interaction_channel", ""), snapshot.get("last_cause", "startup"),
+             snapshot.get("valence", 0.5), snapshot.get("arousal", 0.5), snapshot.get("dominance", 0.5),
+             _json.dumps(snapshot.get("relationship") or {}, ensure_ascii=False),
              _now()),
         )
         self.con.commit()
 
     def load_state(self) -> dict | None:
         """读取持久化的 Agent 状态；无记录（新库/旧库未初始化）返回 None。"""
+        import json as _json
         row = self.con.execute(
             "SELECT energy, mood, attachment, mood_score, total_messages,"
             " social_appetite, attention_topic, attention_scene,"
-            " last_interaction_channel, last_cause"
+            " last_interaction_channel, last_cause,"
+            " valence, arousal, dominance, relationship"
             " FROM agent_state WHERE id=1"
         ).fetchone()
-        return dict(row) if row else None
+        if not row:
+            return None
+        d = dict(row)
+        try:
+            d["relationship"] = _json.loads(d.get("relationship") or "{}")
+        except Exception:
+            d["relationship"] = {}
+        return d
 
     def update_latest(self, memory_id: int, new_content: str, *, confidence: float = 1.0, meta: dict | None = None) -> MemoryEntry:
         """显式版本链：修正不覆盖——新版本入链，旧版本保留（DESIGN.md 写入与检索节）。

@@ -30,6 +30,12 @@ class AgentState:
     attention_scene: str = "normal"    # 场景：normal/busy/away
     last_interaction_channel: str = "" # 最近互动通道：im/tts/qq
     last_cause: str = "startup"        # 最近一次状态变更原因
+    # P-3（PERSONA_LOOP_SPEC）：PAD 情绪向量（0-1，向 0.5 基线衰减）
+    valence: float = 0.5
+    arousal: float = 0.5
+    dominance: float = 0.5
+    # P-3：RelationshipModel 快照（重启恢复；普通消息不改变）
+    relationship: dict = field(default_factory=dict)
     # 内部
     _last_tick: float = field(default=0.0, repr=False)
     _mood_score: float = field(default=0.0, repr=False)   # 近期互动累积
@@ -167,6 +173,11 @@ class AgentState:
             "attention_scene": self.attention_scene,
             "last_interaction_channel": self.last_interaction_channel,
             "last_cause": self.last_cause,
+            # P-3：PAD + 关系快照（旧库缺字段时 from_snapshot 用默认）
+            "valence": round(self.valence, 4),
+            "arousal": round(self.arousal, 4),
+            "dominance": round(self.dominance, 4),
+            "relationship": self.relationship,
         }
 
     @classmethod
@@ -187,6 +198,12 @@ class AgentState:
         st.attention_scene = str(data.get("attention_scene", st.attention_scene) or "normal")
         st.last_interaction_channel = str(data.get("last_interaction_channel", st.last_interaction_channel) or "")
         st.last_cause = str(data.get("last_cause", st.last_cause) or "startup")
+        # P-3：PAD 恢复（缺失用默认 0.5）；relationship 快照恢复（缺失保留默认空）
+        st.valence = max(0.0, min(1.0, float(data.get("valence", st.valence))))
+        st.arousal = max(0.0, min(1.0, float(data.get("arousal", st.arousal))))
+        st.dominance = max(0.0, min(1.0, float(data.get("dominance", st.dominance))))
+        rel = data.get("relationship")
+        st.relationship = dict(rel) if isinstance(rel, dict) else {}
         return st
 
     @property

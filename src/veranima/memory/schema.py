@@ -170,6 +170,11 @@ def init_db(db_path: str | Path, dim: int = EMBEDDING_DIM, provider=None) -> sql
             ("attention_scene", "TEXT NOT NULL DEFAULT 'normal'"),
             ("last_interaction_channel", "TEXT NOT NULL DEFAULT ''"),
             ("last_cause", "TEXT NOT NULL DEFAULT 'startup'"),
+            # P-3（PERSONA_LOOP_SPEC）：PAD + 关系快照
+            ("valence", "REAL NOT NULL DEFAULT 0.5"),
+            ("arousal", "REAL NOT NULL DEFAULT 0.5"),
+            ("dominance", "REAL NOT NULL DEFAULT 0.5"),
+            ("relationship", "TEXT NOT NULL DEFAULT '{}'"),
         ):
             if name not in cols:
                 con.execute(f"ALTER TABLE agent_state ADD COLUMN {name} {ddl}")
