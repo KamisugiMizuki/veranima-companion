@@ -314,6 +314,7 @@ class Agent:
             channel=channel,
             clarification=is_clarification(user_text),  # R1 可逆性：追问 → 精确值（R1_SPEC 3）
             extra_blocks=extra_blocks,
+            relationship=self.relationship,  # P-4：PersonaBrief 接入口
         )
 
         # 4. 组装对话（历史 + 当前）；当前轮含图时用多模态 content 数组

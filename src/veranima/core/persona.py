@@ -430,6 +430,132 @@ def apply_emotion_event(state, event: dict) -> None:
             setattr(state, dim, old + (0.5 - old) * 0.1)
 
 
+# ---------- P-4 Persona Brief ----------
+
+# 每类最多条数与总条数/字符上限（PERSONA_LOOP_SPEC 8）
+PERSONA_BRIEF_PER_CATEGORY = 2
+PERSONA_BRIEF_MAX_ITEMS = 6
+PERSONA_BRIEF_MAX_CHARS = 1800
+
+
+@dataclass
+class PersonaBrief:
+    """P-4：人格上下文（如何理解和回应），与 Memory Brief（有哪些证据）分离。"""
+
+    core_tensions: list[str] = field(default_factory=list)
+    relevant_user_frameworks: list[dict] = field(default_factory=list)
+    relevant_character_beliefs: list[dict] = field(default_factory=list)
+    shared_meanings: list[dict] = field(default_factory=list)
+    relationship_context: dict = field(default_factory=dict)
+    inner_state: dict = field(default_factory=dict)
+    open_tensions: list[str] = field(default_factory=list)
+
+
+def _query_hits(query: str, *fields: str) -> bool:
+    """轻量相关性：query 与字段出现 2+ 字重叠词即相关（低成本近似，无 embedding）。"""
+    q = query or ""
+    if not q:
+        return False
+    qchars = set(q)
+    for f in fields:
+        f = f or ""
+        if not f:
+            continue
+        # 2-4 字滑动窗口重叠
+        for n in (3, 2):
+            for i in range(len(q) - n + 1):
+                if q[i:i + n] in f:
+                    return True
+    return False
+
+
+def build_persona_brief(
+    query: str,
+    card,
+    relationship,
+    state,
+    memory,
+    *,
+    max_chars: int = PERSONA_BRIEF_MAX_CHARS,
+) -> PersonaBrief:
+    """P-4：按相关性选人格上下文，每类 ≤2 条、总计 ≤6 条、≤max_chars。"""
+    cp = card.core_profile
+    tensions = [f"{t['left']} / {t['right']}" for t in cp.get("inner_tensions", [])]
+    brief = PersonaBrief(core_tensions=tensions)
+
+    def _pick(layer: str, kind: str) -> list[dict]:
+        out = []
+        for e in memory.list_layer(layer, limit=30):
+            meta = e.meta or {}
+            if meta.get("kind") != kind:
+                continue
+            scope = meta.get("scope") or []
+            title = meta.get("title") or ""
+            if _query_hits(query, e.content, title, *([s if isinstance(s, str) else "" for s in scope])):
+                out.append({"content": e.content, "kind": kind})
+            if len(out) >= PERSONA_BRIEF_PER_CATEGORY:
+                break
+        return out
+
+    brief.relevant_user_frameworks = _pick("semantic", "user_framework")
+    brief.relevant_character_beliefs = _pick("semantic", "character_belief")
+    brief.shared_meanings = _pick("episodic", "shared_meaning")
+
+    # 关系上下文（不暴露内部数值，只给阶段与边界）
+    stage = derive_relationship_stage(relationship)
+    brief.relationship_context = {
+        "stage": stage,
+        "trusted": relationship.trust >= 0.7,
+        "conflict": relationship.conflict_tension > 0.5,
+    }
+    # 内在状态：PAD 文字化（低/中/高），不暴露数值
+    v, a, d = getattr(state, "valence", 0.5), getattr(state, "arousal", 0.5), getattr(state, "dominance", 0.5)
+    brief.inner_state = {
+        "valence": "愉悦" if v >= 0.65 else ("低落" if v <= 0.35 else "平稳"),
+        "arousal": "兴奋" if a >= 0.65 else ("平静" if a <= 0.35 else "中等"),
+        "dominance": "掌控" if d >= 0.65 else ("被动" if d <= 0.35 else "均衡"),
+    }
+    # 总条数限制
+    all_items = (brief.relevant_user_frameworks + brief.relevant_character_beliefs + brief.shared_meanings)
+    if len(all_items) > PERSONA_BRIEF_MAX_ITEMS:
+        brief.relevant_user_frameworks = brief.relevant_user_frameworks[:PERSONA_BRIEF_MAX_ITEMS]
+        brief.relevant_character_beliefs = []
+        brief.shared_meanings = []
+    # 字符预算（完整条目截断，不在句中硬切）
+    total = len(format_persona_brief(brief))
+    if total > max_chars:
+        brief.shared_meanings = []
+        brief.relevant_character_beliefs = []
+        while brief.relevant_user_frameworks and len(format_persona_brief(brief)) > max_chars:
+            brief.relevant_user_frameworks = brief.relevant_user_frameworks[:-1]
+    return brief
+
+
+def format_persona_brief(brief: PersonaBrief) -> str:
+    """P-4：注入文本（不暴露 memory id/置信度数值/stability）。"""
+    parts: list[str] = []
+    if brief.core_tensions:
+        parts.append("【内在张力】" + "；".join(brief.core_tensions))
+    if brief.relationship_context:
+        rc = brief.relationship_context
+        parts.append(f"【关系】你们处于{rc['stage']}阶段。"
+                     + ("她信任你，可以表达分歧。" if rc["trusted"] else "她还在建立信任，注意分寸。")
+                     + ("当前关系有未消解的压力。" if rc["conflict"] else ""))
+    if brief.inner_state:
+        ins = brief.inner_state
+        parts.append(f"【当下状态】情绪{ins['valence']}、状态{ins['arousal']}、{ins['dominance']}感。")
+    if brief.relevant_user_frameworks:
+        lines = "\n".join(f"- {f['content']}" for f in brief.relevant_user_frameworks)
+        parts.append(f"【理解用户】用户表达过以下观点/框架（引用时保持原意，可扩展、对照或追问适用边界）：\n{lines}")
+    if brief.relevant_character_beliefs:
+        lines = "\n".join(f"- {f['content']}" for f in brief.relevant_character_beliefs)
+        parts.append(f"【角色观点】你形成过的观点：\n{lines}")
+    if brief.shared_meanings:
+        lines = "\n".join(f"- {f['content']}" for f in brief.shared_meanings)
+        parts.append(f"【共同意义】你们对某些共同经历的解释：\n{lines}")
+    return "\n".join(parts)
+
+
 # ---------- PersonaCandidate → MemoryCandidate 转换 ----------
 
 def persona_candidate_to_memory(candidate: PersonaCandidate, source_message_id: int) -> dict | None:

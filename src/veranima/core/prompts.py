@@ -82,6 +82,7 @@ def build_system_prompt(
     extra_blocks: list[str] | None = None,
     channel: str = "im",
     clarification: bool = False,  # R1 可逆性：用户追问细节 → 记忆行不模糊化（R1_SPEC 3）
+    relationship=None,  # P-4（PERSONA_LOOP_SPEC）：PersonaBrief 接入口；None=不注入
 ) -> str:
     """按预算组装系统 prompt。记忆按层注入，超出预算截断。extra_blocks 为附加块（学习参数/镜像/承诺）。
 
@@ -103,6 +104,16 @@ def build_system_prompt(
     # E. 相关记忆（MEMORY_SPEC 10.4：Context Brief 统一预算，完整 item 截断）
     from ..memory.brief import build_brief, format_brief
     query_hint = _latest_query(memory)
+
+    # P-4（PERSONA_LOOP_SPEC 8）：PersonaBrief 单一接入口（如何理解与回应）
+    if relationship is not None:
+        from .persona import build_persona_brief, format_persona_brief
+        persona_text = format_persona_brief(build_persona_brief(
+            query_hint, card, relationship, state, memory,
+        ))
+        if persona_text:
+            parts.append(persona_text)
+
     brief_items = build_brief(
         core_profile=memory.list_layer("core_profile", limit=20),
         procedural=memory.list_layer("procedural", limit=20),
