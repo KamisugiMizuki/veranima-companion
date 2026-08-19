@@ -124,7 +124,7 @@ QQ 形态额外启用：定时问候/节庆、离线思考（静默 30 分钟后
 | R4 | 有分寸的在场（场景锁/通道互斥/9 闸门/忽略自愈/visual 只产候选） | ✅ 实现 |
 | R5 | 外部任务协作（workorder/dsh bridge 取消/超时/截断） | ✅ 实现 |
 | MEMORY_SPEC | M1 版本真值 / M2 写入契约 / M3 混合召回 / M4 Context Brief / M5 整理器 / M6 文风学习 / M7 用户控制 / M8 离线评测 | ✅ 实现 |
-| PERSONA LOOP | P0 角色核心 / P1 用户框架 / P2 共同意义 / P3 多维关系 / P4 Persona Brief / P5 反思 / P6 独立回用 / P7 冲突修复 / P8 评测 / P9 PAD+ResponsePlan+表层印记 | 📐 设计完成，待实现 |
+| PERSONA LOOP | P0 角色核心 / P1 用户框架 / P2 共同意义 / P3 多维关系 / P4 Persona Brief / P5 反思 / P6 独立回用 / P7 冲突修复 / P8 评测 / P9 PAD+ResponsePlan+表层印记 | ✅ 实现 |
 | VISION | 三层感知（L1/L2 禁 LLM、L3 只产 Observation）/敏感窗口/观察预算 | ✅ 实现 |
 | GUI | 状态广播/历史分批/清空确认/立绘锚点布局/交叉淡入/IME/a11y | ✅ 实现 |
 

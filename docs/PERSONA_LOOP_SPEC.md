@@ -832,6 +832,9 @@ persona_candidate_to_memory(candidate, source_message_id) -> dict | None
 
 ## 16. 实现顺序
 
+> 状态：P-0 ~ P-9 全部实现并提交（2026-08-19，`feat(persona):` 系列；行为测试见 tests/test_persona_core.py ~ test_persona_wiring.py；499 passed）。
+> 联通验证：所有新函数均有产品链路消费方（agent/prompts/adapter），见 tests/test_persona_wiring.py；不存在"仅测试消费"的死代码。
+
 以下每个阶段都是独立可提交的垂直切片。除非该阶段明确列出，否则不得改动其他模块。
 
 ### P-0 角色核心扩展
