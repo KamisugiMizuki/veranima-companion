@@ -695,6 +695,8 @@ ipcMain.on('chat-send', (e, text) => {
     pushChat('pet', '（核心未连接）');
   }
 });
+ipcMain.handle('search-history', async (e, query) => wsRequest('search_history', { query: String(query || '') }));
+ipcMain.handle('get-self-model', async () => wsRequest('get_self_model'));
 
 // ---------- renderer → 核心 ----------
 ipcMain.on('pet-event', (e, payload) => {

@@ -18,7 +18,11 @@ contextBridge.exposeInMainWorld('pet', {
   // 聊天窗口通道
   onChatHistory: (cb) => ipcRenderer.on('chat-history', (e, m) => cb(m)),
   onChatLine: (cb) => ipcRenderer.on('chat-line', (e, m) => cb(m)),
+  onHistorySearchResults: (cb) => ipcRenderer.on('history-search-results', (e, m) => cb(m)),
+  onSelfModel: (cb) => ipcRenderer.on('self-model', (e, m) => cb(m)),
   sendChat: (text) => ipcRenderer.send('chat-send', text),
+  searchHistory: (query) => ipcRenderer.invoke('search-history', query),
+  getSelfModel: () => ipcRenderer.invoke('get-self-model'),
   reconnect: () => ipcRenderer.send('pet-reconnect'),
   stopReply: () => ipcRenderer.send('chat-stop'),  // GUI_SPEC 9：停止说话/取消回复
   resizePet: (dim) => ipcRenderer.send('pet-resize', dim),  // GUI_SPEC 4.2：窗口高度随气泡

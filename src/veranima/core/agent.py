@@ -640,6 +640,12 @@ class Agent:
                 self.memory.store("core_profile", f"自我模型 v{sm['version']}: {sm.get('learned_beliefs', [])}",
                                   confidence=0.7, meta={"kind": "self_model_snapshot", "version": sm["version"],
                                                         "evidence_message_ids": r.evidence_ids})
+            self.memory.store_self_model_chapter(
+                title=f"自我模型阶段 {sm['version']}",
+                self_interpretation=str(sm.get("learned_beliefs", "")),
+                key_events=list(r.evidence_ids),
+                relationship_changes=list((self.relationship.to_dict() or {}).get("open_relational_threads", [])),
+            )
             logger.info("persona reflection applied (evidence=%s)", r.evidence_ids)
 
     def _compact_history(self) -> None:

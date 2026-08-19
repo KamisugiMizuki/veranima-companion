@@ -237,7 +237,93 @@ class MemoryStore:
             (role, content, _now(), energy, mood),
         )
         self.con.commit()
-        return cur.lastrowid
+        return int(cur.lastrowid)
+
+    def search_messages(self, query: str, limit: int = 50, before_id: int | None = None) -> list[dict]:
+        """历史搜索：复用 messages_fts，按消息 id 倒序；空查询不返回全库。"""
+        query = str(query or "").strip()
+        if not query:
+            return []
+        limit = max(1, min(int(limit), 200))
+        # trigram 对少于 3 个字符的中文词不建 token；短词用参数化 LIKE 保证可搜。
+        if len(query) < 3:
+            params = (f"%{query}%", limit) if before_id is None else (f"%{query}%", int(before_id), limit)
+            sql = (
+                "SELECT id, role, content, created_at FROM messages "
+                "WHERE content LIKE ? ORDER BY id DESC LIMIT ?"
+                if before_id is None else
+                "SELECT id, role, content, created_at FROM messages "
+                "WHERE content LIKE ? AND id < ? ORDER BY id DESC LIMIT ?"
+            )
+            return [dict(r) for r in self.con.execute(sql, params).fetchall()]
+        if before_id is None:
+            rows = self.con.execute(
+                """SELECT m.id, m.role, m.content, m.created_at
+                   FROM messages_fts f JOIN messages m ON m.id=f.rowid
+                   WHERE messages_fts MATCH ? ORDER BY m.id DESC LIMIT ?""",
+                (query, limit),
+            ).fetchall()
+        else:
+            rows = self.con.execute(
+                """SELECT m.id, m.role, m.content, m.created_at
+                   FROM messages_fts f JOIN messages m ON m.id=f.rowid
+                   WHERE messages_fts MATCH ? AND m.id < ?
+                   ORDER BY m.id DESC LIMIT ?""",
+                (query, int(before_id), limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def store_self_model_chapter(self, *, title: str, self_interpretation: str = "",
+                                 key_events: list[int] | None = None,
+                                 relationship_changes: list[str] | None = None,
+                                 open_threads: list[str] | None = None,
+                                 period_start: str | None = None,
+                                 period_end: str | None = None) -> int:
+        """新增人生章节；章节是角色自我解释，不是原始消息摘要。"""
+        now = _now()
+        cur = self.con.execute(
+            """INSERT INTO self_model_chapters
+               (title, period_start, period_end, key_events, self_interpretation,
+                relationship_changes, open_threads, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (str(title).strip()[:120], period_start, period_end,
+             json.dumps(key_events or [], ensure_ascii=False), str(self_interpretation)[:1000],
+             json.dumps(relationship_changes or [], ensure_ascii=False),
+             json.dumps(open_threads or [], ensure_ascii=False), now, now),
+        )
+        self.con.commit()
+        return int(cur.lastrowid)
+
+    def _chapter_row(self, row) -> dict:
+        d = dict(row)
+        for key in ("key_events", "relationship_changes", "open_threads"):
+            try: d[key] = json.loads(d[key] or "[]")
+            except (TypeError, json.JSONDecodeError): d[key] = []
+        return d
+
+    def get_self_model_chapter(self, chapter_id: int) -> dict | None:
+        row = self.con.execute("SELECT * FROM self_model_chapters WHERE id=?", (int(chapter_id),)).fetchone()
+        return self._chapter_row(row) if row else None
+
+    def list_self_model_chapters(self, limit: int = 50) -> list[dict]:
+        rows = self.con.execute(
+            "SELECT * FROM self_model_chapters ORDER BY id DESC LIMIT ?", (max(1, min(int(limit), 200)),)
+        ).fetchall()
+        return [self._chapter_row(r) for r in rows]
+
+    def update_self_model_chapter(self, chapter_id: int, **changes) -> bool:
+        allowed = {"title", "period_start", "period_end", "self_interpretation", "key_events", "relationship_changes", "open_threads"}
+        sets, vals = [], []
+        for key, value in changes.items():
+            if key not in allowed: continue
+            if key in {"key_events", "relationship_changes", "open_threads"}:
+                value = json.dumps(value or [], ensure_ascii=False)
+            sets.append(f"{key}=?"); vals.append(value)
+        if not sets: return False
+        sets += ["version=version+1", "updated_at=?"]; vals.append(_now()); vals.append(int(chapter_id))
+        cur = self.con.execute(f"UPDATE self_model_chapters SET {', '.join(sets)} WHERE id=?", vals)
+        self.con.commit()
+        return cur.rowcount == 1
 
     # ---------- Agent 状态持久化（2026-08-04 重启续接） ----------
 

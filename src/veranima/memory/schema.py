@@ -43,6 +43,22 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
 
+-- SelfModel 人生章节（独立于原始消息和规范记忆；每章可审计、可更新）
+CREATE TABLE IF NOT EXISTS self_model_chapters (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    title               TEXT NOT NULL,
+    period_start        TEXT,
+    period_end          TEXT,
+    key_events          TEXT NOT NULL DEFAULT '[]',
+    self_interpretation TEXT NOT NULL DEFAULT '',
+    relationship_changes TEXT NOT NULL DEFAULT '[]',
+    open_threads        TEXT NOT NULL DEFAULT '[]',
+    version             INTEGER NOT NULL DEFAULT 1,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_self_model_chapters_updated ON self_model_chapters(updated_at);
+
 -- R4 主动消息反馈（R4_SPEC 4：忽略与自愈）
 CREATE TABLE IF NOT EXISTS proactive_feedback (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,

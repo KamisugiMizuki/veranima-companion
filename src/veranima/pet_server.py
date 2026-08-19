@@ -375,6 +375,19 @@ class PetServer:
                         "character_card": cfg.get("character_card", ""),
                         "pet": {"avatar_height": (cfg.get("pet") or {}).get("avatar_height", 200)},
                     }})
+                elif mtype == "search_history":
+                    data = msg.get("data") or {}
+                    query = str(data.get("query") or msg.get("query") or "")
+                    before_id = data.get("before_id")
+                    rows = self._agent.memory.search_messages(query, before_id=before_id) if self._agent else []
+                    await self._send({"type": "history_search_results", "id": msg.get("id"), "query": query, "data": rows})
+                elif mtype == "get_self_model":
+                    chapters = self._agent.memory.list_self_model_chapters() if self._agent else []
+                    await self._send({"type": "self_model", "id": msg.get("id"), "data": {"chapters": chapters}})
+                elif mtype == "get_self_model_chapter":
+                    chapter_id = (msg.get("data") or {}).get("id")
+                    chapter = self._agent.memory.get_self_model_chapter(chapter_id) if self._agent and chapter_id else None
+                    await self._send({"type": "self_model_chapter", "id": msg.get("id"), "data": chapter})
                 elif mtype == "save_config":
                     # 设置窗口保存：白名单字段更新（全字段——之前只处理 llm/qq.allowed，
                     # character_card/tts/stt 等被静默丢弃，设置页形同虚设）

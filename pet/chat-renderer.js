@@ -2,6 +2,10 @@
 const msgsEl = document.getElementById('msgs');
 const input = document.getElementById('input');
 const sendBtn = document.getElementById('send');
+const historyQuery = document.getElementById('historyQuery');
+const historySearch = document.getElementById('historySearch');
+const historyClear = document.getElementById('historyClear');
+const chaptersEl = document.getElementById('chapters');
 const statusText = document.getElementById('statusText');
 const charName = document.getElementById('charName');
 let activePetMsg = null;   // 流式进行中的桌宠气泡元素（speak_chunk 追加）
@@ -105,6 +109,38 @@ window.pet.onChatLine((m) => {
   if (m.role === 'pet' && m.finish) { finishPetMsg(m.ts); return; }
   appendMsg(m);
 });
+
+function renderSearchResults(rows) {
+  renderGeneration += 1;
+  msgsEl.innerHTML = '';
+  const list = (rows || []).map((r) => ({
+    role: r.role === 'assistant' ? 'pet' : r.role,
+    text: r.content,
+    ts: r.created_at,
+  }));
+  renderHistory(list, renderGeneration);
+}
+historySearch.addEventListener('click', async () => {
+  const q = historyQuery.value.trim();
+  if (!q) return;
+  const result = await window.pet.searchHistory(q);
+  renderSearchResults(result && result.data);
+});
+historyClear.addEventListener('click', () => {
+  historyQuery.value = '';
+  window.location.reload();
+});
+function renderChapters(rows) {
+  chaptersEl.textContent = '';
+  if (!rows || !rows.length) { chaptersEl.textContent = '暂无章节'; return; }
+  for (const row of rows) {
+    const item = document.createElement('div'); item.className = 'chapter';
+    const title = document.createElement('strong'); title.textContent = row.title || '未命名章节';
+    const body = document.createElement('div'); body.textContent = row.self_interpretation || '暂无自我解释';
+    item.append(title, body); chaptersEl.appendChild(item);
+  }
+}
+window.pet.getSelfModel().then((result) => renderChapters(result && result.data && result.data.chapters));
 // 清空确认：main 侧右键菜单已带确认，无 renderer 侧逻辑（GUI_SPEC 6）
 // R3_SPEC 2/4：状态机 → 状态点/文案/输入/按钮
 const STATUS_UI = {
