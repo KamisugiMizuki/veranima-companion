@@ -306,3 +306,30 @@ def test_mirror_filters_stopwords(tmp_path):
     top = m.stats()["top"]
     assert "我想买一" in top  # 内容词保留（2-4 字组）
     assert "这个" not in top and "那个" not in top  # 停用词被过滤
+
+
+# ---------- M-7 用户控制（MEMORY_SPEC 14/15） ----------
+
+def test_list_and_export_memories(tmp_path):
+    a = _agent_with_memory(tmp_path)
+    a.memory.store("semantic", "用户喜欢喝咖啡", meta={"kind": "user_fact"})
+    a.memory.store("episodic", "上次一起爬山", meta={"kind": "shared_episode"})
+    listed = a.list_memories()
+    assert any("喝咖啡" in m["content"] for m in listed)
+    assert any("爬山" in m["content"] for m in listed)
+    jl = a.export_memories("jsonl")
+    assert "用户喜欢喝咖啡" in jl
+    md = a.export_memories("markdown")
+    assert "## semantic" in md
+    assert "## episodic" in md
+
+
+def test_forget_removes_memory_keeps_messages(tmp_path):
+    a = _agent_with_memory(tmp_path)
+    a.memory.store_message("user", "我家的猫叫咪咪", 80, "平静")
+    a.memory.store("semantic", "用户家的猫叫咪咪", meta={"kind": "user_fact"})
+    n = a.memory.erase(content_contains="咪咪")
+    assert n >= 1
+    assert a.list_memories() == []
+    assert len(a.memory.recent_messages(10)) == 1  # 原文保留（单独删除）
+

@@ -689,6 +689,43 @@ class MemoryStore:
             "memories": memories,
         }
 
+    # ---------- M-7 用户控制导出（MEMORY_SPEC 15） ----------
+
+    def export(self, fmt: str = "jsonl") -> str:
+        """导出全部记忆（含版本链，可移植格式）。
+
+        - jsonl：每行一条规范记忆（含 meta）
+        - markdown：按层分组列表
+        """
+        rows = self.con.execute(
+            "SELECT * FROM memories ORDER BY layer, id"
+        ).fetchall()
+        entries = [self._row_to_entry(r) for r in rows]
+        if fmt == "markdown":
+            lines = ["# veranima 记忆导出", ""]
+            for layer in LAYERS:
+                group = [e for e in entries if e.layer == layer]
+                if not group:
+                    continue
+                lines.append(f"## {layer}（{len(group)} 条）")
+                for e in group:
+                    sup = e.meta.get("supersedes")
+                    tag = f" (supersedes={sup})" if sup else ""
+                    lines.append(f"- v{e.version}{tag} [{e.confidence:.2f}] {e.content}")
+                lines.append("")
+            return "\n".join(lines)
+        # jsonl
+        import json as _json
+        out = []
+        for e in entries:
+            out.append(_json.dumps({
+                "id": e.id, "layer": e.layer, "content": e.content,
+                "importance": e.importance, "confidence": e.confidence,
+                "version": e.version, "strength": e.strength,
+                "meta": e.meta, "created_at": e.created_at, "updated_at": e.updated_at,
+            }, ensure_ascii=False))
+        return "\n".join(out)
+
     # ---------- 整理（MEMORY_SPEC 12.2 确定性整理器） ----------
 
     def curate(self, *, sim_dup: float = 0.92, sim_merge: float = 0.78, min_confidence: float = 0.55, max_ops: int = 50) -> dict:

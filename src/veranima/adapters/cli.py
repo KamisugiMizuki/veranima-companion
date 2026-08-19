@@ -87,8 +87,28 @@ class CLIAdapter:
                 f"依恋度 {s['attachment']:.3f} | 本轮消息 {s['history_len']} 条"
             )
         elif op == "/memory":
-            counts = self.agent.memory.curate().get("counts", {})
-            c.print("记忆分布：" + "  ".join(f"{k}={v}" for k, v in counts.items()))
+            # M-7：列出各层记忆（不只是分布）
+            parts = arg.split()
+            layer = parts[0] if parts and parts[0] in ("semantic", "episodic", "procedural", "core_profile", "session") else None
+            mems = self.agent.list_memories(layer=layer, limit=20)
+            if not mems:
+                c.print("（暂无记忆）" if layer is None else f"（{layer} 层暂无记忆）")
+            else:
+                for m in mems:
+                    st = f"[{m['status']}]" if m["status"] != "active" else ""
+                    c.print(f"#{m['id']} {m['layer']} v{m['version']} {st} {m['content'][:60]}")
+                c.print(f"共显示 {len(mems)} 条；/memory <层名> 只看一层")
+        elif op == "/export":
+            fmt = arg.strip() or "jsonl"
+            if fmt not in ("jsonl", "markdown"):
+                c.print("用法：/export [jsonl|markdown]")
+                return
+            data = self.agent.export_memories(fmt=fmt)
+            out_path = f"data/memory_export.{fmt}"
+            import pathlib
+            pathlib.Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+            pathlib.Path(out_path).write_text(data, encoding="utf-8")
+            c.print(f"已导出 {len(data.splitlines())} 行 → {out_path}")
         elif op == "/style":
             ls = self.agent.learning_summary()
             params = ls["params"]
@@ -99,6 +119,16 @@ class CLIAdapter:
             )
             if ls["mirror_top"]:
                 c.print("用户高频词：" + " ".join(f"{w}×{n}" for w, n in list(ls["mirror_top"].items())[:6]))
+            # M-6：文风画像统计
+            prof = ls["profile"]
+            if prof["sample_count"] >= 20:
+                c.print(
+                    f"文风画像（{prof['sample_count']} 样本，置信 {prof['confidence']:.2f}）："
+                    f"均长 {prof['avg_message_chars']:.0f} 字 | 问句 {prof['question_ratio']:.2f} | "
+                    f"正式度 {prof['formality']:.2f} | 直接度 {prof['directness']:.2f}"
+                )
+            else:
+                c.print(f"文风画像收集中（{prof['sample_count']}/20 样本）")
             c.print(f"未兑现承诺：{ls['open_promises']} 条")
         elif op == "/review":
             c.print("（小V 在想……）")

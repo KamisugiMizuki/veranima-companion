@@ -160,8 +160,29 @@ class Agent:
             "params": self.style.params.snapshot(),
             "steps": self.style._steps,
             "mirror_top": self.mirror.stats()["top"],
+            "profile": self.style.profile.snapshot(),
             "open_promises": len(self.promises.open_promises()),
         }
+
+    def list_memories(self, layer: str | None = None, limit: int = 20) -> list[dict]:
+        """M-7：分层列出记忆（current 版本，供用户查看）。"""
+        layers = (layer,) if layer else ("core_profile", "procedural", "semantic", "episodic", "session")
+        out: list[dict] = []
+        for ly in layers:
+            for e in self.memory.list_layer(ly, limit=limit):
+                out.append({
+                    "id": e.id,
+                    "layer": ly,
+                    "content": e.content,
+                    "confidence": e.confidence,
+                    "status": e.status,
+                    "version": e.version,
+                })
+        return out
+
+    def export_memories(self, fmt: str = "jsonl") -> str:
+        """M-7：导出全部记忆（jsonl/markdown）。"""
+        return self.memory.export(fmt=fmt)
 
     def reset_style(self) -> dict:
         """reset --style：回滚风格参数与镜像（核心人格不受影响）。"""
