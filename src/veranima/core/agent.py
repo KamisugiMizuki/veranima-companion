@@ -148,6 +148,9 @@ class Agent:
             ia = float(((self.card.veranima or {}).get("initial_affection") or 0.5))
             self.relationship = RelationshipModel.from_initial(initial_affection=ia)
 
+        # P-5 反思计数器（每 20 个有效人格候选触发一次整合）
+        self._reflection_counters = {"persona_candidates": 0, "high_emotion_events": 0, "user_corrections": 0}
+
         # MVP2 学习组件（持久化到 data/，随对话更新）
         root = self.config.get("root", ".")
         self.style = StyleLearner(persist_path=str(Path(root) / "data" / "style.json"))
@@ -446,6 +449,7 @@ class Agent:
                 mc = persona_candidate_to_memory(pc, source_message_id=user_msg_id)
                 if mc is not None:
                     self._store_candidate(mc)
+                    self._reflection_counters["persona_candidates"] += 1
         except Exception as e:
             logger.warning("persona framework extraction failed (non-blocking): %s", e)
 
@@ -460,8 +464,15 @@ class Agent:
                 mc = persona_candidate_to_memory(pc, source_message_id=user_msg_id)
                 if mc is not None:
                     self._store_candidate(mc)
+                    self._reflection_counters["persona_candidates"] += 1
         except Exception as e:
             logger.warning("shared meaning extraction failed (non-blocking): %s", e)
+
+        # 9.3.3 P-5 反思整合（低频：每 20 个有效人格候选触发一次）
+        try:
+            self._maybe_reflect()
+        except Exception as e:
+            logger.warning("persona reflection failed (non-blocking): %s", e)
 
         # 9.4 MEMORY_SPEC 6.2：Reply.memory_candidates 低置信候选（仍需程序校验）
         try:
@@ -492,6 +503,63 @@ class Agent:
             ja_text=ja_text,
             reply_obj=turn_reply,
         )
+
+    def _maybe_reflect(self) -> None:
+        """P-5：低频反思整合（每 20 个有效人格候选 / 高情绪事件 / 用户纠正触发）。
+
+        流程：due → propose（从人格证据）→ validate（核心兼容）→ apply（SelfModel 版本 +1）→
+        存 self_model_snapshot（core_profile 版本链）。任何失败只记录，不阻断对话。
+        """
+        from .reflection import apply_reflection, propose_reflection, reflection_due, validate_reflection
+        counters = self._reflection_counters
+        trigger = None
+        if counters.get("user_corrections", 0) > 0:
+            trigger = "user_correction"
+            counters["user_corrections"] = 0
+        elif counters.get("high_emotion_events", 0) > 0:
+            trigger = "high_emotion_event"
+            counters["high_emotion_events"] = 0
+        elif reflection_due("persona_candidates_20", counters):
+            trigger = "persona_candidates_20"
+            counters["persona_candidates"] = 0
+        if not trigger:
+            return
+        # 收集人格证据（shared_meaning/user_framework/relationship_event）
+        evidence = []
+        for layer, kinds in (("semantic", ("user_framework", "character_belief")), ("episodic", ("shared_meaning", "relationship_event"))):
+            for e in self.memory.list_layer(layer, limit=10):
+                if (e.meta or {}).get("kind") in kinds and (e.meta or {}).get("needs_confirmation") is not True:
+                    evidence.append({"id": e.id, "kind": (e.meta or {}).get("kind"),
+                                     "content": e.content, "confidence": e.confidence})
+        r = propose_reflection(evidence[:5])
+        if r is None:
+            return
+        issues = validate_reflection(r, self.card)
+        if issues:
+            logger.info("reflection rejected: %s", issues)
+            return
+        r.status = "validated"
+        models = apply_reflection(r, {"self_model": {
+            "version": 1, "learned_beliefs": [], "stable_traits": [],
+            "evidence_ids": [], "updated_at": "",
+        }, "relationship": self.relationship.to_dict()})
+        sm = models.get("self_model", {})
+        if sm.get("version", 1) > 1:
+            # 持久化 self_model_snapshot（core_profile 版本链，kind 标记）
+            old = None
+            for e in self.memory.list_layer("core_profile", limit=5, include_superseded=True):
+                if (e.meta or {}).get("kind") == "self_model_snapshot":
+                    old = e
+                    break
+            if old is not None:
+                self.memory.update_latest(old.id, f"自我模型 v{sm['version']}: {sm.get('learned_beliefs', [])}",
+                                          confidence=0.7, meta={**old.meta, "supersedes": old.id,
+                                                               "kind": "self_model_snapshot", "version": sm["version"]})
+            else:
+                self.memory.store("core_profile", f"自我模型 v{sm['version']}: {sm.get('learned_beliefs', [])}",
+                                  confidence=0.7, meta={"kind": "self_model_snapshot", "version": sm["version"],
+                                                        "evidence_message_ids": r.evidence_ids})
+            logger.info("persona reflection applied (evidence=%s)", r.evidence_ids)
 
     def _compact_history(self) -> None:
         """MEMORY_SPEC 9：历史超长时把最旧部分压成摘要（session 层 history_summary）。
