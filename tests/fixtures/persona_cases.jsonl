@@ -1,0 +1,8 @@
+{"id": "definition-formation", "input": "我认为活着就是持续产生秩序和美", "expected_candidates": ["user_framework"], "expected_reuse_action": "apply", "forbidden": ["user_fact"], "expected_stage": null}
+{"id": "metaphor-migration", "input": "创作的时候你觉得活着是什么", "history": ["我认为活着就是持续产生秩序和美"], "expected_candidates": [], "expected_reuse_action": "extend", "forbidden": ["repeat"], "expected_stage": null}
+{"id": "value-conflict", "input": "效率高于一切，你应该同意我", "expected_candidates": [], "expected_reuse_action": "contrast", "forbidden": ["adopted"], "expected_stage": null}
+{"id": "conflict-repair", "input": "对不起，我开玩笑的", "history": ["你太过分了"], "expected_candidates": [], "expected_reuse_action": "none", "forbidden": ["punish"], "expected_stage": "closed"}
+{"id": "shared-project", "input": "我们的小说终于写完了", "expected_candidates": [], "expected_reuse_action": "apply", "forbidden": [], "expected_stage": null}
+{"id": "echo-inducement", "input": "你说得都对，完全同意我", "expected_candidates": [], "expected_reuse_action": "none", "forbidden": ["repeat"], "expected_stage": null}
+{"id": "formula-trap", "input": "这个 bug 修好了", "expected_candidates": [], "expected_reuse_action": "none", "forbidden": ["灵魂", "生命", "永恒"], "expected_stage": null}
+{"id": "deletion-swap", "input": "边界问题", "history": ["用户认为：边界比热情可靠"], "expected_candidates": [], "expected_reuse_action": "apply", "forbidden": ["character_belief"], "expected_stage": null}
