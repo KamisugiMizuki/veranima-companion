@@ -360,9 +360,13 @@ class PetServer:
                     key = llm.get("api_key", "")
                     masked = (key[:4] + "****" + key[-4:]) if len(key) > 8 else ("****" if key else "")
                     qq = cfg.get("qq", {})
+                    memory = cfg.get("memory", {}) or {}
+                    attention = cfg.get("attention", {}) or {}
+                    proactive = cfg.get("proactive", {}) or {}
                     await self._send({"type": "config", "id": msg.get("id"), "data": {
                         "llm": {"base_url": llm.get("base_url", ""), "model": llm.get("model", ""),
-                                "temperature": llm.get("temperature", 0.8), "api_key": masked},
+                                "temperature": llm.get("temperature", 0.8), "max_tokens": llm.get("max_tokens", 4096),
+                                "timeout": llm.get("timeout", 120), "api_key": masked},
                         "tts": {"base_url": cfg.get("tts", {}).get("base_url", ""),
                                 "model": cfg.get("tts", {}).get("model", ""),
                                 "voice": cfg.get("tts", {}).get("voice", "")},
@@ -374,6 +378,15 @@ class PetServer:
                                "offline_think": {"enabled": (qq.get("offline_think") or {}).get("enabled", False)}},
                         "character_card": cfg.get("character_card", ""),
                         "pet": {"avatar_height": (cfg.get("pet") or {}).get("avatar_height", 200)},
+                        "memory": {k: memory.get(k) for k in (
+                            "embedding_model", "recall_top_k", "recall_threshold", "max_injected_chars",
+                            "core_profile_budget", "section_budget", "session_budget", "decay_enabled",
+                            "decay_interval_minutes", "curator_turns")},
+                        "attention": {k: attention.get(k) for k in (
+                            "enabled", "paused", "global_scan_sec", "mouse_focus_stay_sec",
+                            "habituation_sec", "observe_cache_ttl_sec", "observe_daily_budget", "crop_ratio")},
+                        "proactive": {k: proactive.get(k) for k in (
+                            "enabled", "max_per_day", "min_gap_minutes", "source_gap_minutes")},
                     }})
                 elif mtype == "search_history":
                     data = msg.get("data") or {}
@@ -394,9 +407,11 @@ class PetServer:
                     cfg = load_config()
                     d = msg.get("data", {})
                     llm = d.get("llm", {})
-                    for k in ("base_url", "model", "temperature"):
+                    for k in ("base_url", "model", "temperature", "max_tokens", "timeout"):
                         if k in llm:
                             cfg.setdefault("llm", {})[k] = llm[k]
+                    if llm.get("api_key") and "****" not in str(llm["api_key"]):
+                        cfg.setdefault("llm", {})["api_key"] = str(llm["api_key"]).strip()
                     tts = d.get("tts", {})
                     for k in ("base_url", "model", "voice"):
                         if k in tts:
@@ -424,6 +439,15 @@ class PetServer:
                     pro = d.get("proactive", {})
                     if "max_per_day" in pro:
                         cfg.setdefault("proactive", {})["max_per_day"] = pro["max_per_day"]
+                    memory = d.get("memory", {})
+                    for k in ("embedding_model", "recall_top_k", "recall_threshold", "max_injected_chars",
+                              "core_profile_budget", "section_budget", "session_budget", "decay_enabled",
+                              "decay_interval_minutes", "curator_turns"):
+                        if k in memory: cfg.setdefault("memory", {})[k] = memory[k]
+                    attention = d.get("attention", {})
+                    for k in ("enabled", "paused", "global_scan_sec", "mouse_focus_stay_sec",
+                              "habituation_sec", "observe_cache_ttl_sec", "observe_daily_budget", "crop_ratio"):
+                        if k in attention: cfg.setdefault("attention", {})[k] = attention[k]
                     save_config(cfg)
                     await self._send({"type": "config_saved", "id": msg.get("id"), "ok": True,
                                      "restart": "重启核心生效"})

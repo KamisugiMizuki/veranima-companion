@@ -8,156 +8,68 @@
 <body>
   <main class="settings-shell">
     <aside class="nav-card">
-      <div class="nav-brand">
-        <span class="nav-brand-mark">❀</span>
-        <span class="nav-brand-text">Veranima</span>
-      </div>
+      <div class="nav-brand"><span class="nav-brand-mark">◇</span><span class="nav-brand-text">Veranima</span></div>
+      <p class="nav-caption">陪伴系统控制面</p>
       <nav class="nav-list">
-        <div class="nav-group">
-          <p class="nav-group-label">角色</p>
-          <button class="nav-item is-active" data-page="character" aria-current="page">角色与布局</button>
-        </div>
-        <div class="nav-group">
-          <p class="nav-group-label">智能</p>
-          <button class="nav-item" data-page="llm">模型供应商</button>
-        </div>
-        <div class="nav-group">
-          <p class="nav-group-label">语音</p>
-          <button class="nav-item" data-page="voice">TTS / STT</button>
-        </div>
-        <div class="nav-group">
-          <p class="nav-group-label">系统</p>
-          <button class="nav-item" data-page="system">QQ 与行为</button>
-        </div>
+        <button class="nav-item is-active" data-page="character" aria-current="page">角色与桌宠</button>
+        <button class="nav-item" data-page="model">模型连接</button>
+        <button class="nav-item" data-page="voice">语音</button>
+        <button class="nav-item" data-page="memory">记忆与人格</button>
+        <button class="nav-item" data-page="presence">在场与主动</button>
+        <button class="nav-item" data-page="advanced">高级</button>
       </nav>
+      <div class="nav-foot">改动保存到本地配置<br>重启核心后生效</div>
     </aside>
 
     <section class="content-card">
-      <!-- 角色与布局 -->
       <div class="page is-active" data-page="character">
-        <h2>角色与布局</h2>
-        <div class="field">
-          <label>激活角色</label>
-          <select id="role-select"></select>
-          <div class="hint">切换后重启核心生效；角色目录：characters/</div>
-        </div>
-        <div class="field">
-          <label>当前角色卡</label>
-          <div id="card-path" class="readonly"></div>
-        </div>
-        <div class="field">
-          <label>LLM 供应商（当前配置）</label>
-          <div id="llm-summary" class="readonly"></div>
-        </div>
-        <div class="field">
-          <label>桌宠位置</label>
-          <div class="readonly">拖动形象移动；位置自动保存</div>
-        </div>
-        <div class="field">
-          <label>立绘高度（px，保持原图比例）</label>
-          <input id="avatar-height" type="number" min="50" max="600" placeholder="200">
-          <div class="hint">切换立绘时桌宠框高度不变，宽度按比例自适应</div>
-        </div>
+        <div class="eyebrow">CHARACTER / DESKTOP</div><h1>角色与桌宠</h1>
+        <p class="page-intro">选择她是谁，以及她在桌面上占多大空间。</p>
+        <div class="field"><label for="role-select">激活角色</label><select id="role-select"></select><div class="hint">切换角色需要重启核心；记忆与关系状态按当前产品设计继续保留。</div></div>
+        <div class="field"><label>当前角色卡</label><div id="card-path" class="readonly"></div></div>
+        <div class="split-fields"><div class="field"><label for="avatar-height">立绘高度</label><input id="avatar-height" type="number" min="50" max="600" step="10"><div class="hint">px，保持角色原图比例</div></div><div class="field"><label>窗口位置</label><div class="readonly">拖动桌宠自动保存</div></div></div>
+        <div class="status-strip"><span class="status-dot"></span><span id="llm-summary">正在读取核心状态</span></div>
       </div>
 
-      <!-- 模型供应商 -->
-      <div class="page" data-page="llm">
-        <h2>模型供应商</h2>
-        <div class="field">
-          <label>Base URL</label>
-          <input id="llm-base" placeholder="https://api.example.com/v1">
-        </div>
-        <div class="field">
-          <label>模型</label>
-          <input id="llm-model" placeholder="model-name">
-        </div>
-        <div class="field">
-          <label>Temperature</label>
-          <input id="llm-temp" type="number" step="0.1" min="0" max="2" placeholder="0.8">
-        </div>
-        <div class="field">
-          <label>API Key</label>
-          <div id="llm-key" class="readonly">读取中…</div>
-          <div class="hint">密钥不在此修改（config.yaml 手动维护）</div>
-        </div>
+      <div class="page" data-page="model">
+        <div class="eyebrow">MODEL / PROVIDER</div><h1>模型连接</h1><p class="page-intro">配置聊天模型。密钥只在保存时写入，读取时始终打码。</p>
+        <div class="field"><label for="llm-base">Base URL</label><input id="llm-base" placeholder="https://api.example.com/v1"></div>
+        <div class="field"><label for="llm-model">聊天模型</label><input id="llm-model" placeholder="model-name"></div>
+        <div class="split-fields"><div class="field"><label for="llm-temp">Temperature</label><input id="llm-temp" type="number" step="0.1" min="0" max="2"></div><div class="field"><label for="llm-max-tokens">最大输出 token</label><input id="llm-max-tokens" type="number" min="256" max="32768" step="256"></div></div>
+        <div class="field"><label for="llm-key">API Key</label><input id="llm-key" type="password" placeholder="留空保持现有密钥"><div id="llm-key-status" class="hint">未修改时不会覆盖现有密钥</div></div>
+        <div class="field"><label for="llm-timeout">请求超时（秒）</label><input id="llm-timeout" type="number" min="10" max="600"></div>
       </div>
 
-      <!-- TTS / STT -->
       <div class="page" data-page="voice">
-        <h2>TTS（语音输出）</h2>
-        <div class="field">
-          <label>TTS Base URL</label>
-          <input id="tts-base" placeholder="http://127.0.0.1:9880/v1">
-        </div>
-        <div class="field">
-          <label>TTS 模型</label>
-          <input id="tts-model" placeholder="Qwen3-TTS-12Hz-1.7B-Base">
-        </div>
-        <div class="field">
-          <label>参考音频路径（克隆音色）</label>
-          <input id="tts-voice" placeholder="characters/yuki/example_voices/yuki.mp3">
-        </div>
-        <h2>STT（语音输入）</h2>
-        <div class="field">
-          <label>STT Base URL（留空 = 未接入）</label>
-          <input id="stt-base" placeholder="http://127.0.0.1:9000/v1">
-        </div>
-        <div class="field">
-          <label>STT 模型</label>
-          <input id="stt-model" placeholder="whisper-1">
-        </div>
-        <div class="field">
-          <label>识别语言（留空 = 自动）</label>
-          <input id="stt-language" placeholder="zh">
-        </div>
+        <div class="eyebrow">VOICE / INPUT OUTPUT</div><h1>语音</h1><p class="page-intro">TTS 为空时只显示文字；STT 为空时视为未接入。</p>
+        <h2>TTS 输出</h2><div class="field"><label for="tts-base">TTS Base URL</label><input id="tts-base" placeholder="http://127.0.0.1:9880/v1"></div><div class="split-fields"><div class="field"><label for="tts-model">模型</label><input id="tts-model"></div><div class="field"><label for="tts-voice">参考音频/音色</label><input id="tts-voice"></div></div>
+        <h2>STT 输入</h2><div class="field"><label for="stt-base">STT Base URL</label><input id="stt-base" placeholder="留空 = 未接入"></div><div class="split-fields"><div class="field"><label for="stt-model">模型</label><input id="stt-model"></div><div class="field"><label for="stt-language">语言</label><input id="stt-language" placeholder="自动"></div></div>
       </div>
 
-      <!-- QQ 与行为 -->
-      <div class="page" data-page="system">
-        <h2>QQ 接入</h2>
-        <div class="field">
-          <label>QQ 白名单（逗号分隔）</label>
-          <input id="qq-allowed" placeholder="10001,10002">
-        </div>
-        <div class="field">
-          <label>主动消息</label>
-          <select id="qq-proactive">
-            <option value="true">开启</option>
-            <option value="false">关闭</option>
-          </select>
-        </div>
-        <div class="field">
-          <label>离线思考</label>
-          <select id="qq-offline">
-            <option value="true">开启</option>
-            <option value="false">关闭</option>
-          </select>
-        </div>
-        <h2>记忆</h2>
-        <div class="field">
-          <label>Embedding 模型</label>
-          <div id="mem-embedding" class="readonly"></div>
-        </div>
-        <!-- GUI-4：隐私与主动性（GUI_SPEC 6.7） -->
-        <h2>隐私与主动性</h2>
-        <div class="field">
-          <label>视觉注意力暂停（敏感时段/会议）</label>
-          <select id="att-paused">
-            <option value="false">运行</option>
-            <option value="true">暂停</option>
-          </select>
-        </div>
-        <div class="field">
-          <label>主动消息日上限（0=关闭）</label>
-          <input id="proactive-max" type="number" min="0" max="20" placeholder="2">
-        </div>
-        <p class="hint">视觉只做屏幕变化检测，不保存截图；敏感窗口（支付/密码/私聊）自动跳过。</p>
+      <div class="page" data-page="memory">
+        <div class="eyebrow">MEMORY / PERSONA</div><h1>记忆与人格</h1><p class="page-intro">控制本地混合召回、上下文预算和人格整理频率。</p>
+        <div class="field"><label for="mem-embedding">Embedding 模型</label><input id="mem-embedding" placeholder="local:data/models/bge-m3"><div class="hint">修改后需要重新建立向量索引；默认使用本地模型。</div></div>
+        <div class="split-fields"><div class="field"><label for="mem-top-k">召回条数</label><input id="mem-top-k" type="number" min="1" max="30"></div><div class="field"><label for="mem-threshold">召回阈值</label><input id="mem-threshold" type="number" min="0" max="1" step="0.05"></div></div>
+        <div class="split-fields"><div class="field"><label for="mem-total-budget">总注入预算</label><input id="mem-total-budget" type="number" min="500" max="20000" step="100"></div><div class="field"><label for="mem-curator-turns">整理间隔（轮）</label><input id="mem-curator-turns" type="number" min="1" max="100"></div></div>
+        <div class="field"><label for="mem-decay">记忆衰减</label><select id="mem-decay"><option value="true">开启</option><option value="false">关闭</option></select></div>
+        <div class="status-strip"><span id="mem-status">本地数据库状态读取中</span></div>
       </div>
 
-      <div class="footer">
-        <button id="save">保存（重启核心生效）</button>
-        <div id="msg"></div>
+      <div class="page" data-page="presence">
+        <div class="eyebrow">PRESENCE / AGENCY</div><h1>在场与主动</h1><p class="page-intro">控制她什么时候观察、什么时候主动说话。</p>
+        <div class="field"><label for="att-enabled">视觉注意力</label><select id="att-enabled"><option value="true">开启</option><option value="false">关闭</option></select></div><div class="field"><label for="att-paused">当前暂停</label><select id="att-paused"><option value="false">运行</option><option value="true">暂停</option></select><div class="hint">会议、敏感操作时使用；不会保存原始截图。</div></div>
+        <div class="split-fields"><div class="field"><label for="att-scan">扫描间隔（秒）</label><input id="att-scan" type="number" min="1" max="120"></div><div class="field"><label for="att-budget">每日观察上限</label><input id="att-budget" type="number" min="0" max="1000"></div></div>
+        <h2>主动消息</h2><div class="split-fields"><div class="field"><label for="pro-enabled">主动消息</label><select id="pro-enabled"><option value="true">开启</option><option value="false">关闭</option></select></div><div class="field"><label for="pro-max">每日上限</label><input id="pro-max" type="number" min="0" max="20"></div></div><div class="split-fields"><div class="field"><label for="pro-gap">全局间隔（分钟）</label><input id="pro-gap" type="number" min="1" max="1440"></div><div class="field"><label for="pro-source-gap">同源间隔（分钟）</label><input id="pro-source-gap" type="number" min="1" max="10080"></div></div>
+        <h2>QQ</h2><div class="field"><label for="qq-allowed">白名单（逗号分隔）</label><input id="qq-allowed" placeholder="QQ 号"></div><div class="split-fields"><div class="field"><label for="qq-proactive">QQ 主动消息</label><select id="qq-proactive"><option value="true">开启</option><option value="false">关闭</option></select></div><div class="field"><label for="qq-offline">离线思考</label><select id="qq-offline"><option value="true">开启</option><option value="false">关闭</option></select></div></div>
       </div>
+
+      <div class="page" data-page="advanced">
+        <div class="eyebrow">ADVANCED / DIAGNOSTICS</div><h1>高级</h1><p class="page-intro">只放需要明确知道后果的低频选项。</p>
+        <div class="field"><label>数据库</label><div id="mem-db" class="readonly"></div></div><div class="field"><label>当前 Embedding</label><div id="mem-effective" class="readonly"></div></div><div class="field"><label>配置文件</label><div class="readonly">config/config.yaml（由应用读写）</div></div>
+        <div class="warning-box">保存配置会原子写入本地 YAML，并在保存后重启核心。API Key 读取时不会回显明文。</div>
+      </div>
+
+      <div class="footer"><button id="save">保存并重启核心</button><div id="msg" role="status"></div></div>
     </section>
   </main>
   <script src="settings-renderer.js"></script>
