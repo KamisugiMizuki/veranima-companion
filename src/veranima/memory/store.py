@@ -167,6 +167,12 @@ class MemoryStore:
         self.con = init_db(db_path, dim=self.provider.dim, provider=self.provider)
         self._vec_ok = self._check_vec()
 
+    def warm_embedding(self) -> None:
+        """后台预热本地 embedding；远程/无预热 provider 直接跳过。"""
+        warm = getattr(self.provider, "warm", None)
+        if callable(warm):
+            warm()
+
     def _check_vec(self) -> bool:
         try:
             self.con.execute("SELECT count(*) FROM memory_vec")

@@ -26,7 +26,7 @@ Electron 壳 (pet/)                    Python 核心 (src/veranima/)
         └─ spawn GPT-SoVITS api_v2.py（127.0.0.1:9880，本地日语 TTS）
 ```
 
-- **启动器**：双击 `run_pet.bat`，或 `.venv\Scripts\python.exe scripts\run_pet.py`——壳自动 spawn 核心 + TTS；`config.yaml` 的 `qq.enabled: true` 时连带拉起 QQ bot（后台无窗口，退出一起停）
+- **启动器**：推荐双击 `run_pet.vbs`（无控制台闪窗）；兼容入口为 `run_pet.bat`，或开发调试时运行 `.venv\Scripts\python.exe scripts\run_pet.py`——壳自动 spawn 核心 + TTS；`config.yaml` 的 `qq.enabled: true` 时连带拉起 QQ bot（后台无窗口，退出一起停）
 - 日志按模块落盘：`logs/core.log`（核心）/ `logs/tts.log`（TTS）/ `logs/shell.log`（壳）
 - 聊天记录持久化：`%APPDATA%\veranima-pet\chat.json`（右键菜单可清空）
 
@@ -87,7 +87,7 @@ QQ 形态额外启用：定时问候/节庆、离线思考（静默 30 分钟后
 ## 桌宠（Electron + GPT-SoVITS）
 
 ```bash
-# 启动（双击 run_pet.bat，或：）
+# 启动（推荐双击 run_pet.vbs；开发调试可运行：）
 .venv/Scripts/python.exe scripts\run_pet.py
 ```
 
@@ -106,14 +106,14 @@ QQ 形态额外启用：定时问候/节庆、离线思考（静默 30 分钟后
 ## 测试
 
 ```bash
-.venv/Scripts/python.exe -m pytest tests/ -q    # 382 passed
+.venv/Scripts/python.exe -m pytest tests/ -q
 ```
 
 行为级验收测试覆盖：Reply 解析（纯文本/JSON/fence/残缺/非法标签）、记忆契约（版本链/session TTL/混合召回/整理器/文风画像/离线评测集 10 例）、R4 主动闸门 9 条、R5 工单生命周期、视觉分层与敏感窗口、模块联通（Context Brief 注入/LLM 候选消费/主动反馈链路）。
 
 ## 状态
 
-**设计基线 v2.2（2026-08-19）**。R0-R5、MEMORY_SPEC M1-M8、VISION、GUI 已实现；人格循环已完成专项设计，待按 P-0~P-9 实施：
+**设计基线 v2.2（2026-08-19）**。R0-R5、MEMORY_SPEC M1-M8、VISION、GUI 与人格循环 P-0~P-9 已实现；SelfModel 章节编辑器仍暂缓：
 
 | 里程碑 | 内容 | 状态 |
 |---|---|---|

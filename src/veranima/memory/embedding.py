@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import json
+import threading
 from pathlib import Path
 from typing import Protocol
 
@@ -60,21 +62,55 @@ class SentenceTransformersProvider:
     """
 
     def __init__(self, model_path: str):
-        from sentence_transformers import SentenceTransformer
-        try:
-            import torch
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-        except Exception:
-            device = "cpu"
-        logger.info("loading sentence-transformers model from %s (device=%s)", model_path, device)
-        self._model = SentenceTransformer(model_path, device=device)
-        # sentence-transformers 5.x 新 API；兼容旧名
-        getter = getattr(self._model, "get_embedding_dimension", None) or self._model.get_sentence_embedding_dimension
-        self.dim = getter()
-        logger.info("embedding model loaded, dim=%s", self.dim)
+        self.model_path = model_path
+        self._model = None
+        self._load_lock = threading.Lock()
+        self.dim = self._read_dimension(model_path)
+
+    @staticmethod
+    def _read_dimension(model_path: str) -> int:
+        """只读模型元数据取得维度，避免启动时加载 torch/权重。"""
+        root = Path(model_path)
+        for path, key in (
+            (root / "1_Pooling" / "config.json", "word_embedding_dimension"),
+            (root / "config.json", "hidden_size"),
+        ):
+            try:
+                value = int(json.loads(path.read_text(encoding="utf-8"))[key])
+                if value > 0:
+                    return value
+            except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+        logger.warning("embedding dimension metadata missing for %s; using bge-m3 default 1024", model_path)
+        return 1024
+
+    def _ensure(self):
+        if self._model is not None:
+            return self._model
+        with self._load_lock:
+            if self._model is not None:
+                return self._model
+            from sentence_transformers import SentenceTransformer
+            try:
+                import torch
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+            except Exception:
+                device = "cpu"
+            logger.info("loading sentence-transformers model from %s (device=%s)", self.model_path, device)
+            model = SentenceTransformer(self.model_path, device=device)
+            getter = getattr(model, "get_embedding_dimension", None) or model.get_sentence_embedding_dimension
+            actual_dim = int(getter())
+            if actual_dim != self.dim:
+                raise RuntimeError(f"embedding dimension mismatch: metadata={self.dim}, model={actual_dim}")
+            self._model = model
+            logger.info("embedding model loaded, dim=%s", actual_dim)
+        return self._model
+
+    def warm(self) -> None:
+        self._ensure()
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        vecs = self._model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
+        vecs = self._ensure().encode(texts, normalize_embeddings=True, show_progress_bar=False)
         return [v.tolist() for v in vecs]
 
 

@@ -14,6 +14,7 @@ const CORE_WS = process.env.VERANIMA_PET_WS || 'ws://127.0.0.1:8765';
 const MEMORY_LIMIT_MB = 400;      // 渲染进程 RSS 阈值（R3_SPEC 1.进程与协议）
 const HEALTH_INTERVAL_MS = 5 * 60 * 1000; // 5min 采样
 const LOG_RING_MAX = 500;         // 内存环形缓冲行数
+const startupAt = Date.now();
 
 let win = null;
 let logWin = null;
@@ -53,6 +54,8 @@ let tray = null;
 let ws = null;
 let coreProc = null;
 let ttsProc = null;  // 本地 TTS 服务子进程（Qwen3-TTS 1.7B，OpenAI 兼容）
+let suppressTTSRestart = false;
+let ttsRestartTimer = null;
 let reconnectDelay = 1000;
 let suppressCoreRestart = false;  // 预期停止标志：stopCore/退出时不自动重启
 let coreRestartTimer = null;      // restartCore 定时器（防重入：多次保存只重启一次）
@@ -87,60 +90,19 @@ function pushLog(tag, line) {
   console.log(entry);
 }
 
+function startupMark(label) {
+  pushLog('startup', `${label} +${Date.now() - startupAt}ms`);
+}
+
 // ---------- spawn 核心（R3_SPEC 1.进程与协议） ----------
-// 启动核心前清理孤儿进程：占 8765/9880 且命令行含 pet_server/tts.server/api_v2.py 才杀。
-// 根因：壳被强杀/双实例时 Windows 不回收 spawn 的子进程，孤儿占端口 → 新核心
-// bind 失败 → 崩溃重启死循环（Errno 10048 实测）。
-// 关键：只杀「父进程不是本壳」的进程——自己 spawn 的核心/TTS 父进程 = 本
-// electron 主进程，跳过（否则 restartCore 的 preflight 会误杀正在跑的 TTS，
-// 实测 `killed orphan pid xxx (tts)` 导致 TTS 崩溃重启）。
-function preflightPorts() {
-  try {
-    const { execSync } = require('child_process');
-    const myPid = String(process.pid);
-    const out = execSync('netstat -ano', { encoding: 'buffer' }).toString('latin1');
-    const lines = out.split(/\r?\n/).filter((l) => /:8765\s|:9880\s/.test(l) && /LISTENING/.test(l));
-    const pids = [...new Set(lines.map((l) => l.trim().split(/\s+/).pop()).filter(Boolean))];
-    for (const pid of pids) {
-      if (pid === myPid) continue;
-      if (isOurDescendant(pid, execSync, myPid)) continue;  // 自己 spawn 的进程树（含 uv launcher 两层）
-      const info = execSync(
-        `powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter \\\"ProcessId=${pid}\\\").CommandLine"`,
-        { encoding: 'buffer' }).toString('latin1') || '';
-      if (info.includes('pet_server') || info.includes('tts.server') || info.includes('api_v2.py')) {
-        execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore' });
-        console.log(`[shell] killed orphan pid ${pid} (${info.includes('pet_server') ? 'core' : 'tts'})`);
-      }
-    }
-  } catch (e) { /* netstat/powershell 失败不阻塞启动 */ }
-}
-
-// 沿父进程链向上找（最多 10 层）：祖先链含本壳主进程 → 是自己的子进程树
-// （uv 的 venv python.exe 是 launcher，会再 spawn 真实解释器——监听端口的
-//  是第二层，父进程是 launcher 不是壳，直接比 ParentProcessId 会漏判）
-function isOurDescendant(pid, execSync, myPid) {
-  let cur = pid;
-  for (let i = 0; i < 10; i++) {
-    if (String(cur) === myPid) return true;
-    let info = '';
-    try {
-      info = execSync(
-        `powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter \\\"ProcessId=${cur}\\\").ParentProcessId"`,
-        { encoding: 'buffer' }).toString('latin1') || '';
-    } catch (e) { return false; }
-    const m = info.match(/\d+/);
-    if (!m) return false;
-    cur = m[0].trim();
-  }
-  return false;
-}
-
+// 端口孤儿清理由 scripts/run_pet.py 统一负责；Electron 不再同步执行
+// netstat/PowerShell，避免重复扫描阻塞首屏并产生控制台闪窗。
 function startCore() {
   suppressCoreRestart = false;  // 新进程：崩溃仍走自动重启（restartCore 的定时器会先置 true）
-  preflightPorts();  // 清孤儿（父进程非本壳的残留；自己的子进程自动跳过）
   const py = process.env.VERANIMA_PY || path.join(__dirname, '..', '.venv', 'Scripts', 'python.exe');
   const srcDir = path.join(__dirname, '..', 'src');
   pushLog('shell', `spawning core: ${py} -m veranima.pet_server`);
+  startupMark('core-spawn');
   try {
     coreProc = spawn(py, ['-m', 'veranima.pet_server', '--port', '8765'], {
       cwd: path.join(__dirname, '..'),
@@ -187,6 +149,7 @@ function appendTtsLog(buf) {
     while ((nl = ttsLineBuf.indexOf(10)) !== -1) {  // \n
       const line = ttsLineBuf.subarray(0, nl + 1);
       ttsLineBuf = ttsLineBuf.subarray(nl + 1);
+      if (line.toString('utf8').includes('Uvicorn running')) startupMark('tts-api-ready');
       const ts = new Date().toISOString().slice(11, 23);
       ttsLogStream.write(`[${ts}] `);
       ttsLogStream.write(line);
@@ -194,9 +157,11 @@ function appendTtsLog(buf) {
   } catch (e) { /* 日志写入失败不阻塞 TTS */ }
 }
 function startTTS() {
+  suppressTTSRestart = false;
   const gptDir = path.join(__dirname, '..', 'tts', 'gpt-sovits');
   const gptPy = path.join(gptDir, 'runtime', 'python.exe');
   pushLog('shell', 'spawning tts server (GPT-SoVITS, port 9880)');
+  startupMark('tts-spawn');
   try {
     const ttsEnv = { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONPATH: '' };
     delete ttsEnv.PYTHONUTF8;  // 强制 stdout/stderr 统一 UTF-8（sakura 同款）
@@ -214,19 +179,36 @@ function startTTS() {
   ttsProc.stdout.on('data', (d) => appendTtsLog(d));   // 原始字节写 logs/tts.log
   ttsProc.stderr.on('data', (d) => appendTtsLog(d));   // 同上（含 tqdm 进度）
   ttsProc.on('exit', (code, signal) => {
-    pushLog('shell', `tts exited (code=${code}, signal=${signal}); restarting in ${reconnectDelay}ms`);
+    pushLog('shell', `tts exited (code=${code}, signal=${signal}); ${suppressTTSRestart ? '预期停止，不自动重启' : `restarting in ${reconnectDelay}ms`}`);
     ttsProc = null;
+    if (suppressTTSRestart) return;
     scheduleTTSRestart();
   });
 }
 
 function scheduleTTSRestart() {
-  setTimeout(startTTS, reconnectDelay);
+  if (suppressTTSRestart || ttsRestartTimer) return;
+  ttsRestartTimer = setTimeout(() => { ttsRestartTimer = null; startTTS(); }, reconnectDelay);
   reconnectDelay = Math.min(reconnectDelay * 2, 30000);
 }
 
 function stopTTS() {
-  if (ttsProc) { ttsProc.kill(); ttsProc = null; }
+  suppressTTSRestart = true;
+  if (ttsRestartTimer) { clearTimeout(ttsRestartTimer); ttsRestartTimer = null; }
+  if (ttsProc) { terminateProcessTree(ttsProc); ttsProc = null; }
+}
+
+function terminateProcessTree(proc) {
+  if (!proc || proc.killed) return;
+  if (process.platform === 'win32') {
+    // uv 的 python.exe 会再派生真实解释器；只 kill 父进程会留下监听端口的子进程。
+    const killer = spawn('taskkill', ['/F', '/T', '/PID', String(proc.pid)], {
+      windowsHide: true, stdio: 'ignore',
+    });
+    killer.on('error', () => { try { proc.kill(); } catch (e) { /* already gone */ } });
+  } else {
+    try { proc.kill(); } catch (e) { /* already gone */ }
+  }
 }
 
 function scheduleCoreRestart() {
@@ -236,7 +218,7 @@ function scheduleCoreRestart() {
 
 function stopCore() {
   suppressCoreRestart = true;  // 预期停止：exit 回调不再自动重启（防双 spawn）
-  if (coreProc) { coreProc.kill(); coreProc = null; }
+  if (coreProc) { terminateProcessTree(coreProc); coreProc = null; }
 }
 
 // 重启核心（设置保存后）：kill 旧进程 → 等端口释放 → spawn 新的。
@@ -250,7 +232,6 @@ function restartCore() {
   const waitMs = 3000;  // 旧 python 进程退出 + 端口释放通常 <3s
   coreRestartTimer = setTimeout(() => {
     coreRestartTimer = null;
-    preflightPorts();   // 清真孤儿（父进程非本壳的残留；自己的子进程自动跳过）
     startCore();        // startCore 内部 suppressCoreRestart = false
   }, waitMs);
 }
@@ -309,7 +290,10 @@ function createWindow() {
   // （注：Electron 的 setIgnoreMouseEvents forward 仅在 macOS 有效，Windows 穿透会锁死交互）
   // 角色立绘映射：renderer 加载完成后推一次（connect 的 ws open 可能早于
   // renderer 监听注册——事件竞态导致 avatar-map 丢失，立绘显示 zima 默认图）
-  win.webContents.on('did-finish-load', () => { pushAvatarMap(); });
+  win.webContents.on('did-finish-load', () => {
+    startupMark('ui-ready');
+    pushAvatarMap();
+  });
   // 位置持久化：move/resize → 存 userData/win-pos.json
   win.on('move', saveWindowPos);
   win.on('resize', saveWindowPos);
@@ -530,6 +514,7 @@ function connect() {
   }
   ws.on('open', () => {
     console.log('[ws] connected to core');
+    startupMark('core-ws-connected');
     reconnectDelay = 1000;
     setPetStatus('online');
     pushAvatarMap();  // 启动时加载当前角色立绘映射
@@ -792,10 +777,11 @@ if (!gotLock) {
   app.whenReady().then(() => {
     powerSaveBlocker.start('prevent-app-suspension'); // R3_SPEC 1 缺陷4
     openLogFile();
-    startCore();                // 壳 spawn 核心（R3_SPEC 1.进程与协议）
-    startTTS();                 // 壳 spawn 本地 TTS（Qwen3-TTS 1.7B）
-    createWindow();
+    startupMark('electron-ready');
+    createWindow();             // 先显示桌宠，后台服务不阻塞首屏
     createTray();
+    setTimeout(() => startCore(), 0);
+    setTimeout(() => startTTS(), 0);
     connect();
     setInterval(healthCheck, HEALTH_INTERVAL_MS);
   });

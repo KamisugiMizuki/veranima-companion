@@ -462,6 +462,15 @@ class PetServer:
     async def run(self) -> None:
         logger.info("pet server on ws://%s:%d", self.host, self.port)
         async with websockets.serve(self._handle, self.host, self.port):
+            async def _warm_embedding():
+                if self._agent is None:
+                    return
+                try:
+                    await asyncio.to_thread(self._agent.memory.warm_embedding)
+                    logger.info("embedding warmup complete")
+                except Exception as e:
+                    logger.warning("embedding warmup failed; first recall will retry: %s", e)
+            asyncio.create_task(_warm_embedding())
             # R1 无缝衔接：30s 一次 L0 在场检测（absent→present → 衔接语）
             async def _presence_loop():
                 while True:
