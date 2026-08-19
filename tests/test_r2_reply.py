@@ -91,12 +91,13 @@ def test_pet_server_turn_id_increment():
     import asyncio
     sent = []
 
-    async def fake_send(msg):
-        sent.append(msg)
+    class FakeClient:
+        async def send(self, data):
+            import json as _json
+            sent.append(_json.loads(data))
 
-    srv._send = fake_send
-    srv._client = object()
+    srv._client = FakeClient()
     srv._tts = None  # 纯气泡路径
     asyncio.run(srv.speak("你好"))
-    assert sent and sent[0]["type"] == "speak"
-    assert sent[0]["turn_id"] == 3
+    assert sent and sent[0]["type"] == "reply_start"
+    assert sent[0]["payload"]["turn_id"] == 3

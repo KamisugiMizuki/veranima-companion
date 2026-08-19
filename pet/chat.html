@@ -5,6 +5,7 @@
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font: 13px/1.6 "Microsoft YaHei", sans-serif; background: #f5f6f7; overflow: hidden; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
   #header { height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 12px;
     background: #fff; border-bottom: 1px solid #e4e6eb; }
   #header .dot { width: 8px; height: 8px; border-radius: 50%; background: #95ec69; }
@@ -37,13 +38,14 @@
   <div id="header">
     <span class="dot" id="statusDot"></span>
     <span class="name" id="charName">Yuki</span>
-    <span class="status" id="statusText">正在输入…</span>
+    <span class="status" id="statusText">连接中…</span>
   </div>
-  <div id="msgs"></div>
-  <div id="inputbar">
+  <main id="msgs" role="log" aria-live="polite"></main>
+  <form id="inputbar">
+    <label for="input" class="sr-only">发送消息</label>
     <input id="input" placeholder="对她说点什么…" autocomplete="off">
     <button id="send" disabled>发送</button>
-  </div>
+  </form>
 <script src="chat-renderer.js"></script>
 </body>
 </html>

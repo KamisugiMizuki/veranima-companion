@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('pet', {
   onChatHistory: (cb) => ipcRenderer.on('chat-history', (e, m) => cb(m)),
   onChatLine: (cb) => ipcRenderer.on('chat-line', (e, m) => cb(m)),
   sendChat: (text) => ipcRenderer.send('chat-send', text),
+  reconnect: () => ipcRenderer.send('pet-reconnect'),
   // 设置窗口通道：请求 → main 转发 WS → 核心响应回传
   getConfig: () => ipcRenderer.invoke('settings-get-config'),
   saveConfig: (data) => ipcRenderer.invoke('settings-save-config', data),

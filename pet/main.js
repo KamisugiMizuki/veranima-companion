@@ -415,6 +415,12 @@ ipcMain.handle('settings-save-config', async (e, data) => {
   return ok;
 });
 ipcMain.on('core-restart', () => { restartCore(); });
+ipcMain.on('pet-reconnect', () => {
+  // R3_SPEC 4：聊天窗 offline/failed → 重试连接（重置退避立即重连）
+  reconnectDelay = 1000;
+  if (ws) { try { ws.close(); } catch (e) {} ws = null; }
+  connect();
+});
 
 // 角色立绘映射：读当前角色卡 avatar.expressions → {标签: 绝对路径} → renderer
 // （R2_SPEC 2：表情标签驱动；角色切换后立绘跟着换，不再写死 assets/）
@@ -501,7 +507,7 @@ function connect() {
   ws.on('open', () => {
     console.log('[ws] connected to core');
     reconnectDelay = 1000;
-    win && win.webContents.send('core-state', { connected: true });
+    setPetStatus('online');
     pushAvatarMap();  // 启动时加载当前角色立绘映射
   });
   ws.on('message', (data) => {
@@ -513,7 +519,7 @@ function connect() {
   ws.on('close', () => {
     console.log('[ws] closed');
     ws = null;
-    win && win.webContents.send('core-state', { connected: false });
+    setPetStatus('offline');
     scheduleReconnect();
   });
   ws.on('error', (e) => {
@@ -527,7 +533,21 @@ function scheduleReconnect() {
   reconnectDelay = Math.min(reconnectDelay * 2, 30000); // 1s→2s→4s…上限30s
 }
 
-// ---------- 核心消息 → renderer ----------
+// ---------- 核心消息 → renderer（R3 协议，R3_SPEC 1/2） ----------
+// 状态机：connecting → online → generating → speaking → online
+//        ↘ offline ↔ reconnecting；任意生成态 → failed/cancelled → online
+let petStatus = 'connecting';
+
+function broadcastToWindows(channel, payload) {
+  if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+  if (chatWin && !chatWin.isDestroyed()) chatWin.webContents.send(channel, payload);
+}
+
+function setPetStatus(status, extra = {}) {
+  petStatus = status;
+  broadcastToWindows('core-state', { connected: status !== 'offline', status, ...extra });
+}
+
 function handleCoreMsg(msg) {
   // 带 id 的响应 → 回传 wsRequest pending
   if (msg.id && wsPending.has(msg.id)) {
@@ -536,28 +556,42 @@ function handleCoreMsg(msg) {
     resolve(msg);
     return;
   }
+  const payload = msg.payload || {};
   switch (msg.type) {
-    case 'state':
-      win && win.webContents.send('core-state', msg);
+    case 'state': {
+      const st = payload.status || 'online';
+      setPetStatus(st, { character: payload.character || '', turn_id: payload.turn_id || '' });
       break;
-    case 'speak':
-      win && win.webContents.send('speak', { text: msg.text, text_zh: msg.text_zh || '', tags: msg.tags || [], audioB64: msg.audio_b64 || '' });
-      // 聊天窗口：主动对话（无 chunk 前缀）直接成条；stream_talk 路径 chunk 已显示
-      // → speak 到达时流式已结束，不重复（main 侧 activePetStreaming 判断）
-      if (!activePetStreaming) pushChat('pet', msg.text_zh || msg.text || '');
+    }
+    case 'reply_start':
+      setPetStatus('generating', { character: payload.character || '' });
       break;
-    case 'speak_chunk':
-      win && win.webContents.send('speak-chunk', { text: msg.text });
-      // 聊天窗口：流式追加（chunk 合成为一条桌宠消息）
-      if (!activePetStreaming) { activePetStreaming = true; chatHistory.push({ role: 'pet', text: '', ts: Date.now() }); }
-      const lastPet = chatHistory[chatHistory.length - 1];
-      if (lastPet && lastPet.role === 'pet') lastPet.text += msg.text;
-      saveChatHistory();
-      if (chatWin && !chatWin.isDestroyed()) {
-        chatWin.webContents.send('chat-line', { role: 'pet', text: msg.text, streaming: true });
+    case 'reply_segment': {
+      // 主窗：气泡 + 音频（沿用旧 IPC 通道，renderer 无需改协议）
+      win && win.webContents.send('speak', {
+        text: payload.text, text_zh: payload.text_zh || '', tags: [], audioB64: payload.audio_b64 || '',
+      });
+      if (payload.portrait) {
+        win && win.webContents.send('portrait', { label: payload.portrait });
+      }
+      // 聊天窗口：主动对话直接成条；stream_talk 后无重复（speak 只在 reply_segment 发一次）
+      const display = payload.text_zh || payload.text || '';
+      if (display) {
+        if (!activePetStreaming) {
+          activePetStreaming = true;
+          chatHistory.push({ role: 'pet', text: display, ts: Date.now() });
+        } else {
+          const lastPet = chatHistory[chatHistory.length - 1];
+          if (lastPet && lastPet.role === 'pet') lastPet.text = display;
+        }
+        saveChatHistory();
+        if (chatWin && !chatWin.isDestroyed()) {
+          chatWin.webContents.send('chat-line', { role: 'pet', text: display, streaming: true });
+        }
       }
       break;
-    case 'speak_done':
+    }
+    case 'reply_end':
       win && win.webContents.send('speak-done', {});
       if (activePetStreaming) {
         activePetStreaming = false;
@@ -566,12 +600,25 @@ function handleCoreMsg(msg) {
         }
         saveChatHistory();
       }
+      setPetStatus('online');
+      break;
+    case 'reply_error':
+      // R3_SPEC 5：文字保留；错误状态在聊天窗显示
+      setPetStatus('failed', { reason: payload.code || 'reply_failed' });
+      if (chatWin && !chatWin.isDestroyed()) {
+        chatWin.webContents.send('chat-line', { role: 'error', text: payload.code === 'tts_failed' ? '语音没有播放，文字仍可阅读' : '这条回复没有完成', retry: !!payload.recoverable });
+      }
+      break;
+    case 'reply_cancelled':
+      win && win.webContents.send('stop-speak', {});
+      if (activePetStreaming) {
+        activePetStreaming = false;
+        saveChatHistory();
+      }
+      setPetStatus('online');
       break;
     case 'bubble':
       win && win.webContents.send('bubble', { text: msg.text });
-      break;
-    case 'stop_speak':
-      win && win.webContents.send('stop-speak', {});
       break;
     default:
       console.warn('[ws] unknown msg type:', msg.type);

@@ -95,11 +95,12 @@ def test_pet_server_speak_with_tts(tmp_path):
         server = await websockets.serve(srv._handle, "127.0.0.1", port)
         async with websockets.connect(f"ws://127.0.0.1:{port}") as ws:
             ok = await srv.speak("你好呀")
-            msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+            # R3 协议：reply_start → reply_segment → reply_end
+            msgs = [json.loads(await asyncio.wait_for(ws.recv(), timeout=5)) for _ in range(3)]
             assert ok is True
-            assert msg["type"] == "speak"
-            assert msg["text"] == "你好呀"
-            assert msg["audio_b64"] == "UklGRiBmYWtlLWF1ZGlv"  # base64(b"RIFF fake-audio")
+            seg = next(m for m in msgs if m["type"] == "reply_segment")
+            assert seg["payload"]["text"] == "你好呀"
+            assert seg["payload"]["audio_b64"] == "UklGRiBmYWtlLWF1ZGlv"  # base64(b"RIFF fake-audio")
         server.close()
         await server.wait_closed()
 
@@ -120,9 +121,10 @@ def test_pet_server_speak_without_tts(tmp_path):
         server = await websockets.serve(srv._handle, "127.0.0.1", port)
         async with websockets.connect(f"ws://127.0.0.1:{port}") as ws:
             await srv.speak("只有气泡")
-            msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
-            assert msg["type"] == "speak"
-            assert "audio_b64" not in msg
+            msgs = [json.loads(await asyncio.wait_for(ws.recv(), timeout=5)) for _ in range(3)]
+            seg = next(m for m in msgs if m["type"] == "reply_segment")
+            assert seg["type"] == "reply_segment"
+            assert "audio_b64" not in seg["payload"] or seg["payload"]["audio_b64"] == ""
         server.close()
         await server.wait_closed()
 

@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 
 import websockets
 
@@ -94,59 +95,103 @@ class PetServer:
         return self._turn_seq
 
     async def speak(self, text: str, tags: list | None = None, tts_text: str | None = None) -> bool:
-        """推送回复（整段合成一次 + 一条消息，2026-08-19 用户拍板）。
+        """推送回复（R3 协议：reply_start → reply_segment → reply_end）。
 
         tts_text 指定时用它合成音频（R2 双语：ja 配音 / zh 显示）。
-        整段方案：一次 POST /tts 合成整段 → 一条 speak 消息（音频+文本）。
+        整段方案：一次 POST /tts 合成整段 → 一条 reply_segment（音频+文本）。
         代价：首句延迟 = 整段合成时间（~0.57x 实时率）；换来分句链路的
         bug 全灭（重复推送/气泡…/队列去重——实测逐句方案引发多种问题）。
+        TTS 失败保留文字（R3_SPEC 5：不清空文字），并发 reply_error 可恢复。
         """
         import base64
 
+        tags = tags or []
+        portrait = tags[0] if tags else ""
+        text_zh = tts_text and text or ""
         speak_text = (tts_text or text).strip()
-        if self._tts is None or not speak_text:
-            # 无 TTS：一次性纯气泡
-            return await self._send({
-                "type": "speak", "text": text, "tags": tags or [],
-                "turn_id": self._current_turn,
-            })
-        if self._bilingual and not tts_text:
-            # 双语角色缺日语台词（LLM 输出异常/thinking 截断）：中文送日语模型
-            # 会怪音（2026-08-19 实测）→ 只推气泡不合成
-            return await self._send({
-                "type": "speak", "text": text, "tags": tags or [],
-                "turn_id": self._current_turn,
-            })
 
-        msg: dict = {"type": "speak", "text": text, "tags": tags or []}
-        msg["turn_id"] = self._current_turn  # R2：壳端按 turn_id 丢弃迟到结果
-        if tts_text:
-            msg["text_zh"] = text  # 双语：气泡显示整段中文
+        await self.reply_start()
+        if self._tts is None or not speak_text or (self._bilingual and not tts_text):
+            # 无 TTS / 双语缺日语台词：纯气泡（不发音频，不送日语模型）
+            await self.reply_segment(text=text, portrait=portrait, text_zh=text_zh)
+            return await self.reply_end()
+
         try:
             audio = await asyncio.to_thread(self._tts.synthesize, speak_text)
-            if audio:
-                msg["audio_b64"] = base64.b64encode(audio).decode()
+            await self.reply_segment(
+                text=text,
+                audio_b64=base64.b64encode(audio).decode() if audio else "",
+                portrait=portrait,
+                text_zh=text_zh,
+            )
         except Exception as e:
             logger.warning("tts synthesize failed (bubble only): %s", e)
-        return await self._send(msg)
-
-    async def speak_chunk(self, text: str) -> bool:
-        """流式分片推送（DESIGN 4.13 打字机）。"""
-        return await self._send({"type": "speak_chunk", "text": text, "turn_id": self._current_turn})
-
-    async def speak_done(self) -> bool:
-        return await self._send({"type": "speak_done", "turn_id": self._current_turn})
+            # R3：文字保留 + 可恢复错误
+            await self.reply_error(code="tts_failed", recoverable=True)
+            await self.reply_segment(text=text, portrait=portrait, text_zh=text_zh)
+        return await self.reply_end()
 
     async def bubble(self, text: str) -> bool:
         return await self._send({"type": "bubble", "text": text})
 
     async def push_state(self, **extra) -> bool:
-        return await self._send({"type": "state", **extra})
+        """R3 状态事件（R3_SPEC 1/2）：统一 payload 结构。"""
+        return await self._send({
+            "type": "state",
+            "payload": {
+                "status": extra.pop("status", "online"),
+                "character": extra.pop("character", ""),
+                "turn_id": extra.pop("turn_id", ""),
+                **extra,
+            },
+        })
 
     async def stop_speak(self) -> bool:
-        return await self._send({"type": "stop_speak"})
+        """R3：打断当前回复 → reply_cancelled（R3_SPEC 1）。"""
+        return await self._send({
+            "type": "reply_cancelled",
+            "payload": {"turn_id": self._current_turn},
+        })
+
+    async def reply_start(self, channel: str = "tts") -> bool:
+        """R3 协议：回复开始（R3_SPEC 1）。"""
+        return await self._send({
+            "type": "reply_start",
+            "payload": {"turn_id": self._current_turn, "channel": channel},
+        })
+
+    async def reply_segment(self, *, text: str, audio_b64: str = "",
+                            tone: str = "", portrait: str = "", text_zh: str = "") -> bool:
+        """R3 协议：回复段落（R3_SPEC 1）。"""
+        return await self._send({
+            "type": "reply_segment",
+            "payload": {
+                "turn_id": self._current_turn,
+                "text": text, "audio_b64": audio_b64,
+                "tone": tone, "portrait": portrait, "text_zh": text_zh,
+            },
+        })
+
+    async def reply_end(self) -> bool:
+        """R3 协议：回复结束（R3_SPEC 1）。"""
+        return await self._send({
+            "type": "reply_end",
+            "payload": {"turn_id": self._current_turn},
+        })
+
+    async def reply_error(self, code: str = "tts_failed", recoverable: bool = True) -> bool:
+        """R3 协议：回复失败（R3_SPEC 1）。"""
+        return await self._send({
+            "type": "reply_error",
+            "payload": {"turn_id": self._current_turn, "code": code, "recoverable": recoverable},
+        })
 
     async def _send(self, msg: dict) -> bool:
+        # R3 协议统一信封：event_id + ts（R3_SPEC 1）
+        if "event_id" not in msg:
+            msg["event_id"] = uuid.uuid4().hex[:8]
+        if "ts" not in msg:
+            msg["ts"] = int(time.time())
         if self._client is None:
             return False
         try:
@@ -194,19 +239,18 @@ class PetServer:
                         continue
                     try:
                         msg_text = str(msg.get("text") or "")
-                        # 构建消息 → 流式生成（agent 的 messages 由 handle 内部构建；
-                        # PoC：直接调 llm.stream_chat 需要消息列表——走 agent 的简化路径：
-                        # 用一次性 handle 拿完整回复再按句推（保证与 agent 状态一致）
+                        # R3 整段协议（与 speak 一致）：不再逐句 chunk
                         r = await self._call_agent(msg_text)
-                        for sent in _split_sentences(r.reply):
-                            await self.speak_chunk(sent)
-                        await self.speak_done()
-                        # R2 双语：日语台词合成音频播放（显示已流式，音频补发）
-                        if r.ja_text:
-                            await self.speak(r.reply, tts_text=r.ja_text)
+                        await self.speak(
+                            r.reply,
+                            tags=[r.portrait] if r.portrait else None,
+                            tts_text=r.ja_text or None,
+                        )
                     except Exception as e:
                         logger.warning("stream_talk failed: %s", e)
-                        await self.speak_done()
+                        await self.reply_error(code="reply_failed", recoverable=True)
+                        await self.reply_segment(text="（这条回复没有完成，再说一次？）")
+                        await self.reply_end()
                 elif mtype == "ping":
                     await self._send({"type": "pong"})
                 elif mtype == "get_config":

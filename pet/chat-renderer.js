@@ -75,19 +75,34 @@ window.pet.onChatLine((m) => {
   if (m.role === 'pet' && m.finish) { finishPetMsg(m.ts); return; }
   appendMsg(m);
 });
+// R3_SPEC 2/4：状态机 → 状态点/文案/输入/按钮
+const STATUS_UI = {
+  connecting: { dot: '#f0a020', text: '连接中…', btn: '发送' },
+  online:     { dot: '#95ec69', text: '在线', btn: '发送' },
+  generating: { dot: '#4e9bf7', text: '正在想', btn: '发送' },
+  speaking:   { dot: '#4e9bf7', text: '正在说', btn: '发送' },
+  offline:    { dot: '#f44', text: '连接断开', btn: '重试连接' },
+  failed:     { dot: '#f44', text: '回复未完成', btn: '重试' },
+};
+let curStatus = 'connecting';
 window.pet.onCoreState((m) => {
-  document.getElementById('statusDot').style.background = m.connected ? '#95ec69' : '#f0a020';
-  statusText.textContent = m.connected ? (m.state === 'thinking' ? '思考中…' : '在线') : '核心未连接';
+  curStatus = m.status || (m.connected ? 'online' : 'offline');
+  const ui = STATUS_UI[curStatus] || STATUS_UI.connecting;
+  document.getElementById('statusDot').style.background = ui.dot;
+  statusText.textContent = ui.text;
+  sendBtn.textContent = ui.btn;
 });
 
 // 发送
 function send() {
   const text = input.value.trim();
+  if (curStatus === 'offline') { window.pet.reconnect(); return; }
+  if (curStatus === 'failed') { window.pet.reconnect(); return; }
   if (!text) return;
   window.pet.sendChat(text);
   input.value = '';
   sendBtn.disabled = true;
-  statusText.textContent = '等待回复…';
+  statusText.textContent = '正在想';
 }
 input.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
 input.addEventListener('input', () => { sendBtn.disabled = !input.value.trim(); });

@@ -26,7 +26,7 @@ def _free_port():
 
 
 def test_protocol_roundtrip():
-    """起真实 WS 服务：壳客户端连接 → 收 speak/bubble → 发 poke → 收回复。"""
+    """起真实 WS 服务：壳客户端连接 → 收 reply_*/bubble → 发 poke → 收回复（R3 协议）。"""
     port = _free_port()
     results = {}
 
@@ -35,21 +35,25 @@ def test_protocol_roundtrip():
         task = asyncio.create_task(srv.run())
         await asyncio.sleep(0.3)  # 等服务就绪
         async with websockets.connect(f"ws://127.0.0.1:{port}") as ws:
-            # 核心 → 壳：speak
+            # 核心 → 壳：speak（R3 协议：reply_start → reply_segment → reply_end）
             assert await srv.speak("你好呀", tags=["<低声>"])
-            msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=3))
-            results["speak"] = msg
+            msgs = [json.loads(await asyncio.wait_for(ws.recv(), timeout=3)) for _ in range(3)]
+            results["reply_types"] = [m["type"] for m in msgs]
+            results["segment"] = next(m for m in msgs if m["type"] == "reply_segment")
             # 核心 → 壳：bubble
             assert await srv.bubble("在想你")
             msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=3))
             results["bubble"] = msg
-            # 壳 → 核心：poke → 先 stop_speak（TTS 打断）再回 speak
+            # 壳 → 核心：poke → 先 reply_cancelled（TTS 打断）再回 reply_*
             await ws.send(json.dumps({"type": "poke"}))
+            poke_seg = None
             while True:
                 msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=3))
-                if msg["type"] == "speak":
-                    break
-            results["poke_reply"] = msg
+                if msg["type"] == "reply_segment":
+                    poke_seg = msg
+                if msg["type"] == "reply_end":
+                    break  # 消费完整回复序列
+            results["poke_reply"] = poke_seg
             # 壳 → 核心：ping → pong
             await ws.send(json.dumps({"type": "ping"}))
             msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=3))
@@ -57,11 +61,11 @@ def test_protocol_roundtrip():
         task.cancel()
 
     asyncio.run(scenario())
-    assert results["speak"]["type"] == "speak"
-    assert results["speak"]["text"] == "你好呀"
+    assert results["reply_types"] == ["reply_start", "reply_segment", "reply_end"]
+    assert results["segment"]["payload"]["text"] == "你好呀"
     assert results["bubble"]["type"] == "bubble"
-    assert results["poke_reply"]["type"] == "speak"
-    assert "叫我干嘛" in results["poke_reply"]["text"]
+    assert results["poke_reply"]["type"] == "reply_segment"
+    assert "叫我干嘛" in results["poke_reply"]["payload"]["text"]
     assert results["pong"]["type"] == "pong"
 
 
@@ -95,14 +99,14 @@ def test_poke_with_agent_uses_agent_reply():
             await ws.send(json.dumps({"type": "poke"}))
             while True:
                 msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=3))
-                if msg["type"] == "speak":
+                if msg["type"] == "reply_segment":
                     break
             results["reply"] = msg
         task.cancel()
 
     asyncio.run(scenario())
-    assert results["reply"]["type"] == "speak"
-    assert results["reply"]["text"] == "（抬起头）怎么了？"
+    assert results["reply"]["type"] == "reply_segment"
+    assert results["reply"]["payload"]["text"] == "（抬起头）怎么了？"
 
 
 def test_config_roundtrip(tmp_path):
