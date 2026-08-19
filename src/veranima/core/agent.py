@@ -428,14 +428,29 @@ class Agent:
         try:
             from .persona import extract_framework_candidates, persona_candidate_to_memory, validate_persona_candidate
             for pc in extract_framework_candidates(user_text, user_msg_id):
-                if validate_persona_candidate(pc, self.card):
-                    logger.debug("persona candidate rejected: %s", validate_persona_candidate(pc, self.card))
+                issues = validate_persona_candidate(pc, self.card)
+                if issues:
+                    logger.debug("persona candidate rejected: %s", issues)
                     continue
                 mc = persona_candidate_to_memory(pc, source_message_id=user_msg_id)
                 if mc is not None:
                     self._store_candidate(mc)
         except Exception as e:
             logger.warning("persona framework extraction failed (non-blocking): %s", e)
+
+        # 9.3.2 P-2 共同意义（PERSONA_LOOP_SPEC P-2）
+        try:
+            from .persona import extract_shared_meaning_candidates, persona_candidate_to_memory, validate_persona_candidate
+            for pc in extract_shared_meaning_candidates(user_text, user_msg_id):
+                issues = validate_persona_candidate(pc, self.card)
+                if issues:
+                    logger.debug("shared meaning candidate rejected: %s", issues)
+                    continue
+                mc = persona_candidate_to_memory(pc, source_message_id=user_msg_id)
+                if mc is not None:
+                    self._store_candidate(mc)
+        except Exception as e:
+            logger.warning("shared meaning extraction failed (non-blocking): %s", e)
 
         # 9.4 MEMORY_SPEC 6.2：Reply.memory_candidates 低置信候选（仍需程序校验）
         try:

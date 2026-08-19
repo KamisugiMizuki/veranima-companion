@@ -202,6 +202,82 @@ def validate_persona_candidate(candidate: PersonaCandidate, card) -> list[str]:
     return issues
 
 
+# ---------- P-2 共同意义 ----------
+
+# 用户对过去共同事件给出解释的模式
+_SHARED_MEANING_PATTERN = re.compile(
+    r"(?:上次|刚才|之前|那天|那次|当时)[^。！？!?]{0,24}"
+    r"(?:我们|一起|咱俩)[^。！？!?]{0,24}"
+    r"(?:我觉得|我的理解是|对我来说|现在想想|仔细想想)[^。！？!?]{4,}"
+)
+
+
+def build_shared_meaning_candidate(
+    event_summary: str,
+    user_interpretation: str,
+    character_interpretation: str,
+    evidence_ids: list[int],
+    user_confirmed: bool = False,
+) -> PersonaCandidate | None:
+    """P-2：事件 + 双方解释 → shared_meaning 候选。
+
+    - 缺事件证据 → None（拒绝）
+    - 缺任一方解释 → needs_confirmation=True（不伪造共识）
+    - agreed_meaning 只在 user_confirmed=True（用户确认）时由用户解释代表共识；
+      分歧保留在内容中，不强行合并
+    """
+    event_summary = (event_summary or "").strip()
+    if not event_summary or not evidence_ids:
+        logger.warning("persona: shared_meaning 拒绝（缺事件或证据）")
+        return None
+    confirmed = bool(user_confirmed)
+    content = f"共同事件：{event_summary}。"
+    if user_interpretation.strip():
+        content += f"用户解释：{user_interpretation.strip()}。"
+    if character_interpretation.strip():
+        content += f"角色解释：{character_interpretation.strip()}。"
+    content = content.rstrip("。") + "。"
+    return PersonaCandidate(
+        kind="shared_meaning",
+        title=event_summary[:20],
+        content=content,
+        evidence_message_ids=list(evidence_ids),
+        confidence=0.65,
+        stability=0.5,
+        importance=0.65,
+        emotional_weight=0.6,
+        user_confirmed=confirmed,
+        needs_confirmation=not confirmed,
+    )
+
+
+def extract_shared_meaning_candidates(text: str, message_id: int) -> list[PersonaCandidate]:
+    """P-2：用户对过去共同事件给出解释 → shared_meaning 候选。
+
+    要求同时出现：过去事件标记（上次/刚才/那天…）+ 共同主体（我们/一起）+ 解释（我觉得/我的理解是…）。
+    角色解释缺省 → needs_confirmation 候选。
+    """
+    if not text or len(text.strip()) < 6:
+        return []
+    m = _SHARED_MEANING_PATTERN.search(text)
+    if not m:
+        return []
+    # 事件名：过去标记之后、解释之前的片段
+    past = re.search(r"(上次|刚才|之前|那天|那次|当时)([^。！？!?]{2,24})", text)
+    event = past.group(2).strip() if past else text[:20]
+    interp = re.search(r"(?:我觉得|我的理解是|对我来说|现在想想|仔细想想)([^。！？!?]{2,})", text)
+    user_interp = interp.group(1).strip() if interp else ""
+    return [
+        build_shared_meaning_candidate(
+            event_summary=event,
+            user_interpretation=user_interp,
+            character_interpretation="",  # 角色解释由 P-5 反思/后续轮生成
+            evidence_ids=[message_id],
+            user_confirmed=False,
+        )
+    ]
+
+
 # ---------- PersonaCandidate → MemoryCandidate 转换 ----------
 
 def persona_candidate_to_memory(candidate: PersonaCandidate, source_message_id: int) -> dict | None:
