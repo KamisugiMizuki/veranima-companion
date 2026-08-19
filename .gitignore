@@ -46,6 +46,12 @@ Thumbs.db
 # Hermes 本地状态
 .hermes/
 
+# 本地设计审查快照与用户语音素材（保留本地文件，不纳入版本库）
+.impeccable/
+tmp_dbg/
+characters/*/example_voices/
+characters/*/voice/
+
 # 桌宠壳 node_modules（junction 复用 koodo-reader，不入库）
 pet/node_modules/
 

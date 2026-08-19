@@ -30,9 +30,10 @@ def list_roles() -> list[dict]:
             data = json.loads(cj.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             continue
+        payload = data.get("data", data) if isinstance(data, dict) else {}
         roles.append({
             "id": p.name,
-            "name": str(data.get("name") or data.get("display_name") or p.name),
+            "name": str(payload.get("name") or payload.get("display_name") or p.name),
             "path": str(cj),
         })
     return roles
@@ -52,9 +53,10 @@ def active_role(config: dict) -> dict | None:
         data = json.loads(p.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return None
+    payload = data.get("data", data) if isinstance(data, dict) else {}
     return {
         "id": p.parent.name,
-        "name": str(data.get("name") or data.get("display_name") or p.parent.name),
+        "name": str(payload.get("name") or payload.get("display_name") or p.parent.name),
         "path": str(p),
     }
 

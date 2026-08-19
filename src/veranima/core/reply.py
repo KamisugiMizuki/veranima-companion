@@ -40,6 +40,7 @@ class SpeechSegment:
     tone: str = "中性"
     portrait: str = ""
     display_text: str = ""   # 气泡显示文本（zh）；空 = 用 text
+    suppress_tts: bool = False
 
 
 @dataclass

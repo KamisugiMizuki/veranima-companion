@@ -18,10 +18,14 @@ const EXPRESSION_FILES = {
 let avatarMap = null;
 window.pet.onAvatarMap((map) => {
   avatarMap = map || null;
+  // 角色切换允许重新建立一次比例基准；同一角色的 TTS 表情切换不再重算宽度。
+  avatarWidth = 0;
   if (avatarMap) applyExpression(Object.keys(avatarMap)[0] || '');
 });
 // 表情 → 立绘路径：角色卡优先，fallback 默认 assets/
 let crossfadeTimer = null;
+let isCrossfading = false;
+let fitPending = false;
 function applyExpression(label) {
   let src = '';
   if (avatarMap && avatarMap[label]) src = avatarMap[label];
@@ -87,7 +91,7 @@ function relayout() {
   bubbleEl.style.left = `${lay.bubble.x}px`;
   petEl.style.width = `${lay.stage.w}px`;
   petEl.style.height = `${lay.stage.h}px`;
-  window.pet.resizePet({ height: Math.round(lay.stage.h) });
+  window.pet.resizePet({ width: Math.round(lay.stage.w), height: Math.round(lay.stage.h) });
 }
 if (window.ResizeObserver) {
   new ResizeObserver(relayout).observe(bubbleEl);
@@ -98,8 +102,10 @@ window.addEventListener('resize', relayout);
 // ---------- 立绘尺寸（按原图比例；高度优先固定，宽度自适应） ----------
 // 用户可调：设置页 avatar_height（px）→ main 下发；默认 200
 let avatarHeight = 200;
+let avatarWidth = 0;
 window.pet.onAvatarHeight((h) => {
   avatarHeight = h > 0 ? h : 200;
+  avatarWidth = 0;
   fitAvatar();
 });
 // 立绘加载完成 → 只按比例设置 avatar 自身尺寸；窗口/定位全权交给 relayout
@@ -107,49 +113,66 @@ window.pet.onAvatarHeight((h) => {
 function fitAvatar() {
   const img = avatar;
   if (!img.complete || !img.naturalWidth) { img.onload = fitAvatar; return; }
+  if (isCrossfading) {
+    fitPending = true;
+    return;
+  }
   const h = avatarHeight;
-  const w = Math.round(h * img.naturalWidth / img.naturalHeight);
-  img.style.width = w + 'px';
+  // 同一角色的表情切换不重新按每张图片测宽；否则 TTS 逐句换图时窗口/立绘抖动。
+  // 只有用户改 avatar_height 或首次加载时才建立宽度基准。
+  if (!avatarWidth) avatarWidth = Math.round(h * img.naturalWidth / img.naturalHeight);
+  const w = avatarWidth;
+  img.style.width = `${w}px`;
   img.style.height = h + 'px';
-  relayout();  // 尺寸变了 → 重新布局（含窗口高度）
+  relayout();  // 尺寸变了 → 重新布局（含窗口宽高，一次 IPC）
 }
 avatar.addEventListener('load', fitAvatar);
 
 // ---------- 真交叉淡入（GUI_SPEC 4.1）：双层 img，无淡出空窗（不闪） ----------
 let avatarNext = null;
+function copyAvatarGeometry(target) {
+  // 换图期间两层必须共享完全相同的盒模型；否则 next 从 (0,0) 淡入、
+  // probe 又改 main 尺寸，会表现为"突然放大再缩回"。
+  const box = avatar.getBoundingClientRect();
+  const parent = petEl.getBoundingClientRect();
+  target.style.top = `${Math.round(box.top - parent.top)}px`;
+  target.style.left = `${Math.round(box.left - parent.left)}px`;
+  target.style.width = `${Math.round(box.width)}px`;
+  target.style.height = `${Math.round(box.height)}px`;
+}
 function crossfadeTo(src) {
   if (!avatarNext) {
     avatarNext = document.createElement('img');
     avatarNext.id = 'avatar-next';
-    avatarNext.style.cssText = 'position:absolute;top:0;left:0;opacity:0;transition:opacity 240ms;pointer-events:none;image-rendering:pixelated;';
+    avatarNext.style.cssText = 'position:absolute;opacity:0;transition:opacity 240ms;pointer-events:none;image-rendering:pixelated;';
     petEl.appendChild(avatarNext);
   }
+  clearTimeout(crossfadeTimer);
+  isCrossfading = true;
+  fitPending = false;
+  copyAvatarGeometry(avatarNext);  // 锁住旧图几何，整个淡入过程绝不缩放
   avatarNext.src = src;
-  // 强制重排后淡入新图，同时旧图淡出（交叉，无空窗）
   requestAnimationFrame(() => {
+    avatarNext.style.transition = 'opacity 240ms';
     avatarNext.style.opacity = '1';
     avatar.style.transition = 'opacity 240ms';
     avatar.style.opacity = '0';
   });
-  clearTimeout(crossfadeTimer);
   crossfadeTimer = setTimeout(() => {
-    avatar.src = src;              // 新图就位
+    // 先完成交叉，再更换主图。load → fitAvatar 之后才允许按新图比例结算。
+    avatar.src = src;
     avatar.style.opacity = '1';
     avatar.style.transition = 'opacity 0ms';
     avatarNext.style.opacity = '0';
     avatarNext.style.transition = 'opacity 0ms';
     avatarNext.removeAttribute('src');
+    crossfadeTimer = null;
+    isCrossfading = false;
+    if (fitPending) {
+      fitPending = false;
+      fitAvatar();  // 只在交叉完成后按新角色比例重排一次
+    }
   }, 260);
-  // 立绘切换后同步尺寸（新图比例可能不同）
-  const probe = new Image();
-  probe.onload = () => {
-    const h = avatarHeight;
-    const w = Math.round(h * probe.naturalWidth / probe.naturalHeight);
-    avatar.style.width = w + 'px';
-    avatar.style.height = h + 'px';
-    relayout();
-  };
-  probe.src = src;
 }
 
 // ---------- 气泡 ----------

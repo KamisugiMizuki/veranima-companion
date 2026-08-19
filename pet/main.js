@@ -397,7 +397,8 @@ ipcMain.handle('settings-get-config', async () => {
       .map((d) => {
         try {
           const cj = JSON.parse(fs.readFileSync(path.join(charsDir, d.name, 'character.json'), 'utf-8'));
-          const name = cj.name || cj.display_name || d.name;
+          const payload = cj.spec === 'chara_card_v3' ? (cj.data || {}) : cj;
+          const name = payload.name || payload.display_name || d.name;
           return { id: d.name, name };
         } catch { return { id: d.name, name: d.name }; }
       });
@@ -426,11 +427,19 @@ ipcMain.on('chat-stop', () => {
   if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'stop_speak' }));
 });
 ipcMain.on('pet-resize', (e, dim) => {
-  // GUI_SPEC 4.2：气泡增长 → 窗口向上扩（顶边随高度变化，锚点=形象底边稳定）
+  // GUI_SPEC 4.2：气泡增长 → 窗口向上扩（顶边随高度变化，锚点=形象底边稳定）。
+  // width/height 同时接受，避免 renderer 的布局宽度与原生窗口宽度分叉。
+  const requestedWidth = Math.max(120, Math.round(Number(dim && dim.width) || win.getBounds().width));
   const h = Math.max(120, Math.round(Number(dim && dim.height) || 206));
   const b = win.getBounds();
-  if (b.height === h) return;
-  win.setBounds({ x: b.x, y: b.y - (h - b.height), width: b.width, height: h });
+  if (b.height === h && b.width === requestedWidth) return;
+  const center = b.x + b.width / 2;
+  win.setBounds({
+    x: Math.round(center - requestedWidth / 2),
+    y: b.y - (h - b.height),
+    width: requestedWidth,
+    height: h,
+  });
 });
 
 // 角色立绘映射：读当前角色卡 avatar.expressions → {标签: 绝对路径} → renderer
@@ -460,7 +469,9 @@ function pushAvatarMapFrom(cardPath) {
   try {
     const full = path.join(__dirname, '..', cardPath);
     const cj = JSON.parse(fs.readFileSync(full, 'utf-8'));
-    const exprs = (((cj.extensions || {}).veranima || {}).avatar || {}).expressions || {};
+    const data = cj.spec === 'chara_card_v3' ? (cj.data || {}) : cj;
+    const ext = (data.extensions || {}).veranima || data.veranima || {};
+    const exprs = (ext.avatar || {}).expressions || {};
     const map = {};
     for (const [label, rel] of Object.entries(exprs)) {
       map[label] = require('url').pathToFileURL(path.join(path.dirname(full), rel)).href;

@@ -128,7 +128,8 @@ def apply_portrait_description(char_dir: Path) -> dict[str, str]:
     cj = char_dir / "character.json"
     if cj.exists():
         data = json.loads(cj.read_text(encoding="utf-8"))
-        ver = data.setdefault("extensions", {}).setdefault("veranima", {})
+        payload = data.setdefault("data", {}) if data.get("spec") == "chara_card_v3" else data
+        ver = payload.setdefault("extensions", {}).setdefault("veranima", {})
         avatar = ver.setdefault("avatar", {})
         avatar.setdefault("expressions", {}).update(mapping)
         cj.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -177,7 +178,8 @@ def import_character(archive_path: Path, characters_dir: Path) -> Path:
                 cj = target_dir / "character.json"
                 if cj.exists():
                     data = json.loads(cj.read_text(encoding="utf-8"))
-                    data["display_name"] = target_name
+                    payload = data.setdefault("data", {}) if data.get("spec") == "chara_card_v3" else data
+                    payload["display_name"] = target_name
                     cj.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)

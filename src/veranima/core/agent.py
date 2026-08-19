@@ -160,7 +160,8 @@ class Agent:
         # P-6/P-9 状态：框架引用冷却（8 轮）、表层印记、轮次计数
         from .persona import ImprintTracker, ReuseCooldown
         self._reuse_cd = ReuseCooldown()
-        self._imprints = ImprintTracker()
+        saved_imprints = self.state.relationship.get("imprints") if isinstance(self.state.relationship, dict) else {}
+        self._imprints = ImprintTracker.from_dict(saved_imprints or {})
         self._turn_n = 0
 
         # MVP2 学习组件（持久化到 data/，随对话更新）
@@ -243,6 +244,7 @@ class Agent:
             # P-3：关系模型快照同步进 AgentState；P-7：冲突状态随关系快照
             rel = self.relationship.to_dict()
             rel["conflicts"] = self._conflicts.to_dict()
+            rel["imprints"] = self._imprints.to_dict()
             self.state.relationship = rel
             self.memory.save_state(self.state.to_snapshot())
         except Exception as e:

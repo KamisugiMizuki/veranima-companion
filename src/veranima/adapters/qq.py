@@ -186,7 +186,11 @@ class QQAdapter:
             result = await asyncio.to_thread(self.agent.handle, text, [d for d, _ in images], channel="im")
         self._last_user_activity = time.time()
         if result.reply:
-            await self.bot.send(event, result.reply)
+            # 统一 IM 出口：Reply 也必须经过 render_im，不能绕过波浪号/感叹号/
+            # emoji 规则直接发送原始 LLM 文本。
+            rendered = render_im(result.reply_obj or result.reply, self.agent.state)
+            if rendered:
+                await self.bot.send(event, rendered)
             logger.info("qq=%s << %s", uid, result.reply[:80])
             # 8.6.3 表情包输出：回复后按情绪宽松匹配，附加一张（不刷屏）
             sticker = self._pick_sticker_for_reply(result.reply)

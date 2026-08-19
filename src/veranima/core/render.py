@@ -110,6 +110,7 @@ def render_tts(reply, state=None) -> list:
             out.append(SpeechSegment(
                 text=seg.ja_text or seg.text, tone=seg.tone, portrait=seg.portrait,
                 display_text=seg.translation or seg.text,
+                suppress_tts=True,
             ))
         elif seg.ja_text:
             out.append(SpeechSegment(

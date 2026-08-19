@@ -832,8 +832,8 @@ persona_candidate_to_memory(candidate, source_message_id) -> dict | None
 
 ## 16. 实现顺序
 
-> 状态：P-0 ~ P-9 全部实现并提交（2026-08-19，`feat(persona):` 系列；行为测试见 tests/test_persona_core.py ~ test_persona_wiring.py；499 passed）。
-> 联通验证：所有新函数均有产品链路消费方（agent/prompts/adapter），见 tests/test_persona_wiring.py；不存在"仅测试消费"的死代码。
+> 状态：P-0 ~ P-9 的第一版运行时闭环已实现并接入产品链路（角色核心/框架/共同意义/关系/PAD/Brief/反思/回用/冲突/表达控制）。SelfModel 当前落地为版本化 `self_model_snapshot`，`AutobiographicalChapter` 独立表和完整人生档案 UI 仍暂缓，不能视为完成。
+> 联通验证：所有已声明运行时组件均有产品链路消费方；`tests/test_persona_wiring.py` 锁定 Agent→PersonaBrief/回用/ResponsePlan/Imprint，`tests/test_pet_reply_wiring.py` 锁定 Reply→TTS 多段协议。
 
 以下每个阶段都是独立可提交的垂直切片。除非该阶段明确列出，否则不得改动其他模块。
 

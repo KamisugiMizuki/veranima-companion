@@ -21,6 +21,7 @@ import websockets
 
 from veranima.config import load_config, save_config
 from veranima.llm.client import _split_sentences
+from veranima.core.render import render_tts
 
 logger = logging.getLogger("veranima.pet_server")
 
@@ -185,6 +186,42 @@ class PetServer:
             await self.reply_segment(text=text, portrait=portrait, text_zh=text_zh)
         return await self.reply_end()
 
+    async def speak_reply(self, reply) -> bool:
+        """R2/R3：消费完整 Reply 的全部 TTS segments，不丢 tone/portrait/zh。"""
+        segments = render_tts(reply)
+        if not segments:
+            return await self.speak(getattr(reply, "text", ""))
+        await self.reply_start()
+        import base64
+        for seg in segments:
+            speak_text = (seg.text or "").strip()
+            if not speak_text or getattr(seg, "suppress_tts", False):
+                await self.reply_segment(text=seg.display_text or speak_text,
+                                         tone=seg.tone, portrait=seg.portrait)
+                continue
+            text_zh = seg.display_text if seg.display_text and seg.display_text != speak_text else ""
+            try:
+                audio = None if self._tts is None else await asyncio.to_thread(self._tts.synthesize, speak_text)
+                await self.reply_segment(text=text_zh or speak_text,
+                                         audio_b64=base64.b64encode(audio).decode() if audio else "",
+                                         tone=seg.tone, portrait=seg.portrait, text_zh=text_zh)
+            except Exception as e:
+                logger.warning("tts segment failed (bubble only): %s", e)
+                await self.reply_segment(text=text_zh or speak_text,
+                                         tone=seg.tone, portrait=seg.portrait, text_zh=text_zh)
+        return await self.reply_end()
+
+    async def speak_result(self, result) -> bool:
+        """Reply 对象存在时走完整分段；旧 FakeAgent/兼容调用退回 speak。"""
+        reply_obj = getattr(result, "reply_obj", None)
+        if reply_obj is not None:
+            return await self.speak_reply(reply_obj)
+        return await self.speak(
+            getattr(result, "reply", ""),
+            tags=[result.portrait] if getattr(result, "portrait", "") else None,
+            tts_text=getattr(result, "ja_text", "") or None,
+        )
+
     async def bubble(self, text: str) -> bool:
         return await self._send({"type": "bubble", "text": text})
 
@@ -277,7 +314,7 @@ class PetServer:
                         # 正式版：agent 生成一句互动（channel=tts 语音风格 + 表情标签）
                         try:
                             r = await self._call_agent("（用户戳了戳桌宠）")
-                            await self.speak(r.reply, tags=[r.portrait] if r.portrait else None, tts_text=r.ja_text or None)
+                            await self.speak_result(r)
                         except Exception as e:
                             logger.warning("poke agent failed: %s", e)
                             await self.speak("嗯？叫我干嘛～")
@@ -308,11 +345,7 @@ class PetServer:
                             logger.debug("proactive feedback update failed: %s", e)
                         # R3 整段协议（与 speak 一致）：不再逐句 chunk
                         r = await self._call_agent(msg_text)
-                        await self.speak(
-                            r.reply,
-                            tags=[r.portrait] if r.portrait else None,
-                            tts_text=r.ja_text or None,
-                        )
+                        await self.speak_result(r)
                     except Exception as e:
                         logger.warning("stream_talk failed: %s", e)
                         await self.reply_error(code="reply_failed", recoverable=True)
@@ -431,8 +464,7 @@ class PetServer:
                                     cache_key = f"{ev.kind}:{ev.tag}"
                                     if time.time() - self._obs_cache.get(cache_key, 0.0) < 120:
                                         continue
-                                    summary, category = await asyncio.to_thread(
-                                        self._observe_event, att, ev)
+                                    summary, category = await self._observe_event(att, ev)
                                     if not summary:
                                         continue
                                     self._obs_cache[cache_key] = time.time()
