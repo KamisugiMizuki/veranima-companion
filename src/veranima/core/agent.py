@@ -214,6 +214,9 @@ class Agent:
         if not user_text and not images:
             return TurnResult(reply="", energy=self.state.energy, mood=self.state.mood)
 
+        # ===== R0 阶段 1: prepare_turn（R0_SPEC 5）=====
+        # 输入规整 → 状态推进 → 场景/打断 → 零开销入库 → 记忆检索预算
+        # （第一阶段保持现有行为，仅按注释划分；后续逐步抽为独立函数）
         # 记忆/历史占位文本（图片不直接入库，防 base64 膨胀）
         store_text = user_text + (" [图片]" * len(images)) if images else user_text
 
@@ -235,7 +238,8 @@ class Agent:
         # 2. 零开销摄入：消息立即入库（FTS5 同步索引）
         self.memory.store_message("user", store_text, self.state.energy, self.state.mood)
 
-        # 3. 记忆检索（预算内注入）+ MVP2 附加块（风格/镜像/承诺）+ 打断指令
+        # ===== R0 阶段 2: build_turn_prompt（R0_SPEC 5）=====
+        # 记忆检索（预算内注入）+ MVP2 附加块（风格/镜像/承诺）+ 打断指令
         query_hint = user_text or "图片"
         extra_blocks = [
             self.style.params.to_prompt_block(),
@@ -272,7 +276,8 @@ class Agent:
         else:
             messages.append({"role": "user", "content": user_text})
 
-        # 4.5 模型可用性前置检查（远程 API：is_model_loaded 恒 True，防御性保留）
+        # ===== R0 阶段 3: call_llm（R0_SPEC 5）=====
+        # 模型可用性前置检查（远程 API：is_model_loaded 恒 True，防御性保留）
         check = getattr(self.llm, "is_model_loaded", None)
         if check is not None and not check():
             reply = "（我好像还没醒过来……服务没在运行。检查一下 API 配置？）"
@@ -306,18 +311,22 @@ class Agent:
             cut = reply[:max_len].rstrip("，。！？ ")
             reply = cut + "……（我这边有点忙，回头细说）"
 
-        # 5.6 R2 表情标签驱动：tts 通道解析结构化输出（text/tone/portrait）（R2_SPEC 2）
+        # ===== R0 阶段 4: parse_reply（R0_SPEC 5）=====
+        # R2 表情标签驱动：tts 通道解析结构化输出（text/tone/portrait）（R2_SPEC 2）
         #     R2 双语（角色卡 bilingual.enabled）：ja_text 送 TTS / reply(zh) 显示（R2_SPEC 2）
         portrait = ""
         tone = ""
         ja_text = ""
         if channel == "tts":
             bilingual = bool(((self.card.veranima or {}).get("bilingual") or {}).get("enabled"))
-            reply, tone, portrait, ja_text = extract_segments(reply, bilingual=bilingual)
+            reply, tone, portrait, ja_text = extract_segments(
+                reply, bilingual=bilingual, card=self.card,
+            )
             if portrait and not self._portrait_valid(portrait):
                 portrait = ""  # 词表外标签回退（防 OOC）
 
-        # 6. 回复入库 + 历史更新
+        # ===== R0 阶段 5: persist_turn（R0_SPEC 5）=====
+        # 回复入库 + 历史更新
         self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
         self._history.append({"role": "user", "content": store_text})
         self._history.append({"role": "assistant", "content": reply})
@@ -608,7 +617,7 @@ class Agent:
 
     # ---------- 内部 ----------
 
-    def _short_task(self, task: str, max_tokens: int = 512, bilingual: bool = False) -> str | tuple[str, str]:
+    def _short_task(self, task: str, max_tokens: int | None = None, bilingual: bool = False) -> str | tuple[str, str]:
         """短任务生成：带完整 system prompt（角色锚定）。
 
         实测（2026-08，qwen3-8b）：thinking 模型对裸 user prompt 的短任务
@@ -616,9 +625,13 @@ class Agent:
         带完整 system prompt 后 thinking 收敛、输出正常角色化回复。
         空/异常由调用方回退模板。
 
+        max_tokens=None → 读配置 llm.short_task_max_tokens（默认 1024）；
+        不得传 120/200 这类小预算（R0_SPEC 6：思考模型预算不足只剩残留）。
         bilingual=True：任务要求输出双语 JSON（ja 台词/zh 翻译），返回
         (zh, ja)；非双语返回纯文本字符串。
         """
+        if max_tokens is None:
+            max_tokens = int((self.config.get("llm", {}) or {}).get("short_task_max_tokens", 1024))
         if bilingual:
             task = (
                 task
@@ -637,7 +650,7 @@ class Agent:
         )
         if not bilingual:
             return reply
-        text, _tone, _portrait, ja = extract_segments(reply, bilingual=True)
+        text, _tone, _portrait, ja = extract_segments(reply, bilingual=True, card=self.card)
         return text, ja
 
     def _time_greeting(self) -> str:

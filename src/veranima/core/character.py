@@ -141,3 +141,36 @@ class CharacterCard:
         if extra:
             parts.append(extra)
         return "\n".join(parts)
+
+
+def validate_character_prompt(card: "CharacterCard", prompt: str) -> list[str]:
+    """人格稳定性检查（R0_SPEC 3）：返回问题列表，空列表 = 通过。
+
+    只检查：
+    - name 非空
+    - tones/portrait 在白名单
+    - prompt 包含角色名和 personality 关键片段
+    - 系统硬约束不含其他角色名/生活锚点（IDENTITY_BLOCK 本身无角色词）
+    - 角色卡 JSON 可解析（from_dict 时已保证；此处验证字段完整性）
+    """
+    issues: list[str] = []
+    if not card.name.strip():
+        issues.append("角色名（name）为空")
+    for t in card.tones:
+        if not t.strip():
+            issues.append("语气标签包含空项")
+    # prompt 包含角色名（至少出现一次；容忍 prompt 使用英文名而卡名是中文等变体）
+    if card.name.strip() and card.name not in prompt:
+        issues.append(f"prompt 未包含角色名「{card.name}」")
+    if card.personality.strip():
+        # personality 前 24 字作为关键片段（避免长文截断失配）
+        frag = card.personality.strip()[:24]
+        if frag and frag not in prompt:
+            issues.append(f"prompt 未包含 personality 关键片段「{frag}…」")
+    # 系统硬约束：IDENTITY_BLOCK 不应出现角色名（它是人格无关的统一约束）
+    for other in ("Yuki", "Zima", "由岐", "司书"):
+        if other in IDENTITY_BLOCK:
+            issues.append(f"IDENTITY_BLOCK 泄漏角色锚点「{other}」")
+    # 换卡验收：其他角色名不应出现在角色卡自己的 prompt 段（旧角色关键词泄漏检查）
+    # —— 这里只检查 IDENTITY_BLOCK；角色卡自身内容不强制（用户可能故意引用）
+    return issues

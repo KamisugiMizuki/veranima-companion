@@ -10,9 +10,18 @@ llm:
   # max_tokens 只限制输出（单次回复长度），不影响输入上下文；
   # 4096 对陪伴对话足够，无需随 context 上调
   max_tokens: 4096
+  # 短任务（主动发起/衔接语/观察联想等）输出预算：思考模型会先耗 token 在 thinking，
+  # 低于 256 会只剩残留（历史教训：200 → "0.8, stable companion, natural"）
+  short_task_max_tokens: 1024
   # 低精力时的简短回复配置
   low_energy_max_tokens: 256
   timeout: 120
+
+# R0 统一 Reply 输出契约（R0_SPEC 6）
+output:
+  max_segments: 6                  # TTS JSON segments 最多段数
+  max_reply_chars: 1200            # 单段/整条回复截断上限（字符）
+  parse_retry: 1                   # 解析重试次数（当前解析器确定性，保留配置位）
 
 # TTS（桌宠语音；当前生产实现为本地 GPT-SoVITS v4 HTTP 服务）
 # 壳启动时拉起 tts/gpt-sovits/api_v2.py，默认监听 http://127.0.0.1:9880。

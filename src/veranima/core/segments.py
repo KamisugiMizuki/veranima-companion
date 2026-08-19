@@ -1,18 +1,19 @@
 """R2 表情标签驱动（R2_SPEC 2）：LLM 结构化回复解析。
 
-channel=tts 时 prompt 要求 JSON 输出：
-  {"segments":[{"text":"回复内容","tone":"中性","portrait":"开心脸红"}]}
+本模块是兼容 facade：内部实现已迁移到 `core/reply.py`（R0_SPEC 4 确定性解析）。
+保留 `extract_segments(reply, bilingual)` 旧签名，返回 (text, tone, portrait, ja_text)。
+
 解析失败降级：整段当纯文本（portrait/tone 空），不重试不报错。
 """
 from __future__ import annotations
 
-import json
-import re
+from .reply import parse_reply
 
-_SEGMENTS_RE = re.compile(r"\{[^{}]*\"(?:text|ja|zh)\"[^{}]*\}")  # 双语 segment 无 text 键（ja/zh）
+__all__ = ["extract_segments"]
 
 
-def extract_segments(reply: str, *, bilingual: bool = False) -> tuple[str, str, str, str]:
+def extract_segments(reply: str, *, bilingual: bool = False,
+                     card: object = None) -> tuple[str, str, str, str]:
     """从 LLM 回复提取 (text, tone, portrait, ja_text)。
 
     双语模式（bilingual=True，R2 由岐日语配音）：segment 含 ja/zh 两个文本——
@@ -20,39 +21,18 @@ def extract_segments(reply: str, *, bilingual: bool = False) -> tuple[str, str, 
     返回的 text = zh（显示），ja_text = ja（送 TTS）。非双语时 ja_text 空。
     失败时 text=原文，tone/portrait/ja_text 空。
     """
-    text, tone, portrait, ja_text = reply, "", "", ""
-    try:
-        # 直接 JSON 解析
-        data = json.loads(reply)
-        segs = data.get("segments") if isinstance(data, dict) else None
-        if not isinstance(segs, list) or not segs:
-            return text, tone, portrait, ja_text
-        first = segs[0] if isinstance(segs[0], dict) else {}
-        if bilingual:
-            # 双语：zh 显示 / ja 送 TTS
-            text = str(first.get("zh") or first.get("text") or "").strip() or reply
-            ja_text = str(first.get("ja") or "").strip()
-        else:
-            text = str(first.get("text") or "").strip() or reply  # 缺 text 只回退文本
-        tone = str(first.get("tone") or "").strip()
-        portrait = str(first.get("portrait") or "").strip()
-    except json.JSONDecodeError:
-        # 容错：模型可能包了 markdown 代码块、重复输出多段 JSON 或残缺开头
-        # → 找所有候选对象逐个尝试，第一个可解析的生效（2026-08-19 实测
-        #   LLM 输出两段 segments，第一段残缺 → 只试第一个会失败）
-        for m in _SEGMENTS_RE.finditer(reply):
-            try:
-                obj = json.loads(m.group(0))
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(obj, dict):
-                continue
-            if bilingual:
-                text = str(obj.get("zh") or obj.get("text") or reply).strip()
-                ja_text = str(obj.get("ja") or "").strip()
-            else:
-                text = str(obj.get("text") or reply).strip()
-            tone = str(obj.get("tone") or "").strip()
-            portrait = str(obj.get("portrait") or "").strip()
-            break  # 第一个可解析的对象生效
-    return text, tone, portrait, ja_text
+    parsed = parse_reply(
+        reply,
+        channel="tts",
+        card=card,
+        bilingual=bilingual,
+        max_segments=1,
+        max_chars=1200,
+    )
+    if parsed.degraded:
+        return reply, "", "", ""  # 兼容旧接口：失败时 tone/portrait/ja 为空
+    seg = parsed.segments[0] if parsed.segments else None
+    if seg is None:
+        return reply, "", "", ""
+    # 缺 text 字段：文本回退原文，tone/portrait 保留（旧 facade 行为）
+    return seg.text or reply, seg.tone, seg.portrait, seg.ja_text
