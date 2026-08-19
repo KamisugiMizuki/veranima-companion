@@ -209,9 +209,9 @@ class ProactiveGate:
     # ---------- 主入口 ----------
 
     def decide(self, candidate: ProactiveCandidate, *, scene: str = "normal",
-               other_channel_active: bool = False) -> ProactiveDecision:
-        """9 条确定性闸门（R4_SPEC 2）。"""
-        now = self._t()
+               other_channel_active: bool = False, now=None) -> ProactiveDecision:
+        """9 条确定性闸门（R4_SPEC 2）。now 注入便于测试（默认真实时钟）。"""
+        now = self._t() if now is None else now
         # 1. enabled 与用户暂停开关
         if not self.enabled:
             return ProactiveDecision(False, "proactive disabled", candidate=candidate)

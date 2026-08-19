@@ -6,6 +6,7 @@ MVP2 范围：隐式反馈学习 + 风格参数（bandits+EMA）+ 语言镜像 +
 
 from __future__ import annotations
 
+import datetime
 import logging
 import random
 import time
@@ -960,6 +961,8 @@ class Agent:
         # P-7：未闭合冲突时禁止 ritual 主动（不加重关系压力）
         if self.persona_proactive_blocked("ritual"):
             return []
+        # gate.decide 需要 epoch 秒（now 可能是 datetime 注入，转 timestamp）
+        now_ts = now.timestamp() if isinstance(now, datetime.datetime) else now
         msgs: list[str] = []
         cand = ProactiveCandidate(
             source="ritual", reason="定时问候/节庆纪念",
@@ -969,6 +972,7 @@ class Agent:
         decision = self.gate.decide(
             cand, scene=self.scene_lock.current(),
             other_channel_active=self.activity.blocking("qq"),
+            now=now_ts,  # 测试注入；生产传真实时间
         )
         if not decision.allow:
             return msgs

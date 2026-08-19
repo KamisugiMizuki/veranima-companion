@@ -703,6 +703,143 @@ def note_conflict_from_user_text(tracker: ConflictTracker, text: str) -> str | N
     return None
 
 
+# ---------- P-9 表达控制面 ----------
+
+RESPONSE_PLAN_MAX_CHARS = 400  # 结构化计划上限（不保存自由思维链）
+
+
+@dataclass(frozen=True)
+class ResponsePlan:
+    """P-9：结构化表达计划（intent/开场/要点/不确定性），不暴露私密 CoT。"""
+
+    intent: str
+    confidence: float
+    recalled_frame_ids: tuple[str, ...] = ()
+    conflict: str = ""
+    opening_move: str = ""
+    key_point: str = ""
+    uncertainty_to_express: str = ""
+    desired_length: str = "normal"
+    association_target: str = ""
+
+
+def build_response_plan(context: dict, brief: PersonaBrief, state) -> ResponsePlan | None:
+    """P-9：复杂回复生成计划；简单事实问答返回 None（跳过）。
+
+    触发：未闭合冲突（conflict_tension>0.5）、相关框架注入、共同意义被回溯、低愉悦。
+    联想（association_target）只来自注入的共同意义（可追溯），禁止无因随机跑题。
+    """
+    conflict = float(getattr(state, "conflict_tension", 0.0))
+    valence = float(getattr(state, "valence", 0.5))
+    q = str(context.get("user_text", ""))
+    has_fw = bool(brief.relevant_user_frameworks) or bool(brief.relevant_character_beliefs)
+    has_sm = bool(brief.shared_meanings)
+    if not has_fw and not has_sm and conflict <= 0.5 and valence >= 0.35:
+        return None  # 简单轮：跳过计划
+    if conflict > 0.5:
+        intent, opening = "clarify", "先确认边界"
+    elif valence < 0.35:
+        intent, opening = "comfort", "先接住情绪"
+    elif has_sm and any(k in q for k in ("记得", "那晚", "上次", "那次")):
+        intent, opening = "reflect", "从共同记忆切入"
+    elif has_fw:
+        intent, opening = "apply", "先回应再展开"
+    else:
+        intent, opening = "answer", "直接回应"
+    frame_ids = tuple(f["content"][:12] for f in brief.relevant_user_frameworks[:2])
+    target = ""
+    if has_sm:
+        target = brief.shared_meanings[0]["content"][:30]
+    return ResponsePlan(
+        intent=intent,
+        confidence=0.6,
+        recalled_frame_ids=frame_ids,
+        conflict="" if conflict <= 0.5 else "有未消解关系压力",
+        opening_move=opening,
+        key_point="",
+        uncertainty_to_express="",
+        desired_length="short" if valence < 0.3 else "normal",
+        association_target=target,
+    )
+
+
+def render_authenticity(text: str, authenticity: dict, channel: str) -> dict:
+    """P-9：PAD → 表达风格提示（不重写事实；文本一致性由 prompt 层保证）。
+
+    返回 {"text": 原文, "style_hint": short/normal/long, "energy": 0-1, "tts_short": bool}。
+    同一输入+状态 → 同一输出（无随机反常）。
+    """
+    valence = float(authenticity.get("valence", 0.5))
+    arousal = float(authenticity.get("arousal", 0.5))
+    if valence <= 0.35 and arousal <= 0.35:
+        hint = "short"
+    elif arousal >= 0.7:
+        hint = "short"  # 高唤醒：短句爆发
+    elif valence >= 0.65 and arousal < 0.5:
+        hint = "normal"
+    else:
+        hint = "normal"
+    return {
+        "text": text,
+        "style_hint": hint,
+        "energy": max(0.0, min(1.0, (valence + arousal) / 2)),
+        "tts_short": channel == "tts" and hint == "short",
+    }
+
+
+# ---------- Persona Imprint（表层人格印记） ----------
+
+IMPRINT_ACTIVE_THRESHOLD = 3  # 同方向跨场景反馈次数
+
+
+class ImprintTracker:
+    """P-9：表层人格印记（candidate → active/rejected）。
+
+    单次反馈只形成 candidate；同方向跨场景达到阈值才 active；负反馈直接 rejected。
+    印记只调表层行为倾向，不修改 Character Core。
+    """
+
+    def __init__(self):
+        self._imprints: dict[str, dict] = {}
+
+    def note(self, dimension: str, direction: float, evidence: int, scope: str = "") -> None:
+        cur = self._imprints.setdefault(dimension, {
+            "dimension": dimension, "direction": 0.0, "count": 0,
+            "evidence_ids": [], "scope": scope, "status": "candidate",
+        })
+        if cur["status"] == "rejected":
+            return
+        if direction < 0:
+            cur["status"] = "rejected"
+            cur["evidence_ids"] = list(cur["evidence_ids"]) + [evidence]
+            return
+        cur["direction"] = max(cur["direction"], float(direction))
+        cur["count"] = cur["count"] + 1
+        cur["evidence_ids"] = list(cur["evidence_ids"]) + [evidence]
+        if cur["scope"] and scope and cur["scope"] != scope:
+            cur["scope"] = "跨场景"  # 跨场景证据 → 更稳定
+        if cur["count"] >= IMPRINT_ACTIVE_THRESHOLD:
+            cur["status"] = "active"
+
+    def status(self, dimension: str) -> str | None:
+        im = self._imprints.get(dimension)
+        return im["status"] if im else None
+
+    def active_imprints(self) -> list[tuple[str, str]]:
+        return [(d, im.get("scope", "")) for d, im in self._imprints.items() if im["status"] == "active"]
+
+    def to_dict(self) -> dict:
+        return {d: dict(im) for d, im in self._imprints.items()}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ImprintTracker":
+        t = cls()
+        for d, im in (data or {}).items():
+            if isinstance(im, dict) and im.get("status") in ("candidate", "active", "rejected"):
+                t._imprints[d] = dict(im)
+        return t
+
+
 # ---------- PersonaCandidate → MemoryCandidate 转换 ----------
 
 def persona_candidate_to_memory(candidate: PersonaCandidate, source_message_id: int) -> dict | None:
