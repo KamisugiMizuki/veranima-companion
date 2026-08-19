@@ -3,6 +3,7 @@
 > 目标：Electron 只做身体与媒介，不持有 Agent 业务状态。
 > 现有复用：`pet/main.js`, `preload.js`, `renderer.js`, `chat.html`, `chat-renderer.js`, `pet_server.py`。
 > 参考：sakura 的角色包/历史/音频组织；airi 的可取消回复、异步历史批处理和运行时事件。
+> GUI 组件、视觉 token、窗口尺寸、动效、无障碍和分批实现以 `docs/GUI_SPEC.md` 为唯一真值；本文件只规定进程、协议和产品状态。
 
 ## 1. 进程与协议
 
@@ -96,5 +97,7 @@ pet:
 定向：`tests/test_pet_server.py`, 新增 `tests/test_pet_protocol.py`；JS 用 `node --check`，若引入前端测试再用已有 Node 环境，不新增框架。
 
 验收：首次 10 秒知道入口；角色切换全链路一致；chatWin 收到在线/断线；TTS 失败文字保留；取消后旧音频不播；空态、重试、清空确认和历史恢复可用。
+
+GUI 视觉与交互另按 `GUI_SPEC.md` 的验收矩阵执行，避免两份文档重复维护 CSS 和组件细节。
 
 暂缓：Live2D、语音输入、拖文件、多角色并聊、搜索历史。

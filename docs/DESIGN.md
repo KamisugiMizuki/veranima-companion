@@ -137,7 +137,7 @@ R1 共同经历/状态连续性
  ↓
 R2 IM/TTS 表达与失败降级
  ↓
-R3 Electron 桌宠/独立聊天闭环
+R3 Electron 桌宠/独立聊天闭环（界面契约见 docs/GUI_SPEC.md）
  ↓
 R4 Presence/Attention/主动性
  ↓
@@ -145,6 +145,8 @@ R5 dsh 可选任务协作
 ```
 
 R0-R3 未完成前不扩展 R4/R5。每阶段完成必须通过体验验收，而不是只看测试数量。
+
+GUI 实现以 `docs/GUI_SPEC.md` 为唯一界面契约：主窗突出角色存在，聊天/设置/日志采用安静的 Operate 界面。只借鉴 sakura/airi 已验证的组件职责，不迁移其 UI 框架和插件规模。
 
 ## 8. 总体验收
 

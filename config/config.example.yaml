@@ -144,6 +144,8 @@ pet:
   chat_batch_size: 40
   keep_text_on_tts_failure: true
   autoplay: true
+  reduced_motion: false
+  theme_accent: "#4f78a8"               # 角色包可覆盖；错误/成功语义色不可覆盖
 
 # R5 外部任务协作，默认关闭且要求用户确认
 tasks:
