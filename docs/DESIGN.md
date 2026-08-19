@@ -2,7 +2,7 @@
 
 > 状态：低成本模型实现基线（2026-08-19）。
 > 产品原则：**不追求更像 AI，追求更像「某个人」**。
-> 本文规定模块边界、功能栈、实现顺序和完成定义；详细契约见 R1-R5 与 `VISION_SPEC.md`。
+> 本文规定模块边界、功能栈、实现顺序和完成定义；详细契约见 R1-R5、`MEMORY_SPEC.md`、`GUI_SPEC.md` 与 `VISION_SPEC.md`。
 
 ## 1. 产品与非目标
 
@@ -18,7 +18,7 @@ veranima 是一个固定人格、拥有共同经历、会随当下状态变化�
 |---|---|---|
 | 核心运行时 | Python 3.11 + `src/veranima` | 复用现有包结构 |
 | LLM | OpenAI 兼容 HTTP API，`httpx` | `llm/client.py`；thinking 模型输出预算由配置提供 |
-| 记忆/状态 | SQLite + FTS5 + sqlite-vec | `memory/schema.py`, `memory/store.py` |
+| 记忆/状态 | SQLite + FTS5 + sqlite-vec；完整契约见 `docs/MEMORY_SPEC.md` | `memory/schema.py`, `memory/store.py`, `core/learning.py` |
 | Embedding | 本地 `sentence-transformers` / bge-m3 | `memory/embedding.py`；远程 API 不作为默认 embedding |
 | 角色卡 | Character Card V3 兼容 JSON + `extensions.veranima` | `core/character.py`, `core/roles.py` |
 | QQ | NapCatQQ OneBot v11 反向 WS | `adapters/qq.py` |
@@ -133,7 +133,7 @@ class ProactiveDecision:
 ```text
 R0 角色内核与 Reply 协议
  ↓
-R1 共同经历/状态连续性
+R1 共同经历/状态连续性（记忆与文风学习见 docs/MEMORY_SPEC.md）
  ↓
 R2 IM/TTS 表达与失败降级
  ↓

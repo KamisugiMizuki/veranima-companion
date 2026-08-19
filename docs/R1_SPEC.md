@@ -3,6 +3,7 @@
 > 目标：让角色拥有可追溯的过去和可解释的当下。不要用随机错字/随机遗忘模拟真人。
 > 现有复用：`core/agent.py`、`core/state.py`、`memory/store.py`、`memory/schema.py`、`core/prompts.py`。
 > 最小新增：记忆分类映射、状态字段、候选记忆校验、版本链关联。
+> 记忆系统的完整数据、写入、冲突、召回、遗忘、隐私、文风学习和验收契约以 `docs/MEMORY_SPEC.md` 为唯一真值；本文只保留 R1 阶段边界和摘要。
 
 ## 1. 数据契约
 
@@ -127,3 +128,5 @@ state:
 定向测试：`tests/test_memory.py`, `tests/test_agent.py`, 新增 `tests/test_continuity.py`。
 
 必须覆盖：空库不编造、明确偏好写入、重复去重、纠正版本链、跨重启状态、换卡不污染、低置信措辞、视觉 context 到期不进入长期记忆。
+
+文风学习验收、历史压缩、时间有效性、冲突类型、用户删除和离线 benchmark 见 `docs/MEMORY_SPEC.md` 第 9、13、14、18 节。
