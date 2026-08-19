@@ -249,6 +249,34 @@ class MemoryStore:
         ).fetchall()
         return [dict(r) for r in reversed(rows)]
 
+    # ---------- R4 主动反馈持久化（R4_SPEC 4） ----------
+
+    def record_proactive_feedback(self, *, source: str, responded: bool = False,
+                                  interrupted: bool = False, user_sent_within: int | None = None,
+                                  dismissed: bool = False) -> None:
+        """记录一次主动消息的反馈（忽略/响应/打断）。"""
+        self.con.execute(
+            "INSERT INTO proactive_feedback"
+            " (sent_at, source, responded, interrupted, user_sent_within, dismissed)"
+            " VALUES (?,?,?,?,?,?)",
+            (_now(), source, int(responded), int(interrupted), user_sent_within, int(dismissed)),
+        )
+        self.con.commit()
+
+    def recent_proactive_feedback(self, source: str | None = None, limit: int = 10) -> list[dict]:
+        """最近主动反馈记录（连续忽略判断用）。"""
+        if source:
+            rows = self.con.execute(
+                "SELECT * FROM proactive_feedback WHERE source=? ORDER BY id DESC LIMIT ?",
+                (source, limit),
+            ).fetchall()
+        else:
+            rows = self.con.execute(
+                "SELECT * FROM proactive_feedback ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def _row_to_entry(self, row: sqlite3.Row) -> MemoryEntry:
         return MemoryEntry(
             id=row["id"], layer=row["layer"], content=row["content"],

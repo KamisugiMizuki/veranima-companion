@@ -135,6 +135,161 @@ class ChannelActivityTracker:
         return False
 
 
+@dataclass(frozen=True)
+class ProactiveCandidate:
+    """R4 主动候选（R4_SPEC 1）：来源事件 → 候选。"""
+
+    source: str                 # shared_episode/commitment/scene/ritual/attention
+    reason: str                 # 内部可解释原因
+    relevance: float = 0.5      # 0..1
+    urgency: float = 0.5        # 0..1
+    intent: str = "check_in"    # remind/check_in/share/bridge
+    context: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ProactiveDecision:
+    """R4 主动决策（R4_SPEC 1）：allow=false 是正常返回，不是异常。"""
+
+    allow: bool
+    reason: str
+    cooldown_until: float = 0.0
+    candidate: ProactiveCandidate | None = None
+
+
+class ProactiveGate:
+    """R4 确定性闸门（R4_SPEC 2）：按顺序执行，任一失败返回 allow=false。
+
+    不保留 random 概率作为主入口；如需自然性，调用方可在此之后做一次
+    小概率抑制并记录 reason（R4_SPEC 2 末条）。
+    """
+
+    # 来源默认相关度要求（R4_SPEC 3 来源策略；ritual/scene 有真实来源免阈值）
+    SOURCE_RELEVANCE_MIN = {
+        "shared_episode": 0.65,
+        "commitment": 0.65,
+        "attention": 0.65,
+    }
+    # 来源默认优先级（低=高优先）
+    SOURCE_PRIORITY = {
+        "commitment": 0, "shared_episode": 1, "scene": 2, "ritual": 3, "attention": 4,
+    }
+
+    def __init__(self, config: dict | None = None, now: float | None = None) -> None:
+        cfg = config or {}
+        self.enabled = bool(cfg.get("enabled", True))
+        self.max_per_day = int(cfg.get("max_per_day", 2))
+        self.min_gap_minutes = int(cfg.get("min_gap_minutes", 30))
+        self.source_gap_minutes = int(cfg.get("source_gap_minutes", 120))
+        self.quiet_hours = cfg.get("quiet_hours", [23, 8])
+        self.ignore_backoff = bool(cfg.get("ignore_backoff", True))
+        self._now = now
+        self._last_any = 0.0
+        self._last_sent: dict[str, float] = {}
+        self._today_count = 0
+        self._today_key = ""
+        self._ignored_streak: dict[str, int] = {}
+        self._paused = False  # 用户明确"不想被打扰" → 暂停直到用户主动恢复
+
+    def _t(self) -> float:
+        return self._now if self._now is not None else time.time()
+
+    def _day(self) -> str:
+        import datetime
+        return datetime.datetime.fromtimestamp(self._t()).strftime("%Y-%m-%d")
+
+    def _in_quiet_hours(self) -> bool:
+        import datetime
+        h = datetime.datetime.fromtimestamp(self._t()).hour
+        start, end = self.quiet_hours
+        if start <= end:
+            return start <= h < end
+        return h >= start or h < end  # 跨午夜（如 [23, 8]）
+
+    # ---------- 主入口 ----------
+
+    def decide(self, candidate: ProactiveCandidate, *, scene: str = "normal",
+               other_channel_active: bool = False) -> ProactiveDecision:
+        """9 条确定性闸门（R4_SPEC 2）。"""
+        now = self._t()
+        # 1. enabled 与用户暂停开关
+        if not self.enabled:
+            return ProactiveDecision(False, "proactive disabled", candidate=candidate)
+        if self._paused:
+            return ProactiveDecision(False, "paused by user (不想被打扰)", candidate=candidate)
+        # 2. 场景不是 busy/away/blocked
+        if scene not in ("normal", "chat"):
+            return ProactiveDecision(False, f"scene={scene}", candidate=candidate)
+        # 3. 当前没有其他通道活跃
+        if other_channel_active:
+            return ProactiveDecision(False, "other channel active", candidate=candidate)
+        # 4. quiet hours 外
+        if self._in_quiet_hours():
+            return ProactiveDecision(False, "quiet hours", candidate=candidate)
+        # 5. 当日上限未满
+        d = self._day()
+        if d != self._today_key:
+            self._today_key = d
+            self._today_count = 0
+        if self._today_count >= self.max_per_day:
+            return ProactiveDecision(False, "daily cap reached", candidate=candidate)
+        # 6. 距上次主动消息足够久（全局 30min；同源 2h）
+        if now - self._last_any < self.min_gap_minutes * 60:
+            return ProactiveDecision(False, "min gap not elapsed", candidate=candidate)
+        if now - self._last_sent.get(candidate.source, 0.0) < self.source_gap_minutes * 60:
+            return ProactiveDecision(False, f"source gap ({candidate.source})", candidate=candidate)
+        # 7. 连续忽略抑制（R4_SPEC 4：连续 2 次未响应 → 同源冷却翻倍）
+        streak = self._ignored_streak.get(candidate.source, 0)
+        if self.ignore_backoff and streak >= 2:
+            grow = self.source_gap_minutes * 60 * (2 ** (streak - 1))
+            if now - self._last_sent.get(candidate.source, 0.0) < grow:
+                return ProactiveDecision(False, f"ignored backoff ({candidate.source} ×{streak})", candidate=candidate)
+        # 8. relevance 与来源要求（R4_SPEC 2 第 8 条 / R4_SPEC 3）
+        min_rel = self.SOURCE_RELEVANCE_MIN.get(candidate.source)
+        if min_rel is not None and candidate.relevance < min_rel:
+            return ProactiveDecision(False, f"relevance {candidate.relevance:.2f} < {min_rel}", candidate=candidate)
+        if candidate.source == "attention" and not candidate.context.get("matched_episode"):
+            return ProactiveDecision(False, "attention without shared memory", candidate=candidate)
+        if candidate.source == "ritual" and not candidate.context.get("calendar_source"):
+            return ProactiveDecision(False, "ritual without real memory source", candidate=candidate)
+        # 9. LLM 可用性在生成前检查（R4_SPEC 2 第 9 条；由调用方执行，见 note_failure）
+        return ProactiveDecision(True, "allowed", cooldown_until=0.0, candidate=candidate)
+
+    # ---------- 反馈 ----------
+
+    def commit(self, candidate: ProactiveCandidate) -> None:
+        """发起成功：记全局/同源冷却 + 日计数 + 忽略计数清零。"""
+        now = self._t()
+        self._last_any = now
+        self._last_sent[candidate.source] = now
+        self._today_count += 1
+        self._ignored_streak[candidate.source] = 0
+
+    def note_failure(self, candidate: ProactiveCandidate) -> None:
+        """生成/解析失败：不算主动发送（R4_SPEC 2 第 9 条降级）。"""
+        logger.debug("proactive generation failed: %s", candidate.reason)
+
+    def note_ignored(self, source: str) -> None:
+        """R4_SPEC 4：连续两次未响应 → 同源冷却翻倍。"""
+        n = self._ignored_streak.get(source, 0) + 1
+        self._ignored_streak[source] = n
+        if n >= 2:
+            logger.info("proactive ignored %d× (source=%s), backoff active", n, source)
+
+    def pause(self) -> None:
+        """用户明确"不想被打扰"：立即暂停直到用户主动恢复。"""
+        self._paused = True
+        logger.info("proactive paused by user until explicit resume")
+
+    def resume(self) -> None:
+        self._paused = False
+        logger.info("proactive resumed by user")
+
+    def sort(self, candidates: list[ProactiveCandidate]) -> list[ProactiveCandidate]:
+        """同轮多候选按来源优先级排序（commitment 最先）。"""
+        return sorted(candidates, key=lambda c: self.SOURCE_PRIORITY.get(c.source, 9))
+
+
 class Arbitrator:
     """主动发起仲裁器最小版（R4_SPEC 2.确定性闸门顺序）：拦截 + 排序，不做权重。
 

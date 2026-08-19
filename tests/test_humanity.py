@@ -63,21 +63,19 @@ def test_dig_old_memory_none_when_empty(agent):
     assert agent._dig_old_memory() is None
 
 
-def test_proactive_dig_uses_old_memory(agent):
-    """考古：主动发言 prompt 包含旧记忆。"""
+def test_proactive_removed_by_r4(agent):
+    """R4_SPEC 3：idle/fatigue 类无理由主动已关闭（_try_proactive 返回空）。"""
     agent.memory.store("episodic", "用户说想学吉他", importance=0.8, confidence=0.6)
-    llm = agent.llm
     msg = agent._try_proactive()
-    assert llm.calls == 1
-    assert "吉他" in llm.last_prompt  # 旧记忆进了生成 prompt
-    assert msg  # 返回了发言
+    assert msg == ""
 
 
 def test_proactive_fallback_when_no_memory(agent):
-    """无旧记忆时退虚拟日常分享（prompt 不含考古任务）。"""
+    """R4 已废弃路径：无理由主动不再生成（返回空，不调 LLM）。"""
     llm = agent.llm
-    agent._try_proactive()
-    assert "突然想起" not in llm.last_prompt
+    msg = agent._try_proactive()
+    assert msg == ""
+    assert llm.calls == 0
 
 
 # ---------- 8.7.2 记得感分级 ----------
@@ -161,6 +159,9 @@ def test_late_reply_fallback_template_dedup(agent):
     assert first
     # 再补一条 user 消息使对话重新未闭合，再触发：不得与上一条相同
     agent.memory.store_message("user", "还有个问题想问", 80, "平静")
+    # R4：清除 gate 冷却（同源 2h / 全局 30min 是闸门语义，与模板去重无关）
+    agent.gate._last_sent.clear()
+    agent.gate._last_any = 0.0
     second = agent.late_reply()
     assert second
     assert second != first

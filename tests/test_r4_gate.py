@@ -1,0 +1,136 @@
+"""R4 主动性闸门测试（R4_SPEC 6）。
+
+覆盖：场景阻塞、通道互斥、静默时段、日上限、同源冷却、忽略退避、
+视觉候选无共同经历不发送、commitment 可发、pause/resume。
+"""
+from __future__ import annotations
+
+import time
+import datetime
+
+import pytest
+
+from veranima.core.ambient import ProactiveCandidate, ProactiveGate
+
+# 白天固定基准（避免 quiet hours [23,8] 干扰）
+NOW = datetime.datetime(2026, 8, 19, 12, 0).timestamp()
+
+
+def _cand(source: str = "shared_episode", relevance: float = 0.8, **kw) -> ProactiveCandidate:
+    base = dict(source=source, reason="test", relevance=relevance)
+    base.update(kw)
+    return ProactiveCandidate(**base)
+
+
+def test_basic_allowed():
+    gate = ProactiveGate(config={}, now=1_000_000)
+    d = gate.decide(_cand())
+    assert d.allow
+    assert d.reason == "allowed"
+
+
+def test_disabled():
+    gate = ProactiveGate(config={"enabled": False}, now=1_000_000)
+    assert not gate.decide(_cand()).allow
+
+
+def test_paused_by_user():
+    gate = ProactiveGate(config={}, now=1_000_000)
+    gate.pause()
+    assert not gate.decide(_cand()).allow
+    gate.resume()
+    assert gate.decide(_cand()).allow
+
+
+def test_scene_blocked():
+    gate = ProactiveGate(config={}, now=1_000_000)
+    assert not gate.decide(_cand(), scene="busy").allow
+    assert not gate.decide(_cand(), scene="away").allow
+    assert gate.decide(_cand(), scene="normal").allow
+
+
+def test_other_channel_active():
+    gate = ProactiveGate(config={}, now=1_000_000)
+    assert not gate.decide(_cand(), other_channel_active=True).allow
+
+
+def test_quiet_hours():
+    # quiet_hours [23, 8]；now 用 datetime 可注入的固定时间（凌晨 3 点 = 3 点）
+    three_am = datetime.datetime(2026, 8, 19, 3, 0).timestamp()
+    gate = ProactiveGate(config={}, now=three_am)
+    assert not gate.decide(_cand()).allow
+    noon = NOW
+    gate2 = ProactiveGate(config={}, now=noon)
+    assert gate2.decide(_cand()).allow
+
+
+def test_daily_cap():
+    gate = ProactiveGate(config={}, now=NOW)
+    # 两次用不同来源（同源 2h 冷却独立于日上限）
+    for src in ("shared_episode", "commitment"):
+        assert gate.decide(_cand(source=src)).allow
+        gate.commit(_cand(source=src))
+        gate._now += 31 * 60  # 过全局 30min 间隔
+    assert not gate.decide(_cand()).allow  # 默认 max_per_day=2
+
+
+def test_min_gap_and_source_gap():
+    gate = ProactiveGate(config={}, now=NOW)
+    assert gate.decide(_cand()).allow
+    gate.commit(_cand())
+    # 全局 30min 内拒绝
+    gate._now = NOW + 60
+    assert not gate.decide(_cand(source="commitment")).allow
+    # 30min 后允许新来源
+    gate._now = NOW + 31 * 60
+    assert gate.decide(_cand(source="commitment")).allow
+    # 同源 2h 内拒绝（shared_episode 已发过）
+    assert not gate.decide(_cand()).allow
+
+
+def test_ignored_backoff():
+    gate = ProactiveGate(config={}, now=NOW)
+    gate.commit(_cand())
+    gate.note_ignored("shared_episode")
+    gate.note_ignored("shared_episode")
+    # 同源冷却翻倍：2h × 2^(2-1) = 4h 内拒绝
+    gate._now = NOW + 31 * 60  # 过了全局 30min
+    assert not gate.decide(_cand()).allow
+    gate._now = NOW + 5 * 3600  # 5h 后允许（17:00，非静默时段）
+    assert gate.decide(_cand()).allow
+
+
+def test_attention_without_memory_blocked():
+    gate = ProactiveGate(config={}, now=1_000_000)
+    cand = _cand(source="attention", relevance=0.7)
+    assert not gate.decide(cand).allow  # 无 matched_episode
+    cand2 = _cand(source="attention", relevance=0.7,
+                  context={"tag": "游戏", "matched_episode": True})
+    assert gate.decide(cand2).allow
+
+
+def test_attention_low_relevance_blocked():
+    gate = ProactiveGate(config={}, now=1_000_000)
+    cand = _cand(source="attention", relevance=0.5,
+                 context={"tag": "游戏", "matched_episode": True})
+    assert not gate.decide(cand).allow  # relevance < 0.65
+
+
+def test_ritual_needs_calendar_source():
+    gate = ProactiveGate(config={}, now=1_000_000)
+    assert not gate.decide(_cand(source="ritual")).allow
+    cand = _cand(source="ritual", context={"calendar_source": "occasion"})
+    assert gate.decide(cand).allow
+
+
+def test_commitment_allowed():
+    gate = ProactiveGate(config={}, now=1_000_000)
+    assert gate.decide(_cand(source="commitment")).allow
+
+
+def test_note_failure_no_commit():
+    gate = ProactiveGate(config={}, now=1_000_000)
+    cand = _cand()
+    assert gate.decide(cand).allow
+    gate.note_failure(cand)  # 生成失败不 commit
+    assert gate.decide(cand).allow  # 仍可再试（未计冷却/日上限）

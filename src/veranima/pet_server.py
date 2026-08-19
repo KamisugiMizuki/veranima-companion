@@ -43,7 +43,6 @@ class PetServer:
         self._tts = None    # TTSClient（可选；未配置则桌宠只显气泡不发声）
         self._bilingual = False  # 角色双语（character.json veranima.bilingual.enabled）
         self.attention_cfg = {}  # 视觉注意力配置（VISION_SPEC 4，config.yaml attention: 段）
-        self._last_proactive_ts = 0.0  # 联想主动发起冷却（实测每 15-30s 搭话一次，真人不会这样）
         self._presence_was_absent = False  # R4 在场转变检测（VISION_SPEC L0）
 
     def connect_agent(self, agent) -> None:
@@ -332,6 +331,7 @@ class PetServer:
             # 替代 R4_SPEC 1.x 的 VisualAttention（vision.py 过渡实现）
             async def _visual_loop():
                 from veranima.core.attention import AttentionScheduler
+                from veranima.core.ambient import ProactiveCandidate
                 att = AttentionScheduler(llm=getattr(self._agent, "llm", None),
                                          config=self.attention_cfg)
                 await asyncio.sleep(10)  # 启动后延迟（等核心就绪）
@@ -349,7 +349,7 @@ class PetServer:
                                 logger.info("visual: QQ 活跃，跳过观察")
                                 continue
                             if ev.kind in ("window_switch", "fixation_shift") and ev.tag:
-                                # 观察注入 episodic 记忆 + 联想主动发起（VISION_SPEC 3.1）
+                                # 观察注入 episodic 记忆（短期情境；主动与否由 R4 闸门裁决）
                                 try:
                                     self._agent.memory.store(
                                         "episodic",
@@ -359,14 +359,30 @@ class PetServer:
                                         category="screen",
                                     )
                                     logger.info("visual: 观察注入记忆 tag=%s", ev.tag)
-                                    # 联想主动发起冷却 120s（真人不会每 15s 搭话；
-                                    # 高频 LLM 调用也导致输出截断/残缺，实测）
-                                    if time.time() - self._last_proactive_ts < 120:
+                                    # R4：注意力只产候选（R4_SPEC 1——禁止直接 speak），
+                                    # 必须带 matched_episode 且有共同经历，过 ProactiveGate
+                                    cand = ProactiveCandidate(
+                                        source="attention",
+                                        reason=f"看到用户在{ev.tag}",
+                                        relevance=0.7, urgency=0.4,
+                                        intent="bridge",
+                                        context={
+                                            "tag": ev.tag,
+                                            "matched_episode": self._agent._visual_match_episode(ev.tag),
+                                        },
+                                    )
+                                    decision = self._agent.gate.decide(
+                                        cand,
+                                        scene=self._agent.scene_lock.current(),
+                                        other_channel_active=self._agent.activity.blocking("pet"),
+                                    )
+                                    if not decision.allow:
+                                        logger.debug("visual: 主动被闸门拦截 %s", decision.reason)
                                         continue
                                     proactive, ja = await asyncio.to_thread(
                                         self._agent.proactive_from_visual, ev.tag)
                                     if proactive:
-                                        self._last_proactive_ts = time.time()
+                                        self._agent.gate.commit(cand)
                                         logger.info("visual: 联想主动发起: %s", proactive[:60])
                                         await self.speak(proactive, tts_text=ja or None)
                                 except Exception as e:

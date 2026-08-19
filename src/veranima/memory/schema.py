@@ -43,6 +43,18 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
 
+-- R4 主动消息反馈（R4_SPEC 4：忽略与自愈）
+CREATE TABLE IF NOT EXISTS proactive_feedback (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    sent_at          TEXT NOT NULL,
+    source           TEXT NOT NULL,
+    responded        INTEGER NOT NULL DEFAULT 0,
+    interrupted      INTEGER NOT NULL DEFAULT 0,
+    user_sent_within INTEGER,              -- 秒；主动后用户多久来消息（0=无）
+    dismissed        INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_proactive_feedback_source ON proactive_feedback(source);
+
 -- Agent 内在状态（依恋度/精力/情绪/计数），单行，跨重启持久化（2026-08-04 续接）
 CREATE TABLE IF NOT EXISTS agent_state (
     id             INTEGER PRIMARY KEY CHECK (id = 1),

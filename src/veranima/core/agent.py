@@ -15,7 +15,7 @@ from pathlib import Path
 from ..llm.client import LLMClient, LLMUnavailableError
 from .prompts import build_system_prompt, is_clarification
 from .segments import extract_segments
-from .ambient import Arbitrator, ChannelActivityTracker, SceneLock
+from .ambient import ChannelActivityTracker, ProactiveCandidate, ProactiveGate, SceneLock
 from .interrupt import InterruptDecider, TopicFrequency
 from ..memory.store import MemoryStore
 from ..tools.search import SEARCH_TOOL, SearXNGClient
@@ -141,7 +141,8 @@ class Agent:
         # R4 时空沉浸：场景锁 + 通道互斥 + 主动仲裁（最小版，R4_SPEC 1）
         self.scene_lock = SceneLock()
         self.activity = ChannelActivityTracker()
-        self.arbitrator = Arbitrator()
+        # R4 统一主动入口（R4_SPEC 1/2）：ProactiveCandidate → ProactiveGate 9 闸门
+        self.gate = ProactiveGate(self.config.get("proactive", {}))
 
         # 联网搜索（DESIGN.md 8.5 方案 A：工具调用；默认关闭，config 开启）
         search_cfg = self.config.get("search", {})
@@ -369,11 +370,6 @@ class Agent:
             self.style.save()
             self.mirror.save()
 
-        # 9. 主动发言（低概率，MVP1 简化）
-        proactive_msg = ""
-        if random.random() < float(self.config.get("chat", {}).get("proactive_message_prob", 0.1)):
-            proactive_msg = self._try_proactive()
-
         # 9.3 R1 候选记忆写入（R1_SPEC 2 固定顺序：store assistant → rule_extract
         #      → validate → dedupe → store/update_latest）
         try:
@@ -388,8 +384,8 @@ class Agent:
         return TurnResult(
             reply=reply,
             recalled=[],
-            proactive=bool(proactive_msg),
-            proactive_msg=proactive_msg or "",
+            proactive=False,
+            proactive_msg="",
             energy=self.state.energy,
             mood=self.state.mood,
             portrait=portrait,
@@ -524,6 +520,22 @@ class Agent:
         self._history.append({"role": "assistant", "content": reply})
         return reply, ja
 
+    def _visual_match_episode(self, tag: str) -> bool:
+        """R4：注意力候选必须匹配共同经历（R4_SPEC 3 attention=低）。
+
+        视觉只提供候选；无共同经历匹配时 gate 拦截（R4_SPEC 2 第 8 条）。
+        """
+        if not tag:
+            return False
+        try:
+            hits = [
+                e for e in self.memory.list_layer("episodic", limit=20)
+                if tag in (e.content or "")
+            ]
+            return bool(hits)
+        except Exception:
+            return False
+
     def seamless_greeting(self) -> str:
         """R1 无缝衔接（R1_SPEC 4.召回）：用户回到电脑前 → 从共享历史接续最近话题。
 
@@ -603,11 +615,19 @@ class Agent:
         返回本次应发送的主动消息列表（已入档 memory）；adapter（CLI/QQ）
         负责展示/发送。供后台 tick 线程调用，幂等。``now`` 注入便于测试。
 
-        R4：主动发起前过仲裁器——场景非 normal / 其他通道活跃 / 冷却 / 日上限则拦截（R4_SPEC 2）。
+        R4：统一主动入口——ProactiveCandidate(ritual) → ProactiveGate 9 闸门（R4_SPEC 1/2）。
         """
         msgs: list[str] = []
-        if not self.arbitrator.request("ritual", scene=self.scene_lock.current(),
-                                       other_channel_active=self.activity.blocking("qq")):
+        cand = ProactiveCandidate(
+            source="ritual", reason="定时问候/节庆纪念",
+            relevance=0.9, urgency=0.5, intent="share",
+            context={"calendar_source": "greeter/occasion"},
+        )
+        decision = self.gate.decide(
+            cand, scene=self.scene_lock.current(),
+            other_channel_active=self.activity.blocking("qq"),
+        )
+        if not decision.allow:
             return msgs
         slot = self.greeter.due_greeting(now=now)
         if slot:
@@ -621,7 +641,7 @@ class Agent:
             self.memory.store_message("assistant", msg, self.state.energy, self.state.mood)
             msgs.append(msg)
         if msgs:
-            self.arbitrator.commit("ritual")
+            self.gate.commit(cand)
         return msgs
 
     def heartbeat(self) -> str:
@@ -635,9 +655,16 @@ class Agent:
         - 过仲裁器（场景 normal + 他通道不活跃 + idle 冷却/日上限）
         - LLM 生成「离线整理」破冰；失败降级模板池
         """
-        # 仲裁：idle 机制（闲适性）
-        if not self.arbitrator.request("idle", scene=self.scene_lock.current(),
-                                       other_channel_active=self.activity.blocking("qq")):
+        # R4 闸门：scene 衔接（R4_SPEC 3 scene=低：场景结束后衔接，不打扰）
+        cand = ProactiveCandidate(
+            source="scene", reason="对话闭合后破冰衔接",
+            relevance=0.7, urgency=0.4, intent="bridge",
+            context={"closed_dialogue": True},
+        )
+        if not self.gate.decide(
+            cand, scene=self.scene_lock.current(),
+            other_channel_active=self.activity.blocking("qq"),
+        ).allow:
             return ""
         recent = self.memory.recent_messages(limit=8)
         if not recent or recent[-1]["role"] != "assistant":
@@ -656,7 +683,7 @@ class Agent:
                 if reply:
                     self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
                     self._history.append({"role": "assistant", "content": reply})
-                    self.arbitrator.commit("idle")
+                    self.gate.commit(cand)
                     return reply
             except Exception as e:
                 logger.debug("heartbeat LLM failed, fallback to template: %s", e)
@@ -669,7 +696,7 @@ class Agent:
         reply = pool[0]
         self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
         self._history.append({"role": "assistant", "content": reply})
-        self.arbitrator.commit("idle")
+        self.gate.commit(cand)
         return reply
 
     def late_reply(self) -> str:
@@ -685,6 +712,17 @@ class Agent:
         - LLM 降级模板池：排除最近已发过的模板，避免同一条连发刷屏。
         """
         if self.state.energy < 30:
+            return ""
+        # R4 闸门：shared_episode 来源（针对之前话题，R4_SPEC 3 中）
+        cand = ProactiveCandidate(
+            source="shared_episode", reason="迟来的回应（未闭合对话）",
+            relevance=0.75, urgency=0.5, intent="check_in",
+            context={},
+        )
+        if not self.gate.decide(
+            cand, scene=self.scene_lock.current(),
+            other_channel_active=self.activity.blocking("qq"),
+        ).allow:
             return ""
         # 对话闭合检查：最后一条必须是 user 消息（有未回应完的内容）
         recent = self.memory.recent_messages(limit=8)
@@ -704,6 +742,7 @@ class Agent:
                     if reply:
                         self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
                         self._history.append({"role": "assistant", "content": reply})
+                        self.gate.commit(cand)
                         return reply
             except Exception as e:
                 logger.debug("late reply LLM failed, fallback to template: %s", e)
@@ -721,6 +760,7 @@ class Agent:
         msg = random.choice(candidates)
         self.memory.store_message("assistant", msg, self.state.energy, self.state.mood)
         self._history.append({"role": "assistant", "content": msg})
+        self.gate.commit(cand)
         return msg
 
     # ---------- 内部 ----------
@@ -902,48 +942,13 @@ class Agent:
             return base
 
     def _try_proactive(self) -> str:
-        """主动发言（MVP3：LLM 生成虚拟日常分享，增强连续性；模型不可用降级模板池）。
+        """R4 已废弃：无理由主动（idle/fatigue 类）按 R4_SPEC 3 关闭。
 
-        前置：模型可用性检查（远程 API 恒可用，防御性保留）。低精力不触发。
+        所有主动发起必须携带 ProactiveCandidate（shared_episode/commitment/
+        scene/ritual/attention）并经 ProactiveGate 9 闸门；本函数保留签名
+        返回空串，避免外部残留调用崩溃，下一轮清理。
         """
-        if self.state.energy < 30:
-            return ""
-        # LLM 生成（8.7.1 考古优先：先挖旧记忆，无旧事则分享虚拟日常）
-        if getattr(self.llm, "is_model_loaded", None) is not None and self.llm.is_model_loaded():
-            try:
-                recent = self.memory.recent_messages(limit=6)
-                ctx = "\n".join(f"{m['role']}: {m['content'][:60]}" for m in reversed(recent))
-                old = self._dig_old_memory()
-                if old:
-                    task = (
-                        f"你突然想起一件旧事：\"{old}\"。"
-                        "给用户发一条消息，以'突然想起来'或'对了'的方式自然提起这件事，"
-                        "问问后续或表达关心。"
-                    )
-                else:
-                    task = (
-                        f"下面是你和用户最近的对话：\n{ctx}\n\n"
-                        "现在你打算主动给用户发一条消息，分享一件你虚拟日常里的小事"
-                        "（窗台的绿萝、楼下遇到的猫、面包店、窗外天气等生活细节，要有连续性）。"
-                        "只说这件事本身，像平时聊天一样自然。"
-                    )
-                reply = self._short_task(task, max_tokens=1024)
-                if reply:
-                    self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
-                    self._history.append({"role": "assistant", "content": reply})
-                    return reply
-            except Exception as e:
-                logger.debug("proactive LLM failed, fallback to template: %s", e)
-        # 降级：模板池（MVP1 简化）
-        pool = [
-            "（想起一件事）对了，你上次说的那件事后来怎么样了？",
-            "今天有看到什么有意思的东西吗？",
-            "我刚刚走神了……你说，猫如果会开冰箱，会不会互相分享吃的？",
-        ]
-        msg = random.choice(pool)
-        self.memory.store_message("assistant", msg, self.state.energy, self.state.mood)
-        self._history.append({"role": "assistant", "content": msg})
-        return msg
+        return ""
 
     # ---------- 8.6.3 表情包标注 ----------
 
