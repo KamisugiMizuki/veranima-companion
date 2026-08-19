@@ -433,6 +433,7 @@ class Agent:
                 "content": content,
                 "confidence": 0.7,
                 "importance": 0.6,
+                "source": "rule_extract",  # R1_SPEC 2 候选 JSON 契约：source 必填
                 "source_message_id": source_message_id,
             })
         return candidates

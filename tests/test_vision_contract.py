@@ -119,7 +119,7 @@ def test_policy_sensitive_keyword_in_title():
 
 
 def test_scheduler_away_state(monkeypatch):
-    """VISION_SPEC 3：30min 无输入 → away；note_user_input 恢复。"""
+    """VISION_SPEC 3：30min 无输入 → away；note_user_input 恢复 orienting。"""
     import veranima.core.attention.perception as perception
     import numpy as np
 
@@ -127,12 +127,13 @@ def test_scheduler_away_state(monkeypatch):
                         lambda scale=8: np.zeros((60, 80), dtype=np.uint8))
 
     att = AttentionScheduler(config={"away_idle_s": 1.0})
+    assert att.state == "fixating"  # VISION_SPEC 3 初始状态
     att._last_input_ts = time.time() - 2.0  # 模拟超时
     events = att.tick()
     assert any(e.kind == "away" for e in events)
     assert att.state == "away"
     # away 期间不再产出其他事件
     assert all(e.kind == "away" for e in att.tick())
-    # 用户输入恢复
+    # 用户输入恢复（VISION_SPEC 3：away --activity--> orienting）
     att.note_user_input()
-    assert att.state == "fixation"
+    assert att.state == "orienting"

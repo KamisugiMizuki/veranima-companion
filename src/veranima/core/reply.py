@@ -176,7 +176,22 @@ def parse_reply(raw: str, *, channel: str = "im", card: Any = None,
             max_chars=max_chars, card_tones=card_tones, card=card,
         )
         if segs:
-            return Reply(segments=segs)
+            # R2_SPEC 2：顶层 stance/follow_up/memory_candidates 提取
+            stance = str(data.get("stance") or "").strip()
+            follow_up = str(data.get("follow_up") or "none").strip()
+            if follow_up not in ("none", "answer", "ask", "offer", "remind", "invite", "close"):
+                follow_up = "none"
+            mcs = data.get("memory_candidates")
+            candidates = []
+            if isinstance(mcs, list):
+                for mc in mcs[:5]:
+                    if isinstance(mc, dict) and mc.get("content"):
+                        candidates.append({
+                            "content": str(mc["content"])[:500],
+                            "kind": str(mc.get("kind") or "user_fact"),
+                        })
+            return Reply(segments=segs, stance=stance, follow_up=follow_up,
+                         memory_candidates=candidates)
         return _fallback_text(raw, max_chars)
     except (json.JSONDecodeError, ValueError):
         # 容错：模型可能输出残缺/重复 JSON —— 用正则找候选对象逐个尝试

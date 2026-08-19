@@ -11,17 +11,17 @@
       font-family: "Microsoft YaHei", sans-serif;
     }
     #pet {
-      width: 220px; height: 260px;
+      width: 220px; height: 206px;  /* 高度由 renderer relayout 动态调整 */
       position: relative;
       cursor: grab;
     }
     #avatar {
       width: 200px; height: 200px;
-      position: absolute; top: 0; left: 10px;
+      position: absolute; top: 0; left: 10px;  /* top 由 renderer relayout 设置 */
       image-rendering: pixelated;
     }
     #bubble {
-      position: absolute; top: 150px; left: 60px;
+      position: absolute; top: 0; left: 35px;  /* 形象上方；left/top 由 relayout 设置 */
       max-width: 150px;
       background: rgba(255,255,255,0.95);
       border-radius: 10px; padding: 6px 10px;

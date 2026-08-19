@@ -38,7 +38,7 @@ class AttentionScheduler:
         self.llm = llm
         self.cfg = AttentionConfig(**{k: v for k, v in (config or {}).items()
                                       if hasattr(AttentionConfig, k)})
-        self.state = "fixation"          # fixation / scanning / away（VISION_SPEC 3）
+        self.state = "fixating"        # VISION_SPEC 3：orienting / fixating / habituated / away
         self.focus = None                # 当前注视区域 {center, since, last_change}
         self._prev_frame = None          # 上一次全局快照
         self._last_scan_ts = 0.0         # 全局快照时间
@@ -57,7 +57,7 @@ class AttentionScheduler:
         """用户有输入（聊天/键鼠）→ 离开 away（VISION_SPEC 3 恢复 orienting）。"""
         self._last_input_ts = time.time()
         if self.state == "away":
-            self.state = "fixation"
+            self.state = "orienting"  # VISION_SPEC 3：away --activity--> orienting
             self._was_away = False
             logger.info("attention: away → orienting (user input)")
 
@@ -113,6 +113,7 @@ class AttentionScheduler:
         # 5. 习惯化事件（当前注视区域衰减）
         if self.focus and now - self.focus["since"] > self.cfg.habituation_sec:
             if not self._region_changed(now, self.focus):
+                self.state = "habituated"  # VISION_SPEC 3：fixating --no novelty 60s--> habituated
                 events.append(AttentionEvent(kind="habituation",
                                              region=self._focus_region(), ts=now,
                                              source="saliency", reason="no novelty 60s"))

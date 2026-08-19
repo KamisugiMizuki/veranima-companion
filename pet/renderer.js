@@ -45,6 +45,48 @@ function applyExpression(label) {
   return true;
 }
 
+// ---------- GUI_SPEC 4.2 布局：立绘底边为锚点，气泡增长时窗口向上扩 ----------
+function computePetLayout({ portraitWidth, portraitHeight, bubbleWidth, bubbleHeight, inputHeight = 0, inputOffset = 0 }) {
+  // 返回 stage/portrait/bubble rect + 全局锚点（形象底边中心）
+  const gap = 6;
+  const w = Math.max(portraitWidth, bubbleWidth);
+  const h = bubbleHeight + gap + portraitHeight + inputHeight + inputOffset;
+  const bubble = { x: Math.max(0, (w - bubbleWidth) / 2), y: 0, w: bubbleWidth, h: bubbleHeight };
+  const portrait = { x: Math.max(0, (w - portraitWidth) / 2), y: bubbleHeight + gap, w: portraitWidth, h: portraitHeight };
+  return {
+    stage: { w, h },
+    portrait,
+    bubble,
+    anchor: { x: w / 2, y: portrait.y + portraitHeight },  // 形象底边（脚底不跳动）
+  };
+}
+
+// 气泡尺寸变化 → 重新布局 + 通知 main 调整窗口（向上扩，锚点稳定）
+const bubbleEl = document.getElementById('bubble');
+const petEl = document.getElementById('pet');
+function relayout() {
+  const bh = Math.ceil(bubbleEl.getBoundingClientRect().height) || 0;
+  const bw = Math.ceil(bubbleEl.getBoundingClientRect().width) || 0;
+  const pw = avatar.offsetWidth || 200;
+  const ph = avatar.offsetHeight || 200;
+  const lay = computePetLayout({
+    portraitWidth: pw, portraitHeight: ph, bubbleWidth: Math.min(bw, 150), bubbleHeight: bh,
+  });
+  // 形象定位（气泡在上，形象在下）
+  avatar.style.top = `${lay.portrait.y}px`;
+  avatar.style.left = `${lay.portrait.x}px`;
+  bubbleEl.style.top = '0';
+  bubbleEl.style.left = `${lay.bubble.x}px`;
+  petEl.style.width = `${lay.stage.w}px`;
+  petEl.style.height = `${lay.stage.h}px`;
+  window.pet.resizePet({ height: Math.round(lay.stage.h) });
+}
+if (window.ResizeObserver) {
+  new ResizeObserver(relayout).observe(bubbleEl);
+}
+bubbleEl.addEventListener('transitionend', relayout);
+window.addEventListener('resize', relayout);
+
 // ---------- 立绘尺寸（按原图比例；高度优先固定，宽度自适应） ----------
 // 用户可调：设置页 avatar_height（px）→ main 下发；默认 200
 let avatarHeight = 200;

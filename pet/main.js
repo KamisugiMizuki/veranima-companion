@@ -425,6 +425,13 @@ ipcMain.on('chat-stop', () => {
   // GUI_SPEC 9：generating/speaking → 停止（转发核心 stop_speak → reply_cancelled）
   if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'stop_speak' }));
 });
+ipcMain.on('pet-resize', (e, dim) => {
+  // GUI_SPEC 4.2：气泡增长 → 窗口向上扩（顶边随高度变化，锚点=形象底边稳定）
+  const h = Math.max(120, Math.round(Number(dim && dim.height) || 206));
+  const b = win.getBounds();
+  if (b.height === h) return;
+  win.setBounds({ x: b.x, y: b.y - (h - b.height), width: b.width, height: h });
+});
 
 // 角色立绘映射：读当前角色卡 avatar.expressions → {标签: 绝对路径} → renderer
 // （R2_SPEC 2：表情标签驱动；角色切换后立绘跟着换，不再写死 assets/）
