@@ -198,6 +198,15 @@ class MemoryStore:
             strength=1.0, category=category, meta=meta or {},
             created_at=ts, updated_at=ts,
         )
+        # M-3 显式同步 FTS 索引（独立表，无触发器）
+        if content.strip():
+            try:
+                self.con.execute(
+                    "INSERT INTO memories_fts(rowid, content) VALUES (?,?)", (mid, content)
+                )
+                self.con.commit()
+            except Exception as e:
+                logger.warning("memories_fts index failed for memory %s: %s", mid, e)
         # 向量索引（写入即检索：零开销摄入的向量侧）
         if self._vec_ok and content.strip():
             try:
@@ -279,6 +288,14 @@ class MemoryStore:
         )
         mid = cur.lastrowid
         self.con.commit()
+        # M-3 显式同步 FTS 索引（新版本内容）
+        try:
+            self.con.execute(
+                "INSERT INTO memories_fts(rowid, content) VALUES (?,?)", (mid, new_content)
+            )
+            self.con.commit()
+        except Exception as e:
+            logger.warning("memories_fts index failed on version %s: %s", mid, e)
         if self._vec_ok:
             try:
                 vec = self.provider.embed([new_content])[0]
@@ -426,16 +443,31 @@ class MemoryStore:
                     pool[entry.id] = (entry, 1.0 - r["distance"])
             except Exception as e:
                 logger.warning("vector recall failed: %s", e)
-        # FTS5 补充：命中消息 → 关联 provenance 的记忆（relevance 信号）
+        # FTS5 直接命中规范记忆（M-3，MEMORY_SPEC 10.2：不依赖消息巧合命中）
         try:
-            fts_hits = set(
+            for r in self.con.execute(
+                "SELECT rowid FROM memories_fts WHERE memories_fts MATCH ? LIMIT 10",
+                (self._fts_query(query),),
+            ).fetchall():
+                entry = self.get(r["rowid"])
+                if entry is None:
+                    continue
+                if layer and entry.layer != layer:
+                    continue
+                pool.setdefault(entry.id, (entry, None))
+                fts_hits.add(entry.id)
+        except Exception as e:
+            logger.debug("memories fts failed: %s", e)
+        # 旧路径兼容：FTS 命中消息 → 关联 provenance 的记忆（relevance 信号）
+        try:
+            msg_hits = set(
                 r["rowid"] for r in self.con.execute(
                     "SELECT rowid FROM messages_fts WHERE messages_fts MATCH ? LIMIT 10",
                     (self._fts_query(query),),
                 ).fetchall()
             )
-            if fts_hits:
-                ids = list(fts_hits)
+            if msg_hits:
+                ids = list(msg_hits)
                 ph = ",".join("?" * len(ids))
                 mems = self.con.execute(
                     f"SELECT * FROM memories WHERE provenance IN ({ph})",
@@ -449,12 +481,13 @@ class MemoryStore:
         except Exception as e:
             logger.debug("fts recall failed: %s", e)
         if not pool:
-            # 兜底：无向量且无 FTS 命中时，同层全量按关键词包含匹配
+            # 兜底：无向量且无 FTS 命中时，同层全量按 bigram 包含匹配
             # （ponytail: 低成本近似，精准度低于向量/BM25；embedding 可用后自然淘汰）
             try:
-                words = [w for w in query.replace('"', " ").split() if len(w) >= 2]
+                q = query.replace(" ", "").replace('"', "")
+                bigrams = [q[i:i + 2] for i in range(len(q) - 1) if q[i:i + 2].strip()]
                 for entry in self.list_layer(layer or "semantic", limit=200):
-                    if words and all(w in entry.content for w in words[:3]):
+                    if bigrams and any(b in entry.content for b in bigrams[:8]):
                         pool[entry.id] = (entry, None)
             except Exception as e2:
                 logger.debug("recall keyword fallback failed: %s", e2)
@@ -469,18 +502,21 @@ class MemoryStore:
         }
         if not pool:
             return []
-        # R1 权重评分（缺项归一化）
+        # M-3 entity/temporal 信号（MEMORY_SPEC 10.1/10.3 新权重）
+        intent = self._temporal_intent(query)
         scored: dict[int, float] = {}
         for mid, (entry, sim) in pool.items():
             parts: list[float] = []
             weights: list[float] = []
             if sim is not None:
-                parts.append(max(sim, 0.0)); weights.append(0.45)
-            if mid in fts_hits or entry.provenance in {str(x) for x in fts_hits}:
+                parts.append(max(sim, 0.0)); weights.append(0.35)
+            if mid in fts_hits:
                 parts.append(1.0); weights.append(0.20)
-            parts.append(1.0 / (1.0 + self._age_days(entry.updated_at))); weights.append(0.15)
-            parts.append(max(0.0, min(1.0, entry.importance))); weights.append(0.10)
-            parts.append(max(0.0, min(1.0, entry.confidence))); weights.append(0.10)
+            parts.append(self._temporal_match(entry, intent)); weights.append(0.15)
+            parts.append(self._subject_match(query, entry)); weights.append(0.15)
+            parts.append(1.0 / (1.0 + self._age_days(entry.updated_at))); weights.append(0.05)
+            parts.append(max(0.0, min(1.0, entry.importance))); weights.append(0.05)
+            parts.append(max(0.0, min(1.0, entry.confidence))); weights.append(0.05)
             wsum = sum(weights)
             scored[mid] = sum(p * (w / wsum) for p, w in zip(parts, weights)) if wsum else 0.0
         ranked = sorted(scored.items(), key=lambda kv: kv[1], reverse=True)[:top_k]
@@ -491,11 +527,60 @@ class MemoryStore:
         self.con.commit()
         return [self.get(mid) for mid, _ in ranked]
 
+    # ---------- M-3 查询意图与信号（MEMORY_SPEC 10.1） ----------
+
+    @staticmethod
+    def _temporal_intent(query: str) -> str:
+        """查询时间意图：past / future / current / none。"""
+        if any(k in query for k in ("以前", "之前", "上次", "去年", "上个月", "上周", "当时", "过去")):
+            return "past"
+        if any(k in query for k in ("明天", "下周", "以后", "未来", "下个月", "计划", "打算")):
+            return "future"
+        if any(k in query for k in ("现在", "最近", "目前", "今天")):
+            return "current"
+        return "none"
+
+    @staticmethod
+    def _temporal_match(entry: MemoryEntry, intent: str) -> float:
+        if intent == "none":
+            return 0.5  # 中性（不惩罚也不加分）
+        if intent == "past":
+            return 1.0 if entry.meta.get("event_time") else 0.0
+        if intent == "future":
+            return 1.0 if entry.meta.get("expires_at") or entry.status == "open" else 0.0
+        # current：最近更新的条目更符合（freshness 已覆盖），中性 0.5
+        return 0.5
+
+    @staticmethod
+    def _subject_match(query: str, entry: MemoryEntry) -> float:
+        """subject/entity 匹配（MEMORY_SPEC 7：user/character 实体锚点）。"""
+        subject = entry.meta.get("subject", "")
+        if subject == "user" and any(k in query for k in ("我", "用户", "我的")):
+            return 1.0
+        if subject == "character" and any(k in query for k in ("你", "角色", "她")):
+            return 1.0
+        if not subject:
+            return 0.5  # 无 subject 元数据：中性
+        return 0.0
+
+    @staticmethod
+    def _split_grams(text: str) -> list[str]:
+        """中文长串拆 3-gram（与 trigram tokenizer 对齐），英文保留原词。"""
+        tokens: list[str] = []
+        for w in text.replace('"', " ").split():
+            if not w:
+                continue
+            if any("\u4e00" <= c <= "\u9fff" for c in w) and len(w) > 6:
+                tokens.extend(w[i:i + 3] for i in range(len(w) - 2))
+            else:
+                tokens.append(w)
+        return tokens
+
     @staticmethod
     def _fts_query(text: str) -> str:
-        # 拆词为 OR 查询，避免 FTS5 语法错误
-        words = [w for w in text.replace('"', " ").split() if w]
-        return " OR ".join(f'"{w}"' for w in words[:8]) or '" "'
+        # 拆词为 OR 查询（中文 3-gram 对齐 trigram tokenizer），避免 FTS5 语法错误
+        tokens = MemoryStore._split_grams(text)
+        return " OR ".join(f'"{t}"' for t in tokens[:12]) or '" "'
 
     @staticmethod
     def _age_days(ts: str) -> float:
@@ -549,6 +634,10 @@ class MemoryStore:
             ids = [e.id for e in chain] or [memory_id]
             ph = ",".join("?" * len(ids))
             self.con.execute(f"DELETE FROM memories WHERE id IN ({ph})", ids)
+            try:
+                self.con.execute(f"DELETE FROM memories_fts WHERE rowid IN ({ph})", ids)
+            except Exception as e:
+                logger.warning("memories_fts delete failed: %s", e)
             if self._vec_ok:
                 self.con.execute(f"DELETE FROM memory_vec WHERE memory_id IN ({ph})", ids)
             self.con.commit()
@@ -575,6 +664,10 @@ class MemoryStore:
         ids = sorted(chained)
         ph = ",".join("?" * len(ids))
         self.con.execute(f"DELETE FROM memories WHERE id IN ({ph})", ids)
+        try:
+            self.con.execute(f"DELETE FROM memories_fts WHERE rowid IN ({ph})", ids)
+        except Exception as e:
+            logger.warning("memories_fts delete failed: %s", e)
         if self._vec_ok:
             self.con.execute(f"DELETE FROM memory_vec WHERE memory_id IN ({ph})", ids)
         self.con.commit()

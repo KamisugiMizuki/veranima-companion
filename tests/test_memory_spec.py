@@ -153,3 +153,30 @@ def test_promise_mark_cancelled_status(tmp_path):
     assert not book.open_promises()  # cancelled 不再显示为 open
     chain = s.get_history(pid)
     assert chain[-1].meta.get("status") == "cancelled"
+
+
+# ---------- M-3 召回（MEMORY_SPEC 10） ----------
+
+def test_memory_fts_direct_hit(tmp_path):
+    """FTS 直接索引规范记忆（不依赖消息巧合命中）。"""
+    s = _store(tmp_path)
+    s.store("semantic", "用户喜欢喝手冲咖啡", meta={"kind": "user_fact", "subject": "user"})
+    hits = s.recall("手冲咖啡", top_k=5)
+    assert hits and "手冲咖啡" in hits[0].content
+
+
+def test_temporal_intent_past_boosts_event_time(tmp_path):
+    s = _store(tmp_path)
+    past = s.store("shared_episode", "上次一起爬山摔了一跤", meta={"kind": "shared_episode", "event_time": "2026-06-01T10:00:00+00:00"})
+    now = s.store("shared_episode", "上次一起爬山很开心", meta={"kind": "shared_episode"})
+    hits = s.recall("上次一起爬山怎么样", top_k=5)
+    # past 意图 → 带 event_time 的条目 temporal 信号更高
+    assert hits[0].id == past.id
+
+
+def test_subject_match_user_query(tmp_path):
+    s = _store(tmp_path)
+    user_fact = s.store("semantic", "用户喜欢蓝色", meta={"kind": "user_fact", "subject": "user"})
+    s.store("semantic", "角色喜欢蓝色", meta={"kind": "user_fact", "subject": "character"})
+    hits = s.recall("我喜欢什么颜色", top_k=5)
+    assert hits[0].id == user_fact.id  # "我" → subject=user 优先

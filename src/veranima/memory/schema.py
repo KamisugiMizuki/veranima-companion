@@ -83,6 +83,13 @@ CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
     INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
 END;
 
+-- M-3 规范记忆 FTS（MEMORY_SPEC 10.2：直接索引 memories）
+-- 独立 fts5 表（非外部内容表）：由 store.py 显式同步（store/update_latest/erase），
+-- 外部内容表+触发器模式在迁移/删除路径会损坏库（实测 malformed），不采用
+CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+    content, tokenize='trigram'
+);
+
 -- 记忆向量（cosine 度量：distance = 1 - 余弦相似度，recall 直接 1-distance 即相似度）
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_vec USING vec0(
     memory_id INTEGER PRIMARY KEY,
@@ -114,6 +121,21 @@ def init_db(db_path: str | Path, dim: int = EMBEDDING_DIM, provider=None) -> sql
         # 扩展不可用时向量检索降级（FTS5 仍可用）
         pass
     con.executescript(SCHEMA.format(dim=dim))
+    # M-3 迁移：memories_fts 已建但旧记忆行未索引 → 全量重建（独立表，普通 DELETE/INSERT 安全）
+    try:
+        fts_count = con.execute("SELECT count(*) FROM memories_fts").fetchone()[0]
+        mem_count = con.execute("SELECT count(*) FROM memories").fetchone()[0]
+        if fts_count != mem_count:
+            con.execute("DELETE FROM memories_fts")
+            rows = con.execute("SELECT id, content FROM memories WHERE content != ''").fetchall()
+            con.executemany(
+                "INSERT INTO memories_fts(rowid, content) VALUES (?,?)",
+                [(r["id"], r["content"]) for r in rows],
+            )
+            con.commit()
+            logger.info("memories_fts rebuilt for %s memories", mem_count)
+    except Exception as e:
+        logger.warning("memories_fts migration check failed: %s", e)
     # 迁移：旧版 memory_vec 为默认 L2 度量（distance≠余弦），重建为 cosine 并重新嵌入
     try:
         sql = con.execute("SELECT sql FROM sqlite_master WHERE name='memory_vec'").fetchone()[0]
