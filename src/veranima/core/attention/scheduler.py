@@ -6,18 +6,10 @@ import time
 from dataclasses import dataclass, field
 
 from . import perception, saliency
+from .events import AttentionEvent
+from .visibility_policy import VisibilityPolicy
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class AttentionEvent:
-    """注意力事件（pet_server 消费）。"""
-    kind: str          # fixation_shift / window_switch / observation / habituation
-    region: tuple      # 归一化 (x0,y0,x1,y1)，全屏=(0,0,1,1)
-    tag: str = ""
-    note: str = ""
-    ts: float = 0.0
 
 
 @dataclass
@@ -36,16 +28,17 @@ class AttentionConfig:
     fovea_ratio: float = 0.15           # 注视区域半径（屏幕短边比例）
     mouse_focus_stay_s: float = 2.0     # 鼠标停留判定
     mouse_focus_idle_s: float = 30.0    # 鼠标静止 → 前台窗口兜底
+    away_idle_s: float = 1800.0         # VISION_SPEC 3：30min 无输入 → away
 
 
 class AttentionScheduler:
-    """扫视-注视状态机（VISION_SPEC 2.3）。tick() 每次返回事件列表。"""
+    """扫视-注视状态机（VISION_SPEC 2.3/3）。tick() 每次返回事件列表。"""
 
     def __init__(self, llm=None, config: dict | None = None):
         self.llm = llm
         self.cfg = AttentionConfig(**{k: v for k, v in (config or {}).items()
                                       if hasattr(AttentionConfig, k)})
-        self.state = "fixation"          # fixation / scanning
+        self.state = "fixation"          # fixation / scanning / away（VISION_SPEC 3）
         self.focus = None                # 当前注视区域 {center, since, last_change}
         self._prev_frame = None          # 上一次全局快照
         self._last_scan_ts = 0.0         # 全局快照时间
@@ -56,6 +49,17 @@ class AttentionScheduler:
         self._last_mouse_move_ts = 0.0
         self._last_win = ""
         self._last_win_ts = 0.0
+        self._last_input_ts = time.time()  # 最近用户输入（away 判定）
+        self._was_away = False
+        self.policy = VisibilityPolicy(config)
+
+    def note_user_input(self) -> None:
+        """用户有输入（聊天/键鼠）→ 离开 away（VISION_SPEC 3 恢复 orienting）。"""
+        self._last_input_ts = time.time()
+        if self.state == "away":
+            self.state = "fixation"
+            self._was_away = False
+            logger.info("attention: away → orienting (user input)")
 
     # ---------- 主循环 ----------
 
@@ -66,13 +70,26 @@ class AttentionScheduler:
         if frame is None:
             return events
 
+        # 0. away 状态（VISION_SPEC 3：30min 无输入 → away）
+        if now - self._last_input_ts > self.cfg.away_idle_s:
+            if self.state != "away":
+                self.state = "away"
+                self._was_away = True
+                events.append(AttentionEvent(
+                    kind="away", region=(0, 0, 1, 1),
+                    note="用户长时间无输入", ts=now, source="cursor",
+                    reason="idle > away_idle_s",
+                ))
+            return events  # away 期间不做屏幕感知（VISION_SPEC 3）
+
         # 1. 窗口切换（最高价值，独立于像素）
         win = self._foreground()
         if win and win != self._last_win:
             self._last_win = win
             self._last_win_ts = now
             events.append(AttentionEvent(kind="window_switch", region=(0, 0, 1, 1),
-                                         note=win, ts=now))
+                                         note=win, ts=now, source="foreground",
+                                         reason="foreground window changed"))
 
         # 2. 显著度（全局快照节奏）
         if now - self._last_scan_ts >= self.cfg.global_scan_sec:
@@ -97,7 +114,8 @@ class AttentionScheduler:
         if self.focus and now - self.focus["since"] > self.cfg.habituation_sec:
             if not self._region_changed(now, self.focus):
                 events.append(AttentionEvent(kind="habituation",
-                                             region=self._focus_region(), ts=now))
+                                             region=self._focus_region(), ts=now,
+                                             source="saliency", reason="no novelty 60s"))
                 self.focus = None
         return events
 
@@ -128,21 +146,12 @@ class AttentionScheduler:
         ev = AttentionEvent(kind="fixation_shift",
                             region=(round(x0, 3), round(y0, 3), round(x1, 3), round(y1, 3)),
                             note=f"显著度 {target['score']}（{target['source']}）", ts=now)
-        # 观察（注视转移冷却 15s）
-        if self._cooldown_ok("shift", now):
-            self._observe(ev, frame, x0, y0, x1, y1)
+        # L3 观察由 consumer（pet_server._observe_event）执行（VISION_SPEC 2：
+        # scheduler 属于 L0-L2，禁止直接调 LLM）
         return [ev]
 
     def _observe(self, ev: AttentionEvent, frame, x0, y0, x1, y1) -> None:
-        """注视区域 → LLM 理解 → 填充事件 tag/note。"""
-        from .observer import observe_region
-        h, w = frame.shape
-        b64 = perception.grab_region(frame, int(x0 * w), int(y0 * h), int(x1 * w), int(y1 * h))
-        tag, note = observe_region(self.llm, b64, window_title=self._last_win)
-        if tag or note:
-            ev.tag, ev.note = tag, f"{note}（{ev.note}）"
-            self._mark_observe(ev.kind, time.time())
-        self.focus["last_change"] = time.time()
+        """VISION_SPEC 2 已移除：L3 观察由 consumer 执行，scheduler 不调 LLM。"""
 
     def _mouse_focus(self, now: float) -> AttentionEvent | None:
         """鼠标位置焦点（VISION_SPEC 2.5.1）：停留 >2s → 焦点=鼠标。"""

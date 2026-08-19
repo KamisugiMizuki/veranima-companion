@@ -43,6 +43,7 @@ class PetServer:
         self._tts = None    # TTSClient（可选；未配置则桌宠只显气泡不发声）
         self._bilingual = False  # 角色双语（character.json veranima.bilingual.enabled）
         self.attention_cfg = {}  # 视觉注意力配置（VISION_SPEC 4，config.yaml attention: 段）
+        self._obs_cache: dict = {}  # VISION_SPEC 5：观察缓存（120s TTL，region_key → ts）
         self._presence_was_absent = False  # R4 在场转变检测（VISION_SPEC L0）
 
     def connect_agent(self, agent) -> None:
@@ -92,6 +93,40 @@ class PetServer:
         """R2 递增 turn_id（R2_SPEC 5：低成本递增，不引入任务编排库）。"""
         self._turn_seq += 1
         return self._turn_seq
+
+    async def _observe_event(self, att, ev) -> tuple[str, str]:
+        """VISION_SPEC 5/6：事件 → L3 观察（区域裁剪 → LLM Observation）。
+
+        返回 (summary, category)；失败/敏感返回 ("", "")。不写记忆、不 speak。
+        """
+        try:
+            # 敏感窗口策略：命中不发图（VISION_SPEC 4）
+            policy = getattr(att, "policy", None)
+            if policy is not None:
+                verdict = policy.policy_action(ev.note or "", ev.note or "")
+                if verdict["action"] != "capture":
+                    logger.debug("visual: %s", verdict["reason"])
+                    return "", ""
+            from veranima.core.attention.perception import grab_gray_downsampled, grab_region
+            from veranima.core.attention.observer import observe
+            frame = await asyncio.to_thread(grab_gray_downsampled)
+            if frame is None:
+                return "", ""
+            # 归一化区域 → 像素（region 是 (x0,y0,x1,y1) 0-1）
+            h, w = frame.shape[:2]
+            x0 = int(ev.region[0] * w); y0 = int(ev.region[1] * h)
+            x1 = max(x0 + 1, int(ev.region[2] * w)); y1 = max(y0 + 1, int(ev.region[3] * h))
+            crop = await asyncio.to_thread(grab_region, frame, x0, y0, x1, y1)
+            if not crop:
+                return "", ""
+            obs = await asyncio.to_thread(
+                observe, self._agent.llm, crop, window_title=ev.note or "")
+            if not obs.is_valid:
+                return "", ""
+            return obs.summary, obs.category
+        except Exception as e:
+            logger.debug("visual observe failed: %s", e)
+            return "", ""
 
     async def speak(self, text: str, tags: list | None = None, tts_text: str | None = None) -> bool:
         """推送回复（R3 协议：reply_start → reply_segment → reply_end）。
@@ -349,18 +384,23 @@ class PetServer:
                                 logger.info("visual: QQ 活跃，跳过观察")
                                 continue
                             if ev.kind in ("window_switch", "fixation_shift") and ev.tag:
-                                # 观察注入 episodic 记忆（短期情境；主动与否由 R4 闸门裁决）
+                                # VISION_SPEC 5/7：观察只做短期情境（不写长期记忆——
+                                # L3 禁止写 memories），观察结果 TTL 10min 过期不注入
                                 try:
-                                    self._agent.memory.store(
-                                        "episodic",
-                                        f"[屏幕观察] {ev.note}（{ev.tag}）",
-                                        importance=0.5, confidence=0.7,
-                                        provenance="visual-attention",
-                                        category="screen",
-                                    )
-                                    logger.info("visual: 观察注入记忆 tag=%s", ev.tag)
-                                    # R4：注意力只产候选（R4_SPEC 1——禁止直接 speak），
-                                    # 必须带 matched_episode 且有共同经历，过 ProactiveGate
+                                    # 观察缓存（同 window_category+region 120s 内不重复 L3）
+                                    cache_key = f"{ev.kind}:{ev.tag}"
+                                    if time.time() - self._obs_cache.get(cache_key, 0.0) < 120:
+                                        continue
+                                    summary, category = await asyncio.to_thread(
+                                        self._observe_event, att, ev)
+                                    if not summary:
+                                        continue
+                                    self._obs_cache[cache_key] = time.time()
+                                    logger.info("visual: 观察 %s [%s]", summary[:40], category)
+                                    # 共同经历匹配：观察 summary 检索 episodic（短期情境联想）
+                                    matched = await asyncio.to_thread(
+                                        self._agent._visual_match_episode, summary[:20])
+                                    # R4：注意力只产候选（R4_SPEC 1——禁止直接 speak）
                                     cand = ProactiveCandidate(
                                         source="attention",
                                         reason=f"看到用户在{ev.tag}",
@@ -368,7 +408,7 @@ class PetServer:
                                         intent="bridge",
                                         context={
                                             "tag": ev.tag,
-                                            "matched_episode": self._agent._visual_match_episode(ev.tag),
+                                            "matched_episode": matched,
                                         },
                                     )
                                     decision = self._agent.gate.decide(
