@@ -4,6 +4,7 @@
 > 现有复用：`core/agent.py`、`core/state.py`、`memory/store.py`、`memory/schema.py`、`core/prompts.py`。
 > 最小新增：记忆分类映射、状态字段、候选记忆校验、版本链关联。
 > 记忆系统的完整数据、写入、冲突、召回、遗忘、隐私、文风学习和验收契约以 `docs/MEMORY_SPEC.md` 为唯一真值；本文只保留 R1 阶段边界和摘要。
+> 人格形成、用户思维框架、共同意义、多维关系状态、自传反思和表达回用以 `docs/PERSONA_LOOP_SPEC.md` 为唯一真值；本文不重复其规则。
 
 ## 1. 数据契约
 
@@ -18,6 +19,17 @@
 | shared_episode | `episodic` | 共同事件、情绪、结果 |
 | commitment | `procedural` | 承诺与协作规则 |
 | session | `session` | 当前任务/短期视觉 context |
+
+人格循环不新增数据库 layer，第一版使用 `meta.kind` 区分：
+
+| meta.kind | layer | 内容 |
+|---|---|---|
+| user_framework / character_belief | `semantic` | 用户思维框架 / 角色形成的观点 |
+| shared_meaning / relationship_event | `episodic` | 共同解释 / 靠近、冲突和修复事件 |
+| interaction_rule | `procedural` | 明确关系边界和互动规则 |
+| persona_reflection | `session` 或 `core_profile` | 待整合反思 / 版本化自传摘要 |
+
+普通事实不能误判为用户框架；理解用户观点不等于角色采纳。结构稳定且 JSON meta 查询成为瓶颈时，允许按 `PERSONA_LOOP_SPEC.md` 迁入独立 SelfModel/RelationshipModel 表。
 
 `MemoryEntry.meta` 增加：`subject`, `event_time`, `emotion`, `status`, `expires_at`, `supersedes`。不修改旧字段语义。
 
@@ -107,6 +119,8 @@ state.apply(event="user_message|assistant_reply|time_decay|scene_change|user_fee
 
 第一版不新建通用状态机库；用 `AgentState` 方法和事件字符串即可。每次变更记录 debug 日志 `state changed cause=...`，不把内部数值直接展示给用户。
 
+`attachment` 继续作为兼容汇总值，但不能承担完整关系建模。人格循环 P-3 允许新增 trust/familiarity/intimacy/reciprocity/safety/conflict_tension/repair_progress；更新只由明确关系事件驱动，不能按消息数量线性增长。
+
 ## 6. 配置
 
 ```yaml
@@ -128,5 +142,7 @@ state:
 定向测试：`tests/test_memory.py`, `tests/test_agent.py`, 新增 `tests/test_continuity.py`。
 
 必须覆盖：空库不编造、明确偏好写入、重复去重、纠正版本链、跨重启状态、换卡不污染、低置信措辞、视觉 context 到期不进入长期记忆。
+
+人格循环还必须覆盖：用户框架提取精度、角色核心冲突时保留分歧、共同意义不伪造、关系冲突闭环、框架回用不逐字复述、Persona Brief 预算、旧角色自传隔离。完整验收见 `PERSONA_LOOP_SPEC.md` 第 17 节。
 
 文风学习验收、历史压缩、时间有效性、冲突类型、用户删除和离线 benchmark 见 `docs/MEMORY_SPEC.md` 第 9、13、14、18 节。

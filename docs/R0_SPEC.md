@@ -2,6 +2,7 @@
 
 > R0 是所有实现的入口。没有 R0，后续记忆、TTS、视觉和主动性都会变成给一个空壳模型接功能。
 > 现有复用：`core/character.py`, `core/prompts.py`, `core/segments.py`, `core/agent.py`, `llm/client.py`。
+> 角色核心扩展、角色自我模型与人格循环见 `docs/PERSONA_LOOP_SPEC.md`；R0 只规定稳定角色真值和 Reply 协议。
 
 ## 1. 角色卡真值
 
@@ -22,6 +23,11 @@
       "quirks": ["稳定癖好"],
       "taboos": ["不主动触碰的话题"],
       "values": ["价值排序"],
+      "core_drives": ["长期驱动力"],
+      "value_order": ["按优先级排列的价值"],
+      "inner_tensions": [{"left":"渴望靠近", "right":"害怕失去边界"}],
+      "long_term_desires": ["长期欲求"],
+      "relationship_expectation": "关系期许",
       "capabilities": {"strong": [], "weak": [], "unknown": []},
       "tones": ["中性", "调侃", "疲惫"],
       "avatar": {"expressions": {"闲置": "portraits/idle.png"}},
@@ -33,6 +39,8 @@
 ```
 
 字段不存在时使用空值/默认，不把另一角色的默认文本写进系统层。角色级意象只能通过角色卡注入。
+
+上述人格核心字段是慢变量：普通对话、用户赞同和文风学习都不得覆写。角色可以在共同经历中形成 `character_belief`、自传解释和关系变化，但必须与核心张力和价值底线兼容；详细兼容与版本规则见 `PERSONA_LOOP_SPEC.md` 第 3、6、7 节。
 
 ## 2. Prompt 分层
 
@@ -59,6 +67,8 @@ G. 本轮任务要求
 - prompt 包含角色名和 personality 关键片段。
 - 系统硬约束不含其他角色名/生活锚点。
 - 角色卡 JSON 可解析。
+- core_drives/value_order/inner_tensions/long_term_desires 的结构合法。
+- Persona Brief 不把用户框架写成角色既定信念，不把旧角色 SelfModel 注入新角色。
 
 换卡验收使用 Zima/Yuki/反差测试卡，确认旧角色关键词不泄漏。
 

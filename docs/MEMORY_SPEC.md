@@ -4,6 +4,7 @@
 > 产品目标：记忆不是“检索到更多文本”，而是让同一个人物拥有可追溯的过去、能纠正的认知和不会越界的熟悉感。
 > 技术约束：继续使用 SQLite + FTS5 + sqlite-vec + 本地 bge-m3；不引入 Mem0、Memanto、MemPalace、图数据库或远程记忆服务作为运行时依赖。
 > 唯一实现入口：`src/veranima/memory/`；`Agent` 只编排，不直接写 SQL。
+> 人格形成与关系性回用的行为契约见 `docs/PERSONA_LOOP_SPEC.md`。本文只规定其证据、候选、版本、召回、删除和预算，不决定角色是否采纳用户观点。
 
 ## 1. 设计原点
 
@@ -89,6 +90,15 @@ Context Brief
 | `shared_episode` | `episodic` | 共同事件及结果、参与方、当时情绪 | 时间敏感，可摘要化，不随机删除重要事件 |
 | `commitment` | `procedural` | 用户要求、承诺、协作规则、未完成提醒 | 未完成时不衰减；完成后保留结果摘要 |
 | `session` | `session` | 当前任务、临时话题、视觉/工具短期 context | 必须有 TTL，过期不召回，不转长期 |
+
+人格循环复用这些 layer，并通过 `meta.kind` 扩展产品类型：
+
+- semantic：`user_framework`, `character_belief`。
+- episodic：`shared_meaning`, `relationship_event`。
+- procedural：`interaction_rule`。
+- session/core_profile：`persona_reflection`, `self_model_snapshot`。
+
+其中 user_framework 是“用户如何理解世界”的证据化模型，不是普通 user_fact；character_belief 是角色自己的观点，必须经过角色核心兼容检查；shared_meaning 必须区分用户解释、角色解释、共识和分歧。完整字段与晋升规则见 `PERSONA_LOOP_SPEC.md` 第 3-7 节。
 
 情绪不单独建 memory layer。情绪是 episode 元数据和 AgentState 的输入，不形成“用户永远很难过”一类静态结论。
 
@@ -207,6 +217,10 @@ store_message(user)
 - 密钥、密码、验证码、支付信息和私聊原文。
 - 外部任务 stdout、日志和完整文件内容。
 - 单次文风表现和单次口癖。
+- 未经用户确认的“你真正是怎样的人”式心理推断。
+- 仅由角色回复自身生成、无用户证据的 user_framework/shared_meaning。
+
+人格循环值得写入的特殊候选：用户明确的定义/比喻/因果模型/价值排序；跨场景重复的私人概念；经双方确认的共同意义；明确的关系边界、冲突和修复结果。普通观点至少需要两次独立证据，或一次陈述加一次用户确认。
 
 ## 7. 规范化与实体锚点
 
@@ -399,6 +413,8 @@ class MemoryBriefItem:
 | session/history summary | 600 |
 
 超预算时按完整 item 删除尾部，不在句子中间硬截断。每条 brief 保留 memory id 到日志，但 prompt 不暴露内部 id。
+
+人格循环实现 P-4 后，Context Brief 上方增加独立 `PersonaBrief`：相关用户框架、角色观点、共同意义、关系上下文、当前内在状态和未解决张力。Persona Brief 每类默认最多 2 条，总计最多 6 条；与 Memory Brief 共享总上下文预算。它负责“如何理解和回应”，Memory Brief 负责“有哪些证据和事实”。
 
 ## 11. 记忆表达与不确定性
 
@@ -640,6 +656,8 @@ style_learning:
 7. M-7 用户控制：查看、纠正、忘记、导出、style reset。
 8. M-8 benchmark：离线事实/时序/冲突/承诺/文风回归集。
 
+M-1~M-8 完成后，人格循环按 `PERSONA_LOOP_SPEC.md` 的 P-0~P-9 实现；不得把 PersonaCandidate 绕过现有 validate/version/delete 原语直接写入 prompt。
+
 在 M-1 至 M-4 完成前，不实现 LLM curator、reranker、entity graph 或多角色 memory namespace。
 
 ## 18. 测试与验收
@@ -684,6 +702,7 @@ style_learning:
 - 承诺：open/done/cancelled/expired。
 - 无答案：数据库没有证据时必须拒绝编造。
 - 文风：同内容在不同稳定画像下只改变表达动作，不改变事实和角色立场。
+- 人格循环：私人定义形成、比喻迁移、角色保留分歧、共同意义、关系修复、诱导回声、公式化升华拦截、证据删除与换卡隔离。
 
 指标：Recall@5、current-version accuracy、temporal accuracy、conflict accuracy、no-answer precision、brief 字符数、P95 本地召回耗时、style drift 上限。
 

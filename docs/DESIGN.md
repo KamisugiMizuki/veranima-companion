@@ -1,12 +1,26 @@
-# veranima 设计总纲 v2.1
+# veranima 设计总纲 v2.2
 
-> 状态：低成本模型实现基线（2026-08-19）。
+> 状态：人物中心扩容设计基线（2026-08-19）；R0-R5 既有实现完成，人格循环 P-0~P-9 待按专项契约实施。
 > 产品原则：**不追求更像 AI，追求更像「某个人」**。
-> 本文规定模块边界、功能栈、实现顺序和完成定义；详细契约见 R1-R5、`MEMORY_SPEC.md`、`GUI_SPEC.md` 与 `VISION_SPEC.md`。
+> 本文规定模块边界、功能栈、实现顺序和完成定义；详细契约见 R0-R5、`PERSONA_LOOP_SPEC.md`、`MEMORY_SPEC.md`、`GUI_SPEC.md` 与 `VISION_SPEC.md`。
 
 ## 1. 产品与非目标
 
-veranima 是一个固定人格、拥有共同经历、会随当下状态变化、能通过 QQ 与桌宠陪伴用户的虚拟人物。QQ 与桌宠是同一 Agent 的两种媒介，不是两个角色。
+veranima 是一个具有稳定人格核心、可追溯自传、关系历史和当下内在状态，能通过 QQ 与桌宠陪伴用户的虚拟人物。QQ 与桌宠是同一 Agent 的两种媒介，不是两个角色。
+
+人格不是 system prompt 的静态表演，也不是对用户文风和观点的复制。人物中心模型固定为：
+
+```text
+本轮人格表现
+= Character Core（角色恒定性）
++ Self Model / Relationship Model（自传与关系连续性）
++ Inner State（当下状态）
++ Scene / Channel / Topic（情境化表达）
+```
+
+人格形成与关系性循环的唯一契约见 `docs/PERSONA_LOOP_SPEC.md`：观察用户框架与共同事件 → 候选校验 → 整合为用户模型/共同意义/角色自传 → 在相关新情境中有边界地回用 → 根据反馈修正版本和关系解释。理解用户不等于同意用户；角色必须保留独立判断和分歧。
+
+拟真表达由五维控制面协同：认知过程、情绪耦合、表层人格演化、关系动态和有因差异。认知过程只输出短结构 `ResponsePlan`，不生成或暴露私密思维链；情绪使用连续 PAD（愉悦度/唤醒度/支配度）并具有 cause、惯性和衰减；差异性必须来自状态、关系、注意力或可追溯联想，禁止无因随机反常。
 
 成功不是“回答更聪明”，而是用户在一周后能说出：她是谁、她记得什么、她今天为何不同、她为何现在来找我或没有打扰。
 
@@ -19,6 +33,7 @@ veranima 是一个固定人格、拥有共同经历、会随当下状态变化�
 | 核心运行时 | Python 3.11 + `src/veranima` | 复用现有包结构 |
 | LLM | OpenAI 兼容 HTTP API，`httpx` | `llm/client.py`；thinking 模型输出预算由配置提供 |
 | 记忆/状态 | SQLite + FTS5 + sqlite-vec；完整契约见 `docs/MEMORY_SPEC.md` | `memory/schema.py`, `memory/store.py`, `core/learning.py` |
+| 人格循环 | Character Core + User/Self/Relationship Model + Persona Brief + PAD/ResponsePlan；完整契约见 `docs/PERSONA_LOOP_SPEC.md` | 复用 `core/character.py`, `core/agent.py`, `core/state.py`, `memory/`；按 P-0~P-9 增量实现 |
 | Embedding | 本地 `sentence-transformers` / bge-m3 | `memory/embedding.py`；远程 API 不作为默认 embedding |
 | 角色卡 | Character Card V3 兼容 JSON + `extensions.veranima` | `core/character.py`, `core/roles.py` |
 | QQ | NapCatQQ OneBot v11 反向 WS | `adapters/qq.py` |
@@ -133,7 +148,9 @@ class ProactiveDecision:
 ```text
 R0 角色内核与 Reply 协议
  ↓
-R1 共同经历/状态连续性（记忆与文风学习见 docs/MEMORY_SPEC.md）
+P-0 角色核心扩展（人格循环见 docs/PERSONA_LOOP_SPEC.md）
+ ↓
+R1 共同经历/状态连续性（记忆见 docs/MEMORY_SPEC.md；人格循环 P-1~P-4）
  ↓
 R2 IM/TTS 表达与失败降级
  ↓
@@ -151,6 +168,11 @@ GUI 实现以 `docs/GUI_SPEC.md` 为唯一界面契约：主窗突出角色存�
 ## 8. 总体验收
 
 - 盲测 10 轮能说出角色至少 3 个稳定特征。
+- 一周后角色能自然回用至少 2 个用户私人概念，并能保留具体分歧；不能只复述用户原句。
+- 共同事件不仅保留事实，还能在证据充分时形成双方解释、共同意义和后续行为变化。
+- 一次关系冲突具有触发、解释、澄清、修复/守界和关闭过程，不立刻清零也不永久惩罚。
+- 情绪通过句式、节奏、TTS 和主动性同时可感知，变化有原因、有惯性、会衰减。
+- 同一话题允许有因差异和自然联想，但角色立场不随机漂移，跑题可追溯且用户不接时回到主线。
 - 跨重启/跨 QQ/桌宠能接续共同经历。
 - 换反差角色不泄漏旧角色词汇和锚点。
 - 状态变化有 cause 且可恢复。

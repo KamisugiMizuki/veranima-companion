@@ -34,7 +34,8 @@ Electron 壳 (pet/)                    Python 核心 (src/veranima/)
 
 | 文档 | 内容 |
 |---|---|
-| [docs/DESIGN.md](docs/DESIGN.md) | 主设计文档（v2.1，方案唯一权威） |
+| [docs/DESIGN.md](docs/DESIGN.md) | 主设计文档（v2.2，方案唯一权威） |
+| [docs/PERSONA_LOOP_SPEC.md](docs/PERSONA_LOOP_SPEC.md) | **人格循环专项契约**（角色核心/用户框架/自我与关系模型/共同意义/反思/回用与防回声室） |
 | [docs/MEMORY_SPEC.md](docs/MEMORY_SPEC.md) | **记忆专项契约**（五层类型/候选校验/版本链/混合召回/Context Brief/整理器/文风学习/用户控制/评测） |
 | [docs/R0_SPEC.md](docs/R0_SPEC.md) | R0 角色内核与统一 Reply（角色卡真值/prompt 分层/解析契约） |
 | [docs/R1_SPEC.md](docs/R1_SPEC.md) | R1 共同经历与状态连续性（记忆/状态/跨重启一致） |
@@ -112,7 +113,7 @@ QQ 形态额外启用：定时问候/节庆、离线思考（静默 30 分钟后
 
 ## 状态
 
-**设计基线 v2.1（2026-08-19）**。R0-R5、MEMORY_SPEC M1-M8、VISION、GUI 全部实现并提交：
+**设计基线 v2.2（2026-08-19）**。R0-R5、MEMORY_SPEC M1-M8、VISION、GUI 已实现；人格循环已完成专项设计，待按 P-0~P-9 实施：
 
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
@@ -123,6 +124,7 @@ QQ 形态额外启用：定时问候/节庆、离线思考（静默 30 分钟后
 | R4 | 有分寸的在场（场景锁/通道互斥/9 闸门/忽略自愈/visual 只产候选） | ✅ 实现 |
 | R5 | 外部任务协作（workorder/dsh bridge 取消/超时/截断） | ✅ 实现 |
 | MEMORY_SPEC | M1 版本真值 / M2 写入契约 / M3 混合召回 / M4 Context Brief / M5 整理器 / M6 文风学习 / M7 用户控制 / M8 离线评测 | ✅ 实现 |
+| PERSONA LOOP | P0 角色核心 / P1 用户框架 / P2 共同意义 / P3 多维关系 / P4 Persona Brief / P5 反思 / P6 独立回用 / P7 冲突修复 / P8 评测 / P9 PAD+ResponsePlan+表层印记 | 📐 设计完成，待实现 |
 | VISION | 三层感知（L1/L2 禁 LLM、L3 只产 Observation）/敏感窗口/观察预算 | ✅ 实现 |
 | GUI | 状态广播/历史分批/清空确认/立绘锚点布局/交叉淡入/IME/a11y | ✅ 实现 |
 
