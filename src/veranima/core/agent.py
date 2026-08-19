@@ -244,7 +244,7 @@ class Agent:
         # 记忆检索（预算内注入）+ MVP2 附加块（风格/镜像/承诺）+ 打断指令
         query_hint = user_text or "图片"
         extra_blocks = [
-            self.style.params.to_prompt_block(),
+            self.style.to_prompt_block(),  # M-6：参数 + 文风画像合并块
             self.mirror.to_prompt_block(),
             self.promises.to_prompt_block(query_hint=query_hint),
         ]
@@ -359,7 +359,7 @@ class Agent:
         delay = (time.time() - self._last_reply_ts) if self._last_reply_ts else 0.0
         sig = extract_feedback(user_text, reply, prev_reply, delay=delay)
         self._last_reply_ts = time.time()
-        self.style.observe(sig)
+        self.style.observe(sig, user_text)   # M-6：feedback 快变量 + 文风画像慢变量
         self.mirror.observe(user_text)
         self.promises.record(user_text)
         # curator 整理（每 8 轮）+ 持久化（每 20 轮）

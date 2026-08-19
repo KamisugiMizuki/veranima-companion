@@ -240,3 +240,69 @@ def test_history_compaction_failure_truncates(tmp_path):
     a._compact_history()  # 不抛异常
     assert len(a._history) <= 21
     assert a._history[0]["role"] == "user"
+
+
+# ---------- M-6 文风学习（MEMORY_SPEC 13） ----------
+
+def test_style_sample_filter():
+    from veranima.core.learning import is_style_sample
+    assert is_style_sample("我特别喜欢下雨天")
+    assert is_style_sample("好的，那明天见吧")
+    assert not is_style_sample("https://example.com/abc")
+    assert not is_style_sample("```python\nprint(1)\n```")
+    assert not is_style_sample("cd /tmp && ls")
+    assert not is_style_sample("好")  # 太短
+    assert not is_style_sample("！！！？？")  # 纯标点
+
+
+def test_style_profile_matures_and_adapts(tmp_path):
+    from veranima.core.learning import StyleLearner, FeedbackSignal
+    learner = StyleLearner(persist_path=str(tmp_path / "style.json"))
+    # 20 条前不成熟
+    for i in range(10):
+        learner.observe(FeedbackSignal(), "今天天气不错，我们出去走走。")
+    assert not learner.profile.is_mature()
+    assert learner.to_prompt_block() != ""  # 参数块仍在（向后兼容）
+    # 达到 20 条 → 画像生效
+    for i in range(10):
+        learner.observe(FeedbackSignal(), "能不能帮我查一下资料，谢谢。")
+    assert learner.profile.is_mature()
+    block = learner.profile.to_prompt_block()
+    assert "用户交流偏好" in block
+    assert "模仿口癖" in block  # 13.6 防复读声明
+    assert len(block) <= 300
+    # 保存/加载 roundtrip
+    learner.save()
+    learner2 = StyleLearner(persist_path=str(tmp_path / "style.json"))
+    assert learner2.load()
+    assert learner2.profile.sample_count == learner.profile.sample_count
+    # reset 清画像
+    learner2.reset()
+    assert learner2.profile.sample_count == 0
+
+
+def test_style_profile_v1_migration(tmp_path):
+    """旧 style.json（v1 无 profile）→ 加载不崩，参数保留。"""
+    import json
+    from veranima.core.learning import StyleLearner
+    p = tmp_path / "style.json"
+    p.write_text(json.dumps({
+        "params": {"reply_length": 0.7, "formality": 0.4, "humor": 0.6, "topic_follow": 0.5},
+        "bandits": {"reply_length": [0.1, 0.1, 0.1], "formality": [0.0, 0.0, 0.0],
+                    "humor": [0.0, 0.0, 0.0], "topic_follow": [0.0, 0.0, 0.0]},
+        "steps": 30,
+    }, ensure_ascii=False), encoding="utf-8")
+    learner = StyleLearner(persist_path=str(p))
+    assert learner.load()
+    assert learner.params.reply_length == 0.7  # 参数保留
+    assert learner.profile.sample_count == 0  # 画像默认
+
+
+def test_mirror_filters_stopwords(tmp_path):
+    from veranima.core.learning import LanguageMirror
+    m = LanguageMirror(persist_path=str(tmp_path / "m.json"))
+    m.observe("我觉得这个那个其实还行吧")
+    m.observe("我想买一只猫，猫很可爱")
+    top = m.stats()["top"]
+    assert "我想买一" in top  # 内容词保留（2-4 字组）
+    assert "这个" not in top and "那个" not in top  # 停用词被过滤

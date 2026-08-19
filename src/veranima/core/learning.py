@@ -123,10 +123,13 @@ class StyleLearner:
 
     每个参数 = 一个多臂老虎机（3 臂：升/保持/降），按反馈奖励更新；
     最终参数 = EMA 平滑 + bandit 倾向微调。保守演化：单步变化有上限。
+    M-6（MEMORY_SPEC 13）：profile 为慢变量（用户文风统计），feedback 为快变量，
+    两个来源分别记录，prompt 合并为 UserStyleBrief。
     """
 
     def __init__(self, params: StyleParams | None = None, *, persist_path: str | None = None):
         self.params = params or StyleParams()
+        self.profile = UserStyleProfile()
         self.persist_path = persist_path
         # 每个参数一个 3 臂计数（升/降/保持的累计奖励）
         self._bandits: dict[str, list[float]] = {p: [0.0, 0.0, 0.0] for p in STYLE_PARAMS}
@@ -134,8 +137,8 @@ class StyleLearner:
 
     # ---------- 学习 ----------
 
-    def observe(self, signal: FeedbackSignal) -> dict:
-        """用一轮反馈更新参数。返回变更摘要。"""
+    def observe(self, signal: FeedbackSignal, user_text: str | None = None) -> dict:
+        """用一轮反馈更新参数（快变量）+ 用户文风画像（慢变量）。返回变更摘要。"""
         self._steps += 1
         reward = signal.reward
         delta: dict[str, float] = {}
@@ -159,7 +162,23 @@ class StyleLearner:
                 delta[p] = round(new_v - self.params.__dict__[p], 4)
             self.params.__dict__[p] = new_v
 
-        return {"steps": self._steps, "delta": delta, "reward": round(reward, 2)}
+        # M-6 慢变量：用户文风画像（仅合格样本）
+        if user_text and is_style_sample(user_text):
+            self.profile.observe(user_text)
+
+        return {"steps": self._steps, "delta": delta, "reward": round(reward, 2),
+                "style_samples": self.profile.sample_count}
+
+    def to_prompt_block(self) -> str:
+        """M-6（MEMORY_SPEC 13.5/13.6）：稳定画像摘要 + 风格参数合并为 UserStyleBrief。
+
+        画像不成熟时只注入参数块（向后兼容）。
+        """
+        param_block = self.params.to_prompt_block()
+        profile_block = self.profile.to_prompt_block()
+        if not profile_block:
+            return param_block
+        return param_block + "\n\n" + profile_block
 
     def _rule_targets(self, s: FeedbackSignal) -> dict[str, int]:
         """规则 → 各参数目标方向（-1 降 / 0 保持 / +1 升）。"""
@@ -178,8 +197,16 @@ class StyleLearner:
 
     # ---------- 持久化与回滚 ----------
 
+    SCHEMA_VERSION = 2  # M-6：style.json 版本（v1 无 profile → 迁移）
+
     def snapshot(self) -> dict:
-        return {"params": self.params.snapshot(), "bandits": self._bandits, "steps": self._steps}
+        return {
+            "schema_version": self.SCHEMA_VERSION,
+            "params": self.params.snapshot(),
+            "bandits": self._bandits,
+            "steps": self._steps,
+            "profile": self.profile.snapshot(),
+        }
 
     def save(self) -> None:
         if not self.persist_path:
@@ -196,28 +223,205 @@ class StyleLearner:
                 self.params.__dict__[p] = float(data["params"][p])
                 self._bandits[p] = [float(x) for x in data["bandits"][p]]
             self._steps = int(data["steps"])
+            # M-6：v1 旧文件无 profile → 默认值迁移（缺字段用默认）
+            prof = data.get("profile", {})
+            for k, v in prof.items():
+                if hasattr(self.profile, k) and isinstance(v, (int, float, str)):
+                    setattr(self.profile, k, v)
             return True
         except Exception as e:
             logger.warning("style learner load failed: %s", e)
             return False
 
     def reset(self) -> None:
-        """reset --style：恢复默认参数（核心人格不受影响）。"""
+        """reset --style：恢复默认参数与画像（核心人格不受影响）。"""
         self.params = StyleParams()
+        self.profile = UserStyleProfile()
         self._bandits = {p: [0.0, 0.0, 0.0] for p in STYLE_PARAMS}
         self._steps = 0
         if self.persist_path:
             Path(self.persist_path).unlink(missing_ok=True)
 
 
+# ---------- M-6 用户文风画像（MEMORY_SPEC 13） ----------
+
+# 排除样本：命令/代码/URL/引用/太短/纯标点
+STYLE_SAMPLE_EXCLUDE = (
+    "http://", "https://", "```", "git ", "cd ", "pip ", "npm ", "python ",
+    "def ", "import ", "C:\\", "D:\\", "SELECT ", "INSERT ", "curl ", "mkdir ",
+    "rm ", "cp ", "mv ", "cat ", "echo ",
+)
+
+
+def is_style_sample(user_text: str) -> bool:
+    """MEMORY_SPEC 13.2：只有合格自然消息进入文风统计。"""
+    if not user_text or len(user_text.strip()) < 4:
+        return False
+    t = user_text.strip()
+    if any(k in t.lower() for k in STYLE_SAMPLE_EXCLUDE):
+        return False
+    # 纯标点/符号（无中文无字母无数字）
+    return any(ch.isalnum() or "\u4e00" <= ch <= "\u9fff" for ch in t)
+
+
+@dataclass
+class UserStyleProfile:
+    """MEMORY_SPEC 13.3：稳定文风统计画像（聚合值，不保存原文）。"""
+
+    sample_count: int = 0
+    char_count: int = 0
+    avg_message_chars: float = 0.0
+    avg_sentence_chars: float = 0.0
+    question_ratio: float = 0.0
+    newline_ratio: float = 0.0
+    emoji_ratio: float = 0.0
+    exclamation_ratio: float = 0.0
+    ellipsis_ratio: float = 0.0
+    parenthetical_ratio: float = 0.0
+    ascii_ratio: float = 0.0
+    japanese_ratio: float = 0.0
+    formality: float = 0.5
+    directness: float = 0.5
+    detail_preference: float = 0.5
+    confidence: float = 0.0
+    updated_at: str = ""
+
+    EMA_ALPHA = 0.05        # MEMORY_SPEC 13.4：慢速演化
+    MAX_STEP = 0.02         # 单轮最大变化
+    MIN_SAMPLES = 20        # 画像生效所需样本数
+
+    def observe(self, text: str, *, now: str | None = None) -> None:
+        """单条合格样本 → EMA 更新聚合统计（13.4：单轮变化有上限）。"""
+        from datetime import datetime, timezone
+
+        t = text.strip()
+        n = self.sample_count
+        new_count = n + 1
+        total_chars = self.char_count + len(t)
+        self.avg_message_chars = total_chars / new_count
+        # 句子平均：按中文句号/问号/叹号/换行切分
+        sentences = [s for s in re.split(r"[。！？!?\n]", t) if s.strip()]
+        if sentences:
+            avg_s = sum(len(s) for s in sentences) / len(sentences)
+            self.avg_sentence_chars = self.avg_sentence_chars + (avg_s - self.avg_sentence_chars) * self.EMA_ALPHA
+        # 比率类：EMA 平滑
+        q = (t.count("？") + t.count("?")) / max(1, len(t))
+        nl = t.count("\n") / max(1, len(t))
+        emoji = len(re.findall(r"[\U0001F000-\U0001FAFF\u2600-\u27BF]", t)) / max(1, len(t))
+        ex = (t.count("！") + t.count("!")) / max(1, len(t))
+        paren = (t.count("（") + t.count("(")) / max(1, len(t))
+        ascii_ = sum(1 for ch in t if ord(ch) < 128 and ch.isalnum()) / max(1, len(t))
+        jp = len(re.findall(r"[\u3040-\u30ff]", t)) / max(1, len(t))
+        # 正式度：敬语/礼貌词密度（"请/麻烦/谢谢/您"）
+        polite = sum(t.count(w) for w in ("请", "麻烦", "谢谢", "您", "是否", "能否")) / max(1, len(t))
+        # 直接度：命令式/结论先行（祈使词 + 短句比例）
+        imperative = sum(t.count(w) for w in ("帮我", "给我", "直接", "尽快", "赶紧", "记得")) / max(1, len(t))
+        short_sentence = sum(1 for s in sentences if len(s) <= 8) / max(1, len(sentences))
+        ell = (t.count("…") + t.count("...")) / max(1, len(t) / 3)
+
+        def ema(old: float, new: float) -> float:
+            step = (new - old) * self.EMA_ALPHA
+            step = max(-self.MAX_STEP, min(self.MAX_STEP, step))
+            return max(0.0, min(1.0, old + step))
+
+        self.question_ratio = ema(self.question_ratio, q)
+        self.newline_ratio = ema(self.newline_ratio, nl)
+        self.emoji_ratio = ema(self.emoji_ratio, emoji)
+        self.exclamation_ratio = ema(self.exclamation_ratio, ex)
+        self.ellipsis_ratio = ema(self.ellipsis_ratio, min(1.0, ell))
+        self.parenthetical_ratio = ema(self.parenthetical_ratio, paren)
+        self.ascii_ratio = ema(self.ascii_ratio, ascii_)
+        self.japanese_ratio = ema(self.japanese_ratio, jp)
+        self.formality = ema(self.formality, min(1.0, polite * 8))
+        self.directness = ema(self.directness, min(1.0, imperative * 8 + short_sentence * 0.5))
+        # 展开偏好：平均长度 > 60 字符 → 偏好详细
+        self.detail_preference = ema(self.detail_preference, 1.0 if self.avg_message_chars > 60 else 0.0)
+        self.sample_count = new_count
+        self.char_count = total_chars
+        self.confidence = min(1.0, new_count / self.MIN_SAMPLES)
+        self.updated_at = now or datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    def is_mature(self) -> bool:
+        """13.4：至少 MIN_SAMPLES 条合格样本才生效。"""
+        return self.sample_count >= self.MIN_SAMPLES and self.confidence >= 0.3
+
+    def to_prompt_block(self) -> str:
+        """13.6 契约：注入稳定画像摘要（非数值表），≤300 字符。"""
+        if not self.is_mature():
+            return ""
+        parts: list[str] = []
+        # 长度偏好
+        if self.avg_message_chars < 15:
+            parts.append("习惯用很短的句子")
+        elif self.avg_message_chars < 40:
+            parts.append("通常用中短句")
+        elif self.avg_message_chars < 80:
+            parts.append("会用较长的叙述")
+        else:
+            parts.append("习惯大段展开")
+        if self.question_ratio > 0.15:
+            parts.append("爱提问，期望得到回应")
+        if self.emoji_ratio > 0.03:
+            parts.append("偶尔用 emoji")
+        if self.parenthetical_ratio > 0.03:
+            parts.append("常用括号补充说明")
+        if self.formality > 0.6:
+            parts.append("语气偏正式")
+        elif self.formality < 0.3:
+            parts.append("语气很随意")
+        if self.directness > 0.6:
+            parts.append("说话直接、结论先行")
+        if self.detail_preference > 0.6:
+            parts.append("愿意听详细说明")
+        elif self.detail_preference < 0.35:
+            parts.append("偏好简短回应")
+        if not parts:
+            return ""
+        joined = "、".join(parts)
+        block = (
+            f"【用户交流偏好】{joined}。\n"
+            "请在保持角色自身说话方式的前提下适度适应，不要模仿口癖或复述用户句子。"
+        )
+        return block[:300]
+
+    def snapshot(self) -> dict:
+        return {
+            "sample_count": self.sample_count,
+            "char_count": self.char_count,
+            "avg_message_chars": round(self.avg_message_chars, 2),
+            "avg_sentence_chars": round(self.avg_sentence_chars, 2),
+            "question_ratio": round(self.question_ratio, 4),
+            "newline_ratio": round(self.newline_ratio, 4),
+            "emoji_ratio": round(self.emoji_ratio, 4),
+            "exclamation_ratio": round(self.exclamation_ratio, 4),
+            "ellipsis_ratio": round(self.ellipsis_ratio, 4),
+            "parenthetical_ratio": round(self.parenthetical_ratio, 4),
+            "ascii_ratio": round(self.ascii_ratio, 4),
+            "japanese_ratio": round(self.japanese_ratio, 4),
+            "formality": round(self.formality, 4),
+            "directness": round(self.directness, 4),
+            "detail_preference": round(self.detail_preference, 4),
+            "confidence": round(self.confidence, 4),
+            "updated_at": self.updated_at,
+        }
+
+
 # ---------- 语言镜像 ----------
 
 MIRROR_TOP_N = 5          # 最多镜像多少个词
 MIRROR_MAX_USES = 3       # 单个词使用上限（防刻意）
+# M-6 镜像过滤（MEMORY_SPEC 13.7）：停用词/内容词不镜像
+MIRROR_STOPWORDS = {
+    "这个", "那个", "什么", "怎么", "我们", "你们", "他们", "自己", "时候",
+    "今天", "明天", "昨天", "现在", "就是", "还是", "因为", "所以", "但是",
+    "然后", "觉得", "知道", "可以", "应该", "没有", "一个", "一下", "有点",
+}
+# 敏感词（不进入镜像/画像）
+MIRROR_SENSITIVE = {"密码", "验证码", "卡号", "私钥", "密钥", "token", "password"}
 
 
 class LanguageMirror:
-    """用户高频词统计，偶尔自然沿用（带使用上限）。"""
+    """用户高频词统计，偶尔自然沿用（带使用上限 + M-6 停用词/敏感词过滤）。"""
 
     def __init__(self, *, persist_path: str | None = None):
         self._counter: dict[str, int] = {}
@@ -225,9 +429,13 @@ class LanguageMirror:
         self.persist_path = persist_path
 
     def observe(self, user_text: str) -> None:
-        """统计用户消息中的中文双字词（粗略：连续 2-4 字片段）。"""
+        """统计用户消息中的候选词（M-6：过滤停用词/敏感词/过短片段/内容实体）。"""
         words = re.findall(r"[\u4e00-\u9fff]{2,4}", user_text)
         for w in words:
+            if w in MIRROR_STOPWORDS or w in MIRROR_SENSITIVE:
+                continue
+            if w in user_text and w.count(w[0]) == len(w):
+                continue  # 重复字片段（"好好好"）
             self._counter[w] = self._counter.get(w, 0) + 1
 
     def pick(self, n: int = 1) -> list[str]:
