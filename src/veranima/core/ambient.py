@@ -270,11 +270,16 @@ class ProactiveGate:
         logger.debug("proactive generation failed: %s", candidate.reason)
 
     def note_ignored(self, source: str) -> None:
-        """R4_SPEC 4：连续两次未响应 → 同源冷却翻倍。"""
+        """R4_SPEC 4 忽略反馈：连续忽略 → 同源冷却翻倍（退避）。"""
         n = self._ignored_streak.get(source, 0) + 1
         self._ignored_streak[source] = n
         if n >= 2:
             logger.info("proactive ignored %d× (source=%s), backoff active", n, source)
+
+    def note_responded(self, source: str) -> None:
+        """R4_SPEC 4 响应反馈：用户回应了主动消息 → 重置忽略计数。"""
+        if source:
+            self._ignored_streak[source] = 0
 
     def pause(self) -> None:
         """用户明确"不想被打扰"：立即暂停直到用户主动恢复。"""

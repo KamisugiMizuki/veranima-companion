@@ -43,6 +43,20 @@ class TurnResult:
     reply_obj: object = None  # R2 统一 Reply（adapter 逐步消费；TurnResult 字段保留兼容）
 
 
+@dataclass(frozen=True)
+class TurnContext:
+    """DESIGN 4.1 统一协议：一轮对话的输入上下文。"""
+
+    channel: Literal["im", "tts"]
+    user_text: str
+    images: tuple[str, ...] = ()
+    scene: str = "normal"
+    current_time: str = ""
+    state: dict = field(default_factory=dict)
+    recalled_memories: tuple[dict, ...] = ()
+    active_focus: dict | None = None
+
+
 def _interrupt_prompt(level: int) -> str:
     """R0 打断指令（R0_SPEC 5）：L1 轻推 / L2 转移+新出口，收尾协议。
 
@@ -252,6 +266,16 @@ class Agent:
         if scene != "normal":
             logger.info("scene active: %s", scene)
 
+        # DESIGN 4.1 TurnContext：统一输入协议（handle 内部构造，adapter 签名不变）
+        ctx = TurnContext(
+            channel=channel,
+            user_text=user_text or "",
+            images=tuple(images or []),
+            scene=scene,
+            current_time=time.strftime("%Y-%m-%dT%H:%M:%S"),
+            state=self.state.to_snapshot(),
+        )
+
         # 1.6 R0 打断决策：话题复现计数 → L0-L3 分级（R0_SPEC 5）
         topic_count = self.topic_freq.note(user_text)
         interrupt_level = self.interrupt_decider.decide(topic_count)
@@ -274,6 +298,7 @@ class Agent:
         system = build_system_prompt(
             self.card, self.state, self.memory,
             core_profile_budget=self.config.get("memory", {}).get("core_profile_budget", 1200),
+            procedural_budget=self.config.get("memory", {}).get("procedural_budget", 1000),
             section_budget=self.config.get("memory", {}).get("section_budget", 2400),
             session_budget=self.config.get("memory", {}).get("session_budget", 600),
             channel=channel,
@@ -399,8 +424,16 @@ class Agent:
         except Exception as e:
             logger.warning("candidate memory extraction failed (non-blocking): %s", e)
 
+        # 9.4 MEMORY_SPEC 6.2：Reply.memory_candidates 低置信候选（仍需程序校验）
+        try:
+            self._store_llm_candidates(turn_reply, user_msg_id=user_msg_id)
+        except Exception as e:
+            logger.warning("llm candidate store failed (non-blocking): %s", e)
+
         # 9.5 状态持久化（重启续接）
         self._persist_state()
+        logger.debug("turn done: channel=%s scene=%s images=%d state=%s",
+                     ctx.channel, ctx.scene, len(ctx.images), ctx.state.get("mood"))
 
         # 9.6 MEMORY_SPEC 9 历史压缩（超长时摘要最旧部分）
         try:
@@ -550,6 +583,27 @@ class Agent:
                     })
                 break
         return candidates
+
+    def _store_llm_candidates(self, reply_obj, *, user_msg_id: int) -> None:
+        """MEMORY_SPEC 6.2：Reply.memory_candidates → 程序校验 → 写入（LLM 不直连 SQL）。"""
+        if reply_obj is None or not getattr(reply_obj, "memory_candidates", None):
+            return
+        for mc in reply_obj.memory_candidates:
+            if not isinstance(mc, dict):
+                continue
+            try:
+                cand = {
+                    "kind": mc.get("kind", "user_fact"),
+                    "content": mc.get("content") or mc.get("text") or "",
+                    "confidence": float(mc.get("confidence", 0.5)),
+                    "importance": float(mc.get("importance", 0.5)),
+                    "source": "llm_extract",
+                    "source_message_id": user_msg_id,
+                    "needs_confirmation": True,  # LLM 候选默认低置信待确认
+                }
+                self._store_candidate(cand)
+            except Exception as e:
+                logger.warning("llm candidate store failed (non-blocking): %s", e)
 
     def _store_candidate(self, cand: dict) -> None:
         """校验 → 去重 → 写入/版本链（R1_SPEC 1.2/3，MEMORY_SPEC 5-8）。"""

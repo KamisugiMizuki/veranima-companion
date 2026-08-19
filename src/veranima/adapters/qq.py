@@ -173,6 +173,16 @@ class QQAdapter:
                 self.agent.activity.touch("qq")
             except Exception:
                 pass
+            # R4_SPEC 4 忽略自愈：用户来消息 → 最近主动反馈标记 responded + 重置忽略
+            try:
+                fb = self.agent.memory.recent_proactive_feedback(limit=3)
+                pending = [f for f in fb if not f["responded"]]
+                if pending:
+                    src = pending[-1]["source"]
+                    self.agent.memory.record_proactive_feedback(source=src, responded=True)
+                    self.agent.gate.note_responded(src)
+            except Exception:
+                pass
             result = await asyncio.to_thread(self.agent.handle, text, [d for d, _ in images], channel="im")
         self._last_user_activity = time.time()
         if result.reply:
@@ -325,6 +335,11 @@ class QQAdapter:
                 else:
                     if self.proactive:
                         for msg in self.agent.tick_proactive():
+                            # R4_SPEC 4：主动反馈记录（用户回应由 on_message 标记）
+                            try:
+                                self.agent.memory.record_proactive_feedback(source="ritual")
+                            except Exception:
+                                pass
                             self._send_to_all(loop, msg)
                         self._flush_pending_proactive(loop)
                     if self.offline is not None:
@@ -377,6 +392,11 @@ class QQAdapter:
             msg = self.agent.heartbeat()
         if msg:
             logger.info("offline think reply: %s", msg[:60])
+            # R4_SPEC 4：离线主动反馈记录（用户回应由 on_message 标记）
+            try:
+                self.agent.memory.record_proactive_feedback(source="offline")
+            except Exception:
+                pass
             self._send_to_all(loop, msg)
 
     def _send_to_all(self, loop: asyncio.AbstractEventLoop, msg: str) -> None:

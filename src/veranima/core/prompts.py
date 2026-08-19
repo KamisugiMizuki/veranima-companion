@@ -76,6 +76,7 @@ def build_system_prompt(
     memory: MemoryStore,
     *,
     core_profile_budget: int = 1200,
+    procedural_budget: int = 1000,   # MEMORY_SPEC 10.4：procedural 独立预算
     section_budget: int = 1600,
     session_budget: int = 600,
     extra_blocks: list[str] | None = None,
@@ -99,43 +100,30 @@ def build_system_prompt(
         bilingual = bool(((card.veranima or {}).get("bilingual") or {}).get("enabled"))
         parts.append(BILINGUAL_OUTPUT_INSTRUCTION if bilingual else SEGMENTED_OUTPUT_INSTRUCTION)
 
-    # core_profile + procedural：全量（预算内）
-    for layer, label in (("core_profile", LAYER_LABELS["core_profile"]), ("procedural", LAYER_LABELS["procedural"])):
-        entries = memory.list_layer(layer, limit=50)
-        if not entries:
-            continue
-        texts = [e.content for e in entries]
-        budget = core_profile_budget if layer == "core_profile" else section_budget
-        joined = "\n".join(texts)
-        if len(joined) > budget:
-            joined = joined[:budget] + "…"
-        parts.append(label + "\n" + joined)
-
-    # semantic + episodic：检索注入（8.7.2 记得感分级：按 strength 措辞）
+    # E. 相关记忆（MEMORY_SPEC 10.4：Context Brief 统一预算，完整 item 截断）
+    from ..memory.brief import build_brief, format_brief
     query_hint = _latest_query(memory)
-    if query_hint:
-        for layer, label in (("semantic", LAYER_LABELS["semantic"]), ("episodic", LAYER_LABELS["episodic"])):
-            entries = memory.recall(query_hint, top_k=5, layer=layer)
-            if not entries:
-                continue
-            texts = [format_memory_line(e, clarification=clarification) for e in entries if e.strength >= 0.3]
-            if not texts:
-                continue
-            joined = "\n".join(texts)
-            if len(joined) > section_budget:
-                joined = joined[:section_budget] + "…"
-            parts.append(label + "\n" + joined)
-            # R1 延迟纠错（R1_SPEC 3，prompt 引导）：低确信记忆允许偶发自我修正
-            if any(e.strength < 0.85 for e in entries):
-                parts.append("（你可以偶尔说'等一下，我刚才记错了，应该是……'——人回忆时会有延迟纠错，但不要每轮都用）")
-
-    # session：最近会话摘要（简化：最近对话由历史列表承担，这里注入会话层记忆）
-    session_entries = memory.list_layer("session", limit=10)
-    if session_entries:
-        joined = "\n".join(e.content for e in session_entries)
-        if len(joined) > session_budget:
-            joined = joined[:session_budget] + "…"
-        parts.append("【本次会话】\n" + joined)
+    brief_items = build_brief(
+        core_profile=memory.list_layer("core_profile", limit=20),
+        procedural=memory.list_layer("procedural", limit=20),
+        semantic=memory.recall(query_hint, top_k=5, layer="semantic") if query_hint else [],
+        episodic=memory.recall(query_hint, top_k=5, layer="episodic") if query_hint else [],
+        session=memory.list_layer("session", limit=10),
+        budgets={
+            "core_profile": core_profile_budget,
+            "procedural": procedural_budget,
+            "semantic": section_budget,
+            "episodic": section_budget,
+            "session": session_budget,
+        },
+        total_budget=core_profile_budget + procedural_budget + section_budget * 2 + session_budget,
+    )
+    brief_text = format_brief(brief_items)
+    if brief_text:
+        parts.append(brief_text)
+        # MEMORY_SPEC 11 延迟纠错：仅当注入含低置信条目时允许偶发自我修正
+        if any(it.confidence_label == "低" for it in brief_items):
+            parts.append("（你可以偶尔说'等一下，我刚才记错了，应该是……'——人回忆时会有延迟纠错，但不要每轮都用）")
 
     # 附加块（MVP2：风格参数 / 语言镜像 / 承诺提醒）
     for block in (extra_blocks or []):

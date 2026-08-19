@@ -333,3 +333,55 @@ def test_forget_removes_memory_keeps_messages(tmp_path):
     assert a.list_memories() == []
     assert len(a.memory.recent_messages(10)) == 1  # 原文保留（单独删除）
 
+
+# ---------- 模块联通（DESIGN 4.1 / MEMORY_SPEC 6.2 / R4_SPEC 4） ----------
+
+def test_system_prompt_uses_brief(tmp_path):
+    """build_system_prompt 走 Context Brief（MEMORY_SPEC 10.4 联通）。"""
+    from veranima.core.prompts import build_system_prompt
+    from veranima.core.state import AgentState
+    s = _store(tmp_path)
+    s.store_message("user", "我最近在喝手冲咖啡", 80, "平静")  # 提供查询提示
+    s.store("semantic", "用户喜欢喝手冲咖啡", meta={"kind": "user_fact", "subject": "user"})
+    card = CharacterCard(name="测试卡", veranima={})
+    sp = build_system_prompt(card, AgentState(), s, channel="im")
+    assert "【长期事实】" in sp  # brief 层标签
+    assert "手冲咖啡" in sp
+
+
+def test_turn_context_contract():
+    """DESIGN 4.1 TurnContext 数据契约。"""
+    from veranima.core.agent import TurnContext
+    ctx = TurnContext(channel="im", user_text="你好", images=("a",), scene="normal",
+                      current_time="2026-08-19T10:00:00", state={"mood": "平静"})
+    assert ctx.channel == "im"
+    assert ctx.images == ("a",)
+    assert ctx.scene == "normal"
+
+
+def test_llm_memory_candidates_consumed(tmp_path):
+    """Reply.memory_candidates → validate → 写入（MEMORY_SPEC 6.2 联通）。"""
+    a = _agent_with_memory(tmp_path)
+    from veranima.core.reply import Reply, ReplySegment
+    r = Reply(segments=[ReplySegment(text="嗯")],
+              memory_candidates=[{"kind": "user_fact", "content": "用户喜欢猫", "confidence": 0.5}])
+    a._store_llm_candidates(r, user_msg_id=1)
+    assert any("猫" in e.content for e in a.memory.list_layer("semantic"))
+
+
+def test_proactive_feedback_responded_flow(tmp_path):
+    """R4_SPEC 4：反馈记录 + 响应标记 + 忽略退避链路。"""
+    a = _agent_with_memory(tmp_path)
+    a.memory.record_proactive_feedback(source="attention")
+    a.memory.record_proactive_feedback(source="attention")
+    fb = a.memory.recent_proactive_feedback(limit=3)
+    assert len([f for f in fb if not f["responded"]]) == 2
+    # 用户回应 → responded 标记 + note_responded 重置
+    a.memory.record_proactive_feedback(source="attention", responded=True)
+    a.gate.note_responded("attention")
+    # 连续忽略 → note_ignored 退避
+    a.gate.note_ignored("attention")
+    a.gate.note_ignored("attention")
+    assert a.gate._ignored_streak["attention"] == 2
+
+

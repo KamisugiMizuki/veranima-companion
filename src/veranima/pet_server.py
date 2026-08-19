@@ -293,6 +293,19 @@ class PetServer:
                         continue
                     try:
                         msg_text = str(msg.get("text") or "")
+                        # R4_SPEC 4 忽略自愈：用户来消息 → 最近主动反馈标记 responded；
+                        # 连续 2 条未响应 → 同源退避（note_ignored）
+                        try:
+                            fb = self._agent.memory.recent_proactive_feedback(limit=3)
+                            pending = [f for f in fb if not f["responded"]]
+                            if pending:
+                                self._agent.memory.record_proactive_feedback(
+                                    source=pending[-1]["source"], responded=True)
+                                self._agent.gate.note_responded(pending[-1]["source"])
+                            if len(pending) >= 2:
+                                self._agent.gate.note_ignored(pending[-1]["source"])
+                        except Exception as e:
+                            logger.debug("proactive feedback update failed: %s", e)
                         # R3 整段协议（与 speak 一致）：不再逐句 chunk
                         r = await self._call_agent(msg_text)
                         await self.speak(
@@ -451,6 +464,11 @@ class PetServer:
                                     if proactive:
                                         self._agent.gate.commit(cand)
                                         logger.info("visual: 联想主动发起: %s", proactive[:60])
+                                        # R4_SPEC 4：反馈记录（用户是否回应由 stream_talk 更新）
+                                        try:
+                                            self._agent.memory.record_proactive_feedback(source="attention")
+                                        except Exception as e:
+                                            logger.debug("feedback record failed: %s", e)
                                         await self.speak(proactive, tts_text=ja or None)
                                 except Exception as e:
                                     logger.warning("visual observe inject failed: %s", e)
