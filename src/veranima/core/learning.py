@@ -15,11 +15,37 @@ import math
 import os
 import random
 import re
-import threading
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _file_lock(path: Path):
+    """Serialize style state updates across Agent/CLI processes."""
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as lock:
+        if lock.tell() == 0:
+            lock.write(b"\0")
+            lock.flush()
+        lock.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            lock.seek(0)
+            if os.name == "nt":
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 # ---------- 风格参数（可学习维度） ----------
 
@@ -132,13 +158,6 @@ class StyleLearner:
     两个来源分别记录，prompt 合并为 UserStyleBrief。
     """
 
-    _persist_locks: dict[str, threading.RLock] = {}
-    _persist_locks_guard = threading.Lock()
-
-    def _persist_lock(self):
-        key = str(Path(self.persist_path).resolve()) if self.persist_path else "<memory>"
-        with self._persist_locks_guard:
-            return self._persist_locks.setdefault(key, threading.RLock())
 
     def __init__(self, params: StyleParams | None = None, *, persist_path: str | None = None):
         self.params = params or StyleParams()
@@ -284,11 +303,11 @@ class StyleLearner:
     def save(self) -> None:
         if not self.persist_path:
             return
-        with self._persist_lock():
-            path = Path(self.persist_path)
+        path = Path(self.persist_path)
+        with _file_lock(path):
             self._refresh_activation_from_data(self._read_persisted(), newer_only=True)
             path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp = path.with_suffix(f"{path.suffix}.{os.getpid()}.tmp")
             snapshot = self.snapshot()
             tmp.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
             current = self._read_persisted()

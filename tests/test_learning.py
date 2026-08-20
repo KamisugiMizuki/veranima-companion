@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-import threading
+import subprocess
+import sys
+import time
 
 import pytest
 
@@ -80,38 +82,53 @@ def test_no_feedback_no_drift():
     assert before == after
 
 
-def test_stale_save_cannot_resurrect_cleared_corpus(tmp_path, monkeypatch):
+def test_stale_process_save_cannot_resurrect_cleared_corpus(tmp_path):
     from veranima.core.learning import UserStyleProfile
 
     path = tmp_path / "style.json"
+    entered = tmp_path / "entered"
+    release = tmp_path / "release"
     writer = StyleLearner(persist_path=str(path))
     writer.activate_corpus("private", UserStyleProfile(
         sample_count=20, confidence=1.0, source_id="private", avg_message_chars=80,
     ))
-    stale = StyleLearner(persist_path=str(path))
-    assert stale.load()
-    entered = threading.Event()
-    release = threading.Event()
-    original_read = stale._read_persisted
-
-    def delayed_read():
-        data = original_read()
-        entered.set()
-        release.wait(timeout=2)
-        return data
-
-    monkeypatch.setattr(stale, "_read_persisted", delayed_read)
-    thread = threading.Thread(target=stale.save)
-    thread.start()
-    assert entered.wait(timeout=1)
+    code = f'''from pathlib import Path
+import time
+from veranima.core.learning import StyleLearner
+stale = StyleLearner(persist_path={str(path)!r})
+assert stale.load()
+Path({str(entered)!r}).touch()
+deadline = time.time() + 5
+while not Path({str(release)!r}).exists() and time.time() < deadline:
+    time.sleep(0.01)
+stale.save()
+'''
+    child = subprocess.Popen([sys.executable, "-c", code])
+    deadline = time.time() + 5
+    while not entered.exists() and time.time() < deadline:
+        time.sleep(0.01)
+    assert entered.exists()
     writer.clear_corpus("private")
-    release.set()
-    thread.join(timeout=2)
+    release.touch()
+    assert child.wait(timeout=5) == 0
 
     final = StyleLearner(persist_path=str(path))
     assert final.load()
     assert final.active_corpus_id == ""
     assert final.activation_revision >= 2
+
+
+def test_two_processes_can_save_same_style_file_without_tmp_collision(tmp_path):
+    path = tmp_path / "style.json"
+    StyleLearner(persist_path=str(path)).save()
+    code = f'''from veranima.core.learning import StyleLearner
+learner = StyleLearner(persist_path={str(path)!r})
+assert learner.load()
+learner.save()
+'''
+    children = [subprocess.Popen([sys.executable, "-c", code]) for _ in range(2)]
+    assert [child.wait(timeout=5) for child in children] == [0, 0]
+    assert StyleLearner(persist_path=str(path)).load()
 
 
 # ---------- 语言镜像 ----------
