@@ -13,19 +13,26 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ipaddress
 import logging
 import random
+import socket
 import threading
 import time
+from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 import httpx
 
 from aiocqhttp import CQHttp, Event, Message
 
 from ..core.agent import Agent
+from ..core.image_payload import ImagePayloadError, make_image_payload, payload_from_data_url
 from ..core.render import render_im
 
 logger = logging.getLogger(__name__)
+_FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
+_DEFAULT_QQ_IMAGE_HOSTS = ("multimedia.nt.qq.com",)
 
 
 class OfflineThinkTimer:
@@ -124,6 +131,10 @@ class QQAdapter:
         proactive_delay_minutes: int = 5,
         sticker_library=None,  # StickerLibrary | None；None = 表情包功能关闭
         agent_lock: asyncio.Lock | None = None,
+        image_roots: list[str | Path] | None = None,
+        max_image_bytes: int = 10 * 1024 * 1024,
+        trusted_image_proxy: bool = False,
+        image_proxy_hosts: list[str] | tuple[str, ...] = (),
     ):
         self.agent = agent
         self.ws_host = ws_host
@@ -136,6 +147,16 @@ class QQAdapter:
         self.proactive_delay_minutes = max(1, int(proactive_delay_minutes))
         self.stickers = sticker_library  # 8.6.3 表情包库（None = 关闭）
         self._lock = agent_lock or asyncio.Lock()
+        from ..config import ROOT
+        roots = image_roots or [ROOT / "data", ROOT]
+        self.image_roots = tuple(Path(p).resolve() for p in roots)
+        self.max_image_bytes = max(1024, int(max_image_bytes))
+        self.trusted_image_proxy = bool(trusted_image_proxy)
+        proxy_hosts = image_proxy_hosts or _DEFAULT_QQ_IMAGE_HOSTS
+        self.image_proxy_hosts = tuple(
+            str(host).strip().lower().rstrip(".") for host in proxy_hosts if str(host).strip()
+        )
+        self._sticker_tasks: set[asyncio.Task] = set()
         self._last_user_activity: float | None = None
         self._pending_proactive: str | None = None  # 延迟主动消息（对话静默后发送）
         self.bot = CQHttp(access_token=access_token or None, message_class=Message)
@@ -165,9 +186,6 @@ class QQAdapter:
         if self._pending_proactive:
             logger.info("pending proactive discarded (user active again): %s", self._pending_proactive[:60])
             self._pending_proactive = None
-        # 8.6.3 表情包入库：没见过的图 → LLM 标注 → 入库（后台线程，不阻塞回复）
-        if images:
-            await asyncio.to_thread(self._ingest_stickers, [raw for _, raw in images])
         # 串行处理：agent 内部状态（历史/记忆/学习）有顺序依赖，禁止并发写
         async with self._lock:
             # R4 通道互斥（DESIGN 5.4）：QQ 消息到达 → 记 QQ 通道活跃（桌宠感知降功耗）
@@ -207,25 +225,61 @@ class QQAdapter:
                 "qq=%s << (主动-pending, %dmin 后发) %s",
                 uid, self.proactive_delay_minutes, result.proactive_msg[:60],
             )
+        if images:
+            self._schedule_sticker_ingest(images)
 
-    def _ingest_stickers(self, raw_images: list[bytes]) -> None:
+    def _schedule_sticker_ingest(self, images: list[tuple[str, bytes]]) -> None:
+        """回复发送后再标注；复用 Agent 锁，避免与对话 LLM 并发。"""
+        if self.stickers is None:
+            return
+
+        async def run() -> None:
+            async with self._lock:
+                await asyncio.to_thread(self._ingest_stickers, images)
+
+        task = asyncio.create_task(run())
+        self._sticker_tasks.add(task)
+
+        def done(finished: asyncio.Task) -> None:
+            self._sticker_tasks.discard(finished)
+            if not finished.cancelled() and finished.exception():
+                logger.warning("sticker background ingest failed: %s", finished.exception())
+
+        task.add_done_callback(done)
+
+    def _ingest_stickers(self, images: list[tuple[str, bytes]] | list[bytes]) -> None:
         """8.6.3 表情包入库：没见过的 → LLM 标注 → 存库。
 
         判重用 dHash（同图不同尺寸/压缩也识别）；标注失败不强行入库。
         """
         if self.stickers is None:
             return
-        for raw in raw_images:
+        for item in images:
             try:
+                raw = item[1] if isinstance(item, tuple) else item
                 if self.stickers.find_similar(raw):
                     continue  # 见过，不重复入库
-                from ..core.agent import _data_url_from_bytes
-                data_url = _data_url_from_bytes(raw)
-                meta = self.agent.annotate_sticker(data_url)
-                if meta:
-                    self.stickers.add(raw, **meta)
+                if isinstance(item, tuple):
+                    data_url, raw = item
+                    payload = self._payload_from_download_result(data_url, raw)
+                else:
+                    raw = item
+                    payload = make_image_payload(raw, source="qq")
+                    data_url = payload.data_url
+                if payload.animated:
+                    continue  # 动图只给当前轮 LLM，不进入长期表情库
+                meta = self.agent.annotate_sticker(payload.data_url)
+                if meta and meta.get("is_sticker") is True:
+                    meta = {k: v for k, v in meta.items() if k in ("meaning", "moods", "scenarios")}
+                    self.stickers.add_payload(payload, **meta)
             except Exception as e:
                 logger.debug("sticker ingest failed: %s", e)
+
+    @staticmethod
+    def _payload_from_download_result(data_url: str, raw: bytes):
+        """Revalidate downloader output at the adapter boundary."""
+        ctype = str(data_url).split(";", 1)[0].removeprefix("data:")
+        return make_image_payload(raw, content_type=ctype, source="qq:http")
 
     def _pick_sticker_for_reply(self, reply: str) -> str | None:
         """8.6.3 表情包输出：按回复情绪宽松匹配，返回本地文件路径或 None。
@@ -235,14 +289,17 @@ class QQAdapter:
         if self.stickers is None or len(self.stickers) == 0:
             return None
         mood = self._reply_mood(reply)
-        if not mood:
+        scenario = reply[:120]
+        if not mood and not scenario:
             return None
-        cands = self.stickers.find_for_mood(mood, limit=3)
+        finder = getattr(self.stickers, "find_for_context", None)
+        cands = finder(mood or "", scenario, limit=3) if finder else self.stickers.find_for_mood(mood, limit=3)
         if not cands:
             return None
         entry = cands[0]
         self.stickers.record_use(entry)
-        return str(self.stickers.root / entry.file)
+        path_for = getattr(self.stickers, "path_for", None)
+        return str(path_for(entry) if path_for else self.stickers.root / entry.file)
 
     @staticmethod
     def _reply_mood(reply: str) -> str | None:
@@ -272,38 +329,147 @@ class QQAdapter:
         msg = event.get("message", "")
         if not isinstance(msg, Message):
             return []
-        urls = []
+        segments = []
         for seg in msg:
             if seg.get("type") != "image":
                 continue
             data = seg.get("data") or {}
-            url = data.get("url") or ""
-            # 只认 http(s) url；file 只是本地文件名（如 ab.png），不是可下载地址
-            if url.startswith(("http://", "https://")):
-                urls.append(url)
-        if not urls:
+            segments.append(data)
+        if not segments:
             return []
-        results = await asyncio.gather(
-            *(asyncio.to_thread(self._download_image, u) for u in urls)
-        )
+        if len(segments) > 4:
+            logger.warning("qq image limit: dropped %d images", len(segments) - 4)
+            segments = segments[:4]
+        results = await asyncio.gather(*(self._payload_from_segment(data) for data in segments))
         ok = [r for r in results if r]
-        if len(ok) < len(urls):
-            logger.warning("image download failed: %d/%d images dropped", len(urls) - len(ok), len(urls))
-        return [(data_url, raw) for data_url, raw in ok]
+        if len(ok) < len(segments):
+            logger.warning("image resolve failed: %d/%d images dropped", len(segments) - len(ok), len(segments))
+        return [(payload.data_url, payload.raw) for payload in ok]
 
-    @staticmethod
-    def _download_image(url: str) -> tuple[str, bytes] | None:
-        """下载图片为 (data_url, raw_bytes)。失败返回 None（降级纯文本）。"""
+    async def _payload_from_segment(self, data: dict, *, _allow_lookup: bool = True):
+        """Resolve OneBot image data: data URL, HTTP URL, local file/path, get_image API."""
+        refs = [data.get("url"), data.get("path"), data.get("file")]
+        for ref in refs:
+            if not ref:
+                continue
+            ref = str(ref)
+            try:
+                if ref.startswith("data:"):
+                    return payload_from_data_url(ref, source="qq:data")
+                if ref.startswith(("http://", "https://")):
+                    result = await asyncio.to_thread(self._download_image, ref)
+                    if result:
+                        return self._payload_from_download_result(result[0], result[1])
+                local = self._resolve_local_image(ref)
+                if local:
+                    return make_image_payload(local.read_bytes(), source="qq:file")
+            except (OSError, ImagePayloadError):
+                continue
+        # NapCat may expose only a file id; ask OneBot for the actual path/URL.
+        file_ref = data.get("file") or data.get("path")
+        call_action = getattr(self.bot, "call_action", None)
+        if _allow_lookup and file_ref and callable(call_action):
+            try:
+                result = await call_action("get_image", file=str(file_ref))
+                info = (result or {}).get("data", result or {})
+                if isinstance(info, dict):
+                    return await self._payload_from_segment({
+                        "url": info.get("url"), "path": info.get("path"), "file": info.get("file")
+                    }, _allow_lookup=False)
+            except Exception as exc:
+                logger.debug("OneBot get_image failed: %s", exc)
+        return None
+
+    def _resolve_local_image(self, value: str) -> Path | None:
+        """Resolve an existing local image without accepting traversal under configured roots."""
+        raw = unquote(str(value))
+        if raw.startswith("file://"):
+            raw = urlparse(raw).path
+        candidates = []
+        path = Path(raw)
+        if path.is_absolute():
+            candidates.append(path)
+        else:
+            candidates.extend(root / raw for root in self.image_roots)
+            candidates.extend(root / path.name for root in self.image_roots)
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+                if not resolved.is_file():
+                    continue
+                if not any(resolved == root or resolved.is_relative_to(root) for root in self.image_roots):
+                    continue
+                if resolved.stat().st_size > self.max_image_bytes:
+                    continue
+                if resolved.suffix.lower() not in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
+                    continue
+                return resolved
+            except OSError:
+                continue
+        return None
+
+    def _pinned_http_url(self, url: str) -> tuple[str, str, str] | None:
+        """Resolve once; only an explicit QQ-CDN fake-IP exception may skip IP pinning."""
         try:
-            with httpx.Client(timeout=15) as client:
-                resp = client.get(url)
-                resp.raise_for_status()
-            ctype = resp.headers.get("content-type", "image/jpeg")
-            if not ctype.startswith("image/"):
+            parsed = urlparse(url)
+            if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
                 return None
-            import base64
-            b64 = base64.b64encode(resp.content).decode()
-            return f"data:{ctype};base64,{b64}", resp.content
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            hostname = parsed.hostname.encode("idna").decode("ascii").lower().rstrip(".")
+            try:
+                addresses = [ipaddress.ip_address(hostname)]
+            except ValueError:
+                addresses = [
+                    ipaddress.ip_address(info[4][0].split("%", 1)[0])
+                    for info in socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+                ]
+            default_port = 443 if parsed.scheme == "https" else 80
+            host_header = hostname if port == default_port else f"{hostname}:{port}"
+            if addresses and all(address.is_global for address in addresses):
+                address = sorted(set(addresses), key=lambda item: (item.version, item.packed))[0]
+                ip_host = f"[{address}]" if address.version == 6 else str(address)
+                return parsed._replace(netloc=f"{ip_host}:{port}").geturl(), hostname, host_header
+            proxy_host_allowed = any(
+                hostname == allowed or hostname.endswith(f".{allowed}")
+                for allowed in self.image_proxy_hosts
+            )
+            if (
+                self.trusted_image_proxy and proxy_host_allowed and addresses
+                and all(address in _FAKE_IP_NETWORK for address in addresses)
+            ):
+                return parsed._replace(netloc=f"{hostname}:{port}").geturl(), hostname, host_header
+            return None
+        except (OSError, UnicodeError, ValueError):
+            return None
+
+    def _download_image(self, url: str) -> tuple[str, bytes] | None:
+        """下载图片为 (data_url, raw_bytes)。连接固定到校验过的公网 IP。"""
+        pinned = self._pinned_http_url(url)
+        if not pinned:
+            logger.warning("blocked unsafe image URL: %s", url[:80])
+            return None
+        pinned_url, sni_hostname, host_header = pinned
+        try:
+            with httpx.Client(timeout=15, follow_redirects=False) as client:
+                with client.stream(
+                    "GET", pinned_url, headers={"Host": host_header},
+                    extensions={"sni_hostname": sni_hostname},
+                ) as resp:
+                    resp.raise_for_status()
+                    size = int(resp.headers.get("content-length") or 0)
+                    if size > self.max_image_bytes:
+                        return None
+                    body = bytearray()
+                    for chunk in resp.iter_bytes():
+                        body.extend(chunk)
+                        if len(body) > self.max_image_bytes:
+                            return None
+            payload = make_image_payload(
+                bytes(body),
+                content_type=resp.headers.get("content-type", "").split(";", 1)[0],
+                source="qq:http",
+            )
+            return payload.data_url, payload.raw
         except Exception as e:
             logger.debug("image download failed (%s): %s", url[:80], e)
             return None
@@ -333,6 +499,14 @@ class QQAdapter:
             background.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await background
+            tasks = list(self._sticker_tasks)
+            if tasks:
+                workers = asyncio.gather(*tasks, return_exceptions=True)
+                try:
+                    await asyncio.shield(workers)
+                except asyncio.CancelledError:
+                    await workers
+                    raise
 
     async def _bg_loop_async(self, stop: asyncio.Event) -> None:
         """同进程模式的主动循环；所有 Agent 调用共享 self._lock。"""

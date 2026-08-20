@@ -118,6 +118,60 @@ def _create_cmd(args) -> int:
     return 1
 
 
+def _style_cmd(args) -> int:
+    """离线 Style Learning：本地语料 → 抽样复核 → 聚合画像。"""
+    import json
+    from pathlib import Path
+    from .core.learning import StyleLearner
+    from .core.style_corpus import StyleCorpusStore
+
+    root = Path(load_config().get("root", "."))
+    store = StyleCorpusStore(root / "data" / "style_corpora")
+    learner = StyleLearner(persist_path=str(root / "data" / "style.json"))
+    learner.load()
+    try:
+        if args.style_action == "import":
+            manifest = store.ingest(
+                args.corpus_id, args.files, source=args.source, owner=args.owner,
+                license=args.license, consent=args.consent,
+                delete_scope=args.delete_scope, retention_until=args.retention_until,
+                replace=args.replace,
+            )
+            print(json.dumps({"corpus_id": args.corpus_id, **manifest["stats"]}, ensure_ascii=False))
+            return 0
+        if args.style_action == "review-export":
+            queue = store.export_review(args.corpus_id, limit=args.limit)
+            print(f"已导出 {len(queue)} 条复核样本: {store.review_path(args.corpus_id).resolve()}")
+            return 0
+        if args.style_action == "review-apply":
+            print(json.dumps(store.apply_reviews(args.corpus_id), ensure_ascii=False))
+            return 0
+        if args.style_action == "activate":
+            profile = store.activate(args.corpus_id, learner)
+            print(json.dumps(profile.snapshot(), ensure_ascii=False))
+            return 0
+        if args.style_action == "deactivate":
+            if not store.deactivate(args.corpus_id, learner):
+                print(f"语料集不存在: {args.corpus_id}", file=sys.stderr)
+                return 1
+            print(f"已停用风格画像，语料集保留为 preview: {args.corpus_id}")
+            return 0
+        if args.style_action == "status":
+            for manifest in store.status(args.corpus_id):
+                print(json.dumps(manifest, ensure_ascii=False))
+            return 0
+        if args.style_action == "delete":
+            if not store.delete(args.corpus_id, learner):
+                print(f"语料集不存在: {args.corpus_id}", file=sys.stderr)
+                return 1
+            print(f"已删除语料集及运行时画像: {args.corpus_id}")
+            return 0
+    except (ValueError, FileNotFoundError, FileExistsError, json.JSONDecodeError) as exc:
+        print(f"Style Learning 操作失败: {exc}", file=sys.stderr)
+        return 1
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -134,12 +188,39 @@ def main(argv: list[str] | None = None) -> int:
     cp = sub.add_parser("create", help="共同创作")
     cp.add_argument("create_action", choices=["list", "project", "scene", "decision", "artifact", "thread", "confirm"])
     cp.add_argument("args", nargs="*")
+    sp = sub.add_parser("style", help="离线文风语料处理与复核")
+    style_sub = sp.add_subparsers(dest="style_action", required=True)
+    si = style_sub.add_parser("import", help="导入并自动清洗/分句/弱标注")
+    si.add_argument("corpus_id")
+    si.add_argument("files", nargs="+")
+    si.add_argument("--source", required=True)
+    si.add_argument("--owner", required=True)
+    si.add_argument("--license", required=True)
+    si.add_argument("--consent", action="store_true", help="确认有权在本地分析这些文本")
+    si.add_argument("--retention-until", default="")
+    si.add_argument("--delete-scope", choices=["corpus"], default="corpus")
+    si.add_argument("--replace", action="store_true")
+    se = style_sub.add_parser("review-export", help="导出少量代表/冲突样本")
+    se.add_argument("corpus_id")
+    se.add_argument("--limit", type=int, default=24)
+    sa = style_sub.add_parser("review-apply", help="应用人工 accept/reject 复核")
+    sa.add_argument("corpus_id")
+    sx = style_sub.add_parser("activate", help="质量门禁通过后启用聚合画像")
+    sx.add_argument("corpus_id")
+    sdx = style_sub.add_parser("deactivate", help="停用聚合画像但保留语料集")
+    sdx.add_argument("corpus_id")
+    ss = style_sub.add_parser("status", help="查看语料集状态")
+    ss.add_argument("corpus_id", nargs="?")
+    sd = style_sub.add_parser("delete", help="删除语料集并撤销其运行时画像")
+    sd.add_argument("corpus_id")
     args = ap.parse_args(argv)
 
     if args.cmd == "roles":
         return _roles_cmd(args)
     if args.cmd == "task":
         return _task_cmd(args)
+    if args.cmd == "style":
+        return _style_cmd(args)
     if args.cmd == "create":
         if args.create_action == "list" and not args.args:
             pass

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from veranima.core.learning import (
@@ -78,6 +80,40 @@ def test_no_feedback_no_drift():
     assert before == after
 
 
+def test_stale_save_cannot_resurrect_cleared_corpus(tmp_path, monkeypatch):
+    from veranima.core.learning import UserStyleProfile
+
+    path = tmp_path / "style.json"
+    writer = StyleLearner(persist_path=str(path))
+    writer.activate_corpus("private", UserStyleProfile(
+        sample_count=20, confidence=1.0, source_id="private", avg_message_chars=80,
+    ))
+    stale = StyleLearner(persist_path=str(path))
+    assert stale.load()
+    entered = threading.Event()
+    release = threading.Event()
+    original_read = stale._read_persisted
+
+    def delayed_read():
+        data = original_read()
+        entered.set()
+        release.wait(timeout=2)
+        return data
+
+    monkeypatch.setattr(stale, "_read_persisted", delayed_read)
+    thread = threading.Thread(target=stale.save)
+    thread.start()
+    assert entered.wait(timeout=1)
+    writer.clear_corpus("private")
+    release.set()
+    thread.join(timeout=2)
+
+    final = StyleLearner(persist_path=str(path))
+    assert final.load()
+    assert final.active_corpus_id == ""
+    assert final.activation_revision >= 2
+
+
 # ---------- 语言镜像 ----------
 
 def test_mirror_counts_and_pick():
@@ -120,4 +156,32 @@ def test_reset_restores_default(tmp_path):
     learner.reset()
     assert learner.params.snapshot() == StyleParams().snapshot()
     assert learner._steps == 0
-    assert not learner.load()  # 文件已删
+    assert learner.load()  # 保留带 activation revision 的空快照，阻止旧进程复活
+
+
+def test_style_load_rejects_future_schema_without_partial_mutation(tmp_path):
+    import json
+
+    path = tmp_path / "style.json"
+    learner = StyleLearner(persist_path=str(path))
+    learner.params.reply_length = 0.23
+    payload = learner.snapshot()
+    payload["schema_version"] = 999
+    payload["params"]["reply_length"] = 0.91
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert not learner.load()
+    assert learner.params.reply_length == 0.23
+
+
+def test_style_load_rejects_malformed_profile_without_partial_mutation(tmp_path):
+    import json
+
+    path = tmp_path / "style.json"
+    learner = StyleLearner(persist_path=str(path))
+    learner.params.reply_length = 0.23
+    payload = learner.snapshot()
+    payload["params"]["reply_length"] = 0.91
+    payload["profile"]["sample_count"] = "many"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert not learner.load()
+    assert learner.params.reply_length == 0.23

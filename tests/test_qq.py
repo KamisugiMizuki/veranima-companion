@@ -16,6 +16,7 @@ from aiocqhttp import Message
 from veranima.adapters.qq import OfflineThinkTimer, QQAdapter
 from veranima.core.agent import Agent, TurnResult
 from veranima.core.character import CharacterCard
+from veranima.core.image_payload import make_image_payload
 from veranima.core.state import AgentState
 from veranima.memory.store import MemoryStore
 
@@ -80,6 +81,15 @@ def run(coro):
     return asyncio.run(coro)
 
 
+def run_and_drain(adapter, coro):
+    async def wrapped():
+        await coro
+        pending = list(getattr(adapter, "_sticker_tasks", ()))
+        if pending:
+            await asyncio.gather(*pending)
+    return asyncio.run(wrapped())
+
+
 # ---------- 白名单 ----------
 
 def test_non_whitelist_ignored(adapter, agent):
@@ -105,6 +115,17 @@ def test_whitelist_str_and_int(agent):
     """白名单支持字符串/数字混写。"""
     a = QQAdapter(agent, allowed_qq=[10001, "20002"])
     assert a.allowed == {"10001", "20002"}
+
+
+def test_build_adapter_wires_trusted_image_proxy(agent):
+    from veranima.qq import build_adapter
+
+    built = build_adapter({"qq": {
+        "enabled": True, "allowed_qq": [10001], "trusted_image_proxy": True,
+        "image_proxy_hosts": ["multimedia.nt.qq.com"],
+    }}, agent)
+    assert built is not None and built.trusted_image_proxy
+    assert built.image_proxy_hosts == ("multimedia.nt.qq.com",)
 
 
 # ---------- 文本提取 ----------
@@ -135,7 +156,7 @@ def test_image_message_with_url_passed_to_handle(adapter, agent, monkeypatch):
     """带 http url 的图片消息：下载为 data URL 传给 handle（8.6.2）。"""
     monkeypatch.setattr(
         QQAdapter, "_download_image",
-        staticmethod(lambda url: ("data:image/png;base64,QUJD", b"raw")),
+        lambda self, url: _image_tuple(),
     )
     seen = {}
 
@@ -150,19 +171,141 @@ def test_image_message_with_url_passed_to_handle(adapter, agent, monkeypatch):
          "message": Message("[CQ:image,file=a.png,url=http://127.0.0.1:8099/img/1.png]看看这张")}
     ))
     assert seen["text"] == "看看这张"
-    assert seen["images"] == ["data:image/png;base64,QUJD"]
+    assert seen["images"][0].startswith("data:image/png;base64,")
     assert adapter.bot.sent == [("send", "看到了")]
+
+
+def test_qq_image_message_is_capped_at_four(adapter, agent, monkeypatch):
+    monkeypatch.setattr(QQAdapter, "_download_image", lambda self, url: _image_tuple())
+    seen = {}
+
+    def spy(text, images=None, channel="im"):
+        seen["images"] = images
+        return TurnResult(reply="收到", energy=80, mood="平静")
+
+    agent.handle = spy
+    cq = "".join(f"[CQ:image,file={i}.png,url=https://example.com/{i}.png]" for i in range(5))
+    run(adapter._handle_private({
+        "user_id": 10001, "message_type": "private", "message": Message(cq),
+    }))
+    assert len(seen["images"]) == 4
 
 
 def test_image_download_failure_falls_back_to_text(adapter, agent, monkeypatch):
     """图片下载失败：降级为纯文本对话，不阻塞（8.6.4 边界）。"""
-    monkeypatch.setattr(QQAdapter, "_download_image", staticmethod(lambda url: None))
+    monkeypatch.setattr(QQAdapter, "_download_image", lambda self, url: None)
     agent.handle = lambda text, images=None, channel="im": TurnResult(reply="文字也能聊", energy=80, mood="平静")
     run(adapter._handle_private(
         {"user_id": 10001, "message_type": "private",
          "message": Message("[CQ:image,file=a.png,url=http://127.0.0.1:8099/img/x.png]你好")}
     ))
     assert adapter.bot.sent == [("send", "文字也能聊")]
+
+
+def test_local_image_must_stay_under_configured_roots(agent, tmp_path):
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    inside = allowed / "inside.png"
+    outside = tmp_path / "outside.png"
+    inside.write_bytes(_png_bytes())
+    outside.write_bytes(_png_bytes())
+    local_adapter = QQAdapter(agent, allowed_qq=[10001], image_roots=[allowed])
+
+    assert local_adapter._resolve_local_image(str(inside)) == inside.resolve()
+    assert local_adapter._resolve_local_image(str(outside)) is None
+    assert local_adapter._resolve_local_image(str(allowed / ".." / "outside.png")) is None
+
+
+def test_get_image_response_cannot_recurse_forever(adapter):
+    calls = 0
+
+    async def call_action(action, **kwargs):
+        nonlocal calls
+        calls += 1
+        return {"data": {"file": kwargs["file"]}}
+
+    adapter.bot.call_action = call_action
+    assert run(adapter._payload_from_segment({"file": "loop.png"})) is None
+    assert calls == 1
+
+
+def test_private_http_image_is_rejected_before_network(adapter, monkeypatch):
+    called = False
+
+    class Client:
+        def __init__(self, *args, **kwargs):
+            pass
+        def __enter__(self):
+            nonlocal called
+            called = True
+            return self
+        def __exit__(self, *args):
+            return False
+        def get(self, url):
+            raise AssertionError("private URL must not reach httpx")
+
+    monkeypatch.setattr("veranima.adapters.qq.httpx.Client", Client)
+    assert adapter._download_image("http://127.0.0.1/private.png") is None
+    assert not called
+
+
+def test_fake_ip_requires_explicit_proxy_and_qq_cdn_allowlist(agent, adapter, monkeypatch):
+    monkeypatch.setattr(
+        "veranima.adapters.qq.socket.getaddrinfo",
+        lambda *args, **kwargs: [(2, 1, 6, "", ("198.18.2.135", 443))],
+    )
+    url = "https://multimedia.nt.qq.com/download/image.png"
+    assert adapter._pinned_http_url(url) is None
+
+    trusted = QQAdapter(
+        agent, allowed_qq=[10001], trusted_image_proxy=True,
+        image_proxy_hosts=["multimedia.nt.qq.com"],
+    )
+    pinned = trusted._pinned_http_url(url)
+    assert pinned and pinned[0] == "https://multimedia.nt.qq.com:443/download/image.png"
+    assert trusted._pinned_http_url("https://evil.example/image.png") is None
+
+
+def test_http_image_uses_streaming_size_guard(adapter, monkeypatch):
+    stream_called = False
+    streamed = {}
+
+    class Response:
+        headers = {"content-type": "image/png", "content-length": str(10 * 1024 * 1024 + 1)}
+        def raise_for_status(self):
+            return None
+        def iter_bytes(self):
+            raise AssertionError("oversized content-length must reject before body read")
+
+    class Stream:
+        def __enter__(self):
+            return Response()
+        def __exit__(self, *args):
+            return False
+
+    class Client:
+        def __init__(self, *args, **kwargs):
+            pass
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+        def stream(self, method, url, **kwargs):
+            nonlocal stream_called
+            stream_called = True
+            streamed.update(method=method, url=url, **kwargs)
+            return Stream()
+
+    monkeypatch.setattr("veranima.adapters.qq.httpx.Client", Client)
+    monkeypatch.setattr(
+        "veranima.adapters.qq.socket.getaddrinfo",
+        lambda *args, **kwargs: [(2, 1, 6, "", ("93.184.216.34", 443))],
+    )
+    assert adapter._download_image("https://example.com/too-large.png") is None
+    assert stream_called
+    assert streamed["url"] == "https://93.184.216.34:443/too-large.png"
+    assert streamed["headers"] == {"Host": "example.com"}
+    assert streamed["extensions"] == {"sni_hostname": "example.com"}
 
 
 # ---------- 8.6.3 表情包库 ----------
@@ -175,6 +318,11 @@ def _png_bytes() -> bytes:
     return buf.getvalue()
 
 
+def _image_tuple() -> tuple[str, bytes]:
+    payload = make_image_payload(_png_bytes())
+    return payload.data_url, payload.raw
+
+
 def test_sticker_ingest_new_image(adapter, agent, tmp_path, monkeypatch):
     """没见过的新图：LLM 标注 → 入库（adapter 层链路）。"""
     from veranima.core.stickers import StickerLibrary
@@ -182,11 +330,11 @@ def test_sticker_ingest_new_image(adapter, agent, tmp_path, monkeypatch):
     adapter.stickers = lib
     raw = _png_bytes()
     monkeypatch.setattr(QQAdapter, "_download_image",
-                        staticmethod(lambda url: ("data:image/png;base64,QUJD", raw)))
+                        lambda self, url: _image_tuple())
     monkeypatch.setattr(agent, "annotate_sticker",
-                        lambda data_url: {"meaning": "红色", "moods": ["开心"], "scenarios": ["测试"]})
+                        lambda data_url: {"is_sticker": True, "meaning": "红色", "moods": ["开心"], "scenarios": ["测试"]})
     agent.handle = lambda text, images=None, channel="im": TurnResult(reply="看到图了", energy=80, mood="平静")
-    run(adapter._handle_private(
+    run_and_drain(adapter, adapter._handle_private(
         {"user_id": 10001, "message_type": "private",
          "message": Message("[CQ:image,file=a.png,url=http://127.0.0.1:8099/img/1.png]")}
     ))
@@ -202,14 +350,77 @@ def test_sticker_ingest_duplicate_skipped(adapter, agent, tmp_path, monkeypatch)
     raw = _png_bytes()
     lib.add(raw, meaning="已有", moods=["开心"])
     monkeypatch.setattr(QQAdapter, "_download_image",
-                        staticmethod(lambda url: ("data:image/png;base64,QUJD", raw)))
+                        lambda self, url: _image_tuple())
     monkeypatch.setattr(agent, "annotate_sticker", lambda data_url: (_ for _ in ()).throw(AssertionError("不应标注已见过的图")))
     agent.handle = lambda text, images=None, channel="im": TurnResult(reply="嗯", energy=80, mood="平静")
-    run(adapter._handle_private(
+    run_and_drain(adapter, adapter._handle_private(
         {"user_id": 10001, "message_type": "private",
          "message": Message("[CQ:image,file=a.png,url=http://127.0.0.1:8099/img/1.png]")}
     ))
     assert len(lib) == 1
+
+
+def test_sticker_annotation_does_not_block_first_reply(adapter, agent, tmp_path, monkeypatch):
+    import threading
+    from veranima.core.stickers import StickerLibrary
+
+    adapter.stickers = StickerLibrary(root=tmp_path / "stickers")
+    monkeypatch.setattr(QQAdapter, "_download_image", lambda self, url: _image_tuple())
+    started = threading.Event()
+    release = threading.Event()
+
+    def annotate(data_url):
+        started.set()
+        release.wait(timeout=2)
+        return {"is_sticker": True, "meaning": "慢标注", "moods": ["开心"], "scenarios": ["测试"]}
+
+    agent.annotate_sticker = annotate
+    agent.handle = lambda text, images=None, channel="im": TurnResult(reply="先回复", energy=80, mood="平静")
+
+    async def scenario():
+        task = asyncio.create_task(adapter._handle_private({
+            "user_id": 10001,
+            "message_type": "private",
+            "message": Message("[CQ:image,file=a.png,url=https://example.com/a.png]"),
+        }))
+        try:
+            assert await asyncio.to_thread(started.wait, 1)
+            await asyncio.sleep(0.02)
+            completed_before_release = task.done()
+            sent_before_release = list(adapter.bot.sent)
+        finally:
+            release.set()
+            await task
+            pending = list(getattr(adapter, "_sticker_tasks", ()))
+            if pending:
+                await asyncio.gather(*pending)
+        return completed_before_release, sent_before_release
+
+    completed, sent = asyncio.run(scenario())
+    assert completed
+    assert sent == [("send", "先回复")]
+    assert len(adapter.stickers) == 1
+
+
+def test_run_task_waits_for_background_sticker_worker_on_exit(adapter):
+    async def scenario():
+        async def stopped_bot(**kwargs):
+            return None
+
+        async def worker():
+            async with adapter._lock:
+                await asyncio.to_thread(time.sleep, 0.03)
+                return "finished"
+
+        adapter.bot.run_task = stopped_bot
+        sticker_task = asyncio.create_task(worker())
+        adapter._sticker_tasks.add(sticker_task)
+        await adapter.run_task()
+        assert sticker_task.done() and not sticker_task.cancelled()
+        assert sticker_task.result() == "finished"
+        assert not adapter._lock.locked()
+
+    asyncio.run(scenario())
 
 
 def test_sticker_sent_on_happy_reply(adapter, agent, tmp_path):

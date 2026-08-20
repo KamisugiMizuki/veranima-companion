@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import random
 import re
 from dataclasses import dataclass, field
@@ -33,12 +34,15 @@ class StyleParams:
     humor: float = 0.3          # 0=严肃 1=爱开玩笑
     topic_follow: float = 0.5   # 0=自说自话 1=紧跟用户话题
 
-    def to_prompt_block(self) -> str:
+    def to_prompt_block(self, length_override: str = "") -> str:
         def desc(v: float, low: str, mid: str, high: str) -> str:
             return low if v < 0.33 else high if v > 0.66 else mid
+        length_text = {
+            "short": "简短回应", "normal": "中等长度", "long": "可以详细展开",
+        }.get(length_override, desc(self.reply_length, "简短回应", "中等长度", "可以详细展开"))
         return (
             "【风格参数（学习所得，自然遵循即可，不必刻意）】\n"
-            f"- 回复长度：{desc(self.reply_length, '简短回应', '中等长度', '可以详细展开')}\n"
+            f"- 回复长度：{length_text}\n"
             f"- 语气：{desc(self.formality, '随意放松', '日常自然', '正式礼貌')}\n"
             f"- 幽默感：{desc(self.humor, '认真为主', '偶尔轻松', '喜欢开玩笑')}\n"
             f"- 话题跟随：{desc(self.topic_follow, '按自己节奏', '跟随用户话题', '紧紧跟随用户说的内容')}"
@@ -130,6 +134,9 @@ class StyleLearner:
     def __init__(self, params: StyleParams | None = None, *, persist_path: str | None = None):
         self.params = params or StyleParams()
         self.profile = UserStyleProfile()
+        self.corpus_profile = UserStyleProfile()
+        self.active_corpus_id = ""
+        self.activation_revision = 0
         self.persist_path = persist_path
         # 每个参数一个 3 臂计数（升/降/保持的累计奖励）
         self._bandits: dict[str, list[float]] = {p: [0.0, 0.0, 0.0] for p in STYLE_PARAMS}
@@ -169,16 +176,70 @@ class StyleLearner:
         return {"steps": self._steps, "delta": delta, "reward": round(reward, 2),
                 "style_samples": self.profile.sample_count}
 
-    def to_prompt_block(self) -> str:
-        """M-6（MEMORY_SPEC 13.5/13.6）：稳定画像摘要 + 风格参数合并为 UserStyleBrief。
-
-        画像不成熟时只注入参数块（向后兼容）。
-        """
-        param_block = self.params.to_prompt_block()
-        profile_block = self.profile.to_prompt_block()
-        if not profile_block:
+    def to_prompt_block(self, channel: str = "im", length_override: str = "") -> str:
+        """M-6：快变量参数 + 受控 StyleBrief；离线画像不会覆盖在线画像。"""
+        param_block = self.params.to_prompt_block(length_override)
+        brief = self.build_style_brief(channel, length_override)
+        if not brief:
             return param_block
-        return param_block + "\n\n" + profile_block
+        return param_block + "\n\n" + brief.to_prompt_block()
+
+    def build_style_brief(self, channel: str = "im", length_override: str = "") -> StyleBrief | None:
+        """只输出聚合表达参数；显式启用的离线语料优先。"""
+        self.enforce_retention()
+        profile = self.corpus_profile if self.active_corpus_id and self.corpus_profile.is_mature() else self.profile
+        instructions = profile.to_prompt_block(channel=channel, length_override=length_override)
+        if not instructions:
+            return None
+        return StyleBrief(
+            source_id=self.active_corpus_id or "online-observation",
+            channel=channel,
+            confidence=profile.confidence,
+            instructions=instructions,
+        )
+
+    def activate_corpus(self, corpus_id: str, profile: UserStyleProfile) -> None:
+        if not corpus_id or not profile.is_mature():
+            raise ValueError("离线风格画像未达到启用门槛")
+        self.refresh_activation()
+        previous = self.active_corpus_id, self.corpus_profile, self.activation_revision
+        self.active_corpus_id = corpus_id
+        self.corpus_profile = profile
+        self.activation_revision += 1
+        try:
+            self.save()
+        except Exception:
+            self.active_corpus_id, self.corpus_profile, self.activation_revision = previous
+            raise
+
+    def preferred_length(self, channel: str = "im") -> str:
+        self.enforce_retention()
+        profile = self.corpus_profile if self.active_corpus_id and self.corpus_profile.is_mature() else self.profile
+        if profile.is_mature():
+            if profile.detail_preference < 0.35 or profile.avg_message_chars < 20:
+                value = "short"
+            elif profile.detail_preference > 0.6 or profile.avg_message_chars > 80:
+                value = "long"
+            else:
+                value = "normal"
+        else:
+            value = "short" if self.params.reply_length < 0.33 else "long" if self.params.reply_length > 0.66 else "normal"
+        return "normal" if channel == "tts" and value == "long" else value
+
+    def clear_corpus(self, corpus_id: str | None = None) -> bool:
+        self.refresh_activation()
+        if corpus_id and corpus_id != self.active_corpus_id:
+            return False
+        previous = self.active_corpus_id, self.corpus_profile, self.activation_revision
+        self.active_corpus_id = ""
+        self.corpus_profile = UserStyleProfile()
+        self.activation_revision += 1
+        try:
+            self.save()
+        except Exception:
+            self.active_corpus_id, self.corpus_profile, self.activation_revision = previous
+            raise
+        return True
 
     def _rule_targets(self, s: FeedbackSignal) -> dict[str, int]:
         """规则 → 各参数目标方向（-1 降 / 0 保持 / +1 升）。"""
@@ -197,7 +258,7 @@ class StyleLearner:
 
     # ---------- 持久化与回滚 ----------
 
-    SCHEMA_VERSION = 2  # M-6：style.json 版本（v1 无 profile → 迁移）
+    SCHEMA_VERSION = 3  # v3：显式离线 corpus_profile，在线 profile 保持独立
 
     def snapshot(self) -> dict:
         return {
@@ -206,41 +267,157 @@ class StyleLearner:
             "bandits": self._bandits,
             "steps": self._steps,
             "profile": self.profile.snapshot(),
+            "corpus_profile": self.corpus_profile.snapshot(),
+            "active_corpus_id": self.active_corpus_id,
+            "activation_revision": self.activation_revision,
         }
 
     def save(self) -> None:
         if not self.persist_path:
             return
-        Path(self.persist_path).parent.mkdir(parents=True, exist_ok=True)
-        Path(self.persist_path).write_text(json.dumps(self.snapshot(), ensure_ascii=False), encoding="utf-8")
+        path = Path(self.persist_path)
+        self._refresh_activation_from_data(self._read_persisted(), newer_only=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        snapshot = self.snapshot()
+        tmp.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+        current = self._read_persisted()
+        if int(current.get("activation_revision") or 0) > int(snapshot["activation_revision"]):
+            tmp.unlink(missing_ok=True)
+            return
+        os.replace(tmp, path)
 
     def load(self) -> bool:
         if not self.persist_path or not Path(self.persist_path).exists():
             return False
         try:
             data = json.loads(Path(self.persist_path).read_text(encoding="utf-8"))
-            for p in STYLE_PARAMS:
-                self.params.__dict__[p] = float(data["params"][p])
-                self._bandits[p] = [float(x) for x in data["bandits"][p]]
-            self._steps = int(data["steps"])
-            # M-6：v1 旧文件无 profile → 默认值迁移（缺字段用默认）
-            prof = data.get("profile", {})
-            for k, v in prof.items():
-                if hasattr(self.profile, k) and isinstance(v, (int, float, str)):
-                    setattr(self.profile, k, v)
+            version = int(data.get("schema_version", 1))
+            if version not in {1, 2, 3}:
+                raise ValueError(f"unsupported style schema_version: {version}")
+            params = StyleParams()
+            bandits: dict[str, list[float]] = {}
+            for name in STYLE_PARAMS:
+                setattr(params, name, float(data["params"][name]))
+                values = [float(value) for value in data["bandits"][name]]
+                if len(values) != 3:
+                    raise ValueError(f"invalid bandit arms: {name}")
+                bandits[name] = values
+            steps = int(data["steps"])
+            def parse_profile(raw: object) -> UserStyleProfile:
+                if raw is not None and not isinstance(raw, dict):
+                    raise ValueError("invalid style profile")
+                result = UserStyleProfile()
+                for key, value in (raw or {}).items():
+                    if not hasattr(result, key):
+                        continue
+                    default = getattr(result, key)
+                    if isinstance(default, str):
+                        if not isinstance(value, str):
+                            raise ValueError(f"invalid style profile field: {key}")
+                        parsed = value
+                    elif isinstance(default, int):
+                        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                            raise ValueError(f"invalid style profile field: {key}")
+                        parsed = value
+                    else:
+                        if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
+                            raise ValueError(f"invalid style profile field: {key}")
+                        parsed = float(value)
+                    setattr(result, key, parsed)
+                return result
+
+            profile = parse_profile(data.get("profile"))
+            corpus_profile = parse_profile(data.get("corpus_profile"))
+            active_corpus_id = str(data.get("active_corpus_id") or "")
+            activation_revision = int(data.get("activation_revision") or 0)
+
+            self.params = params
+            self._bandits = bandits
+            self._steps = steps
+            self.profile = profile
+            self.corpus_profile = corpus_profile
+            self.active_corpus_id = active_corpus_id
+            self.activation_revision = activation_revision
             return True
         except Exception as e:
             logger.warning("style learner load failed: %s", e)
             return False
 
+    def _read_persisted(self) -> dict:
+        if not self.persist_path:
+            return {}
+        path = Path(self.persist_path)
+        if not path.exists():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except Exception as exc:
+            logger.warning("style activation refresh failed: %s", exc)
+            return {}
+
+    def _refresh_activation_from_data(self, data: dict, *, newer_only: bool = False) -> bool:
+        if not data:
+            return False
+        revision = int(data.get("activation_revision") or 0)
+        if revision < self.activation_revision or (newer_only and revision == self.activation_revision):
+            return False
+        profile = UserStyleProfile()
+        for key, value in (data.get("corpus_profile") or {}).items():
+            if hasattr(profile, key) and isinstance(value, (int, float, str)):
+                setattr(profile, key, value)
+        changed = revision != self.activation_revision or str(data.get("active_corpus_id") or "") != self.active_corpus_id
+        self.active_corpus_id = str(data.get("active_corpus_id") or "")
+        self.corpus_profile = profile
+        self.activation_revision = revision
+        return changed
+
+    def refresh_activation(self) -> bool:
+        """读取其他进程的激活变更，但不覆盖本进程尚未保存的在线画像。"""
+        if self.persist_path and not Path(self.persist_path).exists() and self.active_corpus_id:
+            self.active_corpus_id = ""
+            self.corpus_profile = UserStyleProfile()
+            return True
+        return self._refresh_activation_from_data(self._read_persisted())
+
+    def enforce_retention(self) -> bool:
+        self.refresh_activation()
+        if not self.persist_path:
+            return False
+        try:
+            from .style_corpus import StyleCorpusStore
+            return StyleCorpusStore(Path(self.persist_path).parent / "style_corpora").expire_active(self)
+        except Exception as exc:
+            # 到期删除若失败，本轮也不得继续注入过期画像。
+            logger.error("expired style corpus cleanup failed: %s", exc)
+            self.active_corpus_id = ""
+            self.corpus_profile = UserStyleProfile()
+            return False
+
     def reset(self) -> None:
         """reset --style：恢复默认参数与画像（核心人格不受影响）。"""
+        self.refresh_activation()
+        previous = (
+            self.params, self.profile, self.corpus_profile, self.active_corpus_id,
+            self.activation_revision, self._bandits, self._steps,
+        )
+        revision = self.activation_revision + 1
         self.params = StyleParams()
         self.profile = UserStyleProfile()
+        self.corpus_profile = UserStyleProfile()
+        self.active_corpus_id = ""
+        self.activation_revision = revision
         self._bandits = {p: [0.0, 0.0, 0.0] for p in STYLE_PARAMS}
         self._steps = 0
-        if self.persist_path:
-            Path(self.persist_path).unlink(missing_ok=True)
+        try:
+            self.save()
+        except Exception:
+            (
+                self.params, self.profile, self.corpus_profile, self.active_corpus_id,
+                self.activation_revision, self._bandits, self._steps,
+            ) = previous
+            raise
 
 
 # ---------- M-6 用户文风画像（MEMORY_SPEC 13） ----------
@@ -248,7 +425,7 @@ class StyleLearner:
 # 排除样本：命令/代码/URL/引用/太短/纯标点
 STYLE_SAMPLE_EXCLUDE = (
     "http://", "https://", "```", "git ", "cd ", "pip ", "npm ", "python ",
-    "def ", "import ", "C:\\", "D:\\", "SELECT ", "INSERT ", "curl ", "mkdir ",
+    "def ", "import ", "c:\\", "d:\\", "select ", "insert ", "curl ", "mkdir ",
     "rm ", "cp ", "mv ", "cat ", "echo ",
 )
 
@@ -285,6 +462,11 @@ class UserStyleProfile:
     detail_preference: float = 0.5
     confidence: float = 0.0
     updated_at: str = ""
+    source_id: str = ""
+    scene_count: int = 0
+    reviewed_count: int = 0
+    quality_score: float = 0.0
+    profile_version: int = 1
 
     EMA_ALPHA = 0.05        # MEMORY_SPEC 13.4：慢速演化
     MAX_STEP = 0.02         # 单轮最大变化
@@ -300,7 +482,7 @@ class UserStyleProfile:
         total_chars = self.char_count + len(t)
         self.avg_message_chars = total_chars / new_count
         # 句子平均：按中文句号/问号/叹号/换行切分
-        sentences = [s for s in re.split(r"[。！？!?\n]", t) if s.strip()]
+        sentences = [s for s in re.split(r"[。！？!?；;\n]|(?<!\d)\.(?!\d)", t) if s.strip()]
         if sentences:
             avg_s = sum(len(s) for s in sentences) / len(sentences)
             self.avg_sentence_chars = self.avg_sentence_chars + (avg_s - self.avg_sentence_chars) * self.EMA_ALPHA
@@ -345,13 +527,16 @@ class UserStyleProfile:
         """13.4：至少 MIN_SAMPLES 条合格样本才生效。"""
         return self.sample_count >= self.MIN_SAMPLES and self.confidence >= 0.3
 
-    def to_prompt_block(self) -> str:
-        """13.6 契约：注入稳定画像摘要（非数值表），≤300 字符。"""
+    def to_prompt_block(self, channel: str = "im", length_override: str = "") -> str:
+        """聚合 StyleBrief；通道相关，但绝不携带语料原文或作者事实。"""
         if not self.is_mature():
             return ""
         parts: list[str] = []
-        # 长度偏好
-        if self.avg_message_chars < 15:
+        if length_override in {"short", "normal", "long"}:
+            parts.append({
+                "short": "当前偏好简短回应", "normal": "当前偏好中等长度", "long": "当前可以详细展开",
+            }[length_override])
+        elif self.avg_message_chars < 15:
             parts.append("习惯用很短的句子")
         elif self.avg_message_chars < 40:
             parts.append("通常用中短句")
@@ -359,28 +544,29 @@ class UserStyleProfile:
             parts.append("会用较长的叙述")
         else:
             parts.append("习惯大段展开")
-        if self.question_ratio > 0.15:
-            parts.append("爱提问，期望得到回应")
-        if self.emoji_ratio > 0.03:
-            parts.append("偶尔用 emoji")
-        if self.parenthetical_ratio > 0.03:
-            parts.append("常用括号补充说明")
+        if channel != "tts":
+            if self.question_ratio > 0.15:
+                parts.append("爱提问，期望得到回应")
+            if self.emoji_ratio > 0.03:
+                parts.append("偶尔用 emoji")
+            if self.parenthetical_ratio > 0.03:
+                parts.append("常用括号补充说明")
         if self.formality > 0.6:
             parts.append("语气偏正式")
         elif self.formality < 0.3:
             parts.append("语气很随意")
         if self.directness > 0.6:
             parts.append("说话直接、结论先行")
-        if self.detail_preference > 0.6:
+        if not length_override and self.detail_preference > 0.6:
             parts.append("愿意听详细说明")
-        elif self.detail_preference < 0.35:
+        elif not length_override and self.detail_preference < 0.35:
             parts.append("偏好简短回应")
         if not parts:
             return ""
-        joined = "、".join(parts)
         block = (
-            f"【用户交流偏好】{joined}。\n"
-            "请在保持角色自身说话方式的前提下适度适应，不要模仿口癖或复述用户句子。"
+            f"【表达适配】用户交流偏好：{'、'.join(parts)}。\n"
+            "只调整长度、正式度、直接度和节奏；角色核心优先，不要模仿口癖或复述原句，"
+            "不得注入语料作者的事实、身份、经历、立场。"
         )
         return block[:300]
 
@@ -403,7 +589,25 @@ class UserStyleProfile:
             "detail_preference": round(self.detail_preference, 4),
             "confidence": round(self.confidence, 4),
             "updated_at": self.updated_at,
+            "source_id": self.source_id,
+            "scene_count": self.scene_count,
+            "reviewed_count": self.reviewed_count,
+            "quality_score": round(self.quality_score, 4),
+            "profile_version": self.profile_version,
         }
+
+
+@dataclass(frozen=True)
+class StyleBrief:
+    """Runtime-safe style artifact: aggregate instructions only."""
+
+    source_id: str
+    channel: str
+    confidence: float
+    instructions: str
+
+    def to_prompt_block(self) -> str:
+        return self.instructions
 
 
 # ---------- 语言镜像 ----------

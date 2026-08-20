@@ -20,6 +20,11 @@ const avatarFallback = $('avatarFallback');
 const stopReplyButton = $('stopReply');
 const stopSpeakingButton = $('stopSpeaking');
 const muteToggle = $('muteToggle');
+const imagePreview = $('imagePreview');
+const attachImage = $('attachImage');
+const recordAudio = $('recordAudio');
+const MAX_RECORDING_BYTES = 20 * 1024 * 1024;
+const MAX_RECORDING_MS = 120 * 1000;
 
 const STATUS = {
   connecting: { text: '正在连接', tone: 'busy' },
@@ -39,6 +44,8 @@ let activeReply = null;
 let petAvatarSrc = '';
 let renderGeneration = 0;
 let noticeRetry = null;
+let pendingImages = [];
+let recordingSession = null;
 
 function escText(value) { return String(value == null ? '' : value); }
 function timeText(ts) {
@@ -56,6 +63,8 @@ function normalizeMessage(m) {
     status: m.status || 'complete',
     turn_id: m.turn_id || '',
     request_id: m.request_id || '',
+    images: Array.isArray(m.image_data) ? m.image_data.filter((x) => typeof x === 'string') : [],
+    image_refs: Array.isArray(m.images) ? m.images.filter((x) => typeof x === 'string') : [],
   };
 }
 function isNearBottom() {
@@ -93,9 +102,31 @@ function updateComposer() {
   const text = input.value.trim();
   const offline = status === 'offline';
   const busy = status === 'generating' || status === 'speaking';
-  sendButton.disabled = !text || busy;
+  sendButton.disabled = (!text && !pendingImages.length) || busy;
   sendButton.textContent = offline ? '重试连接' : '发送';
   sendButton.title = offline ? '保留输入并重试连接' : '发送消息';
+}
+function renderImagePreview() {
+  imagePreview.textContent = '';
+  imagePreview.hidden = !pendingImages.length;
+  pendingImages.forEach((src, index) => {
+    const item = document.createElement('div'); item.className = 'image-preview-item';
+    const image = document.createElement('img'); image.src = src; image.alt = `待发送图片 ${index + 1}`;
+    const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = '×';
+    remove.title = '移除图片'; remove.setAttribute('aria-label', `移除图片 ${index + 1}`);
+    remove.addEventListener('click', () => { pendingImages.splice(index, 1); renderImagePreview(); updateComposer(); });
+    item.append(image, remove); imagePreview.appendChild(item);
+  });
+}
+function addClipboardImage(file) {
+  if (!file || pendingImages.length >= 4 || file.size > 10 * 1024 * 1024) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    if (typeof reader.result === 'string' && reader.result.startsWith('data:image/')) {
+      pendingImages.push(reader.result); renderImagePreview(); updateComposer();
+    }
+  };
+  reader.readAsDataURL(file);
 }
 function resizeInput() {
   input.style.height = 'auto';
@@ -143,6 +174,15 @@ function renderMessageActions(row, m) {
   actions.appendChild(retry);
   row.querySelector('.message-content').appendChild(actions);
 }
+function renderMessageBubble(bubble, m) {
+  bubble.textContent = m.text;
+  (m.images || []).forEach((src, index) => {
+    if (!src.startsWith('data:image/') && !src.startsWith('file://')) return;
+    const image = document.createElement('img'); image.src = src; image.alt = `消息图片 ${index + 1}`;
+    image.style.cssText = 'display:block;max-width:220px;max-height:180px;margin-top:6px;border-radius:4px;object-fit:contain;';
+    bubble.appendChild(image);
+  });
+}
 function appendMessage(m, { forceScroll = false } = {}) {
   const row = document.createElement('article');
   row.className = `message-row ${m.role} ${m.status}`;
@@ -150,7 +190,7 @@ function appendMessage(m, { forceScroll = false } = {}) {
   const content = document.createElement('div'); content.className = 'message-content';
   const meta = document.createElement('div'); meta.className = 'message-meta';
   meta.textContent = m.role === 'user' ? '我' : ($('charName').textContent || '角色');
-  const bubble = document.createElement('div'); bubble.className = 'message-bubble'; bubble.textContent = m.text;
+  const bubble = document.createElement('div'); bubble.className = 'message-bubble'; renderMessageBubble(bubble, m);
   const state = document.createElement('div'); state.className = 'message-status'; state.textContent = statusLabel(m);
   content.append(meta, bubble, state);
   row.append(makeAvatar(m.role), content);
@@ -164,7 +204,7 @@ function updateRenderedMessage(m) {
   if (!row) { appendMessage(m); return; }
   row.className = `message-row ${m.role} ${m.status}`;
   const state = row.querySelector('.message-status'); if (state) state.textContent = statusLabel(m);
-  const bubble = row.querySelector('.message-bubble'); if (bubble) bubble.textContent = m.text;
+  const bubble = row.querySelector('.message-bubble'); if (bubble) renderMessageBubble(bubble, m);
   renderMessageActions(row, m);
 }
 function renderList(list, { search = false } = {}) {
@@ -251,11 +291,18 @@ function retryMessage(id) {
 async function send() {
   if (composing) return;
   if (status === 'offline') { window.pet.reconnect(); return; }
-  const text = input.value.trim(); if (!text) return;
+  const text = input.value.trim();
+  if (!text && !pendingImages.length) return;
   clearNotice();
-  const result = await window.pet.sendChat(text);
-  if (!result || !result.ok) { showNotice('消息没有送出，输入内容已保留。', () => send()); return; }
-  input.value = ''; resizeInput(); updateComposer();
+  const result = await window.pet.sendChat(text, pendingImages);
+  if (!result || !result.ok) {
+    const failedId = result && result.message && result.message.message_id;
+    if (!failedId) { showNotice('消息没有送出，输入内容已保留。', () => send()); return; }
+    input.value = ''; pendingImages = []; renderImagePreview(); resizeInput(); updateComposer();
+    showNotice('消息没有送出，已保留在聊天记录。', () => retryMessage(failedId));
+    return;
+  }
+  input.value = ''; pendingImages = []; renderImagePreview(); resizeInput(); updateComposer();
 }
 function togglePanel(panel, button) {
   const opening = panel.hidden;
@@ -349,6 +396,88 @@ $('clearChat').addEventListener('click', async () => {
   if (ok) { conversation = []; backToConversation(); }
 });
 muteToggle.addEventListener('click', () => setMute(!muted));
+attachImage.addEventListener('click', () => showNotice('直接在输入框粘贴图片即可。', null));
+input.addEventListener('paste', (event) => {
+  const items = Array.from(event.clipboardData?.items || []);
+  const image = items.find((item) => item.kind === 'file' && item.type.startsWith('image/'));
+  if (!image) return;
+  event.preventDefault(); addClipboardImage(image.getAsFile());
+});
+function cleanupRecording(discard = true) {
+  const session = recordingSession;
+  if (!session) return;
+  session.discard = session.discard || discard;
+  clearTimeout(session.timer);
+  if (session.recorder.state !== 'inactive') session.recorder.stop();
+  if (discard || session.recorder.state === 'inactive') {
+    session.stream.getTracks().forEach((track) => track.stop());
+  }
+  if (session.recorder.state === 'inactive' && recordingSession === session) {
+    recordingSession = null;
+    recordAudio.textContent = '●';
+  }
+}
+
+window.pet.onChatHidden(() => cleanupRecording(true));
+window.addEventListener('pagehide', () => cleanupRecording(true));
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) cleanupRecording(true);
+});
+
+recordAudio.addEventListener('click', async () => {
+  if (recordingSession) { cleanupRecording(false); return; }
+  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+    showNotice('当前环境不支持录音。', null); return;
+  }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    if (document.hidden) { stream.getTracks().forEach((track) => track.stop()); return; }
+    let recorder;
+    try {
+      recorder = new MediaRecorder(stream);
+    } catch (error) {
+      stream.getTracks().forEach((track) => track.stop());
+      throw error;
+    }
+    const session = {
+      recorder, stream, chunks: [], byteCount: 0, tooLarge: false,
+      discard: false, timer: null,
+    };
+    recordingSession = session;
+    const mime = recorder.mimeType || 'audio/webm';
+    session.timer = setTimeout(() => cleanupRecording(false), MAX_RECORDING_MS);
+    recorder.ondataavailable = (event) => {
+      if (!event.data.size) return;
+      session.byteCount += event.data.size;
+      if (session.byteCount > MAX_RECORDING_BYTES) {
+        session.tooLarge = true; cleanupRecording(false); return;
+      }
+      session.chunks.push(event.data);
+    };
+    recorder.onerror = () => {
+      showNotice('录音失败，文字输入仍可用。', null);
+      cleanupRecording(true);
+    };
+    recorder.onstop = async () => {
+      clearTimeout(session.timer);
+      stream.getTracks().forEach((track) => track.stop());
+      if (recordingSession === session) recordingSession = null;
+      recordAudio.textContent = '●';
+      if (session.discard) return;
+      if (session.tooLarge) { showNotice('录音超过 20MB，已停止且未发送。', null); return; }
+      try {
+        const blob = new Blob(session.chunks, { type: mime });
+        const text = await window.pet.transcribeAudio(await blob.arrayBuffer(), 'voice.webm');
+        if (text) { input.value = `${input.value}${input.value ? ' ' : ''}${text}`; resizeInput(); updateComposer(); }
+      } catch { showNotice('语音识别失败，文字输入仍可用。', null); }
+    };
+    recorder.start(1000); recordAudio.textContent = '■'; showNotice('正在录音，再点一次结束（最长 120 秒）。', null);
+  } catch {
+    if (stream) stream.getTracks().forEach((track) => track.stop());
+    showNotice('无法访问麦克风。', null);
+  }
+});
 stopReplyButton.addEventListener('click', () => window.pet.stopReply());
 stopSpeakingButton.addEventListener('click', () => window.pet.stopSpeaking());
 composer.addEventListener('submit', (e) => { e.preventDefault(); send(); });

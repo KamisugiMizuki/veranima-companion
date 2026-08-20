@@ -37,13 +37,19 @@ tts:
   timeout: 60
   segment_mode: whole                   # 整段合成（R2_SPEC 6；分句模式已废弃）
 
-# STT 语音输入（OpenAI 兼容 /v1/audio/transcriptions；未配置 = 未接入，接口就绪模型后接）
+# STT 语音输入：默认本地 SenseVoiceSmall，支持同段中英日混说；中文优先只用于降级策略
 stt:
-  base_url: ""                          # 留空 = STT 关闭；填远程/本地 OpenAI 兼容端点
-  model: "whisper-1"                    # 远程：whisper-1 等；本地：服务对应模型名
-  language: ""                          # 空 = 自动检测；填 zh 固定中文
-  api_key: ""                           # 远程必填；本地服务通常不需要
-  timeout: 60
+  enabled: true
+  base_url: "http://127.0.0.1:9890/v1"
+  model: "sensevoice-small"
+  language: "auto"
+  language_priority: [zh, en, ja]
+  api_key: ""
+  device: "cpu"
+  model_path: "data/models/sensevoice-small"
+  vad_model_path: "tts/gpt-sovits/tools/asr/models/speech_fsmn_vad_zh-cn-16k-common-pytorch"
+  timeout: 120
+  max_audio_bytes: 20971520
 
 # 角色卡（CCv3 兼容 JSON；留空则用内置示例卡）
 character_card: "config/character.json"
@@ -98,6 +104,9 @@ qq:
   ws_port: 8099                         # aiocqhttp 反向 WS 服务端口
   access_token: ""                      # NapCat 若配置了 access_token 则填写
   allowed_qq: []                        # 白名单 QQ 号（1v1：只填你自己的号；空 = 拒绝所有）
+  image_roots: []                       # NapCat 本地图片缓存根目录；空 = 仅项目 data/ 与根目录
+  trusted_image_proxy: false            # Clash fake-IP 用户显式开启；仅下方 QQ CDN allowlist 生效
+  image_proxy_hosts: ["multimedia.nt.qq.com"]
   proactive: true                       # 定时问候 + 节庆纪念（每日去重）
   # 主动消息延迟（分钟）：对话静默满该时长后才发送 turn 内触发的主动消息，
   # 避免"回复 + 主动"双连发（真人不会秒补一句无关话题）

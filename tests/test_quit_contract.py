@@ -17,7 +17,7 @@ def test_all_reusable_windows_allow_real_close_during_quit():
     text = (ROOT / "pet/main.js").read_text(encoding="utf-8")
     assert text.count("if (isQuitting) return;") >= 4
     assert "if (isQuitting) return;\n    e.preventDefault();\n    win.hide();" in text
-    assert "if (isQuitting) return;\n    e.preventDefault();\n    chatWin.hide();" in text
+    assert "if (isQuitting) return;\n    e.preventDefault();\n    chatWin.webContents.send('chat-hidden');\n    chatWin.hide();" in text
 
 
 def test_shutdown_kills_process_tree_before_app_quit():

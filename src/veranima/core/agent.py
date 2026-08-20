@@ -169,6 +169,7 @@ class Agent:
         self.style = StyleLearner(persist_path=str(Path(root) / "data" / "style.json"))
         self.mirror = LanguageMirror(persist_path=str(Path(root) / "data" / "mirror.json"))
         self.style.load()
+        self.style.enforce_retention()
         self.mirror.load()
         self.promises = PromiseBook(memory)
 
@@ -224,6 +225,11 @@ class Agent:
 
     def reset_style(self) -> dict:
         """reset --style：回滚风格参数与镜像（核心人格不受影响）。"""
+        active_corpus_id = self.style.active_corpus_id
+        if active_corpus_id:
+            from .style_corpus import StyleCorpusStore
+            root = Path(self.config.get("root", "."))
+            StyleCorpusStore(root / "data" / "style_corpora").deactivate(active_corpus_id, self.style)
         self.style.reset()
         self.mirror.reset()
         return self.learning_summary()
@@ -276,7 +282,16 @@ class Agent:
         channel: 通道标识（im/tts，DESIGN 4.8 通道感知），注入 system prompt 的通道语境。
         """
         user_text = user_text.strip()
-        images = images or []
+        images = [str(x) for x in (images or []) if isinstance(x, str)][:4]
+        if images:
+            from .image_payload import payload_from_data_url
+            validated = []
+            for image in images:
+                try:
+                    validated.append(payload_from_data_url(image, source="agent").data_url)
+                except Exception as exc:
+                    logger.warning("drop invalid image payload: %s", exc)
+            images = validated
         if not user_text and not images:
             return TurnResult(reply="", energy=self.state.energy, mood=self.state.mood)
 
@@ -342,6 +357,17 @@ class Agent:
         # P-6/P-9：预构建 PersonaBrief 选回用动作与表达计划（prompts 内会再次构建——轻量，接受重复）
         reuse_action = ""
         response_plan = None
+        explicit_style_length = ""
+        for rule in self.memory.list_layer("procedural", limit=20):
+            rule_kind = (rule.meta or {}).get("kind") or rule.category
+            if rule_kind not in {"interaction_rule", "preference"}:
+                continue
+            if any(word in rule.content for word in ("简短", "一句话", "只说结论", "别展开", "不要详细")):
+                explicit_style_length = "short"
+                break
+            if any(word in rule.content for word in ("详细回答", "详细说明", "展开说", "完整说明")):
+                explicit_style_length = "long"
+                break
         try:
             from .persona import build_persona_brief, build_response_plan, choose_reuse_action
             # 冲突压力同步到 state（choose_reuse_action/build_response_plan 从 state 读；
@@ -353,18 +379,29 @@ class Agent:
                 key = pre_brief.relevant_user_frameworks[0]["content"][:20]
                 if self._reuse_cd.allow(key, self._turn_n):
                     reuse_action = action
-            response_plan = build_response_plan({"user_text": user_text}, pre_brief, self.state)
+            response_plan = build_response_plan(
+                {
+                    "user_text": user_text,
+                    "explicit_style_length": explicit_style_length,
+                    "style_length": self.style.preferred_length(channel),
+                },
+                pre_brief,
+                self.state,
+            )
         except Exception as e:
             logger.debug("persona reuse/plan skipped: %s", e)
         self._turn_n += 1
         extra_blocks = [
-            self.style.to_prompt_block(),  # M-6：参数 + 文风画像合并块
+            self.style.to_prompt_block(
+                channel=channel,
+                length_override=response_plan.desired_length if response_plan is not None else "",
+            ),  # M-6：参数 + 通道化 StyleBrief；最终计划覆盖统计长度
             self.mirror.to_prompt_block(),
             self.promises.to_prompt_block(query_hint=query_hint),
         ]
         if response_plan is not None:
             # P-9：表达意图注入（不暴露内部思考；只给意图与开场）
-            plan_bits = [f"intent={response_plan.intent}"]
+            plan_bits = [f"intent={response_plan.intent}", f"长度={response_plan.desired_length}"]
             if response_plan.opening_move:
                 plan_bits.append(f"开场={response_plan.opening_move}")
             if response_plan.conflict:
@@ -1370,10 +1407,10 @@ class Agent:
         try:
             task = (
                 "这是一张表情包图片。用 JSON 输出它的标注，格式：\n"
-                '{"meaning": "一句话含义", "moods": ["情绪标签1", "情绪标签2"], '
+                '{"is_sticker": true, "meaning": "一句话含义", "moods": ["情绪标签1", "情绪标签2"], '
                 '"scenarios": ["适用情景1", "适用情景2"]}\n'
                 "情绪标签从 [开心, 难过, 生气, 无语, 惊讶, 鼓励, 调侃, 无奈, 敷衍, 卖萌] 中选；"
-                "适用情景用简短短语描述（如'用户答应请求'）。只输出 JSON，不要其他文字。"
+                "适用情景用简短短语描述（如'用户答应请求'）。普通照片/截图的 is_sticker 必须为 false。只输出 JSON，不要其他文字。"
             )
             messages = [
                 {"role": "system", "content": "你是表情包标注助手，输出严格 JSON。"},
@@ -1410,23 +1447,8 @@ def _parse_sticker_json(text: str) -> dict | None:
     if not isinstance(d, dict):
         return None
     return {
+        "is_sticker": d.get("is_sticker") is True,
         "meaning": str(d.get("meaning", "")).strip(),
         "moods": [str(x).strip() for x in d.get("moods", []) if str(x).strip()],
         "scenarios": [str(x).strip() for x in d.get("scenarios", []) if str(x).strip()],
     }
-
-
-def _data_url_from_bytes(raw: bytes, default_ctype: str = "image/png") -> str:
-    """原始图片字节 → data URL（8.6.3 表情包标注用）。"""
-    import base64
-    # 从文件头嗅探类型（PNG/JPEG/GIF/WEBP），未知回退 default
-    ctype = default_ctype
-    if raw[:8] == b"\x89PNG\r\n\x1a\n":
-        ctype = "image/png"
-    elif raw[:3] == b"\xff\xd8\xff":
-        ctype = "image/jpeg"
-    elif raw[:6] in (b"GIF87a", b"GIF89a"):
-        ctype = "image/gif"
-    elif raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
-        ctype = "image/webp"
-    return f"data:{ctype};base64," + base64.b64encode(raw).decode()

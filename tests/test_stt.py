@@ -1,4 +1,4 @@
-"""STT 客户端测试（OpenAI 兼容 /v1/audio/transcriptions，接口就绪模型未接）。"""
+"""STT 客户端测试（OpenAI 兼容 /v1/audio/transcriptions）。"""
 import json
 
 import pytest
@@ -37,11 +37,12 @@ def test_stt_transcribe_mock(monkeypatch):
 
     monkeypatch.setattr(httpx.Client, "post", fake_post)
     c = STTClient({"base_url": "http://127.0.0.1:9999/v1", "model": "whisper-1"})
-    text = c.transcribe(b"fake-audio-bytes")
+    text = c.transcribe(b"fake-audio-bytes", filename="voice.webm")
     assert text == "今天天气不错"
     assert captured["url"] == "http://127.0.0.1:9999/v1/audio/transcriptions"  # 不重复 /v1
     assert captured["data"]["model"] == "whisper-1"
     assert "file" in captured["files"]
+    assert captured["files"]["file"][2] == "audio/webm"
 
 
 def test_stt_url_no_v1_suffix(monkeypatch):

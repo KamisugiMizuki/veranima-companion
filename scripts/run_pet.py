@@ -90,11 +90,11 @@ def preflight_ports() -> None:
                 ["powershell", "-NoProfile", "-Command",
                  f"(Get-CimInstance Win32_Process -Filter \"ProcessId={pid}\").CommandLine"],
                 capture_output=True, timeout=30).stdout.decode("gbk", errors="replace")
-            return "pet_server" in out or "tts.server" in out
+            return "pet_server" in out or "tts.server" in out or "stt.server" in out or "run_stt_server" in out
         except Exception:
             return False
 
-    for port, name in ((8765, "核心"), (9880, "TTS 服务")):
+    for port, name in ((8765, "核心"), (9880, "TTS 服务"), (9890, "STT 服务")):
         for pid in find_listener(port):
             if is_our_process(pid):
                 _run_hidden(["taskkill", "/F", "/PID", pid], capture_output=True, timeout=30)

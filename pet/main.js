@@ -10,11 +10,14 @@ const { spawn, spawnSync } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { pathToFileURL } = require('url');
 
 const CORE_WS = process.env.VERANIMA_PET_WS || 'ws://127.0.0.1:8765';
 const MEMORY_LIMIT_MB = 400;      // 渲染进程 RSS 阈值（R3_SPEC 1.进程与协议）
 const HEALTH_INTERVAL_MS = 5 * 60 * 1000; // 5min 采样
 const LOG_RING_MAX = 500;         // 内存环形缓冲行数
+const MAX_CHAT_IMAGE_BYTES = 10 * 1024 * 1024;
+const MAX_CHAT_IMAGE_PIXELS = 40 * 1000 * 1000;
 const startupAt = Date.now();
 
 let win = null;
@@ -38,6 +41,7 @@ function loadChatHistory() {
   try { chatHistory = JSON.parse(fs.readFileSync(chatLogPath(), 'utf-8')) || []; }
   catch { chatHistory = []; }
   if (!Array.isArray(chatHistory)) chatHistory = [];
+  chatHistory.forEach(restoreChatImageRefs);
   let changed = false;
   for (const message of chatHistory) {
     if (message.status === 'pending' || message.status === 'sent') {
@@ -49,8 +53,16 @@ function loadChatHistory() {
   chatHistoryLoaded = true;
 }
 function saveChatHistory() {
-  try { fs.writeFileSync(chatLogPath(), JSON.stringify(chatHistory.slice(-500)), 'utf-8'); }
-  catch { /* 写失败不阻塞聊天 */ }
+  try {
+    const removed = chatHistory.length > 500 ? chatHistory.splice(0, chatHistory.length - 500) : [];
+    removeUnreferencedChatImages(removed);
+    const persisted = chatHistory.map((message) => {
+      const copy = { ...message };
+      delete copy.image_data;
+      return copy;
+    });
+    fs.writeFileSync(chatLogPath(), JSON.stringify(persisted), 'utf-8');
+  } catch { /* 写失败不阻塞聊天 */ }
 }
 function pushChat(role, text, opts = {}) {
   if (!chatHistoryLoaded) loadChatHistory();
@@ -62,6 +74,8 @@ function pushChat(role, text, opts = {}) {
     status: opts.status || 'complete',
     turn_id: opts.turnId || '',
     request_id: opts.requestId || '',
+    images: Array.isArray(opts.images) ? opts.images.filter((x) => typeof x === 'string') : [],
+    image_data: Array.isArray(opts.imageData) ? opts.imageData.filter((x) => typeof x === 'string') : [],
   };
   const last = chatHistory[chatHistory.length - 1];
   if (last && last.role === message.role && last.text === message.text &&
@@ -116,7 +130,12 @@ function replyMatches(payload) {
 let tray = null;
 let ws = null;
 let coreProc = null;
-let ttsProc = null;  // 本地 TTS 服务子进程（Qwen3-TTS 1.7B，OpenAI 兼容）
+let ttsProc = null;  // 本地 TTS 服务子进程（GPT-SoVITS api_v2）
+let sttProc = null;  // 本地 SenseVoice STT 服务子进程
+let suppressSTTRestart = false;
+let sttRestartTimer = null;
+let sttRestartDelay = 3000;
+let sttProbeInFlight = false;
 let suppressTTSRestart = false;
 let ttsRestartTimer = null;
 let reconnectDelay = 1000;
@@ -126,15 +145,15 @@ let coreRestartTimer = null;      // restartCore 定时器（防重入：多次�
 let coreStartTimer = null;
 let ttsStartTimer = null;
 let logRing = [];                 // 内存环形缓冲（转发给日志窗口）
-let moduleLogStreams = {};        // 模块日志流：core.log / shell.log（tts.log 走原始字节）
+let moduleLogStreams = {};        // 模块日志流：core.log / shell.log / stt.log（tts.log 走原始字节）
 
 // ---------- 日志（汇聚 + 按模块落盘到 logs/） ----------
 function openLogFile() {
   try {
     const dir = path.join(__dirname, '..', 'logs');
     fs.mkdirSync(dir, { recursive: true });
-    // 按模块分开：core.log / shell.log（tts.log 在 startTTS 里用原始字节写）
-    for (const name of ['core.log', 'shell.log']) {
+    // 按模块分开：core.log / shell.log / stt.log（tts.log 在 startTTS 里用原始字节写）
+    for (const name of ['core.log', 'shell.log', 'stt.log']) {
       moduleLogStreams[name] = fs.createWriteStream(path.join(dir, name), { flags: 'a' });
     }
   } catch (e) { console.error('log file open failed:', e.message); }
@@ -145,8 +164,8 @@ function pushLog(tag, line) {
   const entry = `[${ts}] [${tag}] ${line}`;
   logRing.push(entry);
   if (logRing.length > LOG_RING_MAX) logRing.shift();
-  // 按模块分文件写本地：core-err→core.log，其余→shell.log（TTS 已走 tts.log 原始字节）
-  const tagFile = tag === 'core-err' || tag === 'core' ? 'core.log' : 'shell.log';
+  // 按模块分文件写本地；TTS 已走 tts.log 原始字节。
+  const tagFile = tag === 'core-err' || tag === 'core' ? 'core.log' : tag === 'stt' ? 'stt.log' : 'shell.log';
   const stream = moduleLogStreams[tagFile];
   if (stream) stream.write(entry + '\n');
   if (logWin && !logWin.isDestroyed()) {
@@ -195,6 +214,93 @@ function startCore() {
     if (suppressCoreRestart) return;  // stopCore/退出路径：等 restartCore 定时器或退出
     scheduleCoreRestart();
   });
+}
+
+function startSTT() {
+  if (isQuitting || sttProc || sttProbeInFlight) return;
+  if (!localFeatureEnabled('stt', true)) { pushLog('shell', 'stt disabled by config'); return; }
+  const configuredBase = String(localFeatureValue('stt', 'base_url', 'http://127.0.0.1:9890/v1'));
+  if (!/^https?:\/\/(?:127\.0\.0\.1|localhost):9890(?:\/|$)/i.test(configuredBase)) {
+    pushLog('shell', `remote STT configured; local service not started: ${configuredBase}`);
+    return;
+  }
+  suppressSTTRestart = false;
+  const healthUrl = configuredBase.replace(/\/(?:v1(?:\/audio\/transcriptions)?)?\/?$/, '') + '/health';
+  sttProbeInFlight = true;
+  fetch(healthUrl, { signal: AbortSignal.timeout(1500) })
+    .then(async (response) => {
+      let health = null;
+      if (response.ok) {
+        try { health = await response.json(); } catch (_) { /* not our JSON health endpoint */ }
+      }
+      if (health?.ok === true && health?.provider === 'sensevoice') {
+        sttRestartDelay = 3000;
+        pushLog('shell', 'stt health ready; reusing existing service');
+      } else {
+        suppressSTTRestart = true;
+        pushLog('shell', 'stt port 9890 conflict: health endpoint is not Veranima SenseVoice; restart suppressed');
+      }
+    })
+    .catch(() => spawnLocalSTT())
+    .finally(() => { sttProbeInFlight = false; });
+}
+function spawnLocalSTT() {
+  if (isQuitting || sttProc || suppressSTTRestart) return;
+  if (!localFeatureEnabled('stt', true)) { pushLog('shell', 'stt disabled by config'); return; }
+  const configuredBase = String(localFeatureValue('stt', 'base_url', 'http://127.0.0.1:9890/v1'));
+  if (!/^https?:\/\/(?:127\.0\.0\.1|localhost):9890(?:\/|$)/i.test(configuredBase)) {
+    pushLog('shell', `remote STT configured; local service not started: ${configuredBase}`);
+    return;
+  }
+  const root = path.join(__dirname, '..');
+  const py = process.env.VERANIMA_STT_PY || path.join(root, 'tts', 'gpt-sovits', 'runtime', 'python.exe');
+  const script = path.join(root, 'scripts', 'run_stt_server.py');
+  const overlay = path.join(root, 'data', 'stt-runtime', 'site');
+  const configuredModel = String(localFeatureValue('stt', 'model_path', 'data/models/sensevoice-small'));
+  const modelPath = path.isAbsolute(configuredModel) ? configuredModel : path.join(root, configuredModel);
+  const configuredVad = String(localFeatureValue('stt', 'vad_model_path', 'tts/gpt-sovits/tools/asr/models/speech_fsmn_vad_zh-cn-16k-common-pytorch'));
+  const vadModelPath = path.isAbsolute(configuredVad) ? configuredVad : path.join(root, configuredVad);
+  if (!fs.existsSync(script) || !fs.existsSync(py) || !fs.existsSync(overlay) || !fs.existsSync(modelPath) || !fs.existsSync(vadModelPath)) {
+    pushLog('shell', `stt disabled: missing runtime/script/overlay/model/vad (${modelPath}; ${vadModelPath})`); return;
+  }
+  pushLog('shell', 'spawning STT SenseVoice server (port from config, default 9890)');
+  const env = { ...process.env, PYTHONIOENCODING: 'utf-8' };
+  delete env.PYTHONUTF8;
+  let child;
+  try {
+    child = spawn(py, [script], {
+      cwd: root, windowsHide: true, env: { ...env, PYTHONPATH: '' }, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    sttProc = child;
+  } catch (error) {
+    pushLog('shell', `stt spawn failed: ${error.message}`);
+    scheduleSTTRestart();
+    return;
+  }
+  child.stdout.on('data', (d) => pushLog('stt', d.toString().trimEnd()));
+  child.stderr.on('data', (d) => pushLog('stt', d.toString().trimEnd()));
+  child.on('error', (err) => {
+    pushLog('shell', `stt process error: ${err.message}`);
+    if (sttProc === child) sttProc = null;
+    scheduleSTTRestart();
+  });
+  child.on('exit', (code, signal) => {
+    pushLog('shell', `stt exited (code=${code}, signal=${signal})`);
+    if (sttProc === child) sttProc = null;
+    scheduleSTTRestart();
+  });
+}
+function scheduleSTTRestart() {
+  if (suppressSTTRestart || isQuitting || sttRestartTimer) return;
+  const delay = sttRestartDelay;
+  pushLog('shell', `restarting STT in ${delay}ms`);
+  sttRestartTimer = setTimeout(() => { sttRestartTimer = null; startSTT(); }, delay);
+  sttRestartDelay = Math.min(sttRestartDelay * 2, 60000);
+}
+function stopSTT() {
+  suppressSTTRestart = true;
+  if (sttRestartTimer) { clearTimeout(sttRestartTimer); sttRestartTimer = null; }
+  if (sttProc) { terminateProcessTree(sttProc); sttProc = null; }
 }
 
 // ---------- spawn 本地 TTS 服务（GPT-SoVITS api_v2.py，端口 9880） ----------
@@ -323,6 +429,7 @@ function prepareQuit() {
   }
   stopCore();
   stopTTS();
+  stopSTT();
 }
 
 function quitApplication() {
@@ -479,6 +586,24 @@ function rejectWsPending() {
   }
 }
 
+function failPendingChats() {
+  for (const message of pendingUserMessages.values()) {
+    updateChatMessage(message.message_id, { status: 'failed' });
+  }
+  pendingUserMessages.clear();
+  if (activeReply) finishReply(activeReply, 'failed');
+}
+
+function disconnectSocket(socket) {
+  if (ws !== socket) return false;
+  ws = null;
+  rejectWsPending();
+  failPendingChats();
+  setPetStatus('offline');
+  if (!isQuitting) scheduleReconnect();
+  return true;
+}
+
 function openSettingsWindow() {
   if (settingsWin && !settingsWin.isDestroyed()) {
     settingsWin.show();
@@ -584,6 +709,25 @@ function localCharacterCard() {
     const m = cfg.match(/^character_card:\s*["']?([^"'\s#]+)/m);
     return m ? m[1] : '';
   } catch { return ''; }
+}
+
+function localFeatureEnabled(section, fallback) {
+  const value = localFeatureValue(section, 'enabled', fallback);
+  return typeof value === 'boolean' ? value : fallback;
+}
+
+function localFeatureValue(section, key, fallback) {
+  try {
+    const cfg = fs.readFileSync(path.join(__dirname, '..', 'config', 'config.yaml'), 'utf-8');
+    const block = cfg.match(new RegExp(`^${section}:\\s*\\r?\\n((?:[ \\t]+.*(?:\\r?\\n|$))*)`, 'm'));
+    if (!block) return fallback;
+    const match = block[1].match(new RegExp(`^\\s+${key}:\\s*(?:"([^"]*)"|'([^']*)'|([^#\\r\\n]*))`, 'im'));
+    if (!match) return fallback;
+    const raw = String(match[1] ?? match[2] ?? match[3] ?? '').trim();
+    if (/^(true|false)$/i.test(raw)) return raw.toLowerCase() === 'true';
+    if (/^-?\d+(?:\.\d+)?$/.test(raw)) return Number(raw);
+    return raw;
+  } catch { return fallback; }
 }
 
 function pushAvatarMapFrom(cardPath) {
@@ -765,16 +909,13 @@ function connect() {
     } catch (e) { console.error('[ws] bad msg:', e.message); }
   });
   socket.on('close', () => {
-    if (ws !== socket) return;
+    if (!disconnectSocket(socket)) return;
     console.log('[ws] closed');
-    ws = null;
-    rejectWsPending();
-    setPetStatus('offline');
-    if (!isQuitting) scheduleReconnect();
   });
   socket.on('error', (e) => {
     if (ws !== socket) return;
     console.error('[ws] error:', e.message);
+    disconnectSocket(socket);
     socket.close();
   });
 }
@@ -1014,6 +1155,7 @@ function openChatWindow() {
   chatWin.on('close', (e) => {
     if (isQuitting) return;
     e.preventDefault();
+    chatWin.webContents.send('chat-hidden');
     chatWin.hide();
   }); // 复用模式
   chatWin.on('ready-to-show', () => {
@@ -1035,6 +1177,7 @@ function clearChatHistory() {
     : dialog.showMessageBoxSync(options);
   if (btn !== 1) return false;
   chatHistory = [];
+  fs.rmSync(path.join(app.getPath('userData'), 'chat-images'), { recursive: true, force: true });
   pendingUserMessages.clear();
   activeReply = null;
   saveChatHistory();
@@ -1044,39 +1187,160 @@ function clearChatHistory() {
   pushLog('shell', 'chat history cleared');
   return true;
 }
-function dispatchChat(text, messageId = '') {
+function validateChatImages(images) {
+  if (!Array.isArray(images) || images.length > 4) return { ok: false, reason: '图片数量超限' };
+  const decoded = [];
+  const dir = path.join(app.getPath('userData'), 'chat-images');
+  for (const value of images) {
+    const match = /^data:(image\/(?:png|jpeg|gif|webp));base64,([A-Za-z0-9+/=\r\n]+)$/.exec(String(value || ''));
+    if (!match) return { ok: false, reason: '图片格式无效' };
+    const encoded = match[2].replace(/[\r\n]/g, '');
+    if (encoded.length > Math.ceil(MAX_CHAT_IMAGE_BYTES / 3) * 4) return { ok: false, reason: '图片大小无效' };
+    let raw;
+    try {
+      raw = Buffer.from(encoded, 'base64');
+      if (raw.toString('base64') !== encoded) return { ok: false, reason: '图片编码无效' };
+    } catch { return { ok: false, reason: '图片编码无效' }; }
+    if (!raw.length || raw.length > MAX_CHAT_IMAGE_BYTES) return { ok: false, reason: '图片大小无效' };
+    const magic = (match[1] === 'image/png' && raw.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10])))
+      || (match[1] === 'image/jpeg' && raw.subarray(0, 3).equals(Buffer.from([255,216,255])))
+      || (match[1] === 'image/gif' && (raw.subarray(0, 6).toString() === 'GIF87a' || raw.subarray(0, 6).toString() === 'GIF89a'))
+      || (match[1] === 'image/webp' && raw.subarray(0, 4).toString() === 'RIFF' && raw.subarray(8, 12).toString() === 'WEBP');
+    if (!magic) return { ok: false, reason: '图片内容与类型不匹配' };
+    let size;
+    try { size = nativeImage.createFromBuffer(raw).getSize(); } catch { return { ok: false, reason: '图片内容损坏' }; }
+    if (!size.width || !size.height || size.width * size.height > MAX_CHAT_IMAGE_PIXELS) {
+      return { ok: false, reason: '图片像素尺寸过大' };
+    }
+    const ext = match[1].split('/')[1].replace('jpeg', 'jpg');
+    decoded.push({ value, raw, name: `${crypto.randomUUID()}.${ext}` });
+  }
+  const written = [];
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    for (const item of decoded) {
+      const file = path.join(dir, item.name);
+      fs.writeFileSync(file, item.raw, { flag: 'wx' });
+      written.push(file);
+    }
+  } catch (error) {
+    written.forEach((file) => fs.rmSync(file, { force: true }));
+    return { ok: false, reason: `图片保存失败: ${error.message}` };
+  }
+  const refs = decoded.map((item) => `chat-images/${item.name}`);
+  return { ok: true, values: decoded.map((item) => item.value), refs, previews: chatImageRefs(refs, false) };
+}
+function chatImageFile(ref) {
+  const dir = path.join(app.getPath('userData'));
+  const rel = String(ref || '');
+  if (!rel.startsWith('chat-images/') || rel.includes('..')) return null;
+  const file = path.resolve(dir, rel);
+  if (!file.toLowerCase().startsWith(dir.toLowerCase() + path.sep) || !fs.existsSync(file)) return null;
+  const ext = path.extname(file).toLowerCase();
+  const type = ext === '.png' ? 'image/png' : ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg'
+    : ext === '.gif' ? 'image/gif' : ext === '.webp' ? 'image/webp' : '';
+  return type ? { file, type } : null;
+}
+function chatImageRefs(refs, asDataUrl) {
+  return (Array.isArray(refs) ? refs : []).map((ref) => {
+    const resolved = chatImageFile(ref);
+    if (!resolved) return '';
+    return asDataUrl
+      ? `data:${resolved.type};base64,${fs.readFileSync(resolved.file).toString('base64')}`
+      : pathToFileURL(resolved.file).href;
+  }).filter(Boolean);
+}
+function removeUnreferencedChatImages(messages) {
+  const retained = new Set(chatHistory.flatMap((message) => message.images || []));
+  for (const message of messages || []) {
+    for (const ref of message.images || []) {
+      if (retained.has(ref)) continue;
+      const resolved = chatImageFile(ref);
+      if (resolved) fs.rmSync(resolved.file, { force: true });
+    }
+  }
+}
+function restoreChatImageRefs(message) {
+  if (!message || !Array.isArray(message.images)) return message;
+  message.image_data = chatImageRefs(message.images, false);
+  return message;
+}
+function dispatchChat(text, images = [], messageId = '', existingRefs = []) {
   const t = String(text || '').trim();
-  if (!t) return { ok: false, reason: 'empty' };
-  const requestId = crypto.randomUUID();
   let message = messageId && chatHistory.find((item) => item.message_id === messageId);
+  const imageResult = existingRefs.length
+    ? { ok: true, values: images, refs: existingRefs, previews: chatImageRefs(existingRefs, false) }
+    : validateChatImages(images);
+  if (!imageResult.ok) return imageResult;
+  if (imageResult.values.length !== imageResult.refs.length) return { ok: false, reason: '历史图片缺失' };
+  if (!t && !imageResult.values.length) return { ok: false, reason: 'empty' };
+  const requestId = crypto.randomUUID();
   if (message) {
     message.text = t;
     message.status = 'pending';
     message.request_id = requestId;
     message.ts = Date.now();
+    message.images = imageResult.refs;
+    message.image_data = imageResult.previews;
     saveChatHistory();
     sendChatEvent('message-update', { message });
   } else {
     message = pushChat('user', t, {
       status: 'pending', requestId, dedupe: false,
+      images: imageResult.refs,
+      imageData: imageResult.previews,
     });
   }
   pendingUserMessages.set(requestId, message);
   if (ws && ws.readyState === 1) {
-    ws.send(JSON.stringify({ type: 'stream_talk', text: t, request_id: requestId }));
+    ws.send(JSON.stringify({ type: 'stream_talk', text: t, images: imageResult.values, request_id: requestId }));
   } else {
     updateChatMessage(message.message_id, { status: 'failed' });
+    pendingUserMessages.delete(requestId);
     return { ok: false, reason: 'offline', message };
   }
   return { ok: true, request_id: requestId, message };
 }
 
 // 聊天窗口 IPC：发送/重试 → 带 request_id 的 WS 请求。
-ipcMain.handle('chat-send', (e, text) => dispatchChat(text));
+ipcMain.handle('chat-send', (e, payload) => {
+  if (typeof payload === 'string') return dispatchChat(payload);
+  return dispatchChat(payload && payload.text, payload && payload.images);
+});
+ipcMain.handle('stt-transcribe', async (e, payload) => {
+  const raw = Buffer.from(payload && payload.audio || []);
+  if (!raw.length || raw.length > 20 * 1024 * 1024) return '';
+  try {
+    if (!localFeatureEnabled('stt', true)) return '';
+    const base = String(localFeatureValue('stt', 'base_url', 'http://127.0.0.1:9890/v1')).replace(/\/$/, '');
+    const endpoint = base.endsWith('/audio/transcriptions') ? base
+      : `${base}${base.endsWith('/v1') ? '' : '/v1'}/audio/transcriptions`;
+    const model = String(localFeatureValue('stt', 'model', 'sensevoice-small'));
+    const language = String(localFeatureValue('stt', 'language', 'auto'));
+    const timeoutMs = Math.max(1000, Number(localFeatureValue('stt', 'timeout', 120)) * 1000);
+    const apiKey = String(localFeatureValue('stt', 'api_key', ''));
+    const form = new FormData();
+    form.append('file', new Blob([raw], { type: 'audio/webm' }), String(payload.filename || 'voice.webm'));
+    form.append('model', model); form.append('language', language);
+    const response = await fetch(endpoint, {
+      method: 'POST', body: form, signal: AbortSignal.timeout(timeoutMs),
+      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+    });
+    if (!response.ok) throw new Error(`STT HTTP ${response.status}`);
+    sttRestartDelay = 3000;
+    return String((await response.json()).text || '').trim();
+  } catch (error) {
+    pushLog('shell', `stt transcribe failed: ${error.message}`);
+    startSTT();
+    return '';
+  }
+});
 ipcMain.handle('chat-clear', async () => clearChatHistory());
 ipcMain.handle('chat-retry', (e, messageId) => {
   const old = chatHistory.find((item) => item.message_id === messageId && item.role === 'user');
-  return old ? dispatchChat(old.text, old.message_id) : { ok: false, reason: 'missing' };
+  return old
+    ? dispatchChat(old.text, chatImageRefs(old.images, true), old.message_id, old.images)
+    : { ok: false, reason: 'missing' };
 });
 ipcMain.handle('search-history', async (e, query) => wsRequest('search_history', { query: String(query || '') }));
 ipcMain.handle('get-self-model', async () => wsRequest('get_self_model'));
@@ -1205,6 +1469,7 @@ if (!gotLock) {
     createTray();
     setTimeout(() => startCore(), 0);
     setTimeout(() => startTTS(), 0);
+    setTimeout(() => startSTT(), 0);
     connect();
     setInterval(healthCheck, HEALTH_INTERVAL_MS);
   });

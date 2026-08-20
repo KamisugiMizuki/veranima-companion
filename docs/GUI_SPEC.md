@@ -78,7 +78,7 @@ hideWindow(name)
 
 只抽重复生命周期，不做通用 WindowManager 类。每个命名单例窗口必须遵守：factory 可同步/异步；创建期间共享同一个 Promise；创建失败清空 Promise 允许重试；renderer 不可用或 `closed` 后清空引用并允许重建；show 必须等待 get 完成后再 show/focus。
 
-窗口关闭、隐藏、销毁和应用退出是四条不同路径：隐藏保留窗口与订阅；销毁清理引用/监听器/定时器；应用退出统一 destroy；renderer 崩溃按清理引用后重建处理。窗口启动先调用 `getState()` 快照，再订阅 `onStateChange()`，不能只等待广播。
+窗口关闭、隐藏、销毁和应用退出是四条不同路径：隐藏保留窗口与订阅，但必须终止麦克风录音、媒体 track 和录音 timer；销毁清理引用/监听器/定时器；应用退出统一 destroy；renderer 崩溃按清理引用后重建处理。窗口启动先调用 `getState()` 快照，再订阅 `onStateChange()`，不能只等待广播。
 
 veranima 当前不实现独立 caption overlay 或 desktop grounding overlay。只借鉴 caption 的 TTL/过期行为，并将字幕放在主窗气泡；不创建额外透明跟随窗口，不引入 BroadcastChannel、MCP polling 或 ghost pointer。
 

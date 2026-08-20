@@ -52,6 +52,9 @@ def build_adapter(cfg: dict, agent, *, agent_lock=None) -> QQAdapter | None:
         proactive_delay_minutes=int(qq_cfg.get("proactive_delay_minutes", 5)),
         sticker_library=stickers,
         agent_lock=agent_lock,
+        image_roots=qq_cfg.get("image_roots") or None,
+        trusted_image_proxy=bool(qq_cfg.get("trusted_image_proxy", False)),
+        image_proxy_hosts=qq_cfg.get("image_proxy_hosts") or (),
     )
 
 

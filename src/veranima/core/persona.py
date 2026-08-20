@@ -149,6 +149,31 @@ def extract_framework_candidates(text: str, message_id: int) -> list[PersonaCand
         return []
     if any(re.search(p, t) for p in _RHETORICAL_PATTERNS):
         return []
+    persistent = any(word in t for word in ("以后", "今后", "接下来", "一直", "每次", "都"))
+    if persistent and any(word in t for word in ("简短", "一句话", "只说结论", "不要详细", "别展开")):
+        return [PersonaCandidate(
+            kind="interaction_rule",
+            title="回复长度偏好",
+            content="用户明确要求：以后回复保持简短，只说结论。",
+            evidence_message_ids=[message_id],
+            confidence=0.95,
+            stability=0.9,
+            importance=0.8,
+            user_confirmed=True,
+            needs_confirmation=False,
+        )]
+    if persistent and any(word in t for word in ("详细回答", "详细说明", "展开说", "完整说明")):
+        return [PersonaCandidate(
+            kind="interaction_rule",
+            title="回复长度偏好",
+            content="用户明确要求：以后回复可以详细展开。",
+            evidence_message_ids=[message_id],
+            confidence=0.95,
+            stability=0.9,
+            importance=0.8,
+            user_confirmed=True,
+            needs_confirmation=False,
+        )]
     cands: list[PersonaCandidate] = []
     seen: set[str] = set()
     for pat in FRAMEWORK_PATTERNS:
@@ -734,7 +759,15 @@ def build_response_plan(context: dict, brief: PersonaBrief, state) -> ResponsePl
     q = str(context.get("user_text", ""))
     has_fw = bool(brief.relevant_user_frameworks) or bool(brief.relevant_character_beliefs)
     has_sm = bool(brief.shared_meanings)
-    if not has_fw and not has_sm and conflict <= 0.5 and valence >= 0.35:
+    explicit_style_length = str(context.get("explicit_style_length") or "")
+    if explicit_style_length not in {"short", "long"}:
+        explicit_style_length = ""
+    requested_length = ""
+    if any(word in q for word in ("不要详细", "不用详细", "无需详细", "无需展开", "不用展开", "简单说", "简短", "一句话", "只说结论", "别展开")):
+        requested_length = "short"
+    elif any(word in q for word in ("详细", "展开说", "具体说明", "完整说明")):
+        requested_length = "long"
+    if not has_fw and not has_sm and conflict <= 0.5 and valence >= 0.35 and not requested_length and not explicit_style_length:
         return None  # 简单轮：跳过计划
     if conflict > 0.5:
         intent, opening = "clarify", "先确认边界"
@@ -750,6 +783,17 @@ def build_response_plan(context: dict, brief: PersonaBrief, state) -> ResponsePl
     target = ""
     if has_sm:
         target = brief.shared_meanings[0]["content"][:30]
+    style_length = str(context.get("style_length") or "normal")
+    if style_length not in {"short", "normal", "long"}:
+        style_length = "normal"
+    if requested_length:
+        desired_length = requested_length
+    elif explicit_style_length:
+        desired_length = explicit_style_length
+    elif valence < 0.3:
+        desired_length = "short"
+    else:
+        desired_length = style_length
     return ResponsePlan(
         intent=intent,
         confidence=0.6,
@@ -758,7 +802,7 @@ def build_response_plan(context: dict, brief: PersonaBrief, state) -> ResponsePl
         opening_move=opening,
         key_point="",
         uncertainty_to_express="",
-        desired_length="short" if valence < 0.3 else "normal",
+        desired_length=desired_length,
         association_target=target,
     )
 

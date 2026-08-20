@@ -1,7 +1,7 @@
 # STYLE_LEARNING_SPEC：有限语料的语言风格分析、模仿与训练边界
 
-> 状态：设计稿 v1.0（2026-08-20）。
-> 实现状态：当前项目已有 `StyleLearner`、`style.json` 和规则统计基础；本文细化风格分析与可选离线训练，**不宣称已接入 LoRA/微调**。
+> 状态：MVP 实现版 v1.1（2026-08-21）。
+> 实现状态：未标注语料导入、自动分句/脱敏/去重/弱标注、代表/冲突抽样、人工复核、质量门禁、`StyleProfile → StyleBrief → ResponsePlan`、跨进程激活 revision、到期清理和级联删除已接入；**LoRA/微调仍未实现**。
 > 核心原则：模仿“表达方式”，不能覆盖角色核心、关系边界、事实记忆或安全约束。
 
 ## 1. 先回答可行性
@@ -16,11 +16,12 @@
 
 “有一定量语料就训练”不是充分条件。决定效果的是语料是否同一说话者、场景覆盖、授权、噪声比例、目标模型和评测集。几十条样本适合提取明显节奏，不足以证明稳定人格或复杂修辞已经学会。
 
-## 2. 四层架构
+## 2. 五层架构
 
 ```text
 语料与授权层
   → 清洗/脱敏/分段
+  → 弱标注/低维特征抽样/少量人工复核
   → 统计分析与 StyleProfile
   → ResponsePlan 的表达约束
   → 可选 LoRA/adapter 离线实验
@@ -36,16 +37,28 @@ Character Card 的 `personality/core_drives/value_order/inner_tensions/boundary`
 
 ```json
 {
-  "schema_version": 1,
-  "source_id": "user-owned-corpus-2026-08",
   "sample_count": 860,
-  "confidence": 0.72,
-  "rhythm": {"avg_sentence_chars": 18.4, "short_sentence_ratio": 0.42, "newline_ratio": 0.18},
-  "punctuation": {"question_ratio": 0.08, "exclamation_ratio": 0.03, "ellipsis_ratio": 0.11, "parenthetical_ratio": 0.16},
-  "register": {"formality": 0.27, "directness": 0.74, "detail_preference": 0.61},
-  "mixing": {"ascii_ratio": 0.08, "japanese_ratio": 0.01, "emoji_ratio": 0.01},
-  "habits": ["结论较早出现", "括号用于补充而非替代正文"],
-  "prohibited_mirroring": ["完整句子", "专名", "私人经历", "敏感词"]
+  "char_count": 27412,
+  "avg_message_chars": 31.87,
+  "avg_sentence_chars": 18.4,
+  "question_ratio": 0.08,
+  "newline_ratio": 0.18,
+  "emoji_ratio": 0.01,
+  "exclamation_ratio": 0.03,
+  "ellipsis_ratio": 0.11,
+  "parenthetical_ratio": 0.16,
+  "ascii_ratio": 0.08,
+  "japanese_ratio": 0.01,
+  "formality": 0.27,
+  "directness": 0.74,
+  "detail_preference": 0.61,
+  "confidence": 0.92,
+  "updated_at": "2026-08-21T12:00:00+00:00",
+  "source_id": "user-owned-corpus-2026-08",
+  "scene_count": 3,
+  "reviewed_count": 12,
+  "quality_score": 0.92,
+  "profile_version": 1
 }
 ```
 
@@ -58,7 +71,7 @@ Character Card 的 `personality/core_drives/value_order/inner_tensions/boundary`
 - 用户本人创作且明确授权给本地项目的文本。
 - 用户拥有许可的公开文本或明确允许再利用的语料。
 - 项目团队原创示例。
-- 用户明确选择的聊天消息，必须支持按消息/批次撤回。
+- 用户明确选择的聊天消息，首版需先整理为独立 corpus 批次并按 corpus 撤回；消息级撤回尚未实现。
 
 ### 3.2 默认排除
 
@@ -69,22 +82,30 @@ Character Card 的 `personality/core_drives/value_order/inner_tensions/boundary`
 
 ### 3.3 来源清单
 
-每个语料集需要：`corpus_id/source/owner/license/consent_at/collected_at/delete_scope/hash`。许可证不明确时只能做本地临时分析，不进入包、不训练权重、不导出。
+每个语料集需要：`corpus_id/source/owner/license/consent_at/collected_at/delete_scope/hash`。manifest 只记录 `source_index/hash/bytes`，不保存原文件名或 `path.stem`。license 只接受 `private-local-consent/self-owned/user-owned/project-original` 或受支持的 SPDX 标识；`?`、`N/A`、`none`、`unknown` 等占位值直接拒绝。
 
-删除必须按 `corpus_id` 级联：原始缓存、分段、profile、评测快照、LoRA adapter 和索引一并删除；保留不含原文的审计结果即可。删除角色卡或关闭风格学习不能删除用户事实记忆。
+当前 `delete` 按 `corpus_id` 级联删除脱敏分段、受管复核队列、决策和 profile；原始文件从未复制。删除先撤销运行时指针，再原子改名为确定性 tombstone；部分删除失败时保持 inactive 并保留无原文 sidecar 供重试，不把残缺 corpus 恢复为 active。只保留不含原文的审计结果；删除 corpus 不能删除用户事实记忆。
 
-## 4. 分析流水线
+导入可用 `--retention-until <ISO-8601>` 记录保留期限。到期 corpus 在 Agent 启动或下一轮消费 StyleBrief 前自动停用、删除 corpus 目录并写无原文删除审计；没有 Veranima 进程运行时不另设常驻定时器，下次启动执行清理。
+
+## 4. 分析流水线（当前实现）
 
 ```text
 导入语料
 → 授权/来源确认
-→ 文件类型与编码检查
-→ 分段和角色识别
-→ 排除代码/引用/敏感内容
-→ 统计长度、节奏、标点、语域、混合语言
-→ 聚合 StyleProfile
-→ 人工预览与启用
-→ 离线 benchmark
+→ 文件类型、编码与大小检查（20MB/文件，50MB/语料集，最多 100 文件；先检查后读取）
+→ 输出放大门禁（最多 20,000 片段，持久化 segments JSONL 最多 50MiB）
+→ 按空行/句末标点自动分段，单片段最多 400 字符
+→ 删除 fenced code/引用行；识别邮箱、手机号、身份证、空格银行卡、地址、凭据和身份/职业事实后整段排除，不持久化正文
+→ 归一化精确去重；识别 zh/en/ja/mixed 与 natural/dialogue/list
+→ 规则弱标注长度、节奏、标点、语域、直接度、语言混合
+→ 风险最多占 1/3 + 约 1/4 标签边界 + farthest-first 代表抽样（默认导出 24 条）
+→ manifest 记录允许复核的 segment ID 与不可变字段摘要；apply/activate 重算 segment ID、派生标签和风险字段
+→ apply 为排序后的决策写逐条摘要；activate 同时校验版本、segment 数量/ID 唯一性和决策摘要
+→ 人工只填写 accept/reject，可选修正 3 个高影响标签；修改正文/场景/弱标签、换入未导出 ID 或 apply 后改决策均拒绝
+→ 升级前已生成的 review 没有决策摘要，需重新运行一次 `review-apply`，不走静默兼容
+→ 复核门禁通过后聚合 StyleProfile
+→ 生成按 IM/TTS 分流的 StyleBrief 并接入 ResponsePlan
 → 运行时只注入短摘要
 ```
 
@@ -96,19 +117,20 @@ Character Card 的 `personality/core_drives/value_order/inner_tensions/boundary`
 - 语域：正式/口语缓冲词比例。
 - 直接度：结论先行、请求式、缓冲式表达比例。
 - 展开偏好：对复杂输入的平均回复长度；不能把用户一次要求当稳定画像。
-- 混合语言：ASCII、日文、emoji、颜文字比例。
-- 修辞标签：比喻、列举、反问、括号补充、短评式收束。第一版用轻量规则，不能把分类结果当事实。
+- 混合语言：ASCII、日文、emoji 比例。
+- 内容类型：第一版只识别 natural/dialogue/list，并把非自然列表送入风险复核；比喻、反问等修辞标签尚未实现。
 
 禁止把“某个专名出现很多次”直接当风格；它更可能是主题或私人事实，应进入内容/记忆边界而不是 StyleProfile。
 
 ## 5. 稳定性与阈值
 
-- 少于 20 条合格样本：只显示统计预览，不自动注入。
-- 20-100 条：只调长度/正式度/直接度等低风险旋钮，置信度低。
-- 100 条以上且跨至少 3 种场景：允许生成 StyleBrief，仍不允许权重训练自动上线。
-- EMA `alpha=0.05`，单轮任一维度变化不超过 `0.02`；最近 100 条作为活跃窗口。
-- 用户明确偏好（“短一点”“少问问题”）写入现有 procedural 规则，优先级高于统计画像。
-- `/reset --style` 清空画像和显式风格覆盖，不删除聊天、事实、共同经历或角色卡。
+- 少于 20 条合格片段：只显示统计预览，禁止启用。
+- 人工最少复核 `min(12, max(4, ceil(sqrt(n))))` 条；无论语料多大，当前门禁最多要求 12 条。
+- 复核接受率低于 75%：禁止启用；风险片段未经人工 `accept` 永不参与聚合。
+- 20-100 条：只调长度/正式度/直接度/节奏等低风险旋钮；100 条以上且跨至少 3 个来源场景时置信度更高。
+- 在线画像继续使用 EMA `alpha=0.05`、单轮任一维度变化不超过 `0.02`；离线 corpus 只在显式重新导入/启用时重算。
+- 用户本轮明确偏好（“短一点”“详细展开”）直接覆盖统计画像；已有 procedural `interaction_rule/preference` 会结构化为 `explicit_style_length`，优先于统计画像。
+- `/reset --style` 清空运行时画像和显式风格覆盖，并把 active corpus 改回 preview；不删除 corpus、聊天、事实、共同经历或角色卡。
 
 ## 6. 运行时控制
 
@@ -118,9 +140,10 @@ Character Card 的 `personality/core_drives/value_order/inner_tensions/boundary`
 系统硬边界
 > Character Core / 角色卡沟通方式
 > 通道规则（IM/TTS）
-> 用户明确风格偏好
-> StyleProfile 摘要
-> 当前场景与 ResponsePlan
+> 用户本轮明确要求
+> 已确认的 procedural interaction_rule/preference
+> 当前关系/情绪与 ResponsePlan
+> StyleProfile 统计摘要
 > 单轮轻量镜像
 ```
 
@@ -187,11 +210,60 @@ StyleProfile 只影响句长、段落、正式度、问句频率、括号和 TTS
 - 用户关闭学习：停止采集新样本，保留或删除旧画像由用户选择。
 - UI 需要展示：来源、样本数、置信度、最近更新时间、当前模式（角色默认/Profile/LoRA）、删除和重置按钮；不展示模型私密推理。
 
-## 10. 实现顺序与非目标
+## 10. 实现状态与非目标
 
-1. 复用现有 `StyleLearner/style.json`，补来源和样本过滤。
-2. 生成 `StyleProfile` 与短 `StyleBrief`，接入已有表达控制/ResponsePlan。
-3. 加离线 benchmark 和泄漏测试。
-4. 用户明确开启且语料授权后，才做可选 LoRA 实验。
+1. ✅ 复用现有 `StyleLearner/style.json`；在线 `profile` 与显式离线 `corpus_profile` 分开保存。
+   `activation_revision` 是跨进程激活指针版本；长驻 Agent 每轮刷新，旧进程保存在线画像时不能复活已停用 corpus。
+2. ✅ `src/veranima/core/style_corpus.py` 实现来源、清洗、弱标注、复核、门禁、版本与删除。
+3. ✅ 聚合 `StyleProfile` 生成短 `StyleBrief`，按通道注入并给现有 `ResponsePlan.desired_length` 提供低优先级默认值。
+4. ✅ 行为测试覆盖敏感正文/文件名不落盘、受管队列摘要与 segment 重算、输出预算、跨进程停用、到期清理、corpus 级原子 replace、partial delete tombstone、schema fail-closed、运行时优先级和 CLI 生产路径。
+5. ⏸ 用户明确开启且语料授权、Profile baseline 仍不足时，才做可选 LoRA 实验。
 
 暂缓：在线 RLHF/PPO、逐用户独立模型、多模型自动路由、无授权作者风格一键克隆、把风格样本直接塞进长期记忆。
+
+## 11. 未标注文本的具体操作
+
+### 11.1 用户只需要做什么
+
+1. 准备 UTF-8 的 `.txt`、`.md` 或 `.jsonl`；多个输入文件会映射为匿名 `source-N` 场景，文件名不落盘。
+2. 导入时明确 `source/owner/license` 并给出 `--consent`。原文件不会复制进运行时目录。
+3. 导出复核 JSONL。每行只改 `decision/reason/annotator/corrected_labels`；正文、场景、风险、弱标签、segment ID 和版本均受摘要绑定，不可修改。
+4. 应用复核并执行 `activate`。门禁不通过时保持 preview，不影响角色。
+5. 暂时关闭时执行 `deactivate`；不再使用时执行 `delete`，删除片段、受管复核队列和 profile，并撤销运行时画像。
+
+```bash
+.venv/Scripts/python.exe -m veranima.cli style import my-style corpus/a.txt corpus/b.txt corpus/c.jsonl --source "用户自有文本" --owner user --license private-local-consent --consent
+.venv/Scripts/python.exe -m veranima.cli style review-export my-style --limit 24
+# 编辑 data/style_corpora/my-style/review_queue.jsonl：decision=accept/reject；其余字段通常不改
+.venv/Scripts/python.exe -m veranima.cli style review-apply my-style
+.venv/Scripts/python.exe -m veranima.cli style activate my-style
+.venv/Scripts/python.exe -m veranima.cli style deactivate my-style
+.venv/Scripts/python.exe -m veranima.cli style status my-style
+.venv/Scripts/python.exe -m veranima.cli style delete my-style
+```
+
+### 11.2 自动完成的工作
+
+- 原始语料不进入 `MemoryStore`、语言镜像或角色包；仅在 `data/style_corpora/<corpus_id>/` 保存可删除的低风险片段。命中敏感信息、凭据或身份事实的整段不持久化。
+- 每个片段记录 `segment_id/corpus_version/source_index/scene/language/content_type/weak_labels/risk_flags/bucket`；抽样队列另记 `selection_reason=risk|uncertain|representative`。
+- 代表抽样直接使用弱标签特征空间；当前不加载 bge-m3，因为抽样上限很小且目标是覆盖表达结构，不是语义主题。若实测超过本地文件规模后代表性不足，再将已有 embedding provider 接成可选输入。
+- `profile.json` 只有聚合统计，不含原句、专名、身份或经历；运行时 `StyleBrief` 明确禁止复述语料和注入作者事实。
+- 删除后只在 `deletions.jsonl` 保留 corpus/version/source hash/删除时间，不保留原文。
+- 复核队列固定放在 corpus 目录内，不允许导出到任意外部路径；因此 `style delete` 能级联删除人工复核副本。
+
+### 11.3 人工修正字段
+
+```json
+{
+  "decision": "accept",
+  "annotator": "user",
+  "reason": "代表样本确认",
+  "corrected_labels": {
+    "formality": 0.3,
+    "directness": 0.8,
+    "detail_preference": 0.6
+  }
+}
+```
+
+`corrected_labels` 可省略，数值必须在 0..1。人工不是逐句标全量；未抽中的干净片段在门禁通过后参与聚合，风险片段必须被明确接受。

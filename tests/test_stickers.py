@@ -10,7 +10,7 @@ import io
 import pytest
 from PIL import Image
 
-from veranima.core.agent import _data_url_from_bytes, _parse_sticker_json
+from veranima.core.agent import _parse_sticker_json
 from veranima.core.stickers import StickerLibrary, dhash, hamming
 
 
@@ -85,6 +85,24 @@ def test_index_json_written(tmp_path):
     assert "红" in idx.read_text(encoding="utf-8")
 
 
+def test_sticker_files_do_not_collide_on_short_hash_prefix(tmp_path, monkeypatch):
+    import veranima.core.stickers as module
+
+    first = make_png("blue_circle")
+    second = make_png("green_triangle")
+    hashes = {first: "0" * 64, second: "0" * 12 + "1" * 52}
+    monkeypatch.setattr(module, "dhash", lambda raw, size=module.DEFAULT_SIZE: hashes[raw])
+
+    lib = StickerLibrary(root=tmp_path / "stickers")
+    a = lib.add(first, meaning="A")
+    b = lib.add(second, meaning="B")
+
+    assert a is not None and b is not None
+    assert a.file != b.file
+    assert (lib.root / a.file).read_bytes() == first
+    assert (lib.root / b.file).read_bytes() == second
+
+
 # ---------- 情绪匹配（宽松） ----------
 
 def test_find_for_mood_low_use_first(tmp_path):
@@ -113,21 +131,21 @@ def test_record_use_persisted(tmp_path):
 # ---------- 标注 JSON 解析 ----------
 
 def test_parse_sticker_json_plain():
-    d = _parse_sticker_json('{"meaning": "没问题", "moods": ["开心"], "scenarios": ["用户答应请求"]}')
+    d = _parse_sticker_json('{"is_sticker": true, "meaning": "没问题", "moods": ["开心"], "scenarios": ["用户答应请求"]}')
     assert d["meaning"] == "没问题"
     assert d["moods"] == ["开心"]
 
 
 def test_parse_sticker_json_fenced():
     """thinking 模型常输出 ```json 围栏，需剥离。"""
-    d = _parse_sticker_json('```json\n{"meaning": "哈哈", "moods": ["调侃"], "scenarios": ["开玩笑"]}\n```')
+    d = _parse_sticker_json('```json\n{"is_sticker": true, "meaning": "哈哈", "moods": ["调侃"], "scenarios": ["开玩笑"]}\n```')
     assert d["meaning"] == "哈哈"
     assert d["moods"] == ["调侃"]
 
 
 def test_parse_sticker_json_noise():
     """围栏外有杂文本也能提取。"""
-    d = _parse_sticker_json('好的，这是标注：{"meaning": "加油", "moods": ["鼓励"]} 完毕')
+    d = _parse_sticker_json('好的，这是标注：{"is_sticker": true, "meaning": "加油", "moods": ["鼓励"]} 完毕')
     assert d["meaning"] == "加油"
 
 
@@ -136,21 +154,6 @@ def test_parse_sticker_json_invalid():
     assert _parse_sticker_json('{"meaning": "不完整"') is None
 
 
-# ---------- data URL 构造 ----------
-
-def test_data_url_from_bytes_png():
-    raw = make_png()
-    url = _data_url_from_bytes(raw)
-    assert url.startswith("data:image/png;base64,")
-    assert "," in url
-
-
-def test_data_url_from_bytes_fallback():
-    """未知类型回退默认 content-type。"""
-    url = _data_url_from_bytes(b"not an image", default_ctype="image/jpeg")
-    assert url.startswith("data:image/jpeg;base64,")
-
-
-def test_data_url_from_bytes_gif():
-    gif = b"GIF89a" + b"\x00" * 16
-    assert _data_url_from_bytes(gif).startswith("data:image/gif;base64,")
+def test_parse_sticker_json_requires_literal_boolean_true():
+    assert _parse_sticker_json('{"meaning": "普通照片"}')["is_sticker"] is False
+    assert _parse_sticker_json('{"is_sticker": "false", "meaning": "普通照片"}')["is_sticker"] is False

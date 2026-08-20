@@ -251,6 +251,8 @@ def test_style_sample_filter():
     assert not is_style_sample("https://example.com/abc")
     assert not is_style_sample("```python\nprint(1)\n```")
     assert not is_style_sample("cd /tmp && ls")
+    assert not is_style_sample(r"D:\logs\server.log")
+    assert not is_style_sample("SELECT secret FROM users")
     assert not is_style_sample("好")  # 太短
     assert not is_style_sample("！！！？？")  # 纯标点
 

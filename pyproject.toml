@@ -17,10 +17,8 @@ dependencies = [
     "pyyaml>=6",
     "sentence-transformers>=3",  # 本地 embedding（bge-m3，远程 API 不支持 embeddings 时必需）
     "websockets>=12",            # 桌宠壳 WS 通信（R3_SPEC 1.进程与协议）
-    "fastapi>=0.110",            # 本地 TTS 服务（OpenAI 兼容 /v1/audio/speech）
-    "uvicorn>=0.27",             # 本地 TTS 服务 ASGI
-    "sentencepiece>=0.1.99",     # Qwen3-TTS 分词
-    "qwen-tts>=0.1",             # Qwen3-TTS 推理（transformers 无内置支持）
+    "fastapi>=0.110",            # 本地 STT 服务（OpenAI 兼容 /v1/audio/transcriptions）
+    "uvicorn>=0.27",             # 本地 STT 服务 ASGI
 ]
 
 [build-system]

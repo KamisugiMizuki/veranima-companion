@@ -60,11 +60,15 @@
       <button id="noticeClose" class="plain-button" type="button" aria-label="关闭提示">×</button>
     </div>
 
+    <section id="imagePreview" class="image-preview" hidden aria-label="待发送图片"></section>
+
     <form id="composer" class="composer">
       <label class="sr-only" for="input">发送消息</label>
       <textarea id="input" rows="1" placeholder="对她说点什么…" autocomplete="off" spellcheck="true"></textarea>
       <div class="composer-actions">
         <span id="draftHint" class="draft-hint">Enter 发送 · Shift+Enter 换行</span>
+        <button id="attachImage" class="icon-button" type="button" title="添加图片" aria-label="添加图片">▧</button>
+        <button id="recordAudio" class="icon-button" type="button" title="录音转文字" aria-label="录音转文字">●</button>
         <button id="stopSpeaking" class="small-button" type="button" hidden>停止说话</button>
         <button id="stopReply" class="small-button danger" type="button" hidden>取消回复</button>
         <button id="send" class="send-button" type="submit" disabled>发送</button>

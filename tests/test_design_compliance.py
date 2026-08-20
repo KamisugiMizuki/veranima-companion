@@ -103,6 +103,10 @@ def test_scheduler_habituated_state(monkeypatch):
                         lambda scale=8: np.zeros((60, 80), dtype=np.uint8))
 
     att = AttentionScheduler(config={"away_idle_s": 9999})
+    monkeypatch.setattr(
+        att.policy, "policy_action",
+        lambda *args: {"action": "skip", "category": "sensitive", "reason": "test"},
+    )
     # 构造一个已超习惯化阈值的注视区域
     att.focus = {"center": (40, 30), "since": time.time() - 120, "last_change": time.time() - 120}
     att._habituation["40,30"] = time.time() - 120

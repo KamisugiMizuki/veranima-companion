@@ -5,15 +5,20 @@
 - 本地：本地 Whisper/FunASR 兼容服务（base_url 指向 127.0.0.1:端口）
 
 与 llm/client.py、tts/client.py 同一模式：base_url 决定远程还是本地，接口不变。
-当前阶段（R5 前置）：仅提供接口，不绑定任何模型/服务。
+Electron 与本客户端都消费同一 `stt.base_url/model/language/timeout/api_key` 契约；本地 9890 时由 Electron 负责拉起服务，远程 URL 时直接请求远端。
 """
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import httpx
 
 logger = logging.getLogger(__name__)
+MIME_BY_SUFFIX = {
+    ".wav": "audio/wav", ".mp3": "audio/mpeg", ".ogg": "audio/ogg",
+    ".flac": "audio/flac", ".webm": "audio/webm",
+}
 
 
 class STTUnavailableError(RuntimeError):
@@ -24,8 +29,9 @@ class STTClient:
     def __init__(self, config: dict):
         self.config = config
         self.base_url = config.get("base_url", "").rstrip("/")
-        self.model = config.get("model", "whisper-1")
-        self.language = config.get("language", "")  # 空 = 自动检测
+        self.model = config.get("model", "sensevoice-small")
+        self.language = config.get("language", "auto") or "auto"
+        self.language_priority = config.get("language_priority", ["zh", "en", "ja"])
         self.api_key = config.get("api_key", "")
         self._timeout = config.get("timeout", 60.0)
 
@@ -53,15 +59,13 @@ class STTClient:
             f"{self.base_url}/audio/transcriptions" if self.base_url.endswith("/v1")
             else f"{self.base_url}/v1/audio/transcriptions"
         )
-        data: dict = {"model": self.model}
-        if language or self.language:
-            data["language"] = language or self.language
+        data: dict = {"model": self.model, "language": language or self.language}
         try:
             with httpx.Client(timeout=self._timeout) as client:
                 resp = client.post(
                     url,
                     data=data,
-                    files={"file": (filename, audio, "audio/wav")},
+                    files={"file": (filename, audio, MIME_BY_SUFFIX.get(Path(filename).suffix.lower(), "audio/wav"))},
                     headers=self._headers(),
                 )
                 resp.raise_for_status()

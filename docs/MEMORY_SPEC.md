@@ -128,6 +128,10 @@ class UserStyleProfile:
     detail_preference: float
     confidence: float
     updated_at: str
+    source_id: str
+    scene_count: int
+    reviewed_count: int
+    quality_score: float
 ```
 
 不保存“用户常说过的完整句子”。高频词镜像仅作为低权重临时统计，不能成为人格规则。
@@ -470,7 +474,7 @@ LLM curator 仅用于将一组同主题碎片压成自然摘要，且：默认�
 
 ### 13.2 数据源
 
-只观察 user 角色的自然消息。排除：
+在线画像只观察 user 角色的自然消息；显式授权的离线语料走 `STYLE_LEARNING_SPEC.md` 的独立 corpus 管线。两者分开持久化为 `profile` 与 `corpus_profile`，不互相覆盖。排除：
 
 - 命令、代码块、日志、粘贴文档、URL、引用他人原文。
 - 长度 <4 的消息。
@@ -501,7 +505,7 @@ LLM curator 仅用于将一组同主题碎片压成自然摘要，且：默认�
 
 - 至少 20 条合格样本后才形成 `confidence>0.3` 的画像。
 - 使用 EMA，默认 alpha=0.05；单轮任何维度变化 <=0.02。
-- 最近 100 条样本为活跃窗口，长期基线缓慢更新。
+- 在线画像用 EMA 缓慢更新；离线 corpus 仅在显式重新导入/启用时重算。
 - 用户明确说“回复短一点/别太正式”时，写 procedural 明确偏好，其优先级高于统计画像。
 - 画像变化需连续多个样本支持；单条消息不改变风格。
 - `/reset --style` 清空统计、镜像和显式 style override，但不删其他记忆。
@@ -531,7 +535,7 @@ LLM curator 仅用于将一组同主题碎片压成自然摘要，且：默认�
 注入的是稳定画像摘要，不是数值表：
 
 ```text
-【用户交流偏好】
+【表达适配】用户交流偏好：
 - 通常用中短句，结论先行，不喜欢铺垫过长。
 - 日常语气偏随意，技术问题接受较详细说明。
 - 常用括号补充，但很少使用 emoji。
@@ -552,9 +556,10 @@ LLM curator 仅用于将一组同主题碎片压成自然摘要，且：默认�
 
 - `LanguageMirror.observe()` 不再把所有中文 2-4 字重叠片段作为高频词；先过滤停用词、重复子串、敏感词和内容实体。
 - 新增 `UserStyleProfile.observe(user_text, metadata)`，由纯规则统计稳定特征。
-- `StyleLearner` 接收 profile 作为慢变量、feedback 作为快变量；两个来源分别记录。
-- prompt 中把“风格参数”和“语言镜像”合并成一个 `UserStyleBrief`，避免互相冲突。
-- style.json 增加 schema_version；旧文件缺字段时用默认值迁移。
+- `StyleLearner` 保留在线 profile，并新增显式启用的离线 `corpus_profile`；feedback 与两类画像分别记录。
+- `StyleBrief` 只包含聚合表达控制，按 IM/TTS 分流，并给 `ResponsePlan.desired_length` 提供低优先级默认值。
+- `style.json` schema_version=3；v1/v2 缺字段时用默认值迁移。
+- `style_corpus.py` 负责 provenance、脱敏片段、弱标注、代表抽样、复核门禁和 corpus 级删除；这些数据不进入 `MemoryStore`。
 
 不做：用户文风微调、LoRA、PPO/RLHF、情感依赖优化、逐用户多租户模型。
 

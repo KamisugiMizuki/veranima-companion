@@ -27,6 +27,13 @@ def test_simple_fact_skips_plan():
     assert build_response_plan({"user_text": "现在几点"}, b, _state()) is None
 
 
+def test_explicit_length_enables_plan_on_simple_turn():
+    plan = build_response_plan(
+        {"user_text": "普通问题", "explicit_style_length": "short"}, PersonaBrief(), _state(),
+    )
+    assert plan is not None and plan.desired_length == "short"
+
+
 def test_conflict_enables_plan():
     b = PersonaBrief(core_tensions=["渴望靠近 / 害怕失去边界"])
     p = build_response_plan({"user_text": "你为什么那样说"}, b, _state(conflict=0.7))
@@ -124,3 +131,12 @@ def test_no_random_personality_drift():
     r1 = render_authenticity("test", {"valence": 0.5, "arousal": 0.5}, "im")
     r2 = render_authenticity("test", {"valence": 0.5, "arousal": 0.5}, "im")
     assert r1 == r2
+
+
+def test_persistent_short_reply_request_becomes_interaction_rule():
+    from veranima.core.persona import extract_framework_candidates
+
+    candidates = extract_framework_candidates("以后回复都简短点，只说结论。", 7)
+    assert len(candidates) == 1
+    assert candidates[0].kind == "interaction_rule"
+    assert "简短" in candidates[0].content

@@ -56,6 +56,16 @@ def agent(tmp_path):
     return card, memory
 
 
+def _image_data_url(format_name="PNG"):
+    import io
+    from PIL import Image
+    from veranima.core.image_payload import make_image_payload
+
+    buf = io.BytesIO()
+    Image.new("RGB", (2, 2), (10, 20, 30)).save(buf, format=format_name)
+    return make_image_payload(buf.getvalue()).data_url
+
+
 def test_handle_llm_unavailable_returns_wakeup(agent, tmp_path):
     """服务不可用：前置检查拦截，返回唤醒文案，不发请求。"""
     card, memory = agent
@@ -141,7 +151,7 @@ def test_handle_with_images_uses_multimodal_content(agent):
     card, memory = agent
     llm = FakeLLM()
     a = Agent(card=card, memory=memory, llm=llm, state=AgentState(), config={"chat": {"proactive_message_prob": 0.0}})
-    img = "data:image/png;base64,AAAA"
+    img = _image_data_url()
     r = a.handle("看看这张图", [img])
     assert r.reply
     user_msg = llm.last_messages[-1]
@@ -155,13 +165,24 @@ def test_handle_image_only_message(agent):
     card, memory = agent
     llm = FakeLLM()
     a = Agent(card=card, memory=memory, llm=llm, state=AgentState(), config={"chat": {"proactive_message_prob": 0.0}})
-    r = a.handle("", ["data:image/jpeg;base64,BBBB"])
+    r = a.handle("", [_image_data_url("JPEG")])
     assert r.reply
     user_msg = llm.last_messages[-1]
     assert user_msg["content"][0]["type"] == "text"
     # 记忆用 [图片] 占位（不存 base64）
     recent = memory.recent_messages(limit=2)
     assert "[图片]" in recent[0]["content"]
+
+
+def test_handle_drops_invalid_image_payload_at_shared_agent_boundary(agent):
+    card, memory = agent
+    llm = FakeLLM()
+    a = Agent(card=card, memory=memory, llm=llm, state=AgentState(), config={})
+
+    a.handle("不要转发伪图片", ["data:image/png;base64,QUJD"])
+
+    assert isinstance(llm.last_messages[-1]["content"], str)
+    assert "[图片]" not in memory.recent_messages(limit=2)[0]["content"]
 
 
 def test_handle_no_text_no_images_empty(agent):
@@ -172,6 +193,62 @@ def test_handle_no_text_no_images_empty(agent):
     r = a.handle("")
     assert r.reply == ""
     assert llm.calls == 0
+
+
+def test_handle_consumes_active_style_brief_and_length_plan(agent, tmp_path):
+    """生产 Agent 链：聚合 StyleBrief 与长度计划进同一 system prompt，不泄漏来源标识。"""
+    from veranima.core.learning import UserStyleProfile
+
+    card, memory = agent
+    llm = FakeLLM()
+    state = AgentState()
+    a = Agent(
+        card=card, memory=memory, llm=llm, state=state,
+        config={"root": str(tmp_path), "chat": {"proactive_message_prob": 0.0}},
+    )
+    a.relationship.conflict_tension = 0.7  # 每轮同步到 state 的关系真值，触发复杂 ResponsePlan
+    profile = UserStyleProfile(
+        sample_count=100,
+        char_count=10000,
+        avg_message_chars=100.0,
+        avg_sentence_chars=40.0,
+        detail_preference=0.9,
+        confidence=1.0,
+        source_id="PRIVATE_CORPUS_ID",
+        scene_count=3,
+        reviewed_count=12,
+        quality_score=1.0,
+    )
+    import json
+    corpus_dir = tmp_path / "data" / "style_corpora" / "private-style"
+    corpus_dir.mkdir(parents=True)
+    (corpus_dir / "manifest.json").write_text(
+        json.dumps({"corpus_id": "private-style", "version": 1, "status": "active"}),
+        encoding="utf-8",
+    )
+    a.style.activate_corpus("private-style", profile)
+
+    result = a.handle("请处理这个复杂问题", channel="im")
+    system_prompt = llm.last_messages[0]["content"]
+
+    assert result.reply
+    assert "【表达适配】" in system_prompt
+    assert "长度=long" in system_prompt
+    assert "PRIVATE_CORPUS_ID" not in system_prompt
+
+    a.handle("以后回复都简短点，只说结论。", channel="im")
+    a = Agent(
+        card=card, memory=memory, llm=llm, state=AgentState(),
+        config={"root": str(tmp_path), "chat": {"proactive_message_prob": 0.0}},
+    )
+    a.relationship.conflict_tension = 0.7
+    a.handle("继续处理另一个复杂问题", channel="im")
+    assert "长度=short" in llm.last_messages[0]["content"]
+
+    a.reset_style()
+    manifest = json.loads((corpus_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["status"] == "preview"
+    assert a.style.active_corpus_id == ""
 
 
 def test_handle_history_starting_with_assistant_normalized(agent):

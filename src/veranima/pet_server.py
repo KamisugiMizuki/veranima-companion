@@ -26,6 +26,7 @@ from veranima.core.render import render_tts
 logger = logging.getLogger("veranima.pet_server")
 
 PORT = 8765
+MAX_WS_MESSAGE_BYTES = 64 * 1024 * 1024
 
 
 class PetServer:
@@ -100,9 +101,11 @@ class PetServer:
         return False
 
     # ---------- 对外发送 ----------
-    async def _call_agent(self, text: str):
+    async def _call_agent(self, text: str, images: list[str] | None = None):
         """agent.handle 串行化调用（SQLite 游标非线程安全；桌宠/QQ 并发实测冲突）。"""
         async with self._agent_lock:
+            if images:
+                return await asyncio.to_thread(self._agent.handle, text, images, channel="tts")
             return await asyncio.to_thread(self._agent.handle, text, channel="tts")
 
     def _next_turn(self) -> int:
@@ -463,7 +466,8 @@ class PetServer:
         except asyncio.CancelledError:
             raise
 
-    async def _run_stream_talk(self, msg_text: str, turn_id: int, request_id: str, ws) -> None:
+    async def _run_stream_talk(self, msg_text: str, turn_id: int, request_id: str, ws,
+                               images: list[str] | None = None) -> None:
         try:
             if self._agent is None:
                 if self._client is ws and self._reply_deliverable(turn_id):
@@ -480,7 +484,7 @@ class PetServer:
                     self._agent.gate.note_ignored(pending[-1]["source"])
             except Exception as e:
                 logger.debug("proactive feedback update failed: %s", e)
-            r = await self._call_agent(msg_text)
+            r = await self._call_agent(msg_text, images)
             if self._client is ws and self._reply_deliverable(turn_id):
                 await self.speak_result(r, turn_id=turn_id, request_id=request_id)
         except asyncio.CancelledError:
@@ -537,10 +541,11 @@ class PetServer:
                         task = asyncio.create_task(self._run_poke(turn_id, request_id, ws))
                     else:
                         msg_text = str(msg.get("text") or "").strip()[:8000]
-                        if not msg_text:
+                        images = [str(x) for x in (msg.get("images") or []) if isinstance(x, str)][:4]
+                        if not msg_text and not images:
                             continue
                         task = asyncio.create_task(
-                            self._run_stream_talk(msg_text, turn_id, request_id, ws))
+                            self._run_stream_talk(msg_text, turn_id, request_id, ws, images=images))
                     self._reply_task = task
                     task.add_done_callback(self._task_done)
                 elif mtype == "drag":
@@ -656,7 +661,9 @@ class PetServer:
 
     async def run(self) -> None:
         logger.info("pet server on ws://%s:%d", self.host, self.port)
-        async with websockets.serve(self._handle, self.host, self.port):
+        async with websockets.serve(
+            self._handle, self.host, self.port, max_size=MAX_WS_MESSAGE_BYTES, origins=[None],
+        ):
             async def _warm_embedding():
                 if self._agent is None:
                     return

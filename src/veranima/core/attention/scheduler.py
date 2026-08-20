@@ -96,6 +96,7 @@ class AttentionScheduler:
                     window_title="", window_category="sensitive", ts=now,
                     source="foreground", reason=privacy["reason"],
                 ))
+            self._maybe_habituate(events, now)
             return events
         if changed_window:
             events.append(AttentionEvent(kind="window_switch", region=(0, 0, 1, 1),
@@ -106,6 +107,7 @@ class AttentionScheduler:
 
         frame = perception.grab_gray_downsampled()
         if frame is None:
+            self._maybe_habituate(events, now)
             return events
 
         # 2. 显著度（全局快照节奏）
@@ -128,16 +130,21 @@ class AttentionScheduler:
             events.append(mouse_ev)
 
         # 5. 习惯化事件（当前注视区域衰减）
-        if self.focus and now - self.focus["since"] > self.cfg.habituation_sec:
-            if not self._region_changed(now, self.focus):
-                self.state = "habituated"  # VISION_SPEC 3：fixating --no novelty 60s--> habituated
-                events.append(AttentionEvent(kind="habituation",
-                                             region=self._focus_region(), ts=now,
-                                             source="saliency", reason="no novelty 60s"))
-                self.focus = None
+        self._maybe_habituate(events, now)
         return events
 
     # ---------- 内部 ----------
+
+    def _maybe_habituate(self, events: list[AttentionEvent], now: float) -> None:
+        """Advance the time-only state even when privacy blocks capture."""
+        if self.focus and now - self.focus["since"] > self.cfg.habituation_sec:
+            if not self._region_changed(now, self.focus):
+                self.state = "habituated"
+                events.append(AttentionEvent(
+                    kind="habituation", region=self._focus_region(), ts=now,
+                    source="saliency", reason="no novelty 60s",
+                ))
+                self.focus = None
 
     def _should_saccade(self, now: float) -> bool:
         """扫视条件：注视超时 或 显著区域更高。"""
@@ -185,6 +192,12 @@ class AttentionScheduler:
                 return None
             pos = (p.x, p.y)
         except Exception:
+            return None
+        # 首次采样只建立基线；(0,0) 是合法屏幕坐标，不能把它误当成
+        # 已经静止 2 秒，更不能覆盖一个刚恢复的注视焦点。
+        if self._last_mouse_move_ts == 0.0:
+            self._last_mouse = pos
+            self._last_mouse_move_ts = now
             return None
         if pos != self._last_mouse:
             self._last_mouse = pos
