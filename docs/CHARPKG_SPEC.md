@@ -1,7 +1,7 @@
 # CHARPKG_SPEC：`.charpkg` 角色包格式与生命周期
 
 > 状态：设计稿 v1.0（2026-08-20）。
-> 实现状态：当前仓库已有旧 `.char` ZIP 导入导出（`core/character_archive.py`）；本文规定其安全升级方向，**不宣称 `.charpkg` 已实现**。
+> 实现状态：Pkg-1/Pkg-2 核心已落地：`.charpkg` manifest/checksums 双清单、V3/legacy 兼容、成员/规范化路径/链接/压缩比/哈希/扩展名校验、角色卡与立绘引用验证、staging 后原子安装和 CLI 导入导出。默认不打包 `voice/`、`example_voices/` 或模型权重。版本目录、更新 diff、完整回滚和设置页 UI 仍待后续切片。
 > 核心原则：角色包是可预览、可校验、可回滚的内容包，不是插件，不携带可执行代码，也不是记忆数据库备份。
 
 ## 1. 目标与非目标

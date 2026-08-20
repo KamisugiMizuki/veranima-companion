@@ -66,14 +66,19 @@ cp config/config.example.yaml config/config.yaml
 # 3. 多角色管理
 .venv/Scripts/python.exe -m veranima.cli roles list           # 列出角色
 .venv/Scripts/python.exe -m veranima.cli roles switch <id>    # 切换激活角色
-.venv/Scripts/python.exe -m veranima.cli roles export <id>    # 导出 .char 包
-.venv/Scripts/python.exe -m veranima.cli roles import <file.char>  # 导入（zip 防护 + 立绘映射）
+.venv/Scripts/python.exe -m veranima.cli roles export <id>    # 默认导出 .charpkg（不含声音资源和模型权重）
+.venv/Scripts/python.exe -m veranima.cli roles import <file.charpkg>  # 导入（哈希/zip 防护 + 立绘映射）
 
-# 4. CLI 对话（无参数进入交互模式）
+# 4. 共同创作核心（项目创建、确认共同经历）
+.venv/Scripts/python.exe -m veranima.cli create project story "屋顶短篇" "完成初稿"
+.venv/Scripts/python.exe -m veranima.cli create confirm <project_id> "完成了开场" <message_id>
+# scene / decision / artifact / thread / list：运行 `python -m veranima.cli create -h` 查看
+
+# 5. CLI 对话（无参数进入交互模式）
 .venv/Scripts/python.exe -m veranima.cli
 # 对话中斜杠命令：/memory [/export /forget /style /status /reset --style /quit]
 
-# 5. R5 任务管道（模糊指令 → 工单 → dsh，需 dsh CLI）
+# 6. R5 任务管道（模糊指令 → 工单 → dsh，需 dsh CLI）
 .venv/Scripts/python.exe -m veranima.cli task "帮我查一下今天的天气"
 ```
 

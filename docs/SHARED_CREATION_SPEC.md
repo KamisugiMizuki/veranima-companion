@@ -1,7 +1,7 @@
 # SHARED_CREATION_SPEC：共同创作与共同经历系统
 
 > 状态：设计稿 v1.0（2026-08-20）。
-> 实现状态：当前仓库已有 `shared_episode/shared_meaning/commitment/relationship_event`、P-0~P-9 和 MemoryStore 基础；本文细化“项目/章节/决策/产物”工作流，**不宣称 UI 和完整 DTO 已实现**。
+> 实现状态：C-1~C-3 后端核心已落地：Project/Scene/Decision/Artifact/OpenThread SQLite 持久化、真实消息 evidence 校验、共同事件幂等、用户确认后写入现有 `shared_episode`，并提供覆盖这些对象的 CLI。聊天窗口工作台、项目时间线、关系事件候选和完整导出/删除 UI 仍待后续切片。
 > 核心原则：关系链接来自可追溯的共同事件、共同决策、分歧修复和完成结果，不来自消息数量、在线天数或固定 attachment 加法。
 
 ## 1. 产品命题

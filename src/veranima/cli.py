@@ -39,7 +39,7 @@ def _roles_cmd(args) -> int:
         from .core.character_archive import export_character
         from pathlib import Path
         try:
-            out = export_character(roles_dir() / args.role_id, Path(args.new_id or f"{args.role_id}.char"))
+            out = export_character(roles_dir() / args.role_id, Path(args.new_id or f"{args.role_id}.charpkg"))
             print(f"已导出: {out}")
             return 0
         except Exception as e:
@@ -58,6 +58,66 @@ def _roles_cmd(args) -> int:
     return 1
 
 
+def _creation_store(cfg):
+    from pathlib import Path
+    from .core.shared_creation import SharedCreationStore
+    from .memory.store import MemoryStore
+
+    root = Path(cfg.get("root", "."))
+    llm_cfg = cfg.get("llm") or {}
+    memory_cfg = {**(cfg.get("memory") or {}), "root": str(root), "host": llm_cfg.get("base_url", "")}
+    db_path = memory_cfg.get("db_path") or str(root / "data" / "veranima.db")
+    if not Path(db_path).is_absolute():
+        db_path = str(root / db_path)
+    return SharedCreationStore(MemoryStore(db_path=db_path, config=memory_cfg, llm_config=llm_cfg))
+
+
+def _create_cmd(args) -> int:
+    """共同创作 CLI：消费项目、场景、决策、产物、线程和确认事件。"""
+    store = _creation_store(load_config())
+    if args.create_action == "list":
+        for project in store.list_projects():
+            print(f"{project.project_id} [{project.status}] {project.title} — {project.purpose}")
+        return 0
+    if args.create_action == "project":
+        project = store.create_project(kind=args.kind, title=args.title, purpose=args.purpose, confirmed=True)
+        print(f"项目已创建 {project.project_id}")
+        return 0
+    if args.create_action == "confirm":
+        event = store.confirm_shared_event(
+            args.project_id, summary=args.summary,
+            evidence_message_ids=[int(args.evidence_id)],
+        )
+        print(f"共同经历已确认 {event.event_id} memory_id={event.memory_id}")
+        return 0
+    if args.create_action == "scene":
+        scene = store.create_scene(args.project_id, title=args.title, goal=args.goal)
+        print(f"场景已创建 {scene.scene_id}")
+        return 0
+    if args.create_action == "decision":
+        decision = store.record_decision(
+            args.project_id, args.scene_id, question=args.question,
+            options=[{"id": args.chosen, "label": args.chosen}], chosen=args.chosen,
+            decided_by="user", evidence_message_ids=[int(args.evidence_id)],
+        )
+        print(f"决策已记录 {decision.decision_id}")
+        return 0
+    if args.create_action == "artifact":
+        artifact = store.save_artifact(
+            args.project_id, args.scene_id, title=args.title, content=args.content,
+            evidence_message_ids=[int(args.evidence_id)],
+        )
+        print(f"产物已保存 {artifact.artifact_id} v{artifact.version}")
+        return 0
+    if args.create_action == "thread":
+        thread = store.open_thread(
+            args.project_id, summary=args.summary, next_action=args.next_action,
+        )
+        print(f"线程已记录 {thread.thread_id}")
+        return 0
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -71,12 +131,33 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("new_id", nargs="?")
     tp = sub.add_parser("task", help="R5 任务管道：模糊指令 → 工单 → dsh")
     tp.add_argument("text", nargs="+", help="任务描述")
+    cp = sub.add_parser("create", help="共同创作")
+    cp.add_argument("create_action", choices=["list", "project", "scene", "decision", "artifact", "thread", "confirm"])
+    cp.add_argument("args", nargs="*")
     args = ap.parse_args(argv)
 
     if args.cmd == "roles":
         return _roles_cmd(args)
     if args.cmd == "task":
         return _task_cmd(args)
+    if args.cmd == "create":
+        if args.create_action == "list" and not args.args:
+            pass
+        elif args.create_action == "project" and len(args.args) == 3:
+            args.kind, args.title, args.purpose = args.args
+        elif args.create_action == "scene" and len(args.args) == 3:
+            args.project_id, args.title, args.goal = args.args
+        elif args.create_action == "decision" and len(args.args) == 5:
+            args.project_id, args.scene_id, args.question, args.chosen, args.evidence_id = args.args
+        elif args.create_action == "artifact" and len(args.args) == 5:
+            args.project_id, args.scene_id, args.title, args.content, args.evidence_id = args.args
+        elif args.create_action == "thread" and len(args.args) == 3:
+            args.project_id, args.summary, args.next_action = args.args
+        elif args.create_action == "confirm" and len(args.args) == 3:
+            args.project_id, args.summary, args.evidence_id = args.args
+        else:
+            ap.error("create 参数不匹配；使用 -h 查看动作参数")
+        return _create_cmd(args)
 
     # 默认：进入 CLI 对话
     cfg = load_config()
