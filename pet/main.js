@@ -6,7 +6,7 @@ const { app, BrowserWindow, Tray, Menu, ipcMain, powerSaveBlocker, screen } = re
 // audio.play() → 音频不播 + renderer catch 立即清气泡（实测「消失过快」）。
 // 桌宠是常驻陪伴 UI，放行无手势播放。
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
@@ -19,7 +19,9 @@ const startupAt = Date.now();
 let win = null;
 let logWin = null;
 let chatWin = null;
+let isQuitting = false;
 let activePetStreaming = false;  // 聊天窗口：桌宠回复流式进行中（chunk 合并/去重）
+let activeReply = null;            // R3 reply_start/segment/end 草稿，只在 end 写历史
 // 聊天记录：会话内数组 + userData/chat.json 持久化（跨重启保留）
 let chatHistory = [];
 const chatLogPath = () => path.join(app.getPath('userData'), 'chat.json');
@@ -41,7 +43,7 @@ function pushChat(role, text, opts = {}) {
     saveChatHistory();
     return last;
   }
-  const m = { role, text, ts: Date.now() };
+  const m = { role, text, ts: Date.now(), status: opts.status || 'complete', turn_id: opts.turnId || '' };
   chatHistory.push(m);
   saveChatHistory();
   // 广播给聊天窗口：历史消息直接 append；流式走 streaming/finish 增量
@@ -57,8 +59,11 @@ let ttsProc = null;  // 本地 TTS 服务子进程（Qwen3-TTS 1.7B，OpenAI 兼
 let suppressTTSRestart = false;
 let ttsRestartTimer = null;
 let reconnectDelay = 1000;
+let reconnectTimer = null;
 let suppressCoreRestart = false;  // 预期停止标志：stopCore/退出时不自动重启
 let coreRestartTimer = null;      // restartCore 定时器（防重入：多次保存只重启一次）
+let coreStartTimer = null;
+let ttsStartTimer = null;
 let logRing = [];                 // 内存环形缓冲（转发给日志窗口）
 let moduleLogStreams = {};        // 模块日志流：core.log / shell.log（tts.log 走原始字节）
 
@@ -98,6 +103,7 @@ function startupMark(label) {
 // 端口孤儿清理由 scripts/run_pet.py 统一负责；Electron 不再同步执行
 // netstat/PowerShell，避免重复扫描阻塞首屏并产生控制台闪窗。
 function startCore() {
+  if (isQuitting) return;
   suppressCoreRestart = false;  // 新进程：崩溃仍走自动重启（restartCore 的定时器会先置 true）
   const py = process.env.VERANIMA_PY || path.join(__dirname, '..', '.venv', 'Scripts', 'python.exe');
   const srcDir = path.join(__dirname, '..', 'src');
@@ -157,6 +163,7 @@ function appendTtsLog(buf) {
   } catch (e) { /* 日志写入失败不阻塞 TTS */ }
 }
 function startTTS() {
+  if (isQuitting) return;
   suppressTTSRestart = false;
   const gptDir = path.join(__dirname, '..', 'tts', 'gpt-sovits');
   const gptPy = path.join(gptDir, 'runtime', 'python.exe');
@@ -187,7 +194,7 @@ function startTTS() {
 }
 
 function scheduleTTSRestart() {
-  if (suppressTTSRestart || ttsRestartTimer) return;
+  if (isQuitting || suppressTTSRestart || ttsRestartTimer) return;
   ttsRestartTimer = setTimeout(() => { ttsRestartTimer = null; startTTS(); }, reconnectDelay);
   reconnectDelay = Math.min(reconnectDelay * 2, 30000);
 }
@@ -201,24 +208,55 @@ function stopTTS() {
 function terminateProcessTree(proc) {
   if (!proc || proc.killed) return;
   if (process.platform === 'win32') {
-    // uv 的 python.exe 会再派生真实解释器；只 kill 父进程会留下监听端口的子进程。
-    const killer = spawn('taskkill', ['/F', '/T', '/PID', String(proc.pid)], {
-      windowsHide: true, stdio: 'ignore',
-    });
-    killer.on('error', () => { try { proc.kill(); } catch (e) { /* already gone */ } });
+    // uv 的 python.exe 会再派生真实解释器；退出路径同步递归清理，不能让 app.quit 抢在 taskkill 前完成。
+    try {
+      spawnSync('taskkill', ['/F', '/T', '/PID', String(proc.pid)], {
+        windowsHide: true, stdio: 'ignore', timeout: 10000,
+      });
+    } catch (e) { /* fallback below */ }
+    try { if (!proc.killed) proc.kill(); } catch (e) { /* already gone */ }
   } else {
     try { proc.kill(); } catch (e) { /* already gone */ }
   }
 }
 
 function scheduleCoreRestart() {
-  setTimeout(startCore, reconnectDelay);
+  if (isQuitting || coreRestartTimer) return;
+  coreRestartTimer = setTimeout(() => {
+    coreRestartTimer = null;
+    startCore();
+  }, reconnectDelay);
   reconnectDelay = Math.min(reconnectDelay * 2, 30000); // 1s→2s→4s…上限30s
 }
 
 function stopCore() {
   suppressCoreRestart = true;  // 预期停止：exit 回调不再自动重启（防双 spawn）
   if (coreProc) { terminateProcessTree(coreProc); coreProc = null; }
+}
+
+function prepareQuit() {
+  if (isQuitting) return;
+  isQuitting = true;
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  if (coreRestartTimer) { clearTimeout(coreRestartTimer); coreRestartTimer = null; }
+  if (coreStartTimer) { clearTimeout(coreStartTimer); coreStartTimer = null; }
+  if (ttsStartTimer) { clearTimeout(ttsStartTimer); ttsStartTimer = null; }
+  stopDragPoll();
+  if (ws) {
+    try { ws.close(); } catch (e) { /* already closed */ }
+    ws = null;
+  }
+  if (tray) {
+    try { tray.destroy(); } catch (e) { /* already destroyed */ }
+    tray = null;
+  }
+  stopCore();
+  stopTTS();
+}
+
+function quitApplication() {
+  prepareQuit();
+  app.quit();
 }
 
 // 重启核心（设置保存后）：kill 旧进程 → 等端口释放 → spawn 新的。
@@ -302,8 +340,12 @@ function createWindow() {
     console.error('[health] renderer gone:', details.reason);
     setTimeout(() => { win && win.reload(); }, 2000); // 自愈重建（R3_SPEC 1.进程与协议）
   });
-  // airi allowClose 模式：关窗=隐藏（托盘常驻），托盘「退出」才真关
-  win.on('close', (e) => { e.preventDefault(); win.hide(); });
+  // 普通点叉=隐藏；托盘退出时 isQuitting=true，允许窗口真正销毁。
+  win.on('close', (e) => {
+    if (isQuitting) return;
+    e.preventDefault();
+    win.hide();
+  });
   win.on('closed', () => { win = null; });
 }
 
@@ -324,7 +366,11 @@ function openLogWindow() {
     },
   });
   logWin.loadFile('log.html');
-  logWin.on('close', (e) => { e.preventDefault(); logWin.hide(); }); // 复用模式
+  logWin.on('close', (e) => {
+    if (isQuitting) return;
+    e.preventDefault();
+    logWin.hide();
+  }); // 复用模式
   logWin.on('ready-to-show', () => {
     logWin.show();
     logWin.webContents.send('log-history', logRing); // 补发历史
@@ -363,7 +409,11 @@ function openSettingsWindow() {
     },
   });
   settingsWin.loadFile('settings.html');
-  settingsWin.on('close', (e) => { e.preventDefault(); settingsWin.hide(); }); // 复用
+  settingsWin.on('close', (e) => {
+    if (isQuitting) return;
+    e.preventDefault();
+    settingsWin.hide();
+  }); // 复用
   settingsWin.on('ready-to-show', () => settingsWin.show());
   settingsWin.on('closed', () => { settingsWin = null; });
 }
@@ -491,7 +541,7 @@ function buildContextMenu() {
     { label: '打开日志', click: () => openLogWindow() },
     { label: '重启核心', click: () => { restartCore(); } },
     { type: 'separator' },
-    { label: '退出（全部一起停）', click: () => { stopCore(); stopTTS(); app.quit(); } },
+    { label: '退出（全部一起停）', click: () => quitApplication() },
   ]);
 }
 
@@ -538,7 +588,11 @@ function connect() {
 }
 
 function scheduleReconnect() {
-  setTimeout(connect, reconnectDelay);
+  if (isQuitting || reconnectTimer) return;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connect();
+  }, reconnectDelay);
   reconnectDelay = Math.min(reconnectDelay * 2, 30000); // 1s→2s→4s…上限30s
 }
 
@@ -646,7 +700,11 @@ function openChatWindow() {
     },
   });
   chatWin.loadFile('chat.html');
-  chatWin.on('close', (e) => { e.preventDefault(); chatWin.hide(); }); // 复用模式
+  chatWin.on('close', (e) => {
+    if (isQuitting) return;
+    e.preventDefault();
+    chatWin.hide();
+  }); // 复用模式
   chatWin.on('ready-to-show', () => {
     chatWin.show();
     chatWin.webContents.send('chat-history', chatHistory);  // 补发历史
@@ -785,7 +843,7 @@ if (!gotLock) {
     connect();
     setInterval(healthCheck, HEALTH_INTERVAL_MS);
   });
-  app.on('before-quit', () => { stopCore(); stopTTS(); });
+  app.on('before-quit', () => { prepareQuit(); });
   app.on('window-all-closed', (e) => {
     // 桌宠壳关窗不退出（托盘常驻）；只有托盘菜单「退出」才 quit
   });

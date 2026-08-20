@@ -159,6 +159,9 @@ def main() -> None:
         for p in procs:
             if p.poll() is None:
                 p.kill()
+        # Electron 正常退出应已清理核心/TTS；这里按端口再兜底一次，确保
+        # uv launcher 的孙进程不会在托盘图标消失后继续占用 8765/9880。
+        preflight_ports()
 
 
 if __name__ == "__main__":
