@@ -15,6 +15,7 @@ import math
 import os
 import random
 import re
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -130,6 +131,14 @@ class StyleLearner:
     M-6（MEMORY_SPEC 13）：profile 为慢变量（用户文风统计），feedback 为快变量，
     两个来源分别记录，prompt 合并为 UserStyleBrief。
     """
+
+    _persist_locks: dict[str, threading.RLock] = {}
+    _persist_locks_guard = threading.Lock()
+
+    def _persist_lock(self):
+        key = str(Path(self.persist_path).resolve()) if self.persist_path else "<memory>"
+        with self._persist_locks_guard:
+            return self._persist_locks.setdefault(key, threading.RLock())
 
     def __init__(self, params: StyleParams | None = None, *, persist_path: str | None = None):
         self.params = params or StyleParams()
@@ -275,17 +284,18 @@ class StyleLearner:
     def save(self) -> None:
         if not self.persist_path:
             return
-        path = Path(self.persist_path)
-        self._refresh_activation_from_data(self._read_persisted(), newer_only=True)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        snapshot = self.snapshot()
-        tmp.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
-        current = self._read_persisted()
-        if int(current.get("activation_revision") or 0) > int(snapshot["activation_revision"]):
-            tmp.unlink(missing_ok=True)
-            return
-        os.replace(tmp, path)
+        with self._persist_lock():
+            path = Path(self.persist_path)
+            self._refresh_activation_from_data(self._read_persisted(), newer_only=True)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            snapshot = self.snapshot()
+            tmp.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+            current = self._read_persisted()
+            if int(current.get("activation_revision") or 0) > int(snapshot["activation_revision"]):
+                tmp.unlink(missing_ok=True)
+                return
+            os.replace(tmp, path)
 
     def load(self) -> bool:
         if not self.persist_path or not Path(self.persist_path).exists():
