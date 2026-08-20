@@ -180,3 +180,13 @@ GUI 实现以 `docs/GUI_SPEC.md` 为唯一界面契约：主窗突出角色存�
 - LLM/TTS/核心失败时文字不消失，有恢复动作。
 - 主动消息能解释为什么现在发，忽略后停止。
 - 视觉观察降低盲目提问，不制造监控感。
+
+## 9. 近期设计扩展
+
+以下是围绕角色包、表达适配和共同经历的设计稿；它们先规定边界和验收，不代表对应运行时功能已经全部实现：
+
+- [`CHARPKG_SPEC.md`](CHARPKG_SPEC.md)：在现有 `.char` ZIP 归档基础上升级 `.charpkg`，增加 manifest/schema、哈希清单、quarantine、原子安装、冲突和回滚；不允许执行代码、打包密钥或默认导出用户记忆。
+- [`STYLE_LEARNING_SPEC.md`](STYLE_LEARNING_SPEC.md)：先做统计 `StyleProfile` + `StyleBrief`/`ResponsePlan` 控制；只有语料授权、规模和离线评测满足条件时才做可回滚 LoRA 实验，风格不得覆盖角色核心。
+- [`SHARED_CREATION_SPEC.md`](SHARED_CREATION_SPEC.md)：复用 `shared_episode/shared_meaning/commitment/relationship_event` 和现有关系模型，增加 Project/Arc/Scene/Decision/Artifact/OpenThread 的协作工作流；关系变化必须有证据和用户确认。
+
+Yuki 运行时卡位于 [`characters/yuki/character.json`](../characters/yuki/character.json)，说明文件 [`characters/yuki/card.md`](../characters/yuki/card.md) 区分公开人设参考、项目原创桌宠延展和明确排除的原作文本/剧透。

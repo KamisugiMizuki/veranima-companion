@@ -43,9 +43,13 @@ Electron 壳 (pet/)                    Python 核心 (src/veranima/)
 | [docs/R3_SPEC.md](docs/R3_SPEC.md) | R3 桌宠作为「在场的人」（Electron/聊天/状态闭环） |
 | [docs/R4_SPEC.md](docs/R4_SPEC.md) | R4 有分寸的在场与主动性（Presence/Attention/9 闸门主动仲裁） |
 | [docs/R5_SPEC.md](docs/R5_SPEC.md) | R5 外部任务协作（dsh 可选能力） |
-| [docs/GUI_SPEC.md](docs/GUI_SPEC.md) | GUI 实现契约（窗口/组件/状态/动效/无障碍/分批实现） |
-| [docs/VISION_SPEC.md](docs/VISION_SPEC.md) | 视觉注意力模块（三层感知/显著度/扫视-注视/敏感窗口） |
-| [config/character.example.json](config/character.example.json) | 角色卡示例（字段说明见 DESIGN.md） |
+|| [docs/GUI_SPEC.md](docs/GUI_SPEC.md) | GUI 实现契约（窗口/组件/状态/动效/无障碍/分批实现） |
+|| [docs/VISION_SPEC.md](docs/VISION_SPEC.md) | 视觉注意力模块（三层感知/显著度/扫视-注视/敏感窗口） |
+|| [docs/CHARPKG_SPEC.md](docs/CHARPKG_SPEC.md) | `.charpkg` 角色包格式、安全导入导出、冲突、回滚与 UI 设计稿 |
+|| [docs/STYLE_LEARNING_SPEC.md](docs/STYLE_LEARNING_SPEC.md) | 有限语料风格分析、运行时模仿、离线 LoRA 边界与评测设计稿 |
+|| [docs/SHARED_CREATION_SPEC.md](docs/SHARED_CREATION_SPEC.md) | 共同创作、项目/章节/决策/产物、共同经历与关系事件设计稿 |
+|| [characters/yuki/card.md](characters/yuki/card.md) | Yuki 角色卡说明、公开人设参考与项目原创边界 |
+|| [config/character.example.json](config/character.example.json) | 角色卡示例（字段说明见 DESIGN.md） |
 
 ## 快速开始（CLI）
 
