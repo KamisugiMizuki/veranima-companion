@@ -1,7 +1,7 @@
 """启动桌宠（开发模式）：只启动 Electron 壳——壳会自动 spawn Python 核心。
 
-桌宠启动时若 config.yaml 的 qq.enabled=true，会一并拉起 QQ bot（后台无窗口）。
-退出（托盘退出 / Ctrl+C）时全部进程一起停。
+桌宠核心会在同一 Python 进程内挂载 QQ adapter，共用 Agent/记忆/锁。
+退出（托盘退出 / Ctrl+C）时壳及其核心/TTS 一起停。
 
 用法：推荐双击项目根目录的 run_pet.vbs（无控制台窗口）；开发调试可运行：python scripts/run_pet.py
 """
@@ -67,16 +67,6 @@ def check_node_modules() -> None:
         sys.exit(1)
 
 
-def qq_enabled() -> bool:
-    """config.yaml 的 qq.enabled（桌宠启动时是否连带拉起 QQ bot）。"""
-    try:
-        import yaml
-        cfg = yaml.safe_load(open(os.path.join(V, "config", "config.yaml"), encoding="utf-8"))
-        return bool((cfg.get("qq") or {}).get("enabled"))
-    except Exception:
-        return False
-
-
 def preflight_ports() -> None:
     """启动前检查核心/TTS 端口：残留孤儿进程（壳被强杀后 Windows 不回收子进程）
     会占住 8765/9880 导致核心 bind 失败死循环——这里自动清理。
@@ -129,21 +119,7 @@ def main() -> None:
     )
     procs = [shell]
 
-    # 2. QQ bot（config qq.enabled=true 时一并拉起；后台无窗口）
-    qq_proc = None
-    if qq_enabled():
-        if os.path.exists(PY):
-            qq_proc = subprocess.Popen(
-                [PY, "-m", "veranima.qq"],
-                cwd=V, env=env, creationflags=CREATE_NO_WINDOW, startupinfo=_startupinfo(),
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-            procs.append(qq_proc)
-            print("QQ bot 已随桌宠启动（config qq.enabled=true）")
-        else:
-            print("[warn] .venv 缺失，QQ bot 未启动")
-
-    print("桌宠已启动（壳会自动拉起 Python 核心；托盘退出后全部进程随之退出）")
+    print("桌宠已启动（核心内共用 Agent 挂载 QQ；托盘退出后全部进程随之退出）")
     try:
         # 等待壳退出（托盘退出 = 真正退出）；pythonw 下无 Ctrl+C
         while shell.poll() is None:

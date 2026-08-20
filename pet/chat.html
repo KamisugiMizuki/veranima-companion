@@ -1,68 +1,76 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-<meta charset="UTF-8">
-<style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { height:100vh; display:flex; flex-direction:column; font: 13px/1.6 "Microsoft YaHei", sans-serif; background: #f5f6f7; overflow: hidden; }
-  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
-  #header { height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 12px;
-    background: #fff; border-bottom: 1px solid #e4e6eb; }
-  #header .dot { width: 8px; height: 8px; border-radius: 50%; background: #95ec69; }
-  #header .name { font-weight: 600; }
-  #header .status { font-size: 11px; color: #666; }  /* GUI_SPEC 11：对比度 >=4.5:1 */
-  #msgs { flex:1; min-height:0; overflow-y: auto; padding: 12px; }
-  #tools { height: 38px; display:flex; gap:6px; padding:5px 10px; background:#fafafa; border-bottom:1px solid #e4e6eb; }
-  #historyQuery { flex:1; min-width:0; border:1px solid #d8dce3; border-radius:4px; padding:4px 8px; }
-  #tools button { border:1px solid #d8dce3; background:#fff; border-radius:4px; padding:2px 8px; }
-  #archive { margin:8px 12px; border:1px solid #e4e6eb; border-radius:5px; background:#fff; }
-  #archive summary { cursor:pointer; padding:5px 8px; color:#59636f; }
-  #chapters { padding:0 8px 8px; max-height:150px; overflow:auto; }
-  .chapter { padding:6px 0; border-top:1px solid #f0f1f2; }
-  .msg { display: flex; margin-bottom: 14px; }
-  .msg.user { justify-content: flex-end; }
-  .avatar { width: 36px; height: 36px; border-radius: 6px; flex-shrink: 0; overflow: hidden;
-    background: #e8eaed; display: flex; align-items: center; justify-content: center; font-size: 16px; }
-  .msg.user .avatar { order: 2; margin-left: 8px; background: #a8c7fa; }
-  .avatar img { width: 100%; height: 100%; object-fit: cover; }
-  .body { max-width: 70%; }
-  .bubble { padding: 8px 12px; border-radius: 8px; word-break: break-word; white-space: pre-wrap; }
-  .msg.pet .bubble { background: #fff; border: 1px solid #e4e6eb; border-top-left-radius: 2px; }
-  .msg.user .bubble { background: #95ec69; border-top-right-radius: 2px; }
-  .ts { font-size: 10px; color: #767676; margin-top: 2px; }  /* 对比度修正 */
-  .msg.user .ts { text-align: right; }
-  #inputbar { height: 60px; background: #fff; border-top: 1px solid #e4e6eb;
-    display: flex; align-items: center; gap: 8px; padding: 0 12px; }
-  #input { flex: 1; height: 34px; padding: 0 12px; border: 1px solid #d8dce3; border-radius: 6px;
-    font-size: 13px; }
-  #input:focus-visible { outline: 2px solid #4e9bf7; outline-offset: 1px; }  /* GUI_SPEC 11 */
-  #send:focus-visible { outline: 2px solid #2b6cb0; outline-offset: 2px; }
-  #send { height: 34px; padding: 0 18px; border: none; border-radius: 6px; background: #4e9bf7;
-    color: #fff; cursor: pointer; font-size: 13px; }
-  #send:disabled { background: #c9d4e0; cursor: default; }
-  .typing { color: #666; font-size: 12px; }
-  .empty { color: #666; text-align: center; margin-top: 48px; font-size: 12px; }  /* 空态 */
-  /* GUI_SPEC 10/11：reduced motion + 允许复制 */
-  .msg .bubble { user-select: text; }
-  @media (prefers-reduced-motion: reduce) {
-    * { transition: none !important; animation: none !important; }
-  }
-</style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Veranima 聊天</title>
+  <link rel="stylesheet" href="chat.css">
 </head>
 <body>
-  <div id="header">
-    <span class="dot" id="statusDot"></span>
-    <span class="name" id="charName">Yuki</span>
-    <span class="status" id="statusText">连接中…</span>
-  </div>
-  <div id="tools"><input id="historyQuery" placeholder="搜索聊天记录" aria-label="搜索聊天记录"><button id="historySearch">搜索</button><button id="historyClear">清除</button></div>
-  <details id="archive"><summary>人物档案</summary><div id="chapters">暂无章节</div></details>
-  <main id="msgs" role="log" aria-live="polite"></main>
-  <form id="inputbar">
-    <label for="input" class="sr-only">发送消息</label>
-    <input id="input" placeholder="对她说点什么…" autocomplete="off">
-    <button id="send" disabled>发送</button>
-  </form>
-<script src="chat-renderer.js"></script>
+  <section class="chat-shell">
+    <header class="character-header">
+      <div class="identity">
+        <div class="character-avatar"><img id="characterAvatar" alt="角色头像"><span id="avatarFallback">由</span></div>
+        <div class="identity-copy">
+          <strong id="charName">Veranima</strong>
+          <span id="statusText" aria-live="polite">正在连接</span>
+        </div>
+        <span id="statusDot" class="status-dot" aria-hidden="true"></span>
+      </div>
+      <div class="header-actions">
+        <button id="historyToggle" class="icon-button" type="button" title="搜索聊天记录" aria-label="搜索聊天记录" aria-pressed="false">⌕</button>
+        <button id="archiveToggle" class="icon-button" type="button" title="人物档案" aria-label="人物档案" aria-pressed="false">▤</button>
+        <button id="muteToggle" class="icon-button" type="button" title="静音语音" aria-label="静音语音" aria-pressed="false">♫</button>
+        <button id="clearChat" class="icon-button danger" type="button" title="清空聊天记录" aria-label="清空聊天记录">×</button>
+      </div>
+    </header>
+
+    <section id="historyPanel" class="utility-panel" hidden aria-label="聊天记录搜索">
+      <form id="searchForm" class="search-row">
+        <label class="sr-only" for="historyQuery">搜索聊天记录</label>
+        <input id="historyQuery" type="search" placeholder="搜索聊天记录" autocomplete="off">
+        <button id="historySearch" class="small-button primary" type="submit">搜索</button>
+        <button id="historyBack" class="small-button" type="button">返回会话</button>
+      </form>
+      <div id="searchMeta" class="utility-meta"></div>
+    </section>
+
+    <aside id="archivePanel" class="utility-panel archive-panel" hidden aria-label="人物档案">
+      <div class="panel-heading"><strong>人物档案</strong><button id="archiveClose" class="plain-button" type="button" aria-label="关闭人物档案">收起</button></div>
+      <div id="chapters" class="chapters"><span class="muted">正在读取章节…</span></div>
+    </aside>
+
+    <main id="messages" class="messages" role="log" aria-live="polite" aria-label="聊天消息">
+      <div id="emptyState" class="empty-state">
+        <div class="empty-avatar"><span>由</span></div>
+        <strong>还没聊过。先说一句吧。</strong>
+        <span>她会记住这次对话里真正重要的部分。</span>
+        <div class="starter-row">
+          <button class="starter" type="button" data-text="今天过得怎么样？">今天过得怎么样？</button>
+          <button class="starter" type="button" data-text="我有件事想和你聊聊">我有件事想和你聊聊</button>
+          <button class="starter" type="button" data-text="你现在在想什么？">你现在在想什么？</button>
+        </div>
+      </div>
+      <button id="newMessageMarker" class="new-message-marker" type="button" hidden>有新消息</button>
+    </main>
+
+    <div id="notice" class="notice" role="alert" hidden>
+      <span id="noticeText"></span>
+      <button id="noticeAction" class="plain-button" type="button" hidden>重试</button>
+      <button id="noticeClose" class="plain-button" type="button" aria-label="关闭提示">×</button>
+    </div>
+
+    <form id="composer" class="composer">
+      <label class="sr-only" for="input">发送消息</label>
+      <textarea id="input" rows="1" placeholder="对她说点什么…" autocomplete="off" spellcheck="true"></textarea>
+      <div class="composer-actions">
+        <span id="draftHint" class="draft-hint">Enter 发送 · Shift+Enter 换行</span>
+        <button id="stopSpeaking" class="small-button" type="button" hidden>停止说话</button>
+        <button id="stopReply" class="small-button danger" type="button" hidden>取消回复</button>
+        <button id="send" class="send-button" type="submit" disabled>发送</button>
+      </div>
+    </form>
+  </section>
+  <script src="chat-renderer.js"></script>
 </body>
 </html>

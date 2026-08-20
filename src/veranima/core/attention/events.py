@@ -40,6 +40,9 @@ class AttentionEvent:
     confidence: float = 0.7
     source: str = "saliency"   # foreground/cursor/saliency/manual
     reason: str = ""
+    app_name: str = ""
+    window_title: str = ""
+    window_category: str = ""
     expires_at: float = 0.0
 
     def __post_init__(self):

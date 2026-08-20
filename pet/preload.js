@@ -18,14 +18,22 @@ contextBridge.exposeInMainWorld('pet', {
   // 聊天窗口通道
   onChatHistory: (cb) => ipcRenderer.on('chat-history', (e, m) => cb(m)),
   onChatLine: (cb) => ipcRenderer.on('chat-line', (e, m) => cb(m)),
+  onChatEvent: (cb) => ipcRenderer.on('chat-event', (e, m) => cb(m)),
+  onChatProfile: (cb) => ipcRenderer.on('chat-profile', (e, m) => cb(m)),
   onHistorySearchResults: (cb) => ipcRenderer.on('history-search-results', (e, m) => cb(m)),
   onSelfModel: (cb) => ipcRenderer.on('self-model', (e, m) => cb(m)),
-  sendChat: (text) => ipcRenderer.send('chat-send', text),
+  sendChat: (text) => ipcRenderer.invoke('chat-send', text),
+  clearChat: () => ipcRenderer.invoke('chat-clear'),
+  retryChat: (messageId) => ipcRenderer.invoke('chat-retry', messageId),
+  getChatState: () => ipcRenderer.invoke('chat-get-state'),
   searchHistory: (query) => ipcRenderer.invoke('search-history', query),
   getSelfModel: () => ipcRenderer.invoke('get-self-model'),
   reconnect: () => ipcRenderer.send('pet-reconnect'),
   stopReply: () => ipcRenderer.send('chat-stop'),  // GUI_SPEC 9：停止说话/取消回复
+  stopSpeaking: () => ipcRenderer.send('speech-stop'),
+  setSpeechMuted: (muted) => ipcRenderer.send('speech-mute', !!muted),
   resizePet: (dim) => ipcRenderer.send('pet-resize', dim),  // GUI_SPEC 4.2：窗口高度随气泡
+  setPetHitShape: (data) => ipcRenderer.send('pet-hit-shape', data),
   // 设置窗口通道：请求 → main 转发 WS → 核心响应回传
   getConfig: () => ipcRenderer.invoke('settings-get-config'),
   saveConfig: (data) => ipcRenderer.invoke('settings-save-config', data),

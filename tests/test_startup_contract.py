@@ -47,3 +47,11 @@ def test_zero_console_launcher_exists():
     text = (ROOT / "run_pet.vbs").read_text(encoding="ascii")
     assert "pythonw.exe" in text
     assert ", 0, False" in text
+
+
+def test_launcher_does_not_spawn_second_qq_agent():
+    launcher = (ROOT / "scripts/run_pet.py").read_text(encoding="utf-8")
+    core = (ROOT / "src/veranima/pet_server.py").read_text(encoding="utf-8")
+    assert "veranima.qq" not in launcher
+    assert "connect_qq" in core
+    assert "build_adapter" in core

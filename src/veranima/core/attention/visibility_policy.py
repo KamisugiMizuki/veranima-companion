@@ -32,16 +32,17 @@ class VisibilityPolicy:
         self.sensitive_categories = list(cfg.get("sensitive_categories", []))
         self._keywords = tuple(DEFAULT_SENSITIVE_KEYWORDS)
 
-    def is_sensitive(self, app_name: str, window_title: str = "") -> bool:
+    def is_sensitive(self, app_name: str, window_title: str = "", category: str = "") -> bool:
         """窗口/标题命中敏感关键词（VISION_SPEC 4 默认分类）。"""
-        hay = f"{app_name} {window_title}".lower()
-        return any(k in hay for k in self._keywords)
+        hay = f"{app_name} {window_title} {category}".lower()
+        configured = {str(item).lower() for item in self.sensitive_categories}
+        return category.lower() in configured or any(k in hay for k in self._keywords)
 
     def paused_now(self) -> bool:
         """attention.paused=true → 全局暂停（VISION_SPEC 4 第 4 条）。"""
         return self.paused
 
-    def policy_action(self, app_name: str, window_title: str = "") -> dict:
+    def policy_action(self, app_name: str, window_title: str = "", category: str = "") -> dict:
         """对一次感知请求给出策略裁决。
 
         返回 {"action": "capture|block", "category": "sensitive|normal", "reason": "..."}
@@ -50,7 +51,7 @@ class VisibilityPolicy:
             return {"action": "block", "category": "normal", "reason": "attention disabled"}
         if self.paused:
             return {"action": "block", "category": "normal", "reason": "paused by user"}
-        if self.is_sensitive(app_name, window_title):
+        if self.is_sensitive(app_name, window_title, category):
             return {"action": "block", "category": SENSITIVE_CATEGORY,
                     "reason": f"sensitive window: {app_name}"}
         return {"action": "capture", "category": "normal", "reason": "ok"}

@@ -1,12 +1,13 @@
 // Veranima 桌宠壳 main 进程（R3_SPEC 1.进程与协议）
 // 职责：窗口管理（主窗口/日志窗口）、spawn 核心、WS 连核心、日志汇聚、health 自愈
-const { app, BrowserWindow, Tray, Menu, ipcMain, powerSaveBlocker, screen } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, powerSaveBlocker, screen, nativeImage } = require('electron');
 
 // 主动对话（L0 衔接语等）无用户手势：Chromium autoplay 策略默认拒绝
 // audio.play() → 音频不播 + renderer catch 立即清气泡（实测「消失过快」）。
 // 桌宠是常驻陪伴 UI，放行无手势播放。
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 const { spawn, spawnSync } = require('child_process');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
@@ -21,36 +22,96 @@ let logWin = null;
 let chatWin = null;
 let isQuitting = false;
 let activePetStreaming = false;  // 聊天窗口：桌宠回复流式进行中（chunk 合并/去重）
-let activeReply = null;            // R3 reply_start/segment/end 草稿，只在 end 写历史
+let activeReply = null;            // 当前 R3 reply 草稿，只在 reply_end 落盘
+let pendingUserMessages = new Map();
+let latestReplyTurn = 0;
+let coreSessionId = '';
+let speechMuted = false;
+const stoppedSpeechTurns = new Set();
+const cancelledReplyTurns = new Set();
+const seenCoreEvents = new Set();
 // 聊天记录：会话内数组 + userData/chat.json 持久化（跨重启保留）
 let chatHistory = [];
+let chatHistoryLoaded = false;
 const chatLogPath = () => path.join(app.getPath('userData'), 'chat.json');
 function loadChatHistory() {
   try { chatHistory = JSON.parse(fs.readFileSync(chatLogPath(), 'utf-8')) || []; }
   catch { chatHistory = []; }
   if (!Array.isArray(chatHistory)) chatHistory = [];
+  let changed = false;
+  for (const message of chatHistory) {
+    if (message.status === 'pending' || message.status === 'sent') {
+      message.status = 'failed';
+      changed = true;
+    }
+  }
+  if (changed) saveChatHistory();
+  chatHistoryLoaded = true;
 }
 function saveChatHistory() {
   try { fs.writeFileSync(chatLogPath(), JSON.stringify(chatHistory.slice(-500)), 'utf-8'); }
   catch { /* 写失败不阻塞聊天 */ }
 }
 function pushChat(role, text, opts = {}) {
-  // 主动对话 speak 逐句推送 N 条（每条 text=整段，音频不同）→ 聊天记录
-  // 去重：同角色同文本的连续消息合并（只更新时间戳），避免「重复三遍」（实测）
+  if (!chatHistoryLoaded) loadChatHistory();
+  const message = {
+    message_id: opts.messageId || crypto.randomUUID(),
+    role,
+    text: String(text || ''),
+    ts: opts.ts || Date.now(),
+    status: opts.status || 'complete',
+    turn_id: opts.turnId || '',
+    request_id: opts.requestId || '',
+  };
   const last = chatHistory[chatHistory.length - 1];
-  if (last && last.role === role && last.text === text && !opts.streaming) {
-    last.ts = Date.now();
-    saveChatHistory();
+  if (last && last.role === message.role && last.text === message.text &&
+      message.status === 'complete' && opts.dedupe !== false) {
+    last.ts = message.ts;
+    if (opts.persist !== false) saveChatHistory();
     return last;
   }
-  const m = { role, text, ts: Date.now(), status: opts.status || 'complete', turn_id: opts.turnId || '' };
-  chatHistory.push(m);
-  saveChatHistory();
-  // 广播给聊天窗口：历史消息直接 append；流式走 streaming/finish 增量
-  if (chatWin && !chatWin.isDestroyed()) {
-    chatWin.webContents.send('chat-line', { ...m, streaming: !!opts.streaming, finish: !!opts.finish });
+  chatHistory.push(message);
+  if (opts.persist !== false) saveChatHistory();
+  if (opts.broadcast !== false && chatWin && !chatWin.isDestroyed()) {
+    chatWin.webContents.send('chat-line', message);
   }
-  return m;
+  return message;
+}
+
+function sendChatEvent(type, payload = {}) {
+  if (chatWin && !chatWin.isDestroyed()) {
+    chatWin.webContents.send('chat-event', { type, ...payload });
+  }
+}
+
+function updateChatMessage(messageId, patch) {
+  const message = chatHistory.find((item) => item.message_id === messageId);
+  if (!message) return null;
+  Object.assign(message, patch);
+  saveChatHistory();
+  sendChatEvent('message-update', { message });
+  return message;
+}
+
+function rememberCoreEvent(msg) {
+  const id = msg && msg.event_id;
+  if (!id) return true;
+  if (seenCoreEvents.has(id)) return false;
+  seenCoreEvents.add(id);
+  if (seenCoreEvents.size > 2048) {
+    const first = seenCoreEvents.values().next().value;
+    seenCoreEvents.delete(first);
+  }
+  return true;
+}
+
+function replyMatches(payload) {
+  if (!activeReply) return false;
+  const turn = Number(payload && payload.turn_id || 0);
+  const request = String(payload && payload.request_id || '');
+  if (turn && turn !== activeReply.turn_id) return false;
+  if (request && activeReply.request_id && request !== activeReply.request_id) return false;
+  return true;
 }
 let tray = null;
 let ws = null;
@@ -123,6 +184,11 @@ function startCore() {
   }
   coreProc.stdout.on('data', (d) => pushLog('core', d.toString().trimEnd()));
   coreProc.stderr.on('data', (d) => pushLog('core-err', d.toString().trimEnd()));
+  coreProc.on('error', (err) => {
+    pushLog('shell', `core process error: ${err.message}`);
+    coreProc = null;
+    if (!isQuitting) scheduleCoreRestart();
+  });
   coreProc.on('exit', (code, signal) => {
     pushLog('shell', `core exited (code=${code}, signal=${signal}); ${suppressCoreRestart ? '预期停止，不自动重启' : `restarting in ${reconnectDelay}ms`}`);
     coreProc = null;
@@ -185,6 +251,11 @@ function startTTS() {
   }
   ttsProc.stdout.on('data', (d) => appendTtsLog(d));   // 原始字节写 logs/tts.log
   ttsProc.stderr.on('data', (d) => appendTtsLog(d));   // 同上（含 tqdm 进度）
+  ttsProc.on('error', (err) => {
+    pushLog('shell', `tts process error: ${err.message}`);
+    ttsProc = null;
+    if (!isQuitting) scheduleTTSRestart();
+  });
   ttsProc.on('exit', (code, signal) => {
     pushLog('shell', `tts exited (code=${code}, signal=${signal}); ${suppressTTSRestart ? '预期停止，不自动重启' : `restarting in ${reconnectDelay}ms`}`);
     ttsProc = null;
@@ -385,12 +456,27 @@ const wsPending = new Map(); // id -> resolve
 
 function wsRequest(type, data, timeoutMs = 5000) {
   return new Promise((resolve) => {
-    if (!ws || ws.readyState !== 1) { resolve(null); return; }
+    if (!ws || ws.readyState !== 1 || isQuitting) { resolve(null); return; }
     const id = ++wsRequestId;
-    wsPending.set(id, resolve);
-    ws.send(JSON.stringify({ type, data, id }));
-    setTimeout(() => { if (wsPending.has(id)) { wsPending.delete(id); resolve(null); } }, timeoutMs);
+    const timer = setTimeout(() => {
+      const entry = wsPending.get(id);
+      if (entry) { wsPending.delete(id); entry.resolve(null); }
+    }, timeoutMs);
+    wsPending.set(id, { resolve, timer });
+    try {
+      ws.send(JSON.stringify({ type, data, id }));
+    } catch (e) {
+      clearTimeout(timer); wsPending.delete(id); resolve(null);
+    }
   });
+}
+
+function rejectWsPending() {
+  for (const [id, entry] of wsPending) {
+    clearTimeout(entry.timer);
+    entry.resolve(null);
+    wsPending.delete(id);
+  }
 }
 
 function openSettingsWindow() {
@@ -453,12 +539,13 @@ ipcMain.on('core-restart', () => { restartCore(); });
 ipcMain.on('pet-reconnect', () => {
   // R3_SPEC 4：聊天窗 offline/failed → 重试连接（重置退避立即重连）
   reconnectDelay = 1000;
-  if (ws) { try { ws.close(); } catch (e) {} ws = null; }
+  if (ws) { rejectWsPending(); try { ws.close(); } catch (e) {} ws = null; }
   connect();
 });
+ipcMain.on('pet-hit-shape', (e, payload) => applyPetHitShape(payload || {}));
 ipcMain.on('chat-stop', () => {
-  // GUI_SPEC 9：generating/speaking → 停止（转发核心 stop_speak → reply_cancelled）
-  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'stop_speak' }));
+  // 取消整轮生成（与 speech-stop 的本地音频停止分离）。
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'cancel_reply' }));
 });
 ipcMain.on('pet-resize', (e, dim) => {
   // GUI_SPEC 4.2：气泡增长 → 窗口向上扩（顶边随高度变化，锚点=形象底边稳定）。
@@ -511,8 +598,13 @@ function pushAvatarMapFrom(cardPath) {
       map[label] = require('url').pathToFileURL(path.join(path.dirname(full), rel)).href;
     }
     // 主窗 + 聊天窗都收（聊天窗桌宠头像用角色卡立绘，不再写死 zima idle）
+    const profile = { name: data.name || data.display_name || 'Veranima' };
     win && win.webContents.send('avatar-map', map);
-    if (chatWin && !chatWin.isDestroyed()) chatWin.webContents.send('avatar-map', map);
+    win && win.webContents.send('character-profile', profile);
+    if (chatWin && !chatWin.isDestroyed()) {
+      chatWin.webContents.send('avatar-map', map);
+      chatWin.webContents.send('chat-profile', profile);
+    }
     // 启动时同步立绘尺寸（设置页 avatar_height；默认 200）
     const ah = localAvatarHeight();
     if (ah > 0) win && win.webContents.send('avatar-height', Number(ah));
@@ -528,11 +620,104 @@ function localAvatarHeight() {
   } catch { return 0; }
 }
 
+function applyPetHitShape(payload = {}) {
+  if (!win || win.isDestroyed() || typeof win.setShape !== 'function') return;
+  if (process.platform !== 'win32' && process.platform !== 'linux') return;
+  try {
+    const src = String(payload.src || '');
+    if (!src) return;
+    const filePath = src.startsWith('file:')
+      ? require('url').fileURLToPath(src)
+      : path.resolve(src);
+    const projectRoot = path.resolve(__dirname, '..');
+    const resolved = path.resolve(filePath);
+    if (!resolved.toLowerCase().startsWith(projectRoot.toLowerCase() + path.sep)) {
+      pushLog('shell', `hit-shape rejected outside project: ${resolved}`);
+      return;
+    }
+    const image = nativeImage.createFromPath(resolved);
+    if (image.isEmpty()) return;
+    const sourceSize = image.getSize();
+    const bitmap = image.toBitmap();
+    const left = Math.max(0, Math.round(Number(payload.x) || 0));
+    const top = Math.max(0, Math.round(Number(payload.y) || 0));
+    const width = Math.max(1, Math.round(Number(payload.width) || sourceSize.width));
+    const height = Math.max(1, Math.round(Number(payload.height) || sourceSize.height));
+    // 形状裁剪本身也会影响可见轮廓；按显示像素采样，避免 128 网格造成 2px 台阶。
+    // 半透明抗锯齿边缘纳入命中区，但不改变图像本身的 alpha。
+    const threshold = Math.max(1, Math.min(255, Number(payload.threshold ?? 4)));
+    const cols = Math.min(width, 512);
+    const rows = Math.min(height, 512);
+    const spansByRow = [];
+    for (let gy = 0; gy < rows; gy += 1) {
+      const y0 = Math.floor(gy * height / rows);
+      const y1 = Math.max(y0 + 1, Math.floor((gy + 1) * height / rows));
+      const sy = Math.min(sourceSize.height - 1,
+        Math.floor((gy + 0.5) * sourceSize.height / rows));
+      const spans = [];
+      let runStart = -1;
+      for (let gx = 0; gx < cols; gx += 1) {
+        const x0 = Math.floor(gx * width / cols);
+        const x1 = Math.max(x0 + 1, Math.floor((gx + 1) * width / cols));
+        const sx = Math.min(sourceSize.width - 1,
+          Math.floor((gx + 0.5) * sourceSize.width / cols));
+        const alpha = bitmap[(sy * sourceSize.width + sx) * 4 + 3];
+        const opaque = alpha >= threshold;
+        if (opaque && runStart < 0) runStart = gx;
+        if ((!opaque || gx === cols - 1) && runStart >= 0) {
+          const end = opaque && gx === cols - 1 ? gx + 1 : gx;
+          // 原生 shape 是二值边界；向外扩 1 DIP，把硬裁剪放到完全透明区，
+          // 保留 Chromium 已计算出的半透明抗锯齿边缘。
+          const startPx = Math.max(0, Math.floor(runStart * width / cols) - 1);
+          const endPx = Math.min(width, Math.floor(end * width / cols) + 1);
+          const expandedY0 = Math.max(0, y0 - 1);
+          const expandedY1 = Math.min(height, y1 + 1);
+          spans.push({ x: left + startPx, y: top + expandedY0,
+            width: Math.max(1, endPx - startPx), height: expandedY1 - expandedY0 });
+          runStart = -1;
+        }
+      }
+      spansByRow.push(spans);
+    }
+    const rects = [];
+    for (const spans of spansByRow) {
+      for (const span of spans) {
+        const previous = rects[rects.length - 1];
+        if (previous && previous.x === span.x && previous.width === span.width &&
+            previous.y + previous.height === span.y) {
+          previous.height += span.height;
+        } else {
+          rects.push({ ...span });
+        }
+      }
+    }
+    // 气泡是 DOM 交互区，不属于 PNG alpha；由 renderer 显式补充其窗口内矩形。
+    const extraRects = Array.isArray(payload.rects) ? payload.rects.map((r) => ({
+      x: Math.max(0, Math.round(Number(r.x) || 0)),
+      y: Math.max(0, Math.round(Number(r.y) || 0)),
+      width: Math.max(1, Math.round(Number(r.width) || 0)),
+      height: Math.max(1, Math.round(Number(r.height) || 0)),
+    })).filter((r) => r.width > 0 && r.height > 0) : [];
+    const allRects = rects.concat(extraRects);
+    // 轮廓复杂时保留 alpha 轮廓并优先保留显式 UI 矩形；失败时退回立绘盒。
+    const bounded = allRects.length > 4000
+      ? rects.slice(0, Math.max(0, 4000 - extraRects.length)).concat(extraRects.slice(-4000))
+      : allRects;
+    win.setShape(bounded.length ? bounded : [{ x: left, y: top, width, height }]);
+  } catch (e) {
+    pushLog('shell', `hit-shape failed: ${e.message}`);
+  }
+}
+
 // ---------- 托盘 ----------
 // 右键菜单模板（形象右键 + 托盘共用；sakura 同款：设置/日志/重启/退出）
 function buildContextMenu() {
   return Menu.buildFromTemplate([
-    { label: '戳一下', click: () => { win && win.webContents.send('menu-poke'); } },
+    { label: '戳一下', click: () => {
+      if (ws && ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'poke', request_id: crypto.randomUUID() }));
+      }
+    } },
     { label: '打开聊天', click: () => openChatWindow() },
     { label: '清空聊天记录', click: () => clearChatHistory() },
     { label: '显示/隐藏桌宠', click: () => { win ? (win.isVisible() ? win.hide() : win.show()) : createWindow(); } },
@@ -556,34 +741,41 @@ function createTray() {
 function connect() {
   if (ws) return;
   const WebSocket = require('ws');
+  let socket;
   try {
-    ws = new WebSocket(CORE_WS);
+    socket = new WebSocket(CORE_WS);
+    ws = socket;
   } catch (e) {
     scheduleReconnect();
     return;
   }
-  ws.on('open', () => {
+  socket.on('open', () => {
+    if (ws !== socket) return;
     console.log('[ws] connected to core');
     startupMark('core-ws-connected');
     reconnectDelay = 1000;
     setPetStatus('online');
     pushAvatarMap();  // 启动时加载当前角色立绘映射
   });
-  ws.on('message', (data) => {
+  socket.on('message', (data) => {
+    if (ws !== socket) return;
     try {
       const msg = JSON.parse(data.toString());
       handleCoreMsg(msg);
     } catch (e) { console.error('[ws] bad msg:', e.message); }
   });
-  ws.on('close', () => {
+  socket.on('close', () => {
+    if (ws !== socket) return;
     console.log('[ws] closed');
     ws = null;
+    rejectWsPending();
     setPetStatus('offline');
-    scheduleReconnect();
+    if (!isQuitting) scheduleReconnect();
   });
-  ws.on('error', (e) => {
+  socket.on('error', (e) => {
+    if (ws !== socket) return;
     console.error('[ws] error:', e.message);
-    ws && ws.close();
+    socket.close();
   });
 }
 
@@ -611,72 +803,187 @@ function setPetStatus(status, extra = {}) {
   broadcastToWindows('core-state', { connected: status !== 'offline', status, ...extra });
 }
 
+function updateChatMessage(messageId, patch) {
+  const message = chatHistory.find((item) => item.message_id === messageId);
+  if (!message) return null;
+  Object.assign(message, patch);
+  saveChatHistory();
+  sendChatEvent('message-update', { message });
+  return message;
+}
+
+function rememberCoreEvent(msg) {
+  const id = msg && msg.event_id;
+  if (!id) return true;
+  if (seenCoreEvents.has(id)) return false;
+  seenCoreEvents.add(id);
+  if (seenCoreEvents.size > 2048) {
+    seenCoreEvents.delete(seenCoreEvents.values().next().value);
+  }
+  return true;
+}
+
+function replyMatches(payload) {
+  if (!activeReply) return false;
+  const turn = Number(payload && payload.turn_id || 0);
+  const request = String(payload && payload.request_id || '');
+  if (turn && turn !== activeReply.turn_id) return false;
+  if (request && activeReply.request_id && request !== activeReply.request_id) return false;
+  return true;
+}
+
+function beginReply(payload) {
+  const turn = Number(payload.turn_id || 0);
+  const request = String(payload.request_id || '');
+  if (turn && (turn < latestReplyTurn || cancelledReplyTurns.has(turn))) return false;
+  if (activeReply && turn && turn < activeReply.turn_id) return false;
+  activeReply = {
+    message_id: crypto.randomUUID(),
+    turn_id: turn,
+    request_id: request,
+    text: '',
+    segments: [],
+    started_at: Date.now(),
+  };
+  latestReplyTurn = Math.max(latestReplyTurn, turn);
+  const pending = pendingUserMessages.get(request);
+  if (pending) {
+    updateChatMessage(pending.message_id, { status: 'sent', turn_id: turn });
+  }
+  sendChatEvent('reply-start', {
+    turn_id: turn, request_id: request, message_id: activeReply.message_id,
+  });
+  setPetStatus('generating', { turn_id: turn, request_id: request });
+  return true;
+}
+
+function finishReply(payload, status = 'complete') {
+  if (!replyMatches(payload)) return false;
+  const reply = activeReply;
+  const finalStatus = reply.errorCode ? 'failed' : status;
+  const message = reply.text
+    ? pushChat('pet', reply.text, {
+        status: finalStatus, turnId: reply.turn_id, requestId: reply.request_id,
+        messageId: reply.message_id, broadcast: false, dedupe: false,
+      })
+    : null;
+  sendChatEvent('reply-end', {
+    message, status: finalStatus, turn_id: reply.turn_id, request_id: reply.request_id,
+  });
+  pendingUserMessages.delete(reply.request_id);
+  activeReply = null;
+  setPetStatus('online');
+  return true;
+}
+
 function handleCoreMsg(msg) {
-  // 带 id 的响应 → 回传 wsRequest pending
+  if (msg.session_id && msg.session_id !== coreSessionId) {
+    coreSessionId = msg.session_id;
+    latestReplyTurn = 0;
+    cancelledReplyTurns.clear();
+    stoppedSpeechTurns.clear();
+    seenCoreEvents.clear();
+    if (activeReply) {
+      const pending = pendingUserMessages.get(activeReply.request_id);
+      if (pending) updateChatMessage(pending.message_id, { status: 'failed' });
+      activeReply = null;
+    }
+    win && win.webContents.send('stop-speak', {});
+  }
+  // 带 id 的配置/搜索响应先交给 pending promise。
   if (msg.id && wsPending.has(msg.id)) {
-    const resolve = wsPending.get(msg.id);
+    const entry = wsPending.get(msg.id);
     wsPending.delete(msg.id);
-    resolve(msg);
+    clearTimeout(entry.timer);
+    entry.resolve(msg);
     return;
   }
+  if (!rememberCoreEvent(msg)) return;
   const payload = msg.payload || {};
   switch (msg.type) {
-    case 'state': {
-      const st = payload.status || 'online';
-      setPetStatus(st, { character: payload.character || '', turn_id: payload.turn_id || '' });
+    case 'state':
+      setPetStatus(payload.status || 'online', {
+        character: payload.character || '', turn_id: payload.turn_id || '',
+      });
       break;
-    }
     case 'reply_start':
-      setPetStatus('generating', { character: payload.character || '' });
+      beginReply(payload);
       break;
     case 'reply_segment': {
-      // 主窗：气泡 + 音频（沿用旧 IPC 通道，renderer 无需改协议）
-      win && win.webContents.send('speak', {
-        text: payload.text, text_zh: payload.text_zh || '',
-        tags: [], portrait: payload.portrait || '', audioB64: payload.audio_b64 || '',
-      });
-      // 聊天窗口：主动对话直接成条；stream_talk 后无重复（speak 只在 reply_segment 发一次）
+      if (!activeReply && payload.turn_id !== undefined && !beginReply(payload)) break;
+      if (!replyMatches(payload)) break; // 丢弃迟到/旧回合
       const display = payload.text_zh || payload.text || '';
-      if (display) {
-        if (!activePetStreaming) {
-          activePetStreaming = true;
-          chatHistory.push({ role: 'pet', text: display, ts: Date.now() });
-        } else {
-          const lastPet = chatHistory[chatHistory.length - 1];
-          if (lastPet && lastPet.role === 'pet') lastPet.text = display;
-        }
-        saveChatHistory();
-        if (chatWin && !chatWin.isDestroyed()) {
-          chatWin.webContents.send('chat-line', { role: 'pet', text: display, streaming: true });
-        }
-      }
+      activeReply.text += display;
+      activeReply.segments.push({
+        text: payload.text || '', text_zh: payload.text_zh || '',
+        tone: payload.tone || '', portrait: payload.portrait || '',
+        audio_b64: payload.audio_b64 || '',
+      });
+      win && win.webContents.send('speak', {
+        text: payload.text, text_zh: payload.text_zh || '', tags: [],
+        portrait: payload.portrait || '',
+        audioB64: speechMuted || stoppedSpeechTurns.has(activeReply.turn_id)
+          ? '' : (payload.audio_b64 || ''),
+        turn_id: activeReply.turn_id, request_id: activeReply.request_id,
+      });
+      sendChatEvent('reply-segment', {
+        message_id: activeReply.message_id, text: display,
+        segment: activeReply.segments[activeReply.segments.length - 1],
+        turn_id: activeReply.turn_id, request_id: activeReply.request_id,
+      });
+      setPetStatus('speaking', {
+        turn_id: activeReply.turn_id, request_id: activeReply.request_id,
+      });
       break;
     }
     case 'reply_end':
       win && win.webContents.send('speak-done', {});
-      if (activePetStreaming) {
-        activePetStreaming = false;
-        if (chatWin && !chatWin.isDestroyed()) {
-          chatWin.webContents.send('chat-line', { role: 'pet', text: '', finish: true, ts: Date.now() });
-        }
-        saveChatHistory();
-      }
-      setPetStatus('online');
+      finishReply(payload);
       break;
-    case 'reply_error':
-      // R3_SPEC 5：文字保留；错误状态在聊天窗显示
+    case 'reply_error': {
+      if (!replyMatches(payload)) break;
+      if (payload.code === 'tts_failed') {
+        sendChatEvent('speech-error', {
+          code: payload.code, turn_id: activeReply.turn_id,
+          request_id: activeReply.request_id,
+        });
+        break;
+      }
+      activeReply.errorCode = payload.code || 'reply_failed';
+      const pending = pendingUserMessages.get(activeReply.request_id);
+      if (pending) updateChatMessage(pending.message_id, { status: 'failed' });
+      sendChatEvent('reply-error', {
+        code: payload.code || 'reply_failed', recoverable: !!payload.recoverable,
+        turn_id: activeReply.turn_id, request_id: activeReply.request_id,
+      });
       setPetStatus('failed', { reason: payload.code || 'reply_failed' });
-      if (chatWin && !chatWin.isDestroyed()) {
-        chatWin.webContents.send('chat-line', { role: 'error', text: payload.code === 'tts_failed' ? '语音没有播放，文字仍可阅读' : '这条回复没有完成', retry: !!payload.recoverable });
-      }
       break;
-    case 'reply_cancelled':
+    }
+    case 'reply_cancelled': {
+      if (!activeReply || (payload.turn_id && !replyMatches(payload))) break;
       win && win.webContents.send('stop-speak', {});
-      if (activePetStreaming) {
-        activePetStreaming = false;
-        saveChatHistory();
+      const request = activeReply && activeReply.request_id;
+      const pending = pendingUserMessages.get(request);
+      if (pending) updateChatMessage(pending.message_id, { status: 'cancelled' });
+      cancelledReplyTurns.add(Number(payload.turn_id || 0));
+      if (cancelledReplyTurns.size > 128) {
+        cancelledReplyTurns.delete(cancelledReplyTurns.values().next().value);
       }
+      if (activeReply.text) {
+        finishReply(payload, 'cancelled');
+      } else {
+        sendChatEvent('reply-cancelled', {
+          turn_id: payload.turn_id, request_id: payload.request_id,
+        });
+        activeReply = null;
+      }
+      pendingUserMessages.delete(request);
       setPetStatus('online');
+      break;
+    }
+    case 'speech_stopped':
+      win && win.webContents.send('stop-speak', {});
+      sendChatEvent('speech-stopped', payload);
       break;
     case 'bubble':
       win && win.webContents.send('bubble', { text: msg.text });
@@ -691,7 +998,7 @@ function openChatWindow() {
   loadChatHistory();
   if (chatWin && !chatWin.isDestroyed()) { chatWin.show(); chatWin.focus(); return; }
   chatWin = new BrowserWindow({
-    width: 380, height: 560,
+    width: 420, height: 640, minWidth: 360, minHeight: 480,
     title: 'Veranima 聊天',
     show: false,
     webPreferences: {
@@ -700,6 +1007,10 @@ function openChatWindow() {
     },
   });
   chatWin.loadFile('chat.html');
+  chatWin.webContents.on('did-finish-load', () => {
+    pushAvatarMap();
+    chatWin.webContents.send('chat-history', chatHistory);
+  });
   chatWin.on('close', (e) => {
     if (isQuitting) return;
     e.preventDefault();
@@ -707,39 +1018,90 @@ function openChatWindow() {
   }); // 复用模式
   chatWin.on('ready-to-show', () => {
     chatWin.show();
-    chatWin.webContents.send('chat-history', chatHistory);  // 补发历史
   });
   chatWin.on('closed', () => { chatWin = null; });
 }
 function clearChatHistory() {
-  // GUI_SPEC 6：清空二次确认（防误删 500 条历史）
-  if (!chatWin || chatWin.isDestroyed()) return;
+  // 只清 Electron 窗口历史；SQLite 原始消息/长期记忆证据不删除。
   const { dialog } = require('electron');
-  const btn = dialog.showMessageBoxSync(chatWin, {
+  const parent = chatWin && !chatWin.isDestroyed() ? chatWin
+    : (win && !win.isDestroyed() ? win : null);
+  const options = {
     type: 'question', buttons: ['取消', '清空'], defaultId: 0, cancelId: 0,
-    title: '清空聊天记录', message: '确定清空全部聊天记录吗？', detail: '此操作不可撤销。',
-  });
-  if (btn !== 1) return;
+    title: '清空窗口记录', message: '确定清空这个聊天窗口的记录吗？',
+    detail: '长期记忆和可审计的原始消息不会被删除。',
+  };
+  const btn = parent ? dialog.showMessageBoxSync(parent, options)
+    : dialog.showMessageBoxSync(options);
+  if (btn !== 1) return false;
   chatHistory = [];
+  pendingUserMessages.clear();
+  activeReply = null;
   saveChatHistory();
   if (chatWin && !chatWin.isDestroyed()) {
-    chatWin.webContents.send('chat-history', []);  // 清空已打开窗口的显示
+    chatWin.webContents.send('chat-history', []);
   }
   pushLog('shell', 'chat history cleared');
+  return true;
 }
-// 聊天窗口 IPC：发送 → WS stream_talk + 本地记录用户消息
-ipcMain.on('chat-send', (e, text) => {
+function dispatchChat(text, messageId = '') {
   const t = String(text || '').trim();
-  if (!t) return;
-  pushChat('user', t);
-  if (ws && ws.readyState === 1) {
-    ws.send(JSON.stringify({ type: 'stream_talk', text: t }));
+  if (!t) return { ok: false, reason: 'empty' };
+  const requestId = crypto.randomUUID();
+  let message = messageId && chatHistory.find((item) => item.message_id === messageId);
+  if (message) {
+    message.text = t;
+    message.status = 'pending';
+    message.request_id = requestId;
+    message.ts = Date.now();
+    saveChatHistory();
+    sendChatEvent('message-update', { message });
   } else {
-    pushChat('pet', '（核心未连接）');
+    message = pushChat('user', t, {
+      status: 'pending', requestId, dedupe: false,
+    });
   }
+  pendingUserMessages.set(requestId, message);
+  if (ws && ws.readyState === 1) {
+    ws.send(JSON.stringify({ type: 'stream_talk', text: t, request_id: requestId }));
+  } else {
+    updateChatMessage(message.message_id, { status: 'failed' });
+    return { ok: false, reason: 'offline', message };
+  }
+  return { ok: true, request_id: requestId, message };
+}
+
+// 聊天窗口 IPC：发送/重试 → 带 request_id 的 WS 请求。
+ipcMain.handle('chat-send', (e, text) => dispatchChat(text));
+ipcMain.handle('chat-clear', async () => clearChatHistory());
+ipcMain.handle('chat-retry', (e, messageId) => {
+  const old = chatHistory.find((item) => item.message_id === messageId && item.role === 'user');
+  return old ? dispatchChat(old.text, old.message_id) : { ok: false, reason: 'missing' };
 });
 ipcMain.handle('search-history', async (e, query) => wsRequest('search_history', { query: String(query || '') }));
 ipcMain.handle('get-self-model', async () => wsRequest('get_self_model'));
+ipcMain.handle('chat-get-state', async () => ({
+  status: petStatus, muted: speechMuted, history: chatHistory,
+  active_reply: activeReply && {
+    message_id: activeReply.message_id, turn_id: activeReply.turn_id,
+    request_id: activeReply.request_id, text: activeReply.text,
+  },
+}));
+ipcMain.on('speech-stop', () => {
+  if (activeReply && activeReply.turn_id) {
+    stoppedSpeechTurns.add(activeReply.turn_id);
+    if (stoppedSpeechTurns.size > 128) {
+      stoppedSpeechTurns.delete(stoppedSpeechTurns.values().next().value);
+    }
+  }
+  win && win.webContents.send('stop-speak', {});
+  sendChatEvent('speech-stopped', {});
+});
+ipcMain.on('speech-mute', (e, muted) => {
+  speechMuted = !!muted;
+  if (speechMuted) win && win.webContents.send('stop-speak', {});
+  sendChatEvent('speech-muted', { muted: speechMuted });
+});
 
 // ---------- renderer → 核心 ----------
 ipcMain.on('pet-event', (e, payload) => {
@@ -748,8 +1110,7 @@ ipcMain.on('pet-event', (e, payload) => {
     // 主窗口发消息：记录聊天 + 转发（聊天窗口 UI 已接管主入口，保留兼容）
     const t = String(payload.text || '').trim();
     if (t) {
-      pushChat('user', t);
-      if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'stream_talk', text: t }));
+      dispatchChat(t);
     }
     return;
   }
@@ -762,6 +1123,10 @@ ipcMain.on('pet-event', (e, payload) => {
     } else {
       stopDragPoll();
     }
+    return;
+  }
+  if (payload && payload.type === 'pet-hit-shape') {
+    applyPetHitShape(payload);
     return;
   }
   if (payload && payload.type === 'fit-window') {

@@ -262,12 +262,13 @@ class MemoryStore:
                 "WHERE content LIKE ? AND id < ? ORDER BY id DESC LIMIT ?"
             )
             return [dict(r) for r in self.con.execute(sql, params).fetchall()]
+        fts_query = self._fts_query(query)
         if before_id is None:
             rows = self.con.execute(
                 """SELECT m.id, m.role, m.content, m.created_at
                    FROM messages_fts f JOIN messages m ON m.id=f.rowid
                    WHERE messages_fts MATCH ? ORDER BY m.id DESC LIMIT ?""",
-                (query, limit),
+                (fts_query, limit),
             ).fetchall()
         else:
             rows = self.con.execute(
@@ -275,7 +276,7 @@ class MemoryStore:
                    FROM messages_fts f JOIN messages m ON m.id=f.rowid
                    WHERE messages_fts MATCH ? AND m.id < ?
                    ORDER BY m.id DESC LIMIT ?""",
-                (query, int(before_id), limit),
+                (fts_query, int(before_id), limit),
             ).fetchall()
         return [dict(r) for r in rows]
 

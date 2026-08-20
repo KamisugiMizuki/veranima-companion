@@ -92,6 +92,7 @@ function relayout() {
   petEl.style.width = `${lay.stage.w}px`;
   petEl.style.height = `${lay.stage.h}px`;
   window.pet.resizePet({ width: Math.round(lay.stage.w), height: Math.round(lay.stage.h) });
+  requestAnimationFrame(reportHitShape);
 }
 if (window.ResizeObserver) {
   new ResizeObserver(relayout).observe(bubbleEl);
@@ -125,9 +126,32 @@ function fitAvatar() {
   img.style.width = `${w}px`;
   img.style.height = h + 'px';
   relayout();  // 尺寸变了 → 重新布局（含窗口宽高，一次 IPC）
+  reportHitShape();
 }
-avatar.addEventListener('load', fitAvatar);
-
+function reportHitShape() {
+  if (!avatar.src || !avatar.complete || !avatar.naturalWidth) return;
+  const box = avatar.getBoundingClientRect();
+  const stage = petEl.getBoundingClientRect();
+  const uiRects = [];
+  if (bubbleEl.classList.contains('show')) {
+    const bubbleBox = bubbleEl.getBoundingClientRect();
+    uiRects.push({
+      x: Math.round(bubbleBox.left - stage.left),
+      y: Math.round(bubbleBox.top - stage.top),
+      width: Math.round(bubbleBox.width),
+      height: Math.round(bubbleBox.height),
+    });
+  }
+  window.pet.setPetHitShape({
+    src: avatar.currentSrc || avatar.src,
+    x: Math.round(box.left - stage.left),
+    y: Math.round(box.top - stage.top),
+    width: Math.round(box.width),
+    height: Math.round(box.height),
+    rects: uiRects,
+    threshold: 1,
+  });
+}
 // ---------- 真交叉淡入（GUI_SPEC 4.1）：双层 img，无淡出空窗（不闪） ----------
 let avatarNext = null;
 function copyAvatarGeometry(target) {
@@ -144,7 +168,7 @@ function crossfadeTo(src) {
   if (!avatarNext) {
     avatarNext = document.createElement('img');
     avatarNext.id = 'avatar-next';
-    avatarNext.style.cssText = 'position:absolute;opacity:0;transition:opacity 240ms;pointer-events:none;image-rendering:pixelated;';
+    avatarNext.style.cssText = 'position:absolute;opacity:0;transition:opacity 240ms;pointer-events:none;image-rendering:auto;object-fit:contain;object-position:center bottom;';
     petEl.appendChild(avatarNext);
   }
   clearTimeout(crossfadeTimer);
@@ -196,19 +220,37 @@ window.pet.onCoreState((m) => {
 // 时长），避免前几句气泡在排队时 3s 就消失、只有最后一句停留。
 let audioQueue = [];
 let currentAudio = null;
-function playAudio(b64, text) {
+let audioGeneration = 0;
+let activeAudioTurn = 0;
+function stopAudioQueue() {
+  audioGeneration += 1;
+  if (currentAudio) currentAudio.audio.pause();
+  currentAudio = null;
+  audioQueue = [];
+}
+function playAudio(b64, text, turnId = 0) {
+  const turn = Number(turnId || 0);
+  if (turn && turn < activeAudioTurn) return;
+  if (turn && turn > activeAudioTurn) {
+    stopAudioQueue();
+    activeAudioTurn = turn;
+  }
   const a = new Audio(`data:audio/wav;base64,${b64}`);
+  const item = { audio: a, text, turn, generation: audioGeneration };
   a.onended = () => {
+    if (item.generation !== audioGeneration) return;
     currentAudio = null;
     hideBubble();
-    const next = audioQueue.shift();
-    if (next) {
-      playNext(next);
-    } else if (currentState === 'speaking') {
+    let next = audioQueue.shift();
+    while (next && (next.generation !== audioGeneration ||
+           (activeAudioTurn && next.turn && next.turn !== activeAudioTurn))) {
+      next = audioQueue.shift();
+    }
+    if (next) playNext(next);
+    else if (currentState === 'speaking') {
       setState('idle');
     }
   };
-  const item = { audio: a, text };
   if (currentAudio) {
     audioQueue.push(item);
   } else {
@@ -216,7 +258,9 @@ function playAudio(b64, text) {
   }
 }
 function playNext(item) {
-  currentAudio = item.audio;
+  if (item.generation !== audioGeneration ||
+      (activeAudioTurn && item.turn && item.turn !== activeAudioTurn)) return;
+  currentAudio = item;
   // 气泡跟随播放：显示本句文本，音频时长=气泡时长。
   // 去重：主动对话逐句推送（每条 text=整段）→ 同一文本不重复渲染（音频照播）
   if (item.text && item.text !== bubble.textContent) {
@@ -224,6 +268,7 @@ function playNext(item) {
     bubble.classList.add('show');
   }
   item.audio.play().catch(() => {
+    if (item.generation !== audioGeneration) return;
     currentAudio = null; audioQueue = [];
     hideBubble();
     /* 播放失败（无音频设备）→ 按文本时长回 idle */
@@ -247,7 +292,7 @@ window.pet.onSpeak((m) => {
   // TTS 播放（R3_SPEC 1.进程与协议）：有 audioB64 播放真实语音（串行队列，气泡跟随
   // 音频显示），否则模拟 2.5s 显示
   if (m.audioB64) {
-    playAudio(m.audioB64, displayText);
+    playAudio(m.audioB64, displayText, m.turn_id);
   } else {
     showBubble(displayText);
   }
@@ -255,8 +300,7 @@ window.pet.onSpeak((m) => {
 
 // TTS 打断：停止当前播放并清空队列（R3_SPEC 1）
 window.pet.onStopSpeak(() => {
-  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
-  audioQueue = [];
+  stopAudioQueue();
   hideBubble();
   setState('idle');
 });

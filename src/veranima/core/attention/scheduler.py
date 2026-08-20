@@ -66,8 +66,7 @@ class AttentionScheduler:
     def tick(self) -> list[AttentionEvent]:
         events: list[AttentionEvent] = []
         now = time.time()
-        frame = perception.grab_gray_downsampled()
-        if frame is None:
+        if not self.policy.enabled or self.policy.paused_now():
             return events
 
         # 0. away 状态（VISION_SPEC 3：30min 无输入 → away）
@@ -84,12 +83,30 @@ class AttentionScheduler:
 
         # 1. 窗口切换（最高价值，独立于像素）
         win = self._foreground()
-        if win and win != self._last_win:
+        changed_window = bool(win and win != self._last_win)
+        category = self._window_category(win)
+        privacy = self.policy.policy_action("", win, category)
+        if changed_window:
             self._last_win = win
             self._last_win_ts = now
+        if privacy["action"] != "capture":
+            if privacy["category"] == "sensitive" and changed_window:
+                events.append(AttentionEvent(
+                    kind="privacy_block", region=(0, 0, 1, 1), note="sensitive",
+                    window_title="", window_category="sensitive", ts=now,
+                    source="foreground", reason=privacy["reason"],
+                ))
+            return events
+        if changed_window:
             events.append(AttentionEvent(kind="window_switch", region=(0, 0, 1, 1),
-                                         note=win, ts=now, source="foreground",
+                                         note=win, window_title=win,
+                                         window_category=category,
+                                         ts=now, source="foreground",
                                          reason="foreground window changed"))
+
+        frame = perception.grab_gray_downsampled()
+        if frame is None:
+            return events
 
         # 2. 显著度（全局快照节奏）
         if now - self._last_scan_ts >= self.cfg.global_scan_sec:
@@ -146,7 +163,10 @@ class AttentionScheduler:
 
         ev = AttentionEvent(kind="fixation_shift",
                             region=(round(x0, 3), round(y0, 3), round(x1, 3), round(y1, 3)),
-                            note=f"显著度 {target['score']}（{target['source']}）", ts=now)
+                            note=f"显著度 {target['score']}（{target['source']}）",
+                            window_title=self._last_win,
+                            window_category=self._window_category(self._last_win),
+                            ts=now)
         # L3 观察由 consumer（pet_server._observe_event）执行（VISION_SPEC 2：
         # scheduler 属于 L0-L2，禁止直接调 LLM）
         return [ev]
@@ -174,7 +194,8 @@ class AttentionScheduler:
             if self.focus is None or self.focus.get("from_mouse") != pos:
                 self.focus = {"center": pos, "since": now, "last_change": now, "from_mouse": pos}
                 return AttentionEvent(kind="fixation_shift", region=(0, 0, 1, 1),
-                                      note=f"焦点=鼠标{pos}", ts=now)
+                                      note=f"焦点=鼠标{pos}", window_title=self._last_win,
+                                      window_category=self._window_category(self._last_win), ts=now)
         return None
 
     def _foreground(self) -> str:
@@ -183,6 +204,20 @@ class AttentionScheduler:
             return foreground_app()
         except Exception:
             return ""
+
+    @staticmethod
+    def _window_category(title: str) -> str:
+        """粗粒度窗口类别只用于隐私/缓存键，不作为观察结论。"""
+        title = (title or "").lower()
+        if any(k in title for k in ("chrome", "edge", "firefox", "浏览器")):
+            return "browser"
+        if any(k in title for k in ("code", "visual studio", "pycharm", "编辑器")):
+            return "coding"
+        if any(k in title for k in ("steam", "game", "游戏")):
+            return "game"
+        if any(k in title for k in ("meeting", "teams", "zoom", "会议")):
+            return "meeting"
+        return "unknown"
 
     # ---------- 习惯化 / 冷却 ----------
 

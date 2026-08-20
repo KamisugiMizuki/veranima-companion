@@ -12,6 +12,7 @@ NapCatQQ 作为 WS 客户端连接），不上 nonebot2 全家桶。
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import random
 import threading
@@ -122,6 +123,7 @@ class QQAdapter:
         quiet_hours: tuple[int, int] | None = (23, 8),
         proactive_delay_minutes: int = 5,
         sticker_library=None,  # StickerLibrary | None；None = 表情包功能关闭
+        agent_lock: asyncio.Lock | None = None,
     ):
         self.agent = agent
         self.ws_host = ws_host
@@ -133,7 +135,7 @@ class QQAdapter:
         self.quiet_hours = quiet_hours  # (开始小时, 结束小时)；None = 不限制
         self.proactive_delay_minutes = max(1, int(proactive_delay_minutes))
         self.stickers = sticker_library  # 8.6.3 表情包库（None = 关闭）
-        self._lock = asyncio.Lock()
+        self._lock = agent_lock or asyncio.Lock()
         self._last_user_activity: float | None = None
         self._pending_proactive: str | None = None  # 延迟主动消息（对话静默后发送）
         self.bot = CQHttp(access_token=access_token or None, message_class=Message)
@@ -319,6 +321,82 @@ class QQAdapter:
             self.bot.run(host=self.ws_host, port=self.ws_port)
         finally:
             stop.set()
+
+    async def run_task(self) -> None:
+        """与桌宠核心共用事件循环/Agent 的异步入口。"""
+        stop = asyncio.Event()
+        background = asyncio.create_task(self._bg_loop_async(stop))
+        try:
+            await self.bot.run_task(host=self.ws_host, port=self.ws_port)
+        finally:
+            stop.set()
+            background.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await background
+
+    async def _bg_loop_async(self, stop: asyncio.Event) -> None:
+        """同进程模式的主动循环；所有 Agent 调用共享 self._lock。"""
+        while not stop.is_set():
+            try:
+                if not self._in_quiet_hours():
+                    if self.proactive:
+                        async with self._lock:
+                            messages = await asyncio.to_thread(self.agent.tick_proactive)
+                        for msg in messages:
+                            try:
+                                self.agent.memory.record_proactive_feedback(source="ritual")
+                            except Exception:
+                                pass
+                            await self._send_to_all_async(msg)
+                        await self._flush_pending_proactive_async()
+                    if self.offline is not None:
+                        await self._tick_offline_think_async()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("async bg proactive tick failed")
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=self._tick_interval)
+            except asyncio.TimeoutError:
+                pass
+
+    async def _flush_pending_proactive_async(self) -> None:
+        if not self._pending_proactive or self._last_user_activity is None:
+            return
+        if time.time() - self._last_user_activity < self.proactive_delay_minutes * 60:
+            return
+        msg, self._pending_proactive = self._pending_proactive, None
+        await self._send_to_all_async(msg)
+
+    async def _tick_offline_think_async(self) -> None:
+        if not self.offline.due(time.time(), self._last_user_activity):
+            return
+        model_check = getattr(self.agent.llm, "is_model_loaded", None)
+        if model_check is not None and not model_check():
+            return
+        async with self._lock:
+            msg = await asyncio.to_thread(self.agent.late_reply)
+            if not msg:
+                msg = await asyncio.to_thread(self.agent.heartbeat)
+        if msg:
+            try:
+                self.agent.memory.record_proactive_feedback(source="offline")
+            except Exception:
+                pass
+            await self._send_to_all_async(msg)
+
+    async def _send_to_all_async(self, msg: str) -> None:
+        try:
+            card = self.agent.card
+            emoji_freq = (card.veranima or {}).get("emoji_frequency", "low") if card else "low"
+            attachment = self.agent.state.attachment
+        except Exception:
+            emoji_freq, attachment = "low", 0.5
+        msg = render_im(msg, attachment=attachment, emoji_frequency=emoji_freq)
+        if not msg:
+            return
+        for uid in self.allowed:
+            await self.bot.send_private_msg(user_id=int(uid), message=msg)
 
     def _bg_loop(self, stop: threading.Event) -> None:
         """后台线程：等待事件循环就绪后，周期性执行问候/节庆/离线思考。"""

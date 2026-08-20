@@ -34,19 +34,28 @@ class PetServer:
     def __init__(self, host: str = "127.0.0.1", port: int = PORT) -> None:
         self.host = host
         self.port = port
+        self.session_id = uuid.uuid4().hex[:12]
         self._client: websockets.ServerConnection | None = None
+        self._send_lock = asyncio.Lock()
         self._agent = None  # 后续接 Agent；PoC 阶段 None
         self._agent_lock = asyncio.Lock()  # agent.handle 串行化（SQLite 游标非线程安全，并发实测 "no more rows available"）
+        self._qq_adapter = None
+        self._qq_task: asyncio.Task | None = None
         # R2 状态与取消（R2_SPEC 5）：递增 turn_id；新输入打断时旧 turn 的
         # 迟到结果由壳端按 turn_id 丢弃（低成本递增，不引入任务编排库）
         self._turn_seq = 0
         self._current_turn = 0
+        self._current_request_id = ""
+        self._reply_task: asyncio.Task | None = None
+        self._cancelled_turns: set[int] = set()
+        self._turn_clients: dict[int, object] = {}
         self._tts = None    # TTSClient（可选；未配置则桌宠只显气泡不发声）
         self._bilingual = False  # 角色双语（character.json veranima.bilingual.enabled）
         self.attention_cfg = {}  # 视觉注意力配置（VISION_SPEC 4，config.yaml attention: 段）
         self._obs_cache: dict = {}  # VISION_SPEC 5：观察缓存（120s TTL，region_key → ts）
         self._obs_budget_day = ""
         self._obs_budget_count = 0   # VISION_SPEC 5：observe_daily_budget 日预算
+        self._seen_attention_events: set[str] = set()
         self._presence_was_absent = False  # R4 在场转变检测（VISION_SPEC L0）
 
     def connect_agent(self, agent) -> None:
@@ -62,6 +71,10 @@ class PetServer:
     def connect_tts(self, tts) -> None:
         """接入 TTS（远程/本地统一 OpenAI 兼容接口；未配置则跳过合成）。"""
         self._tts = tts
+
+    def connect_qq(self, adapter) -> None:
+        """接入 QQ 适配器；adapter 必须复用本实例的 Agent/agent_lock。"""
+        self._qq_adapter = adapter
 
     async def tick_presence(self) -> bool:
         """R1 无缝衔接（R1_SPEC 4.召回）：L0 在场检测 → absent→present 转变 → 衔接语。
@@ -97,13 +110,12 @@ class PetServer:
         self._turn_seq += 1
         return self._turn_seq
 
-    async def _observe_event(self, att, ev) -> tuple[str, str]:
-        """VISION_SPEC 5/6：事件 → L3 观察（区域裁剪 → LLM Observation）。
-
-        返回 (summary, category)；失败/敏感返回 ("", "")。不写记忆、不 speak。
-        """
+    async def _observe_event(self, att, ev):
+        """Run one privacy-checked L3 observation for a fixation event."""
+        from veranima.core.attention.events import Observation
         try:
-            # VISION_SPEC 5：日预算（observe_daily_budget 默认 120，超出只保留 L0/L1）
+            if ev.kind != "fixation_shift" or time.time() > ev.expires_at:
+                return Observation(event_id=ev.event_id, category="unknown", confidence=0.0)
             import datetime
             today = datetime.date.today().isoformat()
             if today != self._obs_budget_day:
@@ -111,115 +123,206 @@ class PetServer:
                 self._obs_budget_count = 0
             budget = int((self.attention_cfg or {}).get("observe_daily_budget", 120))
             if self._obs_budget_count >= budget:
-                logger.debug("visual: 日观察预算已用尽 (%d)", budget)
-                return "", ""
-            # 敏感窗口策略：命中不发图（VISION_SPEC 4）
+                logger.info("visual: event=%s action=blocked reason=daily_budget", ev.event_id)
+                return Observation(event_id=ev.event_id, category="unknown", confidence=0.0)
             policy = getattr(att, "policy", None)
             if policy is not None:
-                verdict = policy.policy_action(ev.note or "", ev.note or "")
+                verdict = policy.policy_action(ev.app_name, ev.window_title, ev.window_category)
                 if verdict["action"] != "capture":
-                    logger.debug("visual: %s", verdict["reason"])
-                    return "", ""
-            from veranima.core.attention.perception import grab_gray_downsampled, grab_region
+                    logger.info("visual: event=%s action=blocked reason=%s",
+                                ev.event_id, verdict["reason"])
+                    return Observation(event_id=ev.event_id, category="unknown", confidence=0.0,
+                                       sensitive_redacted=verdict["category"] == "sensitive")
+            from veranima.core.attention.perception import grab_color_region
             from veranima.core.attention.observer import observe
-            frame = await asyncio.to_thread(grab_gray_downsampled)
-            if frame is None:
-                return "", ""
-            # 归一化区域 → 像素（region 是 (x0,y0,x1,y1) 0-1）
-            h, w = frame.shape[:2]
-            x0 = int(ev.region[0] * w); y0 = int(ev.region[1] * h)
-            x1 = max(x0 + 1, int(ev.region[2] * w)); y1 = max(y0 + 1, int(ev.region[3] * h))
-            # VISION_SPEC 5：区域最大为屏幕短边 30%（crop_ratio）
             crop_ratio = float((self.attention_cfg or {}).get("crop_ratio", 0.30))
-            short_side = min(h, w) * crop_ratio
-            if (x1 - x0) > short_side:
-                x1 = min(w, x0 + int(short_side))
-            if (y1 - y0) > short_side:
-                y1 = min(h, y0 + int(short_side))
-            crop = await asyncio.to_thread(grab_region, frame, x0, y0, x1, y1)
+            crop = await asyncio.to_thread(grab_color_region, ev.region, crop_ratio)
             if not crop:
-                return "", ""
+                return Observation(event_id=ev.event_id, category="unknown", confidence=0.0)
             obs = await asyncio.to_thread(
-                observe, self._agent.llm, crop, window_title=ev.note or "")
-            if not obs.is_valid:
-                return "", ""
+                observe, self._agent.llm, crop,
+                window_title=ev.window_title,
+                category_hint=ev.window_category,
+            )
+            if not obs.is_valid or obs.expired:
+                return Observation(event_id=ev.event_id, category="unknown", confidence=0.0)
             self._obs_budget_count += 1
-            return obs.summary, obs.category
+            return Observation(
+                event_id=ev.event_id, summary=obs.summary, category=obs.category,
+                notable=obs.notable, confidence=obs.confidence,
+                sensitive_redacted=obs.sensitive_redacted, expires_at=obs.expires_at,
+            )
         except Exception as e:
             logger.debug("visual observe failed: %s", e)
-            return "", ""
+            return Observation(event_id=getattr(ev, "event_id", ""),
+                               category="unknown", confidence=0.0)
 
-    async def speak(self, text: str, tags: list | None = None, tts_text: str | None = None) -> bool:
-        """推送回复（R3 协议：reply_start → reply_segment → reply_end）。
+    async def _process_attention_event(self, att, ev) -> bool:
+        """Consume one event through privacy, observation, recall and R4 gate."""
+        from veranima.core.ambient import ProactiveCandidate
+        now = time.time()
+        if not ev.event_id or ev.event_id in self._seen_attention_events:
+            return False
+        self._seen_attention_events.add(ev.event_id)
+        if len(self._seen_attention_events) > 2048:
+            self._seen_attention_events.pop()
+        if now > ev.expires_at:
+            logger.info("visual: event=%s action=drop reason=expired", ev.event_id)
+            return False
+        logger.info("visual: event=%s state=%s source=%s reason=%s confidence=%.2f",
+                    ev.event_id, ev.kind, ev.source, ev.reason, ev.confidence)
+        if self._agent is None or ev.kind != "fixation_shift":
+            return False  # window_switch only updates metadata; never captures or speaks
+        activity = getattr(self._agent, "activity", None)
+        if activity and activity.active("qq"):
+            logger.info("visual: event=%s action=blocked reason=qq_active", ev.event_id)
+            return False
+        cache_ttl = float((self.attention_cfg or {}).get("observe_cache_ttl_sec", 120))
+        region_key = ",".join(f"{v:.2f}" for v in ev.region)
+        cache_key = f"{ev.window_category}:{region_key}"
+        if now - self._obs_cache.get(cache_key, 0.0) < cache_ttl:
+            logger.debug("visual: event=%s action=blocked reason=observe_cache", ev.event_id)
+            return False
+        obs = await self._observe_event(att, ev)
+        if not obs.is_valid or obs.expired:
+            return False
+        self._obs_cache[cache_key] = now
+        query = f"{obs.category} {obs.summary}".strip()
+        async with self._agent_lock:
+            hits = await asyncio.to_thread(self._agent.memory.recall, query, top_k=5)
+        related = next((entry for entry in hits
+                        if entry.layer in ("episodic", "procedural") and
+                        entry.confidence >= 0.65), None)
+        logger.info("visual: event=%s action=observed category=%s matched=%s",
+                    ev.event_id, obs.category, bool(related))
+        if related is None:
+            return False
+        gate = getattr(self._agent, "gate", None)
+        scene_lock = getattr(self._agent, "scene_lock", None)
+        if gate is None or scene_lock is None:
+            return False
+        cand = ProactiveCandidate(
+            source="attention", reason=f"视觉观察关联共同经历：{obs.summary[:40]}",
+            relevance=max(0.65, min(1.0, obs.confidence)), urgency=0.4,
+            intent="bridge",
+            context={"event_id": ev.event_id, "category": obs.category,
+                     "summary": obs.summary, "memory_id": related.id},
+        )
+        decision = gate.decide(
+            cand, scene=scene_lock.current(),
+            other_channel_active=activity.blocking("pet") if activity else False,
+        )
+        if not decision.allow:
+            logger.info("visual: event=%s action=suppressed reason=%s",
+                        ev.event_id, decision.reason)
+            return False
+        async with self._agent_lock:
+            proactive, ja = await asyncio.to_thread(
+                self._agent.proactive_from_visual, obs.category,
+                related.content,
+            )
+        if not proactive:
+            return False
+        self._agent.gate.commit(cand)
+        try:
+            self._agent.memory.record_proactive_feedback(source="attention")
+        except Exception as e:
+            logger.debug("feedback record failed: %s", e)
+        logger.info("visual: event=%s action=proactive", ev.event_id)
+        await self.speak(proactive, tts_text=ja or None)
+        return True
 
-        tts_text 指定时用它合成音频（R2 双语：ja 配音 / zh 显示）。
-        整段方案：一次 POST /tts 合成整段 → 一条 reply_segment（音频+文本）。
-        代价：首句延迟 = 整段合成时间（~0.57x 实时率）；换来分句链路的
-        bug 全灭（重复推送/气泡…/队列去重——实测逐句方案引发多种问题）。
-        TTS 失败保留文字（R3_SPEC 5：不清空文字），并发 reply_error 可恢复。
-        """
+    async def speak(self, text: str, tags: list | None = None, tts_text: str | None = None,
+                    *, turn_id: int | None = None, request_id: str | None = None) -> bool:
+        """推送一条完整回复；所有事件共享 turn/request 上下文。"""
         import base64
 
         tags = tags or []
         portrait = tags[0] if tags else ""
         text_zh = tts_text and text or ""
         speak_text = (tts_text or text).strip()
-
-        await self.reply_start()
+        if turn_id is not None and turn_id in self._cancelled_turns:
+            return False
+        if not await self.reply_start(turn_id=turn_id, request_id=request_id):
+            return False
         if self._tts is None or not speak_text or (self._bilingual and not tts_text):
-            # 无 TTS / 双语缺日语台词：纯气泡（不发音频，不送日语模型）
-            await self.reply_segment(text=text, portrait=portrait, text_zh=text_zh)
-            return await self.reply_end()
-
+            await self.reply_segment(text=text, portrait=portrait, text_zh=text_zh,
+                                     turn_id=turn_id, request_id=request_id)
+            return await self.reply_end(turn_id=turn_id, request_id=request_id)
         try:
             audio = await asyncio.to_thread(self._tts.synthesize, speak_text)
+            if turn_id is not None and turn_id in self._cancelled_turns:
+                return False
             await self.reply_segment(
                 text=text,
                 audio_b64=base64.b64encode(audio).decode() if audio else "",
                 portrait=portrait,
                 text_zh=text_zh,
+                turn_id=turn_id,
+                request_id=request_id,
             )
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.warning("tts synthesize failed (bubble only): %s", e)
-            # R3：文字保留 + 可恢复错误
-            await self.reply_error(code="tts_failed", recoverable=True)
-            await self.reply_segment(text=text, portrait=portrait, text_zh=text_zh)
-        return await self.reply_end()
+            await self.reply_error(code="tts_failed", recoverable=True,
+                                   turn_id=turn_id, request_id=request_id)
+            await self.reply_segment(text=text, portrait=portrait, text_zh=text_zh,
+                                     turn_id=turn_id, request_id=request_id)
+        return await self.reply_end(turn_id=turn_id, request_id=request_id)
 
-    async def speak_reply(self, reply) -> bool:
-        """R2/R3：消费完整 Reply 的全部 TTS segments，不丢 tone/portrait/zh。"""
+    async def speak_reply(self, reply, *, turn_id: int | None = None,
+                          request_id: str | None = None) -> bool:
+        """消费完整 Reply 的全部 TTS segments，不丢上下文。"""
         segments = render_tts(reply)
         if not segments:
-            return await self.speak(getattr(reply, "text", ""))
-        await self.reply_start()
+            return await self.speak(getattr(reply, "text", ""), turn_id=turn_id,
+                                    request_id=request_id)
+        if not await self.reply_start(turn_id=turn_id, request_id=request_id):
+            return False
         import base64
         for seg in segments:
+            if turn_id is not None and turn_id in self._cancelled_turns:
+                return False
             speak_text = (seg.text or "").strip()
             if not speak_text or getattr(seg, "suppress_tts", False):
                 await self.reply_segment(text=seg.display_text or speak_text,
-                                         tone=seg.tone, portrait=seg.portrait)
+                                         tone=seg.tone, portrait=seg.portrait,
+                                         turn_id=turn_id, request_id=request_id)
                 continue
             text_zh = seg.display_text if seg.display_text and seg.display_text != speak_text else ""
             try:
-                audio = None if self._tts is None else await asyncio.to_thread(self._tts.synthesize, speak_text)
-                await self.reply_segment(text=text_zh or speak_text,
-                                         audio_b64=base64.b64encode(audio).decode() if audio else "",
-                                         tone=seg.tone, portrait=seg.portrait, text_zh=text_zh)
+                audio = None if self._tts is None else await asyncio.to_thread(
+                    self._tts.synthesize, speak_text)
+                await self.reply_segment(
+                    text=text_zh or speak_text,
+                    audio_b64=base64.b64encode(audio).decode() if audio else "",
+                    tone=seg.tone, portrait=seg.portrait, text_zh=text_zh,
+                    turn_id=turn_id, request_id=request_id,
+                )
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 logger.warning("tts segment failed (bubble only): %s", e)
-                await self.reply_segment(text=text_zh or speak_text,
-                                         tone=seg.tone, portrait=seg.portrait, text_zh=text_zh)
-        return await self.reply_end()
+                await self.reply_segment(
+                    text=text_zh or speak_text,
+                    tone=seg.tone, portrait=seg.portrait, text_zh=text_zh,
+                    turn_id=turn_id, request_id=request_id,
+                )
+        return await self.reply_end(turn_id=turn_id, request_id=request_id)
 
-    async def speak_result(self, result) -> bool:
+    async def speak_result(self, result, *, turn_id: int | None = None,
+                           request_id: str | None = None) -> bool:
         """Reply 对象存在时走完整分段；旧 FakeAgent/兼容调用退回 speak。"""
         reply_obj = getattr(result, "reply_obj", None)
         if reply_obj is not None:
-            return await self.speak_reply(reply_obj)
+            return await self.speak_reply(reply_obj, turn_id=turn_id, request_id=request_id)
         return await self.speak(
             getattr(result, "reply", ""),
             tags=[result.portrait] if getattr(result, "portrait", "") else None,
             tts_text=getattr(result, "ja_text", "") or None,
+            turn_id=turn_id,
+            request_id=request_id,
         )
 
     async def bubble(self, text: str) -> bool:
@@ -237,64 +340,175 @@ class PetServer:
             },
         })
 
+    def _reply_context(self, turn_id=None, request_id=None) -> tuple[int, str]:
+        return (
+            self._current_turn if turn_id is None else int(turn_id),
+            self._current_request_id if request_id is None else str(request_id),
+        )
+
+    def _reply_deliverable(self, turn_id: int) -> bool:
+        """Drop cancelled turns and replies owned by a replaced shell connection."""
+        if turn_id in self._cancelled_turns:
+            return False
+        owner = self._turn_clients.get(turn_id)
+        return owner is None or owner is self._client
+
     async def stop_speak(self) -> bool:
         """R3：打断当前回复 → reply_cancelled（R3_SPEC 1）。"""
+        # asyncio.to_thread 无法真正杀掉底层线程；标记 turn 取消并让线程自然收尾，
+        # 避免释放 _agent_lock 后下一轮与旧线程并发操作 SQLite。
+        if self._current_turn:
+            self._cancelled_turns.add(self._current_turn)
+            if len(self._cancelled_turns) > 128:
+                self._cancelled_turns = set(sorted(self._cancelled_turns)[-64:])
         return await self._send({
             "type": "reply_cancelled",
-            "payload": {"turn_id": self._current_turn},
+            "payload": {"turn_id": self._current_turn, "request_id": self._current_request_id},
         })
 
-    async def reply_start(self, channel: str = "tts") -> bool:
+    async def reply_start(self, channel: str = "tts", *, turn_id=None, request_id=None) -> bool:
         """R3 协议：回复开始（R3_SPEC 1）。"""
+        turn_id, request_id = self._reply_context(turn_id, request_id)
+        if not self._reply_deliverable(turn_id):
+            return False
         return await self._send({
             "type": "reply_start",
-            "payload": {"turn_id": self._current_turn, "channel": channel},
+            "payload": {"turn_id": turn_id, "request_id": request_id, "channel": channel},
         })
 
     async def reply_segment(self, *, text: str, audio_b64: str = "",
-                            tone: str = "", portrait: str = "", text_zh: str = "") -> bool:
+                            tone: str = "", portrait: str = "", text_zh: str = "",
+                            turn_id=None, request_id=None) -> bool:
         """R3 协议：回复段落（R3_SPEC 1）。"""
+        turn_id, request_id = self._reply_context(turn_id, request_id)
+        if not self._reply_deliverable(turn_id):
+            return False
         return await self._send({
             "type": "reply_segment",
             "payload": {
-                "turn_id": self._current_turn,
+                "turn_id": turn_id, "request_id": request_id,
                 "text": text, "audio_b64": audio_b64,
                 "tone": tone, "portrait": portrait, "text_zh": text_zh,
             },
         })
 
-    async def reply_end(self) -> bool:
+    async def reply_end(self, *, turn_id=None, request_id=None) -> bool:
         """R3 协议：回复结束（R3_SPEC 1）。"""
+        turn_id, request_id = self._reply_context(turn_id, request_id)
+        if not self._reply_deliverable(turn_id):
+            return False
         return await self._send({
             "type": "reply_end",
-            "payload": {"turn_id": self._current_turn},
+            "payload": {"turn_id": turn_id, "request_id": request_id},
         })
 
-    async def reply_error(self, code: str = "tts_failed", recoverable: bool = True) -> bool:
+    async def reply_error(self, code: str = "tts_failed", recoverable: bool = True,
+                          *, turn_id=None, request_id=None) -> bool:
         """R3 协议：回复失败（R3_SPEC 1）。"""
+        turn_id, request_id = self._reply_context(turn_id, request_id)
+        if not self._reply_deliverable(turn_id):
+            return False
         return await self._send({
             "type": "reply_error",
-            "payload": {"turn_id": self._current_turn, "code": code, "recoverable": recoverable},
+            "payload": {"turn_id": turn_id, "request_id": request_id,
+                        "code": code, "recoverable": recoverable},
         })
 
-    async def _send(self, msg: dict) -> bool:
+    async def _send(self, msg: dict, *, client=None) -> bool:
         # R3 协议统一信封：event_id + ts（R3_SPEC 1）
         if "event_id" not in msg:
             msg["event_id"] = uuid.uuid4().hex[:8]
         if "ts" not in msg:
             msg["ts"] = int(time.time())
+        msg.setdefault("session_id", self.session_id)
         if self._client is None:
             return False
         try:
-            await self._client.send(json.dumps(msg, ensure_ascii=False))
+            payload = msg.get("payload") or {}
+            turn_id = payload.get("turn_id")
+            try:
+                owner = self._turn_clients.get(int(turn_id)) if turn_id not in (None, "") else None
+            except (TypeError, ValueError):
+                owner = None
+            async with self._send_lock:
+                if self._client is None or (client is not None and self._client is not client):
+                    return False
+                if owner is not None and self._client is not owner:
+                    return False
+                await self._client.send(json.dumps(msg, ensure_ascii=False))
             return True
         except Exception as e:
             logger.warning("send failed: %s", e)
-            self._client = None
+            if client is None or self._client is client:
+                self._client = None
             return False
 
     # ---------- 接收处理 ----------
+    async def _run_poke(self, turn_id: int, request_id: str, ws) -> None:
+        try:
+            if self._agent is not None:
+                try:
+                    r = await self._call_agent("（用户戳了戳桌宠）")
+                    if self._client is ws and self._reply_deliverable(turn_id):
+                        await self.speak_result(r, turn_id=turn_id, request_id=request_id)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.warning("poke agent failed: %s", e)
+                    if self._client is ws and self._reply_deliverable(turn_id):
+                        await self.speak("嗯？叫我干嘛～", turn_id=turn_id, request_id=request_id)
+            else:
+                if self._client is ws and self._reply_deliverable(turn_id):
+                    await self.speak("嗯？叫我干嘛～", turn_id=turn_id, request_id=request_id)
+        except asyncio.CancelledError:
+            raise
+
+    async def _run_stream_talk(self, msg_text: str, turn_id: int, request_id: str, ws) -> None:
+        try:
+            if self._agent is None:
+                if self._client is ws and self._reply_deliverable(turn_id):
+                    await self.speak("（流式需要接入 agent）", turn_id=turn_id, request_id=request_id)
+                return
+            try:
+                fb = self._agent.memory.recent_proactive_feedback(limit=3)
+                pending = [f for f in fb if not f["responded"]]
+                if pending:
+                    self._agent.memory.record_proactive_feedback(
+                        source=pending[-1]["source"], responded=True)
+                    self._agent.gate.note_responded(pending[-1]["source"])
+                if len(pending) >= 2:
+                    self._agent.gate.note_ignored(pending[-1]["source"])
+            except Exception as e:
+                logger.debug("proactive feedback update failed: %s", e)
+            r = await self._call_agent(msg_text)
+            if self._client is ws and self._reply_deliverable(turn_id):
+                await self.speak_result(r, turn_id=turn_id, request_id=request_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("stream_talk failed: %s", e)
+            if self._client is ws and self._reply_deliverable(turn_id):
+                await self.reply_error(code="reply_failed", recoverable=True,
+                                       turn_id=turn_id, request_id=request_id)
+                await self.reply_segment(text="（这条回复没有完成，再说一次？）",
+                                         turn_id=turn_id, request_id=request_id)
+                await self.reply_end(turn_id=turn_id, request_id=request_id)
+
+    def _task_done(self, task: asyncio.Task) -> None:
+        if self._reply_task is task:
+            self._reply_task = None
+        if not task.cancelled() and task.exception() is not None:
+            logger.warning("reply task ended with error", exc_info=task.exception())
+
     async def _handle(self, ws: websockets.ServerConnection) -> None:
+        old_client = self._client
+        if old_client is not None and old_client is not ws:
+            if self._current_turn:
+                self._cancelled_turns.add(self._current_turn)
+            try:
+                await old_client.close(code=4001, reason="replaced by new shell")
+            except Exception:
+                pass
         self._client = ws
         logger.info("pet shell connected")
         try:
@@ -304,53 +518,33 @@ class PetServer:
                 except json.JSONDecodeError:
                     continue
                 mtype = msg.get("type")
-                if mtype in ("poke", "stream_talk"):
-                    # R3 TTS 打断（R3_SPEC 1）：用户新互动 → 停止当前播放
+                if mtype in ("stop_speak", "cancel_reply"):
                     await self.stop_speak()
-                    self._current_turn = self._next_turn()  # R2：新 turn
-                if mtype == "poke":
-                    logger.info("poke received")
-                    if self._agent is not None:
-                        # 正式版：agent 生成一句互动（channel=tts 语音风格 + 表情标签）
-                        try:
-                            r = await self._call_agent("（用户戳了戳桌宠）")
-                            await self.speak_result(r)
-                        except Exception as e:
-                            logger.warning("poke agent failed: %s", e)
-                            await self.speak("嗯？叫我干嘛～")
+                    continue
+                if mtype in ("poke", "stream_talk"):
+                    # 新输入只打断旧任务；接收循环继续运行，stop/ping/config 不再排队。
+                    await self.stop_speak()
+                    self._current_turn = self._next_turn()
+                    self._current_request_id = str(msg.get("request_id") or uuid.uuid4().hex)
+                    turn_id = self._current_turn
+                    request_id = self._current_request_id
+                    self._turn_clients[turn_id] = ws
+                    if len(self._turn_clients) > 128:
+                        for old_turn in sorted(self._turn_clients)[:-64]:
+                            self._turn_clients.pop(old_turn, None)
+                    if mtype == "poke":
+                        logger.info("poke received turn=%s request=%s", turn_id, request_id)
+                        task = asyncio.create_task(self._run_poke(turn_id, request_id, ws))
                     else:
-                        # PoC：无 agent 时写死文案
-                        await self.speak("嗯？叫我干嘛～")
+                        msg_text = str(msg.get("text") or "").strip()[:8000]
+                        if not msg_text:
+                            continue
+                        task = asyncio.create_task(
+                            self._run_stream_talk(msg_text, turn_id, request_id, ws))
+                    self._reply_task = task
+                    task.add_done_callback(self._task_done)
                 elif mtype == "drag":
                     pass  # 拖拽由壳自己处理，核心无需响应（PoC）
-                elif mtype == "stream_talk":
-                    # 流式对话（DESIGN 4.13）：逐句推送 speak_chunk → speak_done
-                    if self._agent is None:
-                        await self.speak("（流式需要接入 agent）")
-                        continue
-                    try:
-                        msg_text = str(msg.get("text") or "")
-                        # R4_SPEC 4 忽略自愈：用户来消息 → 最近主动反馈标记 responded；
-                        # 连续 2 条未响应 → 同源退避（note_ignored）
-                        try:
-                            fb = self._agent.memory.recent_proactive_feedback(limit=3)
-                            pending = [f for f in fb if not f["responded"]]
-                            if pending:
-                                self._agent.memory.record_proactive_feedback(
-                                    source=pending[-1]["source"], responded=True)
-                                self._agent.gate.note_responded(pending[-1]["source"])
-                            if len(pending) >= 2:
-                                self._agent.gate.note_ignored(pending[-1]["source"])
-                        except Exception as e:
-                            logger.debug("proactive feedback update failed: %s", e)
-                        # R3 整段协议（与 speak 一致）：不再逐句 chunk
-                        r = await self._call_agent(msg_text)
-                        await self.speak_result(r)
-                    except Exception as e:
-                        logger.warning("stream_talk failed: %s", e)
-                        await self.reply_error(code="reply_failed", recoverable=True)
-                        await self.reply_segment(text="（这条回复没有完成，再说一次？）")
-                        await self.reply_end()
                 elif mtype == "ping":
                     await self._send({"type": "pong"})
                 elif mtype == "get_config":
@@ -457,7 +651,8 @@ class PetServer:
             pass
         finally:
             logger.info("pet shell disconnected")
-            self._client = None
+            if self._client is ws:
+                self._client = None
 
     async def run(self) -> None:
         logger.info("pet server on ws://%s:%d", self.host, self.port)
@@ -485,75 +680,30 @@ class PetServer:
             # 替代 R4_SPEC 1.x 的 VisualAttention（vision.py 过渡实现）
             async def _visual_loop():
                 from veranima.core.attention import AttentionScheduler
-                from veranima.core.ambient import ProactiveCandidate
                 att = AttentionScheduler(llm=getattr(self._agent, "llm", None),
                                          config=self.attention_cfg)
-                await asyncio.sleep(10)  # 启动后延迟（等核心就绪）
+                await asyncio.sleep(10)
                 logger.info("visual: 注意力循环启动（VISION_SPEC V1）")
                 while True:
                     try:
                         for ev in await asyncio.to_thread(att.tick):
-                            logger.info("visual: %s %s %s", ev.kind, ev.region,
-                                        ev.note or ev.tag or "")
-                            if self._agent is None:
-                                continue
-                            # QQ 通道互斥（沿用 R4_SPEC 1.3）：QQ 活跃跳过观察
-                            qq_active = self._agent.activity.active("qq") if self._agent.activity else False
-                            if qq_active:
-                                logger.info("visual: QQ 活跃，跳过观察")
-                                continue
-                            if ev.kind in ("window_switch", "fixation_shift") and ev.tag:
-                                # VISION_SPEC 5/7：观察只做短期情境（不写长期记忆——
-                                # L3 禁止写 memories），观察结果 TTL 10min 过期不注入
-                                try:
-                                    # 观察缓存（同 window_category+region 120s 内不重复 L3）
-                                    cache_key = f"{ev.kind}:{ev.tag}"
-                                    if time.time() - self._obs_cache.get(cache_key, 0.0) < 120:
-                                        continue
-                                    summary, category = await self._observe_event(att, ev)
-                                    if not summary:
-                                        continue
-                                    self._obs_cache[cache_key] = time.time()
-                                    logger.info("visual: 观察 %s [%s]", summary[:40], category)
-                                    # 共同经历匹配：观察 summary 检索 episodic（短期情境联想）
-                                    matched = await asyncio.to_thread(
-                                        self._agent._visual_match_episode, summary[:20])
-                                    # R4：注意力只产候选（R4_SPEC 1——禁止直接 speak）
-                                    cand = ProactiveCandidate(
-                                        source="attention",
-                                        reason=f"看到用户在{ev.tag}",
-                                        relevance=0.7, urgency=0.4,
-                                        intent="bridge",
-                                        context={
-                                            "tag": ev.tag,
-                                            "matched_episode": matched,
-                                        },
-                                    )
-                                    decision = self._agent.gate.decide(
-                                        cand,
-                                        scene=self._agent.scene_lock.current(),
-                                        other_channel_active=self._agent.activity.blocking("pet"),
-                                    )
-                                    if not decision.allow:
-                                        logger.debug("visual: 主动被闸门拦截 %s", decision.reason)
-                                        continue
-                                    proactive, ja = await asyncio.to_thread(
-                                        self._agent.proactive_from_visual, ev.tag)
-                                    if proactive:
-                                        self._agent.gate.commit(cand)
-                                        logger.info("visual: 联想主动发起: %s", proactive[:60])
-                                        # R4_SPEC 4：反馈记录（用户是否回应由 stream_talk 更新）
-                                        try:
-                                            self._agent.memory.record_proactive_feedback(source="attention")
-                                        except Exception as e:
-                                            logger.debug("feedback record failed: %s", e)
-                                        await self.speak(proactive, tts_text=ja or None)
-                                except Exception as e:
-                                    logger.warning("visual observe inject failed: %s", e)
+                            try:
+                                await self._process_attention_event(att, ev)
+                            except Exception as e:
+                                logger.warning("visual event consumer failed: %s", e)
                     except Exception as e:
                         logger.warning("visual tick failed: %s", e)
-                    await asyncio.sleep(0.5)  # tick 内部自管理全局快照节奏
+                    await asyncio.sleep(0.5)
             asyncio.create_task(_visual_loop())
+            if self._qq_adapter is not None:
+                async def _qq_loop():
+                    try:
+                        await self._qq_adapter.run_task()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.exception("QQ adapter stopped; desktop core remains online")
+                self._qq_task = asyncio.create_task(_qq_loop())
             await asyncio.Future()  # 常驻
 
 
@@ -567,8 +717,17 @@ def main() -> None:
     from veranima.app import create_agent
     from veranima.config import load_config
     cfg = load_config()
-    srv.connect_agent(create_agent(cfg))
+    agent = create_agent(cfg)
+    srv.connect_agent(agent)
     logger.info("agent connected (character_card=%s)", cfg.get("character_card", ""))
+    if (cfg.get("qq") or {}).get("enabled", False):
+        try:
+            from veranima.qq import build_adapter
+            qq_adapter = build_adapter(cfg, agent, agent_lock=srv._agent_lock)
+            srv.connect_qq(qq_adapter)
+            logger.info("QQ adapter attached to shared desktop Agent")
+        except Exception as e:
+            logger.warning("QQ adapter disabled: %s", e)
     # 视觉注意力配置（VISION_SPEC 4：config.yaml attention: 段 → AttentionScheduler）
     srv.attention_cfg = cfg.get("attention", {}) or {}
     # TTS（远程/本地统一 OpenAI 兼容接口；未配置 base_url 则桌宠只显气泡）

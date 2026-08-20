@@ -19,14 +19,14 @@
 ```
 Electron 壳 (pet/)                    Python 核心 (src/veranima/)
 ├─ 主窗口（透明置顶立绘）             ├─ pet_server  WS 127.0.0.1:8765
-├─ 聊天窗口（QQ 风格，独立窗口）      ├─ agent（人格/记忆/打断/双语/文风学习）
-├─ 设置/日志窗口                      ├─ qq bot  WS 127.0.0.1:8099 (OneBot v11)
+├─ 聊天窗口（QQ 风格，独立窗口）      ├─ 单一 Agent（人格/记忆/状态/锁）
+├─ 设置/日志窗口                      ├─ QQAdapter  WS 127.0.0.1:8099 (OneBot v11)
 └─ spawn ────────────────>           └─ attention 包（视觉注意力循环）
         │
         └─ spawn GPT-SoVITS api_v2.py（127.0.0.1:9880，本地日语 TTS）
 ```
 
-- **启动器**：推荐双击 `run_pet.vbs`（无控制台闪窗）；兼容入口为 `run_pet.bat`，或开发调试时运行 `.venv\Scripts\python.exe scripts\run_pet.py`——壳自动 spawn 核心 + TTS；`config.yaml` 的 `qq.enabled: true` 时连带拉起 QQ bot（后台无窗口，退出一起停）
+- **启动器**：推荐双击 `run_pet.vbs`（无控制台闪窗）；兼容入口为 `run_pet.bat`，或开发调试时运行 `.venv\Scripts\python.exe scripts\run_pet.py`——壳自动 spawn 核心 + TTS；`config.yaml` 的 `qq.enabled: true` 时由核心进程内挂载 QQAdapter，与桌宠共用同一 Agent/记忆/锁
 - 日志按模块落盘：`logs/core.log`（核心）/ `logs/tts.log`（TTS）/ `logs/shell.log`（壳）
 - 聊天记录持久化：`%APPDATA%\veranima-pet\chat.json`（右键菜单可清空）
 
@@ -79,6 +79,8 @@ cp config/config.example.yaml config/config.yaml
 # 1. 登录 NapCatQQ，配置「反向 WebSocket 客户端」→ ws://127.0.0.1:8099/ws
 # 2. config.yaml 的 [qq] 段：enabled: true、allowed_qq: [你的QQ号]（白名单必填）
 # 3. 启动
+# 桌宠模式：推荐 run_pet.vbs，QQAdapter 会在核心内挂载，共用 Agent
+# 仅需 QQ、不启动桌宠时才单独运行：
 .venv/Scripts/python.exe -m veranima.qq
 ```
 
@@ -94,7 +96,7 @@ QQ 形态额外启用：定时问候/节庆、离线思考（静默 30 分钟后
 - **聊天**：点击形象打开 QQ 风格独立聊天窗口（右侧用户绿泡/左侧桌宠白泡+立绘头像，Enter 发送，IME 选词不误发，记录跨重启保留）
 - **右键菜单**：戳一下 / 打开聊天 / 清空聊天记录 / 显示隐藏 / 设置 / 日志 / 重启核心 / 退出
 - **TTS**：GPT-SoVITS v4 本地日语合成（端口 9880）。模型权重 + 参考音频在 `characters/yuki/voice/`（gitignore），配置在 config.yaml `[tts]` 段
-- **视觉注意力**：自动运行（logs/core.log 可看事件：window_switch / fixation_shift / 观察注入 / 联想主动发起），参数在 config.yaml `[attention]` 段
+- **视觉注意力**：自动运行；窗口切换只记录元数据，注视转移才会在隐私策略通过后发送彩色区域截图（原始截图不落盘），参数在 config.yaml `[attention]` 段
 
 ### 桌宠所需的外部资源（gitignore，clone 后手动准备）
 

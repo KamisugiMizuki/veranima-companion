@@ -869,7 +869,7 @@ class Agent:
         import difflib
         return difflib.SequenceMatcher(None, a, b).ratio()
 
-    def proactive_from_visual(self, tag: str) -> str:
+    def proactive_from_visual(self, tag: str, matched_memory: str = "") -> str:
         """R4 联想式主动发起（R4_SPEC 1.三段式决策）。
 
         屏幕 focus.tag × 事件记忆模糊匹配：episodic 层含 tag 关键词 → 生成联想消息。
@@ -877,17 +877,19 @@ class Agent:
         """
         if not tag or self.state.energy < 30:
             return "", ""
-        # 检索 episodic 层含 tag 的记忆
-        try:
-            hits = [
-                e for e in self.memory.list_layer("episodic", limit=20)
-                if tag in (e.content or "")
-            ]
-        except Exception:
-            hits = []
-        if not hits:
-            return "", ""
-        old = hits[-1].content[:120]
+        old = str(matched_memory or "").strip()[:120]
+        if not old:
+            # 兼容旧调用；生产视觉链会把混合 recall 的命中直接传入。
+            try:
+                hits = [
+                    e for e in self.memory.list_layer("episodic", limit=20)
+                    if tag in (e.content or "")
+                ]
+            except Exception:
+                hits = []
+            if not hits:
+                return "", ""
+            old = hits[-1].content[:120]
         task = (
             f"你看到用户正在{tag}（屏幕焦点）。突然想起一件旧事：\"{old}\"。"
             f"给用户发一条消息，自然地提起这件事（可以带'咦''说起来'这类开头），"

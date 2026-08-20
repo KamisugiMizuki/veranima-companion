@@ -18,7 +18,8 @@
     #avatar {
       width: 200px; height: 200px;
       position: absolute; top: 0; left: 10px;  /* top 由 renderer relayout 设置 */
-      image-rendering: pixelated;
+      /* 角色立绘是高分辨率 RGBA 素材，不是像素画；使用浏览器高质量插值。 */
+      image-rendering: auto;
       object-fit: contain;
       object-position: center bottom;
     }
