@@ -222,7 +222,6 @@ class PetServer:
         )
         decision = gate.decide(
             cand, scene=scene_lock.current(),
-            other_channel_active=activity.blocking("pet") if activity else False,
         )
         if not decision.allow:
             logger.info("visual: event=%s action=suppressed reason=%s",
@@ -490,8 +489,7 @@ class PetServer:
                     self._agent.memory.record_proactive_feedback(
                         source=source, channel="pet", responded=True)
                     self._agent.gate.note_responded(source, channel="pet")
-                if len(pending) >= 2:
-                    self._agent.gate.note_ignored(pending[-1]["source"], channel="pet")
+
             except Exception as e:
                 logger.debug("proactive feedback update failed: %s", e)
             r = await self._call_agent(msg_text, images)
@@ -665,7 +663,7 @@ class PetServer:
                         if k in att:
                             cfg.setdefault("attention", {})[k] = att[k]
                     pro = d.get("proactive", {})
-                    for k in ("enabled", "quiet_hours_enabled", "global_max_per_day"):
+                    for k in ("enabled", "quiet_hours_enabled"):
                         if k in pro:
                             cfg.setdefault("proactive", {})[k] = pro[k]
                     if isinstance(pro.get("channels"), dict):

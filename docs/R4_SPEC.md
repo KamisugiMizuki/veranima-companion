@@ -65,7 +65,7 @@ class ProactiveDecision:
 
 ## 4. 忽略与自愈
 
-记录 `proactive_feedback`：`sent_at, source, responded, interrupted, user_sent_within, dismissed`。连续两次未响应：同源冷却翻倍；用户明确“不想被打扰”：立即暂停直到用户主动恢复。
+记录 `proactive_feedback`：`sent_at, source, responded, interrupted, user_sent_within, dismissed`。用户明确“不想被打扰”：立即暂停直到用户主动恢复。
 
 用户新消息到来时，尚未发送的 pending candidate 作废。主动消息不得与用户回复同一轮连发。
 
@@ -76,9 +76,7 @@ proactive:
   enabled: true
   max_per_day: 2
   min_gap_minutes: 30
-  source_gap_minutes: 120
   quiet_hours: [23, 8]
-  ignore_backoff: true
   visual_candidates: true
 ```
 
@@ -86,4 +84,4 @@ proactive:
 
 ## 6. 测试
 
-覆盖：场景阻塞、通道互斥、静默时段、日上限、同源冷却、用户新消息作废、连续忽略退避、视觉候选无共同经历不发送、commitment 到期可发、低成本模型输出异常降级。
+覆盖：场景阻塞、通道独立间隔、静默时段、每日上限、用户新消息作废、视觉候选无共同经历不发送、commitment 到期可发、低成本模型输出异常降级。

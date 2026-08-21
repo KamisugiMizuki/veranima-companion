@@ -1,6 +1,6 @@
 """R4 主动性闸门测试（R4_SPEC 6）。
 
-覆盖：场景阻塞、通道互斥、静默时段、日上限、同源冷却、忽略退避、
+覆盖：场景阻塞、通道独立间隔、静默时段、日上限、
 视觉候选无共同经历不发送、commitment 可发、pause/resume。
 """
 from __future__ import annotations
@@ -50,9 +50,9 @@ def test_scene_blocked():
     assert gate.decide(_cand(), scene="normal").allow
 
 
-def test_other_channel_active():
+def test_other_channel_active_does_not_block_channel_cooldown():
     gate = ProactiveGate(config={}, now=1_000_000)
-    assert not gate.decide(_cand(), other_channel_active=True).allow
+    assert gate.decide(_cand(), other_channel_active=True).allow
 
 
 def test_quiet_hours():
@@ -67,38 +67,24 @@ def test_quiet_hours():
 
 def test_daily_cap():
     gate = ProactiveGate(config={}, now=NOW)
-    # 两次用不同来源（同源 2h 冷却独立于日上限）
+    # 两次使用不同来源，但只计算 QQ 自己的间隔和每日上限
     for src in ("shared_episode", "commitment"):
         assert gate.decide(_cand(source=src)).allow
         gate.commit(_cand(source=src))
-        gate._now += 31 * 60  # 过全局 30min 间隔
+        gate._now += 31 * 60  # 过 QQ 自己的 30min 间隔
     assert not gate.decide(_cand()).allow  # 默认 max_per_day=2
 
 
-def test_min_gap_and_source_gap():
+def test_each_channel_has_one_min_gap_only():
     gate = ProactiveGate(config={}, now=NOW)
     assert gate.decide(_cand()).allow
     gate.commit(_cand())
-    # 全局 30min 内拒绝
+    # 自身通道的间隔未到，换来源也不能绕过
     gate._now = NOW + 60
     assert not gate.decide(_cand(source="commitment")).allow
-    # 30min 后允许新来源
+    # 自身通道间隔到期，换来源不再有第二层冷却
     gate._now = NOW + 31 * 60
     assert gate.decide(_cand(source="commitment")).allow
-    # 同源 2h 内拒绝（shared_episode 已发过）
-    assert not gate.decide(_cand()).allow
-
-
-def test_ignored_backoff():
-    gate = ProactiveGate(config={}, now=NOW)
-    gate.commit(_cand())
-    gate.note_ignored("shared_episode")
-    gate.note_ignored("shared_episode")
-    # 同源冷却翻倍：2h × 2^(2-1) = 4h 内拒绝
-    gate._now = NOW + 31 * 60  # 过了全局 30min
-    assert not gate.decide(_cand()).allow
-    gate._now = NOW + 5 * 3600  # 5h 后允许（17:00，非静默时段）
-    assert gate.decide(_cand()).allow
 
 
 def test_attention_without_memory_blocked():
@@ -140,8 +126,8 @@ def test_note_failure_no_commit():
 def test_channel_cooldowns_are_independent():
     gate = ProactiveGate(config={
         "channels": {
-            "qq": {"min_gap_minutes": 120, "source_gap_minutes": 120, "max_per_day": 2},
-            "pet": {"min_gap_minutes": 30, "source_gap_minutes": 120, "max_per_day": 2},
+            "qq": {"min_gap_minutes": 120, "max_per_day": 2},
+            "pet": {"min_gap_minutes": 30, "max_per_day": 2},
         },
     }, now=NOW)
     qq = _cand(channel="qq")
@@ -152,12 +138,16 @@ def test_channel_cooldowns_are_independent():
     assert not gate.decide(_cand(channel="qq", source="commitment")).allow
     assert gate.decide(pet).allow
 
+    gate._now += 121 * 60
+    gate.commit(pet)
+    assert gate.decide(_cand(channel="qq", source="commitment")).allow
+
 
 def test_channel_daily_caps_are_independent():
     gate = ProactiveGate(config={
         "channels": {
-            "qq": {"min_gap_minutes": 0, "source_gap_minutes": 0, "max_per_day": 1},
-            "pet": {"min_gap_minutes": 0, "source_gap_minutes": 0, "max_per_day": 1},
+            "qq": {"min_gap_minutes": 0, "max_per_day": 1},
+            "pet": {"min_gap_minutes": 0, "max_per_day": 1},
         },
     }, now=NOW)
     gate.commit(_cand(channel="qq"))
@@ -170,7 +160,6 @@ def test_channel_daily_caps_are_independent():
 def test_legacy_gap_config_seeds_both_channels():
     gate = ProactiveGate(config={
         "min_gap_minutes": 45,
-        "source_gap_minutes": 90,
         "max_per_day": 3,
     }, now=NOW)
 

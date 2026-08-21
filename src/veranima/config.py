@@ -31,15 +31,23 @@ def normalize_proactive_channels(data: dict) -> dict:
         "enabled": True,
         "max_per_day": int(proactive.get("max_per_day", 2)),
         "min_gap_minutes": int(proactive.get("min_gap_minutes", 30)),
-        "source_gap_minutes": int(proactive.get("source_gap_minutes", 120)),
     }
+    proactive.pop("source_gap_minutes", None)
+    proactive.pop("ignore_backoff", None)
     configured = proactive.get("channels") if isinstance(proactive.get("channels"), dict) else {}
+    configured = {
+        name: {k: v for k, v in (value or {}).items()
+               if k not in {"source_gap_minutes", "ignore_backoff"}}
+        for name, value in configured.items()
+        if isinstance(value, dict)
+    }
     defaults = {
         "qq": {**legacy, "evaluation_interval_minutes": 15, "post_silence_buffer_minutes": 30,
                "sleep_silence_hours": 8, "sleep_min_hours": 6, "sleep_max_hours": 12,
                "low_activity_multiplier": 0.3, "ignored_reply_window_hours": 24},
         "pet": dict(legacy),
     }
+    proactive.pop("global_max_per_day", None)
     proactive["channels"] = {
         name: {**defaults[name], **(configured.get(name, {}) or {})}
         for name in ("qq", "pet")

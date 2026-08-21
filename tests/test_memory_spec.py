@@ -387,7 +387,7 @@ def test_llm_memory_candidates_consumed(tmp_path):
 
 
 def test_proactive_feedback_responded_flow(tmp_path):
-    """R4_SPEC 4：反馈记录 + 响应标记 + 忽略退避链路。"""
+    """R4_SPEC 4：反馈记录与响应标记链路。"""
     a = _agent_with_memory(tmp_path)
     a.memory.record_proactive_feedback(source="attention")
     a.memory.record_proactive_feedback(source="attention")
@@ -396,9 +396,7 @@ def test_proactive_feedback_responded_flow(tmp_path):
     # 用户回应 → responded 标记 + note_responded 重置
     a.memory.record_proactive_feedback(source="attention", responded=True)
     a.gate.note_responded("attention")
-    # 连续忽略 → note_ignored 退避
-    a.gate.note_ignored("attention")
-    a.gate.note_ignored("attention")
-    assert a.gate._ignored_streak["attention"] == 2
+    # 响应反馈不改变通道自己的发言间隔
+    assert a.gate._last_any == {}
 
 

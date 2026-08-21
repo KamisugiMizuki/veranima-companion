@@ -160,12 +160,10 @@ proactive:
   enabled: true
   quiet_hours_enabled: true
   quiet_hours: [23, 8]
-  global_max_per_day: 0
   channels:
     qq:
       enabled: true
       min_gap_minutes: 120
-      source_gap_minutes: 120
       max_per_day: 2
       evaluation_interval_minutes: 15
       post_silence_buffer_minutes: 30
@@ -177,9 +175,7 @@ proactive:
     pet:
       enabled: true
       min_gap_minutes: 30
-      source_gap_minutes: 120
       max_per_day: 2
-  ignore_backoff: true
   visual_candidates: true
 
 # R4 视觉注意力：默认只保存短期摘要，不保存原始截图

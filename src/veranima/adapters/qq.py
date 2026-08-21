@@ -611,7 +611,6 @@ class QQAdapter:
         candidate = self._qq_candidate_from_text(msg, source="scene")
         if not self.agent.gate.decide(
             candidate, scene=self.agent.scene_lock.current(),
-            other_channel_active=self.agent.activity.blocking("qq"),
         ).allow:
             logger.info("pending qq proactive suppressed by gate")
             return
@@ -651,7 +650,6 @@ class QQAdapter:
         candidate = self._qq_candidate(material)
         decision = self.agent.gate.decide(
             candidate, scene=self.agent.scene_lock.current(),
-            other_channel_active=self.agent.activity.blocking("qq"), now=now,
         )
         if not decision.allow:
             logger.info("qq proactive suppressed by gate: %s", decision.reason)

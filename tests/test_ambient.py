@@ -84,7 +84,7 @@ def test_arbitrator_blocks_in_scene():
 
 def test_arbitrator_blocks_other_channel():
     a = Arbitrator(now=1000.0)
-    assert a.request("idle", other_channel_active=True) is False
+    assert a.request("idle", other_channel_active=True) is True
 
 
 def test_arbitrator_cooldown_and_daily_cap():
@@ -119,7 +119,7 @@ def test_heartbeat_requires_closed_conversation(agent):
     assert a.heartbeat() == ""
     # 闭合：补一条 assistant
     memory.store_message("assistant", "你好呀", 80, "平静")
-    a.gate._last_sent.clear()  # R4：清除同源冷却以便同轮再触发
+    a.gate._last_any.clear()  # 清除 QQ 通道自己的发言间隔
     out = a.heartbeat()
     assert out != ""
     assert llm.calls > 0

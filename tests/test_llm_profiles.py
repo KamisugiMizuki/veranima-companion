@@ -6,12 +6,12 @@ from veranima.llm.client import LLMClient
 
 def test_proactive_channel_defaults_split_legacy_config():
     from veranima.config import normalize_proactive_channels
-    data = {"proactive": {"min_gap_minutes": 30, "source_gap_minutes": 90, "max_per_day": 2}}
+    data = {"proactive": {"min_gap_minutes": 30, "max_per_day": 2}}
 
     normalize_proactive_channels(data)
 
     assert data["proactive"]["channels"]["qq"]["min_gap_minutes"] == 30
-    assert data["proactive"]["channels"]["pet"]["source_gap_minutes"] == 90
+    assert "source_gap_minutes" not in data["proactive"]["channels"]["pet"]
 
 
 def _legacy():

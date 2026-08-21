@@ -22,7 +22,6 @@ class Memory:
 
 class Gate:
     def note_responded(self, source): pass
-    def note_ignored(self, source): pass
 
 
 class Agent:

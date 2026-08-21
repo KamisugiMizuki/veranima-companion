@@ -183,20 +183,14 @@ class ProactiveGate:
             "enabled": True,
             "max_per_day": int(cfg.get("max_per_day", 2)),
             "min_gap_minutes": int(cfg.get("min_gap_minutes", 30)),
-            "source_gap_minutes": int(cfg.get("source_gap_minutes", 120)),
         }
         self._channels = cfg.get("channels", {}) or {}
-        self.global_max_per_day = int(cfg.get("global_max_per_day", 0))
         self.quiet_hours_enabled = bool(cfg.get("quiet_hours_enabled", True))
         self.quiet_hours = cfg.get("quiet_hours", [23, 8])
-        self.ignore_backoff = bool(cfg.get("ignore_backoff", True))
         self._now = now
         self._last_any: dict[str, float] = {}
-        self._last_sent: dict[tuple[str, str], float] = {}
         self._today_count: dict[str, int] = {}
-        self._global_today_count = 0
         self._today_key = ""
-        self._ignored_streak: dict[tuple[str, str], int] = {}
         self._paused = False  # 用户明确"不想被打扰" → 暂停直到用户主动恢复
         self._paused_channels: set[str] = set()
 
@@ -204,11 +198,10 @@ class ProactiveGate:
         return {**self._legacy_channel_config, **(self._channels.get(channel, {}) or {})}
 
     def restore_feedback(self, rows: list[dict] | None) -> None:
-        """从 SQLite 主动发送记录恢复通道级冷却和忽略退避。"""
+        """从 SQLite 主动发送记录恢复通道级发言间隔和每日计数。"""
         self._roll_day()
         for row in reversed(rows or []):
             channel = str(row.get("channel") or "qq")
-            source = str(row.get("source") or "unknown")
             try:
                 import datetime
                 stamp = datetime.datetime.fromisoformat(str(row.get("sent_at")).replace("Z", "+00:00"))
@@ -217,15 +210,8 @@ class ProactiveGate:
                 continue
             if ts > self._last_any_for(channel):
                 self._last_any[channel] = ts
-            key = (channel, source)
-            self._last_sent[key] = max(self._last_sent.get(key, 0.0), ts)
             if self._day_of_timestamp(ts) == self._today_key:
                 self._today_count[channel] = self._today_count.get(channel, 0) + 1
-                self._global_today_count += 1
-            if row.get("responded"):
-                self._ignored_streak[key] = 0
-            else:
-                self._ignored_streak[key] = self._ignored_streak.get(key, 0) + 1
 
     def _last_any_for(self, channel: str) -> float:
         value = self._last_any
@@ -250,7 +236,6 @@ class ProactiveGate:
         if day != self._today_key:
             self._today_key = day
             self._today_count.clear()
-            self._global_today_count = 0
 
     def _in_quiet_hours(self) -> bool:
         import datetime
@@ -266,7 +251,7 @@ class ProactiveGate:
 
     def decide(self, candidate: ProactiveCandidate, *, scene: str = "normal",
                other_channel_active: bool = False, now=None) -> ProactiveDecision:
-        """9 条确定性闸门（R4_SPEC 2）。now 注入便于测试（默认真实时钟）。"""
+        """按候选自身通道执行闸门；保留旧参数但不参与决策。"""
         now = self._t() if now is None else now
         channel = candidate.channel or "qq"
         channel_cfg = self.channel_config(channel)
@@ -278,10 +263,7 @@ class ProactiveGate:
         # 2. 场景不是 busy/away/blocked
         if scene not in ("normal", "chat"):
             return ProactiveDecision(False, f"scene={scene}", candidate=candidate)
-        # 3. 当前没有其他通道活跃
-        if other_channel_active:
-            return ProactiveDecision(False, "other channel active", candidate=candidate)
-        # 4. quiet hours 外
+        # 3. quiet hours 外；另一个通道的活跃状态不参与本通道决策。
         if self._in_quiet_hours():
             return ProactiveDecision(False, "quiet hours", candidate=candidate)
         # 5. 当日上限未满
@@ -289,23 +271,11 @@ class ProactiveGate:
         max_per_day = int(channel_cfg.get("max_per_day", 2))
         if max_per_day > 0 and self._today_count.get(channel, 0) >= max_per_day:
             return ProactiveDecision(False, "daily cap reached", candidate=candidate)
-        if self.global_max_per_day > 0 and self._global_today_count >= self.global_max_per_day:
-            return ProactiveDecision(False, "global daily cap reached", candidate=candidate)
-        # 6. 距上次主动消息足够久（全局 30min；同源 2h）
+        # 6. 只按当前通道的上次主动发言计算间隔。
         min_gap = int(channel_cfg.get("min_gap_minutes", 30))
-        source_gap = int(channel_cfg.get("source_gap_minutes", 120))
         if now - self._last_any_for(channel) < min_gap * 60:
             return ProactiveDecision(False, "min gap not elapsed", candidate=candidate)
-        source_key = (channel, candidate.source)
-        if now - self._last_sent.get(source_key, 0.0) < source_gap * 60:
-            return ProactiveDecision(False, f"source gap ({candidate.source})", candidate=candidate)
-        # 7. 连续忽略抑制（R4_SPEC 4：连续 2 次未响应 → 同源冷却翻倍）
-        streak = self._ignored_streak.get(source_key, 0)
-        if self.ignore_backoff and streak >= 2:
-            grow = source_gap * 60 * (2 ** (streak - 1))
-            if now - self._last_sent.get(source_key, 0.0) < grow:
-                return ProactiveDecision(False, f"ignored backoff ({candidate.source} ×{streak})", candidate=candidate)
-        # 8. relevance 与来源要求（R4_SPEC 2 第 8 条 / R4_SPEC 3）
+        # 7. relevance 与来源要求 (R4_SPEC 2 第 8 条 / R4_SPEC 3)
         min_rel = self.SOURCE_RELEVANCE_MIN.get(candidate.source)
         if min_rel is not None and candidate.relevance < min_rel:
             return ProactiveDecision(False, f"relevance {candidate.relevance:.2f} < {min_rel}", candidate=candidate)
@@ -319,39 +289,19 @@ class ProactiveGate:
     # ---------- 反馈 ----------
 
     def commit(self, candidate: ProactiveCandidate) -> None:
-        """发起成功：记全局/同源冷却 + 日计数 + 忽略计数清零。"""
+        """发起成功：记录当前通道的间隔起点和每日计数。"""
         self._roll_day()
         now = self._t()
         channel = candidate.channel or "qq"
-        key = (channel, candidate.source)
         self._last_any[channel] = now
-        self._last_sent[key] = now
         self._today_count[channel] = self._today_count.get(channel, 0) + 1
-        self._global_today_count += 1
-        self._ignored_streak[key] = 0
-        if channel == "qq":
-            self._ignored_streak[candidate.source] = 0
 
     def note_failure(self, candidate: ProactiveCandidate) -> None:
         """生成/解析失败：不算主动发送（R4_SPEC 2 第 9 条降级）。"""
         logger.debug("proactive generation failed: %s", candidate.reason)
 
-    def note_ignored(self, source: str, channel: str = "qq") -> None:
-        """R4_SPEC 4 忽略反馈：连续忽略 → 同源冷却翻倍（退避）。"""
-        key = (channel, source)
-        n = self._ignored_streak.get(key, 0) + 1
-        self._ignored_streak[key] = n
-        if channel == "qq":
-            self._ignored_streak[source] = n
-        if n >= 2:
-            logger.info("proactive ignored %d× (source=%s), backoff active", n, source)
-
     def note_responded(self, source: str, channel: str = "qq") -> None:
-        """R4_SPEC 4 响应反馈：用户回应了主动消息 → 重置忽略计数。"""
-        if source:
-            self._ignored_streak[(channel, source)] = 0
-            if channel == "qq":
-                self._ignored_streak[source] = 0
+        """兼容旧反馈调用；响应不改变通道发言间隔。"""
 
     def pause(self, channel: str | None = None) -> None:
         """用户明确"不想被打扰"：立即暂停直到用户主动恢复。"""
@@ -399,7 +349,7 @@ class Arbitrator:
         return base.strftime("%Y-%m-%d")
 
     def request(self, mechanism: str, *, scene: str = "normal", other_channel_active: bool = False) -> bool:
-        """请求主动发起；返回 True=允许。拦截条件：场景非 normal / 其他通道活跃 / 冷却 / 日上限。"""
+        """请求主动发起；只检查自身机制冷却和日上限，旧参数仅兼容。"""
         # 日计数滚动
         d = self._day()
         if d != self._today_key:
@@ -407,9 +357,6 @@ class Arbitrator:
             self._today_count = 0
         if scene != "normal":
             logger.debug("arbitrator: blocked by scene=%s", scene)
-            return False
-        if other_channel_active:
-            logger.debug("arbitrator: blocked by other channel active")
             return False
         now = self._t()
         if now < self._cooldown.get(mechanism, 0):

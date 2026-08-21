@@ -1134,7 +1134,6 @@ class Agent:
         )
         decision = self.gate.decide(
             cand, scene=self.scene_lock.current(),
-            other_channel_active=self.activity.blocking("qq"),
             now=now_ts,  # 测试注入；生产传真实时间
         )
         if not decision.allow:
@@ -1180,7 +1179,6 @@ class Agent:
         )
         if not self.gate.decide(
             cand, scene=self.scene_lock.current(),
-            other_channel_active=self.activity.blocking("qq"),
         ).allow:
             return ""
         recent = self.memory.recent_messages(limit=8)
@@ -1242,7 +1240,6 @@ class Agent:
         )
         if not self.gate.decide(
             cand, scene=self.scene_lock.current(),
-            other_channel_active=self.activity.blocking("qq"),
         ).allow:
             return ""
         # 对话闭合检查：最后一条必须是 user 消息（有未回应完的内容）

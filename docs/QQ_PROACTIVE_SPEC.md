@@ -24,7 +24,7 @@ QQ 是异步、高打扰、高退出成本的媒介。用户关闭 QQ 对话框�
 - 不把“虚拟状态前缀”写成系统实际执行过某项现实操作的证据。
 - 不新增远程搜索或新的记忆后端。
 
-桌宠仍通过自己的 `pet` 通道使用视觉注意力、观察事件、`ProactiveGate` 和桌宠 TTS。两通道可以保留“用户当前正在另一通道交互时不打扰”的活动互斥，但这不是共享冷却，不能读取或更新对方通道的最后发言时间。
+桌宠仍通过自己的 `pet` 通道使用视觉注意力、观察事件、`ProactiveGate` 和桌宠 TTS。主动闸门不读取另一通道的活跃状态，不因另一通道刚发言而延迟当前通道。
 
 ## 2. 当前实现事实
 
@@ -46,21 +46,20 @@ QQ adapter 的后台循环会调用 `tick_proactive()`、离线思考和延迟 `
 
 ```text
 _last_any
-_last_sent[source]
 _today_count
-_ignored_streak[source]
 ```
 
-因此 QQ 或桌宠任一通道成功发言后，会影响另一通道的全局间隔和每日额度。`source` 只能区分 `ritual`、`attention` 等来源，不能区分真正的交付通道。
+每个通道只维护自己的最后发言时间和每日计数。`source` 只用于说明主动消息的来源，不参与间隔计算。
 
-### 2.3 需要保留的活动互斥
+### 2.3 主动闸门不使用跨通道活动状态
 
-`ChannelActivityTracker` 记录用户最近是否在 QQ 或桌宠交互。该机制和主动冷却是两个不同概念：
+`ChannelActivityTracker` 可以继续为其他 UI/在场逻辑记录活动，但不参与主动闸门。主动冷却只看候选自身通道：
 
 - **冷却**：某通道自己上一次主动发言后，多久才允许该通道再次主动发言。
-- **活动互斥**：用户正在另一通道交互时，是否暂时不打扰。
-
-本专项只消除前者的跨通道共享。后者默认保留：用户刚在 QQ 对话时，桌宠视觉主动可以安静；用户正在桌宠聊天时，QQ 主动也可以暂缓。活动互斥不应更新对方的 cooldown timestamp。
+- 不读取另一通道的最后发言时间；
+- 不读取另一通道的活跃窗口；
+- 不因另一通道刚发送而阻塞当前通道；
+- 不更新另一通道的 cooldown timestamp 或每日计数。
 
 ## 3. 通道模型
 
@@ -88,9 +87,7 @@ class ProactiveCandidate:
 
 ```python
 _last_any: dict[str, float]
-_last_sent: dict[tuple[str, str], float]
 _today_count: dict[str, int]
-_ignored_streak: dict[tuple[str, str], int]
 ```
 
 索引关系：
@@ -98,9 +95,6 @@ _ignored_streak: dict[tuple[str, str], int]
 ```text
 _last_any["qq"]
 _last_any["pet"]
-_last_sent[("qq", "ritual")]
-_last_sent[("qq", "shared_episode")]
-_last_sent[("pet", "attention")]
 ```
 
 QQ 的主动消息不会更新 `pet` 的 `_last_any`；桌宠视觉主动不会更新 `qq` 的 `_last_any`。
@@ -112,14 +106,10 @@ proactive:
   enabled: true
   quiet_hours_enabled: true
   quiet_hours: [23, 8]
-  # 可选的跨通道紧急总上限。默认关闭，避免再次产生隐式通道耦合。
-  global_max_per_day: 0
-
   channels:
     qq:
       enabled: true
       min_gap_minutes: 120
-      source_gap_minutes: 120
       max_per_day: 2
       evaluation_interval_minutes: 15
       post_silence_buffer_minutes: 30
@@ -132,24 +122,21 @@ proactive:
     pet:
       enabled: true
       min_gap_minutes: 30
-      source_gap_minutes: 120
       max_per_day: 2
 ```
 
 字段含义：
 
 - `min_gap_minutes`：该通道任意两次主动发言之间的硬下限。
-- `source_gap_minutes`：同一通道、同一来源之间的硬下限。
 - `max_per_day`：该通道每日主动发言上限。
 - `evaluation_interval_minutes`：QQ 时机引擎重新计算的间隔，不等于发送间隔。
-- `global_max_per_day`：仅作为紧急总保险；为 `0` 时关闭，不参与普通决策。
+
 
 旧配置迁移：
 
 ```text
 proactive.min_gap_minutes      → proactive.channels.qq.min_gap_minutes
                                 → proactive.channels.pet.min_gap_minutes
-proactive.source_gap_minutes   → 两个 channel 的 source_gap_minutes
 proactive.max_per_day          → 两个 channel 的 max_per_day
 ```
 
@@ -170,7 +157,7 @@ QQ 文本时间线统计
     ↓
 五维 readiness score
     ↓
-硬闸门：静默期、最小间隔、每日上限、活动互斥、忽略退避
+硬闸门：静默期、当前通道发言间隔、当前通道每日上限
     ↓
 内容素材选择
     ↓
@@ -299,9 +286,7 @@ P = clamp(T × M × R × C × S, 0, 1)
 - quiet hours；
 - `min_gap_minutes` 未到；
 - QQ 当日上限已满；
-- 同源冷却未到；
-- QQ 近期被忽略退避；
-- 用户正在桌宠交互，且活动互斥策略要求暂缓。
+
 
 ## 5. 用户状态感知协议
 
@@ -474,22 +459,19 @@ proactive:
   channels:
     pet:
       min_gap_minutes: 30
-      source_gap_minutes: 120
       max_per_day: 2
 ```
 
 QQ 与桌宠之间保留的只有：
 
 - 同一 Agent、记忆和人格状态；
-- 用户跨通道活动互斥；
+- （无跨通道冷却或活动阻塞）；
 - 全局显式暂停/quiet hours（如果产品决定保留）。
 
 不共享：
 
 - `last_any`；
 - 通道每日额度；
-- 同源冷却；
-- 忽略退避；
 - QQ 用户回复率；
 - QQ 用户状态锁与 routine profile。
 
@@ -498,7 +480,7 @@ QQ 与桌宠之间保留的只有：
 ### Phase 0：通道冷却拆分
 
 - 为候选和 Gate 引入 `channel`；
-- 将 `_last_any`、`_last_sent`、每日计数、忽略退避按通道分桶；
+- 将 `_last_any` 和每日计数按通道分桶；
 - 增加 `proactive.channels.qq` 与 `proactive.channels.pet`；
 - 旧配置自动迁移；
 - 行为测试证明 QQ 发言不会改变 pet cooldown，pet 发言不会改变 QQ cooldown。
@@ -532,7 +514,7 @@ QQ 与桌宠之间保留的只有：
 
 - M 对话热度；
 - R 用户 routine profile；
-- S QQ 主动回复率、忽略退避和显式拒绝；
+- S QQ 主动回复率和显式拒绝；
 - 最小样本数与冷启动默认值；
 - 统计只保留本地聚合画像。
 
@@ -551,7 +533,8 @@ QQ 与桌宠之间保留的只有：
 - QQ 发言后，pet 仍按自己的间隔计时；
 - pet 发言后，QQ 仍按自己的间隔计时；
 - 旧全局字段迁移后两个通道均有明确值；
-- 活动互斥阻塞不改变另一通道 cooldown timestamp。
+- QQ 发言后，pet 是否允许发送只由 pet 自己的发言间隔和每日上限决定；
+- pet 发言后，QQ 是否允许发送只由 QQ 自己的发言间隔和每日上限决定；
 
 ### 11.2 QQ 时间线
 
@@ -596,7 +579,7 @@ QQ 与桌宠之间保留的只有：
 以下是实现前需要用户确认的产品决策，文档先给出默认建议：
 
 1. **默认 QQ 最小主动间隔**：建议 120 分钟；桌宠保留 30 分钟。理由是 QQ 的打扰成本明显更高。
-2. **每日上限是否也完全分通道**：建议分通道；保留一个默认关闭的 `global_max_per_day` 作为紧急保险。
+2. **每日上限**：固定按通道分开计算，不提供共享总上限。
 3. **quiet hours 是否分通道**：建议先保留全局硬静默，后续如用户需要再增加 `qq.quiet_hours` 覆盖。
 4. **QQ routine profile 最小样本数**：建议至少 12 条有效 QQ 用户回复后启用；此前使用中性系数 `R=1.0`。
 5. **主动内容中的虚拟状态前缀**：建议只允许模糊、不可验证的角色化措辞，不允许声称执行过现实操作或编造精确外部事实。
