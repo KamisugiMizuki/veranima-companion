@@ -145,6 +145,10 @@ def test_plain_text_accepts_napcat_face_placeholder():
     assert QQAdapter._plain_text({"message": "[表情 [比心] ]"}) == "[QQ表情：比心]"
 
 
+def test_plain_text_preserves_text_around_napcat_face_placeholder():
+    assert QQAdapter._plain_text({"message": "你好 [表情 [比心] ] 世界"}) == "你好 [QQ表情：比心] 世界"
+
+
 def test_plain_text_accepts_structured_face_list():
     assert QQAdapter._plain_text({"message": [{"type": "face", "data": {"summary": "[比心]"}}]}) == "[QQ表情：比心]"
 

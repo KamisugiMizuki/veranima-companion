@@ -350,10 +350,12 @@ class QQAdapter:
                     return extract(Message(raw))
                 except Exception:
                     pass
-            match = re.search(r"\[表情\s*\[([^\]]+)\]\s*\]", raw)
-            if match:
-                return f"[QQ表情：{match.group(1).strip()}]"
-            return re.sub(r"\[CQ:(?:image|file),[^\]]*\]", "", raw).strip()
+            raw = re.sub(r"\[CQ:(?:image|file),[^\]]*\]", "", raw)
+            return re.sub(
+                r"\[表情\s*\[([^\]]+)\]\s*\]",
+                lambda m: f"[QQ表情：{m.group(1).strip()}]",
+                raw,
+            ).strip()
 
         text = extract(event.get("message", ""))
         if not text or text in {"[图片]", "[文件]", "[表情]"}:
