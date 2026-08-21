@@ -80,6 +80,35 @@ def test_handle_llm_unavailable_returns_wakeup(agent, tmp_path):
     assert msgs[-1]["role"] == "assistant"
 
 
+def test_prompt_preserves_message_times_across_restart(agent):
+    card, memory = agent
+    memory.con.executemany(
+        "INSERT INTO messages(role, content, created_at, energy_at, mood_at) VALUES (?,?,?,?,?)",
+        [
+            ("user", "我觉得是该睡觉的时间了", "2026-08-21T10:40:48", 80, "平静"),
+            ("assistant", "行了，赶紧躺着去，晚安。", "2026-08-21T10:40:52", 80, "平静"),
+        ],
+    )
+    memory.con.commit()
+    llm = FakeLLM(reply="知道了")
+    a = Agent(card=card, memory=memory, llm=llm, state=AgentState(), config={})
+
+    a.handle("不对，我根本还没睡")
+
+    assert llm.last_messages[1] == {
+        "role": "user",
+        "content": "[2026-08-21 10:40:48] 我觉得是该睡觉的时间了",
+    }
+    assert llm.last_messages[2] == {
+        "role": "assistant",
+        "content": "[2026-08-21 10:40:52] 行了，赶紧躺着去，晚安。",
+    }
+    assert llm.last_messages[-1]["content"].startswith("[")
+    assert llm.last_messages[-1]["content"].endswith("不对，我根本还没睡")
+    assert "不要仅凭晚安、睡觉或早安推断已经跨日" in llm.last_messages[0]["content"]
+    assert all(item.get("created_at") for item in a._history[-2:])
+
+
 def test_handle_model_loaded_but_chat_fails(agent):
     """模型已加载但生成异常：异常分类兜底。（proactive 关掉，避免随机触发影响断言）"""
     card, memory = agent
@@ -156,7 +185,7 @@ def test_handle_with_images_uses_multimodal_content(agent):
     assert r.reply
     user_msg = llm.last_messages[-1]
     assert isinstance(user_msg["content"], list)
-    assert user_msg["content"][0] == {"type": "text", "text": "看看这张图"}
+    assert user_msg["content"][0]["text"].endswith("看看这张图")
     assert user_msg["content"][1] == {"type": "image_url", "image_url": {"url": img}}
 
 
@@ -168,7 +197,8 @@ def test_handle_image_only_message(agent):
     r = a.handle("", [_image_data_url("JPEG")])
     assert r.reply
     user_msg = llm.last_messages[-1]
-    assert user_msg["content"][0]["type"] == "text"
+    assert user_msg["content"][0]["text"].startswith("[")
+    assert user_msg["content"][0]["text"].endswith("[图片]")
     # 记忆用 [图片] 占位（不存 base64）
     recent = memory.recent_messages(limit=2)
     assert "[图片]" in recent[0]["content"]
@@ -273,7 +303,7 @@ def test_handle_history_starting_with_assistant_normalized(agent):
     assert msgs[0]["role"] == "system"
     assert msgs[1]["role"] == "user"      # 开头的孤立 assistant 被丢弃
     assert msgs[-1]["role"] == "user"     # 结尾是当前用户消息
-    assert msgs[-1]["content"] == "今天天气不错"
+    assert msgs[-1]["content"].endswith("今天天气不错")
 
 
 def test_handle_history_all_assistant_normalized(agent):

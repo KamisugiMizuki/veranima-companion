@@ -67,6 +67,13 @@ def test_message_ingestion_and_fts(store):
     assert any(r["rowid"] == mid for r in rows)
 
 
+def test_message_created_at_lookup(store):
+    mid = store.store_message("user", "带时间的消息")
+    stamp = store.message_created_at(mid)
+    assert stamp and "T" in stamp
+    assert store.message_created_at(999999) is None
+
+
 def test_recall_by_similarity(store):
     store.store("episodic", "用户上个月通过了考试", importance=0.9)
     store.store("episodic", "用户最近在备考心理学", importance=0.7)

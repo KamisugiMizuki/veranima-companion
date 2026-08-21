@@ -245,6 +245,13 @@ class MemoryStore:
         self.con.commit()
         return int(cur.lastrowid)
 
+    def message_created_at(self, message_id: int) -> str | None:
+        """返回原始消息的创建时间；不存在时返回 None。"""
+        row = self.con.execute(
+            "SELECT created_at FROM messages WHERE id=?", (int(message_id),)
+        ).fetchone()
+        return str(row["created_at"]) if row else None
+
     def search_messages(self, query: str, limit: int = 50, before_id: int | None = None) -> list[dict]:
         """历史搜索：复用 messages_fts，按消息 id 倒序；空查询不返回全库。"""
         query = str(query or "").strip()

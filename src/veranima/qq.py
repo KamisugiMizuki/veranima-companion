@@ -34,7 +34,8 @@ def build_adapter(cfg: dict, agent, *, agent_lock=None) -> QQAdapter | None:
             growth_factor=float(think_cfg.get("growth_factor", 0.08)),
             max_probability=float(think_cfg.get("max_probability", 0.95)),
         )
-    qh = qq_cfg.get("quiet_hours", [23, 8])
+    proactive_cfg = cfg.get("proactive", {}) or {}
+    qh = qq_cfg.get("quiet_hours", [23, 8]) if proactive_cfg.get("quiet_hours_enabled", True) else None
     quiet_hours = (int(qh[0]), int(qh[1])) if qh else None
     stickers = None
     if qq_cfg.get("stickers", {}).get("enabled", False):

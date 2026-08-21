@@ -134,7 +134,7 @@ class Agent:
             hist_limit = self.config.get("chat", {}).get("history_max_messages", 20)
             recent = self.memory.recent_messages(limit=hist_limit)
             self._history = [
-                {"role": m["role"], "content": m["content"]}
+                self._history_entry(m["role"], m["content"], m.get("created_at"))
                 for m in recent if m["role"] in ("user", "assistant")
             ]
             if self._history:
@@ -193,6 +193,53 @@ class Agent:
 
     # ---------- MVP2 状态 ----------
 
+    @staticmethod
+    def _format_history_content(content: str, created_at: str | None = None) -> str:
+        """为历史消息加本地时间前缀；旧记录没有时间时保持原文。"""
+        if not created_at:
+            return str(content)
+        try:
+            stamp = datetime.datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+            if stamp.tzinfo is not None:
+                stamp = stamp.astimezone().replace(tzinfo=None)
+            return f"[{stamp.strftime('%Y-%m-%d %H:%M:%S')}] {content}"
+        except (TypeError, ValueError):
+            return str(content)
+
+    @classmethod
+    def _history_entry(cls, role: str, content: str, created_at: str | None = None) -> dict:
+        return {"role": role, "content": str(content), "created_at": created_at}
+
+    def _message_time_for_id(self, message_id: int) -> str | None:
+        return self.memory.message_created_at(message_id)
+
+    @staticmethod
+    def _local_message_time() -> str:
+        return datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+
+    @classmethod
+    def _prompt_history(cls, entry: dict) -> dict:
+        return {
+            "role": entry["role"],
+            "content": cls._format_history_content(entry.get("content", ""), entry.get("created_at")),
+        }
+
+    @staticmethod
+    def _time_context_instruction() -> str:
+        return (
+            "【消息时间规则】历史消息和当前消息正文前的方括号时间是发送时间，格式为 YYYY-MM-DD HH:MM:SS。"
+            "判断刚才、今天、昨天、是否跨夜或间隔多久时，优先依据这些时间；"
+            "不要仅凭晚安、睡觉或早安推断已经跨日，时间没有跨日就按连续对话处理。"
+        )
+
+    @classmethod
+    def _message_context_line(cls, message: dict) -> str:
+        role = {"user": "用户", "assistant": "我"}.get(message.get("role"), message.get("role", "消息"))
+        return f"{role}: {cls._format_history_content(message.get('content', ''), message.get('created_at'))}"
+
+    def _append_history_message(self, role: str, content: str, created_at: str | None = None) -> None:
+        self._history.append(self._history_entry(role, content, created_at or self._local_message_time()))
+
     def learning_summary(self) -> dict:
         """学习状态摘要（/style 命令与 /status 用）。"""
         return {
@@ -240,6 +287,7 @@ class Agent:
         text = review.generate(name=self.card.name)
         # 回顾本身也作为一条 assistant 消息入档
         self.memory.store_message("assistant", text, self.state.energy, self.state.mood)
+        self._append_history_message("assistant", text)
         return text
 
     # ---------- 公开接口 ----------
@@ -264,7 +312,7 @@ class Agent:
         if not msgs:
             opening = self.card.first_mes or f"你好，我是{self.card.name}。今天想聊点什么？"
             self.memory.store_message("assistant", opening, self.state.energy, self.state.mood)
-            self._history.append({"role": "assistant", "content": opening})
+            self._append_history_message("assistant", opening)
             self._persist_state()
             return opening
         # 非首次：按时间段问候
@@ -338,7 +386,7 @@ class Agent:
             user_text=user_text or "",
             images=tuple(images or []),
             scene=scene,
-            current_time=time.strftime("%Y-%m-%dT%H:%M:%S"),
+            current_time=self._local_message_time(),
             state=self.state.to_snapshot(),
         )
 
@@ -423,8 +471,8 @@ class Agent:
         )
 
         # 4. 组装对话（历史 + 当前）；当前轮含图时用多模态 content 数组
-        messages = [{"role": "system", "content": system}]
-        hist = self._history[-self.config.get("chat", {}).get("history_max_messages", 20):]
+        messages = [{"role": "system", "content": system + "\n" + self._time_context_instruction()}]
+        hist = [self._prompt_history(item) for item in self._history[-self.config.get("chat", {}).get("history_max_messages", 20):]]
         # 2026-08-04 修复：proactive/late_reply/问候会向 _history 追加孤立的 assistant
         # 消息（无配对 user），截断后序列可能以 assistant 开头；llama.cpp Qwen3 jinja
         # 模板要求第一条非 system 消息必须是 user，否则 400 "No user query found in
@@ -433,12 +481,14 @@ class Agent:
         while hist and hist[0]["role"] != "user":
             hist = hist[1:]
         messages.extend(hist)
+        current_prompt_time = self._message_time_for_id(user_msg_id) or ctx.current_time
+        current_prompt_text = self._format_history_content(user_text or ("[图片]" if images else ""), current_prompt_time)
         if images:
-            content: list[dict] = [{"type": "text", "text": user_text or "（用户发了一张图片）"}]
+            content: list[dict] = [{"type": "text", "text": current_prompt_text}]
             content.extend({"type": "image_url", "image_url": {"url": u}} for u in images)
             messages.append({"role": "user", "content": content})
         else:
-            messages.append({"role": "user", "content": user_text})
+            messages.append({"role": "user", "content": current_prompt_text})
 
         # ===== R0 阶段 3: call_llm（R0_SPEC 5）=====
         # 模型可用性前置检查（远程 API：is_model_loaded 恒 True，防御性保留）
@@ -446,7 +496,8 @@ class Agent:
         if check is not None and not check():
             reply = "（我好像还没醒过来……服务没在运行。检查一下 API 配置？）"
             self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
-            self._history.append({"role": "assistant", "content": reply})
+            self._append_history_message("user", store_text, self._message_time_for_id(user_msg_id))
+            self._append_history_message("assistant", reply)
             self.state.on_assistant_message()
             self._persist_state()
             return TurnResult(reply=reply, energy=self.state.energy, mood=self.state.mood)
@@ -504,8 +555,8 @@ class Agent:
         # ===== R0 阶段 5: persist_turn（R0_SPEC 5）=====
         # 回复入库 + 历史更新
         self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
-        self._history.append({"role": "user", "content": store_text})
-        self._history.append({"role": "assistant", "content": reply})
+        self._history.append(self._history_entry("user", store_text, self._message_time_for_id(user_msg_id)))
+        self._history.append(self._history_entry("assistant", reply, self._local_message_time()))
         self.state.on_assistant_message()
 
         # 7. 定期触发遗忘衰减（每 10 轮；MVP1 简化：无后台调度器，随对话驱动）
@@ -940,7 +991,7 @@ class Agent:
         if not reply:
             return "", ""
         self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
-        self._history.append({"role": "assistant", "content": reply})
+        self._append_history_message("assistant", reply)
         return reply, ja
 
     def _visual_match_episode(self, tag: str) -> bool:
@@ -971,7 +1022,7 @@ class Agent:
         last_user = ""
         for m in reversed(recent):
             if m.get("role") == "user":
-                last_user = str(m.get("content") or "")[:80]
+                last_user = self._message_context_line(m)[:120]
                 break
         if not last_user:
             return "", ""
@@ -988,7 +1039,7 @@ class Agent:
         if not reply:
             return "", ""
         self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
-        self._history.append({"role": "assistant", "content": reply})
+        self._append_history_message("assistant", reply)
         return reply, ja
 
     def task_result_story(self, result: dict) -> str:
@@ -1078,11 +1129,13 @@ class Agent:
             # 8.7.5 个性化问候（结合最近记忆；LLM 不可用回退模板）
             msg = self.greeting_message(slot)
             self.memory.store_message("assistant", msg, self.state.energy, self.state.mood)
+            self._append_history_message("assistant", msg)
             msgs.append(msg)
         occasion = self.occasion.due_occasion(self.memory, now=now)
         if occasion:
             msg = self.occasion.occasion_reaction(occasion, self.card.name)
             self.memory.store_message("assistant", msg, self.state.energy, self.state.mood)
+            self._append_history_message("assistant", msg)
             msgs.append(msg)
         if msgs:
             self.gate.commit(cand)
@@ -1116,7 +1169,7 @@ class Agent:
         if getattr(self.llm, "is_model_loaded", None) is not None and self.llm.is_model_loaded():
             try:
                 ctx = ("最近的对话：\n" + "\n".join(
-                    f"{m['role']}: {m['content'][:60]}" for m in recent[-4:]
+                    self._message_context_line(m)[:120] for m in recent[-4:]
                 )) if recent else ""
                 task = (
                     f"{ctx}\n\n你刚在整理聊天记录（离线成长），想跟用户说点什么破冰。"
@@ -1126,7 +1179,7 @@ class Agent:
                 reply = self._short_task(task, max_tokens=1024)
                 if reply:
                     self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
-                    self._history.append({"role": "assistant", "content": reply})
+                    self._append_history_message("assistant", reply)
                     self.gate.commit(cand)
                     return reply
             except Exception as e:
@@ -1139,7 +1192,7 @@ class Agent:
         ]
         reply = pool[0]
         self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
-        self._history.append({"role": "assistant", "content": reply})
+        self._append_history_message("assistant", reply)
         self.gate.commit(cand)
         return reply
 
@@ -1174,18 +1227,18 @@ class Agent:
             return ""
         if getattr(self.llm, "is_model_loaded", None) is not None and self.llm.is_model_loaded():
             try:
-                user_msgs = [m["content"][:80] for m in reversed(recent) if m["role"] == "user"]
+                user_msgs = [self._message_context_line(m)[:120] for m in reversed(recent) if m["role"] == "user"]
                 if user_msgs:
                     last = user_msgs[0]
                     task = (
-                        f"用户之前说过：\"{last}\"，但你现在才空下来，"
+                        f"{last}。但你现在才空下来，"
                         "想补一条迟来的回应。自然提起这件事，补充想法或表达关心。"
                         "像平时聊天一样自然，长度随意。"
                     )
                     reply = self._short_task(task, max_tokens=1024)
                     if reply:
                         self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
-                        self._history.append({"role": "assistant", "content": reply})
+                        self._append_history_message("assistant", reply)
                         self.gate.commit(cand)
                         return reply
             except Exception as e:
@@ -1203,7 +1256,7 @@ class Agent:
             return ""
         msg = random.choice(candidates)
         self.memory.store_message("assistant", msg, self.state.energy, self.state.mood)
-        self._history.append({"role": "assistant", "content": msg})
+        self._append_history_message("assistant", msg)
         self.gate.commit(cand)
         return msg
 
@@ -1232,7 +1285,7 @@ class Agent:
                   '直接输出最终答案的 JSON，禁止输出草稿、多个选项、思考过程、'
                   '解释或对指令的复述——只要一段 JSON，不要 markdown 代码块。'
             )
-        system = build_system_prompt(self.card, self.state, self.memory)
+        system = build_system_prompt(self.card, self.state, self.memory) + "\n" + self._time_context_instruction()
         reply = self.llm.chat(
             [
                 {"role": "system", "content": system},
@@ -1259,7 +1312,7 @@ class Agent:
         else:
             msg = "晚上好。今天过得怎么样？"
         self.memory.store_message("assistant", msg, self.state.energy, self.state.mood)
-        self._history.append({"role": "assistant", "content": msg})
+        self._append_history_message("assistant", msg)
         return msg
 
     def _chat_with_search(self, messages: list[dict], low_energy: bool) -> str:
@@ -1370,7 +1423,7 @@ class Agent:
             return base
         try:
             recent = self.memory.recent_messages(limit=8)
-            user_msgs = [m["content"][:60] for m in reversed(recent) if m["role"] == "user"]
+            user_msgs = [self._message_context_line(m)[:90] for m in reversed(recent) if m["role"] == "user"]
             if not user_msgs:
                 return base
             ctx = "\n".join(user_msgs[:3])

@@ -73,7 +73,7 @@ Context Brief
 
 规则：
 
-- 用户消息和最终展示给用户的 assistant 文本立即写入。
+- 用户消息和最终展示给用户的 assistant 文本立即写入；`created_at` 使用带时区的 ISO 时间，并在对话恢复和 LLM prompt 中保留为本地显示时间。
 - 图片只写 `[图片]` 占位与可选结构化描述，不写 base64。
 - 工具原始 stdout、内部 reasoning、异常堆栈、截图、TTS 音频不写入。
 - assistant 的虚构日常只留在消息历史，不自动晋升为用户事实或共同经历。

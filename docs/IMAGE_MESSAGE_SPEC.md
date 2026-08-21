@@ -37,7 +37,7 @@
 按 OneBot 图片段依次尝试：data URL、HTTP URL、本地 `url/path/file`、最多一次 `get_image` API。所有来源统一进入 `ImagePayload`。普通图、截图、静态表情和动图都送给当前轮 LLM；只有标注为静态表情包的图片才进入表情库。
 
 - 本地绝对/相对路径必须位于 `qq.image_roots`；空配置只允许项目 `data/` 与根目录。
-- HTTP 图片默认只允许解析结果全为公网 IP 的 HTTP(S) URL；请求连接固定到已校验 IP，并通过原 hostname 的 Host/SNI 验证 TLS，关闭重定向，按流读取并在 10MB 处停止。Clash fake-IP 环境仅在显式 `qq.trusted_image_proxy=true` 且 hostname 命中 `qq.image_proxy_hosts` 时允许 `198.18.0.0/15`，默认 allowlist 只有 `multimedia.nt.qq.com`；任意其他主机仍拒绝，不能全局放行 fake-IP。
+- HTTP 图片默认只允许解析结果全为公网 IP 的 HTTP(S) URL；请求连接固定到已校验 IP，并通过原 hostname 的 Host/SNI 验证 TLS，关闭重定向，按流读取并在 10MB 处停止。Clash fake-IP 环境仅在显式 `qq.trusted_image_proxy=true` 且 hostname 命中 `qq.image_proxy_hosts` 时允许 `198.18.0.0/15`，默认 allowlist 包含 `multimedia.nt.qq.com` 与 `multimedia.nt.qq.com.cn`；任意其他主机仍拒绝，不能全局放行 fake-IP。
 - QQ 消息最多解析前 4 张图；其余丢弃并记录 warning。
 
 ## 安全与降级

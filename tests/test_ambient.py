@@ -69,6 +69,13 @@ def test_channel_blocking():
 
 # ---------- 仲裁器 ----------
 
+def test_quiet_hours_can_be_disabled():
+    from veranima.core.ambient import ProactiveCandidate, ProactiveGate
+    gate = ProactiveGate({"quiet_hours_enabled": False, "quiet_hours": [0, 24]}, now=2 * 3600)
+    decision = gate.decide(ProactiveCandidate(source="ritual", reason="test", context={"calendar_source": "test"}))
+    assert decision.allow
+
+
 def test_arbitrator_blocks_in_scene():
     a = Arbitrator(now=1000.0)
     assert a.request("idle", scene="busy") is False

@@ -133,11 +133,61 @@ def test_build_adapter_wires_trusted_image_proxy(agent):
 def test_plain_text_from_message_object():
     """CQ 码剥离：图片段被忽略，文本保留。"""
     msg = Message("[CQ:image,file=ab.png]你好呀[CQ:face,id=1]")
-    assert QQAdapter._plain_text({"message": msg}) == "你好呀"
+    assert QQAdapter._plain_text({"message": msg}) == "你好呀[QQ表情：id=1]"
+
+
+def test_plain_text_preserves_native_qq_face_meaning():
+    msg = Message([{"type": "face", "data": {"id": "66", "summary": "[比心]"}}])
+    assert QQAdapter._plain_text({"message": msg}) == "[QQ表情：比心]"
+
+
+def test_plain_text_accepts_napcat_face_placeholder():
+    assert QQAdapter._plain_text({"message": "[表情 [比心] ]"}) == "[QQ表情：比心]"
+
+
+def test_plain_text_accepts_structured_face_list():
+    assert QQAdapter._plain_text({"message": [{"type": "face", "data": {"summary": "[比心]"}}]}) == "[QQ表情：比心]"
+
+
+def test_native_qq_face_only_message_reaches_agent(adapter, agent):
+    seen = []
+    agent.handle = lambda text, images=None, channel="im": (
+        seen.append((text, images, channel)) or TurnResult(reply="收到你的比心了", energy=80, mood="平静")
+    )
+    run(adapter._handle_private({
+        "user_id": 10001,
+        "message_type": "private",
+        "message": Message([{"type": "face", "data": {"id": "66", "summary": "[比心]"}}]),
+    }))
+    assert seen == [("[QQ表情：比心]", [], "im")]
+    assert adapter.bot.sent == [("send", "收到你的比心了")]
+
+
+def test_napcat_face_placeholder_reaches_agent(adapter, agent):
+    seen = []
+    agent.handle = lambda text, images=None, channel="im": (
+        seen.append((text, images, channel)) or TurnResult(reply="看到了", energy=80, mood="平静")
+    )
+    run(adapter._handle_private({
+        "user_id": 10001,
+        "message_type": "private",
+        "message": "[表情 [比心] ]",
+    }))
+    assert seen == [("[QQ表情：比心]", [], "im")]
+    assert adapter.bot.sent == [("send", "看到了")]
 
 
 def test_plain_text_from_raw_string():
     assert QQAdapter._plain_text({"message": " 直接文本 "}) == "直接文本"
+
+
+def test_build_adapter_quiet_hours_can_be_disabled(agent):
+    from veranima.qq import build_adapter
+    adapter = build_adapter({
+        "qq": {"enabled": True, "allowed_qq": [10001], "quiet_hours": [23, 8]},
+        "proactive": {"quiet_hours_enabled": False},
+    }, agent)
+    assert adapter.quiet_hours is None
 
 
 def test_image_segments_accept_cq_string_and_file_or_image_refs():

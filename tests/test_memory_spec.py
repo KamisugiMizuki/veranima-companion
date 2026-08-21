@@ -216,8 +216,8 @@ def test_history_compaction_writes_summary(tmp_path):
     # 手工撑大历史（超过 2×history_max_messages=40）
     a._history = []
     for i in range(22):
-        a._history.append({"role": "user", "content": f"第{i}条消息"})
-        a._history.append({"role": "assistant", "content": f"回复{i}"})
+        a._history.append({"role": "user", "content": f"第{i}条消息", "created_at": f"2026-08-21T10:{i:02d}:00+08:00"})
+        a._history.append({"role": "assistant", "content": f"回复{i}", "created_at": f"2026-08-21T10:{i:02d}:01+08:00"})
     a._short_task = lambda task, max_tokens=None, bilingual=False: "用户聊了二十二轮日常话题，没有特别承诺。"
     a._compact_history()
     assert len(a._history) <= 21  # 截断到最近 history_max_messages 轮内

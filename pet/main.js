@@ -1307,6 +1307,7 @@ ipcMain.handle('chat-send', (e, payload) => {
   if (typeof payload === 'string') return dispatchChat(payload);
   return dispatchChat(payload && payload.text, payload && payload.images);
 });
+ipcMain.handle('stt-input-device', async () => String(localFeatureValue('stt', 'input_device_id', '')));
 ipcMain.handle('stt-transcribe', async (e, payload) => {
   const raw = Buffer.from(payload && payload.audio || []);
   if (!raw.length || raw.length > 20 * 1024 * 1024) return '';

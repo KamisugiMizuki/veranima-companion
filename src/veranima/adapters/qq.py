@@ -33,7 +33,7 @@ from ..core.render import render_im
 
 logger = logging.getLogger(__name__)
 _FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
-_DEFAULT_QQ_IMAGE_HOSTS = ("multimedia.nt.qq.com",)
+_DEFAULT_QQ_IMAGE_HOSTS = ("multimedia.nt.qq.com", "multimedia.nt.qq.com.cn")
 
 
 class OfflineThinkTimer:
@@ -315,12 +315,51 @@ class QQAdapter:
 
     @staticmethod
     def _plain_text(event: Event) -> str:
-        """提取消息纯文本；结构化消息和 raw_message 都剥离媒体 CQ 码。"""
-        msg = event.get("message", "")
-        if isinstance(msg, Message):
-            text = msg.extract_plain_text().strip()
-        else:
-            text = re.sub(r"\[CQ:(?:image|file|face),[^\]]*\]", "", str(msg)).strip()
+        """提取文本并保留原生 QQ face 的语义占位。"""
+        def extract(value) -> str:
+            if isinstance(value, (list, tuple)):
+                try:
+                    value = Message(value)
+                except Exception:
+                    return ""
+            if isinstance(value, Message):
+                parts = []
+                has_text = any(seg.get("type") == "text" for seg in value)
+                for seg in value:
+                    data = seg.get("data") or {}
+                    if seg.get("type") == "text":
+                        piece = str(data.get("text") or "")
+                        match = re.fullmatch(r"\[表情\s*\[([^\]]+)\]\s*\]", piece)
+                        parts.append(
+                            f"[QQ表情：{match.group(1).strip()}]" if match else piece
+                        )
+                    elif seg.get("type") == "face":
+                        summary = str(
+                            data.get("summary") or data.get("text") or data.get("raw") or ""
+                        ).strip().strip("[]")
+                        face_id = str(data.get("id") or "").strip()
+                        if not summary and not data.get("summary") and has_text:
+                            parts.append(f"[QQ表情：id={face_id}]" if face_id else "[QQ表情：未知]")
+                            continue
+                        summary = summary or (f"id={face_id}" if face_id else "未知")
+                        parts.append(f"[QQ表情：{summary}]")
+                return "".join(parts).strip()
+            raw = str(value or "")
+            if "[CQ:face," in raw:
+                try:
+                    return extract(Message(raw))
+                except Exception:
+                    pass
+            match = re.search(r"\[表情\s*\[([^\]]+)\]\s*\]", raw)
+            if match:
+                return f"[QQ表情：{match.group(1).strip()}]"
+            return re.sub(r"\[CQ:(?:image|file),[^\]]*\]", "", raw).strip()
+
+        text = extract(event.get("message", ""))
+        if not text or text in {"[图片]", "[文件]", "[表情]"}:
+            fallback = extract(event.get("raw_message", ""))
+            if fallback and fallback not in {"[图片]", "[文件]", "[表情]"}:
+                text = fallback
         if text in {"[图片]", "[文件]", "[表情]"}:
             return ""
         return text

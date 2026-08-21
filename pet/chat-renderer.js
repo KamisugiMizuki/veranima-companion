@@ -431,7 +431,10 @@ recordAudio.addEventListener('click', async () => {
   }
   let stream;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const deviceId = await window.pet.getSttInputDevice();
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: deviceId ? { deviceId: { exact: deviceId } } : true,
+    });
     if (document.hidden) { stream.getTracks().forEach((track) => track.stop()); return; }
     let recorder;
     try {

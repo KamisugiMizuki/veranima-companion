@@ -181,6 +181,7 @@ class ProactiveGate:
         self.max_per_day = int(cfg.get("max_per_day", 2))
         self.min_gap_minutes = int(cfg.get("min_gap_minutes", 30))
         self.source_gap_minutes = int(cfg.get("source_gap_minutes", 120))
+        self.quiet_hours_enabled = bool(cfg.get("quiet_hours_enabled", True))
         self.quiet_hours = cfg.get("quiet_hours", [23, 8])
         self.ignore_backoff = bool(cfg.get("ignore_backoff", True))
         self._now = now
@@ -202,6 +203,8 @@ class ProactiveGate:
         import datetime
         h = datetime.datetime.fromtimestamp(self._t()).hour
         start, end = self.quiet_hours
+        if not self.quiet_hours_enabled:
+            return False
         if start <= end:
             return start <= h < end
         return h >= start or h < end  # 跨午夜（如 [23, 8]）

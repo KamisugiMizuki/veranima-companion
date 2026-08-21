@@ -44,6 +44,7 @@ stt:
   model: "sensevoice-small"
   language: "auto"
   language_priority: [zh, en, ja]
+  input_device_id: ""                  # 留空=系统默认；设置页可选择具体麦克风
   api_key: ""
   device: "cpu"
   model_path: "data/models/sensevoice-small"
@@ -106,7 +107,7 @@ qq:
   allowed_qq: []                        # 白名单 QQ 号（1v1：只填你自己的号；空 = 拒绝所有）
   image_roots: []                       # NapCat 本地图片缓存根目录；空 = 仅项目 data/ 与根目录
   trusted_image_proxy: false            # Clash fake-IP 用户显式开启；仅下方 QQ CDN allowlist 生效
-  image_proxy_hosts: ["multimedia.nt.qq.com"]
+  image_proxy_hosts: ["multimedia.nt.qq.com", "multimedia.nt.qq.com.cn"]
   proactive: true                       # 定时问候 + 节庆纪念（每日去重）
   # 主动消息延迟（分钟）：对话静默满该时长后才发送 turn 内触发的主动消息，
   # 避免"回复 + 主动"双连发（真人不会秒补一句无关话题）
@@ -139,6 +140,7 @@ chat:
 # R4 主动性：观察/记忆只生成候选，统一由程序闸门裁决
 proactive:
   enabled: true
+  quiet_hours_enabled: true
   max_per_day: 2
   min_gap_minutes: 30
   source_gap_minutes: 120

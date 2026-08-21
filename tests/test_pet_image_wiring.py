@@ -33,6 +33,9 @@ def test_clipboard_and_stt_are_connected():
     main = (ROOT / "pet/main.js").read_text(encoding="utf-8")
     assert "event.clipboardData" in renderer
     assert "FileReader" in renderer
+    assert "getSttInputDevice" in preload
+    assert "deviceId: { deviceId: deviceId }" not in renderer
+    assert "deviceId: { exact: deviceId }" in renderer
     assert "transcribeAudio" in renderer
     assert "ipcRenderer.invoke('stt-transcribe'" in preload
     assert "localFeatureValue('stt', 'base_url'" in main
@@ -45,6 +48,8 @@ def test_clipboard_and_stt_are_connected():
     assert "MAX_RECORDING_BYTES = 20 * 1024 * 1024" in renderer
     assert "MAX_RECORDING_MS = 120 * 1000" in renderer
     assert "recorder.start(1000)" in renderer
+    assert "getSttInputDevice" in preload
+    assert "deviceId: { exact: deviceId }" in renderer
     assert "没有识别到清晰语音" in renderer
     assert "function cleanupRecording(discard = true)" in renderer
     assert "recorder.onerror" in renderer

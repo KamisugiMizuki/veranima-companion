@@ -571,9 +571,11 @@ class PetServer:
                         "tts": {"base_url": cfg.get("tts", {}).get("base_url", ""),
                                 "model": cfg.get("tts", {}).get("model", ""),
                                 "voice": cfg.get("tts", {}).get("voice", "")},
-                        "stt": {"base_url": cfg.get("stt", {}).get("base_url", ""),
+                        "stt": {"enabled": cfg.get("stt", {}).get("enabled", True),
+                                "base_url": cfg.get("stt", {}).get("base_url", ""),
                                 "model": cfg.get("stt", {}).get("model", ""),
-                                "language": cfg.get("stt", {}).get("language", "")},
+                                "language": cfg.get("stt", {}).get("language", ""),
+                                "input_device_id": cfg.get("stt", {}).get("input_device_id", "")},
                         "qq": {"allowed": qq.get("allowed", qq.get("allowed_qq", [])),
                                "proactive": qq.get("proactive", False),
                                "offline_think": {"enabled": (qq.get("offline_think") or {}).get("enabled", False)}},
@@ -587,7 +589,7 @@ class PetServer:
                             "enabled", "paused", "global_scan_sec", "mouse_focus_stay_sec",
                             "habituation_sec", "observe_cache_ttl_sec", "observe_daily_budget", "crop_ratio")},
                         "proactive": {k: proactive.get(k) for k in (
-                            "enabled", "max_per_day", "min_gap_minutes", "source_gap_minutes")},
+                            "enabled", "quiet_hours_enabled", "max_per_day", "min_gap_minutes", "source_gap_minutes")},
                     }})
                 elif mtype == "search_history":
                     data = msg.get("data") or {}
@@ -618,7 +620,7 @@ class PetServer:
                         if k in tts:
                             cfg.setdefault("tts", {})[k] = tts[k]
                     stt = d.get("stt", {})
-                    for k in ("base_url", "model", "language"):
+                    for k in ("enabled", "base_url", "model", "language", "input_device_id"):
                         if k in stt:
                             cfg.setdefault("stt", {})[k] = stt[k]
                     qq = d.get("qq", {})
@@ -639,7 +641,7 @@ class PetServer:
                         if k in att:
                             cfg.setdefault("attention", {})[k] = att[k]
                     pro = d.get("proactive", {})
-                    for k in ("enabled", "max_per_day", "min_gap_minutes", "source_gap_minutes"):
+                    for k in ("enabled", "quiet_hours_enabled", "max_per_day", "min_gap_minutes", "source_gap_minutes"):
                         if k in pro:
                             cfg.setdefault("proactive", {})[k] = pro[k]
                     memory = d.get("memory", {})

@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('pet', {
   onSelfModel: (cb) => ipcRenderer.on('self-model', (e, m) => cb(m)),
   sendChat: (text, images = []) => ipcRenderer.invoke('chat-send', { text, images }),
   transcribeAudio: (audio, filename = 'voice.webm') => ipcRenderer.invoke('stt-transcribe', { audio, filename }),
+  getSttInputDevice: () => ipcRenderer.invoke('stt-input-device'),
   clearChat: () => ipcRenderer.invoke('chat-clear'),
   retryChat: (messageId) => ipcRenderer.invoke('chat-retry', messageId),
   getChatState: () => ipcRenderer.invoke('chat-get-state'),
