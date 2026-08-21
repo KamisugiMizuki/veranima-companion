@@ -329,10 +329,11 @@ class QQAdapter:
                     data = seg.get("data") or {}
                     if seg.get("type") == "text":
                         piece = str(data.get("text") or "")
-                        match = re.fullmatch(r"\[表情\s*\[([^\]]+)\]\s*\]", piece)
-                        parts.append(
-                            f"[QQ表情：{match.group(1).strip()}]" if match else piece
-                        )
+                        parts.append(re.sub(
+                            r"\[表情\s*\[([^\]]+)\]\s*\]",
+                            lambda m: f"[QQ表情：{m.group(1).strip()}]",
+                            piece,
+                        ))
                     elif seg.get("type") == "face":
                         summary = str(
                             data.get("summary") or data.get("text") or data.get("raw") or ""

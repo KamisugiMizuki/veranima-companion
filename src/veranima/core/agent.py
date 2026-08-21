@@ -768,7 +768,7 @@ class Agent:
         summary = ""
         try:
             transcript = "\n".join(
-                f"{'用户' if m['role'] == 'user' else '我'}: {m['content']}"
+                f"{'用户' if m['role'] == 'user' else '我'}: {self._format_history_content(m['content'], m.get('created_at'))}"
                 for m in old_part
             )
             summary = self._short_task(

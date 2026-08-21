@@ -50,6 +50,8 @@ def test_clipboard_and_stt_are_connected():
     assert "recorder.start(1000)" in renderer
     assert "getSttInputDevice" in preload
     assert "deviceId: { exact: deviceId }" in renderer
+    assert "function restartSTT()" in main
+    assert "if (data && data.stt) restartSTT()" in main
     assert "没有识别到清晰语音" in renderer
     assert "function cleanupRecording(discard = true)" in renderer
     assert "recorder.onerror" in renderer

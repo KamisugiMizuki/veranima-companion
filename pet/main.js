@@ -136,6 +136,7 @@ let suppressSTTRestart = false;
 let sttRestartTimer = null;
 let sttRestartDelay = 3000;
 let sttProbeInFlight = false;
+let sttRestartSerial = 0;
 let suppressTTSRestart = false;
 let ttsRestartTimer = null;
 let reconnectDelay = 1000;
@@ -301,6 +302,15 @@ function stopSTT() {
   suppressSTTRestart = true;
   if (sttRestartTimer) { clearTimeout(sttRestartTimer); sttRestartTimer = null; }
   if (sttProc) { terminateProcessTree(sttProc); sttProc = null; }
+}
+function restartSTT() {
+  const serial = ++sttRestartSerial;
+  stopSTT();
+  setTimeout(() => {
+    if (serial !== sttRestartSerial || isQuitting) return;
+    suppressSTTRestart = false;
+    startSTT();
+  }, 1000);
 }
 
 // ---------- spawn 本地 TTS 服务（GPT-SoVITS api_v2.py，端口 9880） ----------
@@ -655,6 +665,7 @@ ipcMain.handle('settings-save-config', async (e, data) => {
   const ok = !!(resp && resp.type === 'config_saved' && resp.ok);
   if (ok) {
     pushAvatarMap();  // 角色可能变了 → 刷新立绘映射
+    if (data && data.stt) restartSTT();
     const h = data && data.pet && data.pet.avatar_height;
     if (h) win && win.webContents.send('avatar-height', Number(h));  // 立绘尺寸
   }

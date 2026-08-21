@@ -226,6 +226,21 @@ def test_history_compaction_writes_summary(tmp_path):
     assert any(e.meta.get("kind") == "history_summary" for e in sems)
 
 
+def test_history_compaction_prompt_keeps_message_times(tmp_path):
+    a = _agent_with_memory(tmp_path)
+    a._history = []
+    for i in range(22):
+        stamp = f"2026-08-21T10:{i:02d}:00+08:00"
+        a._history.append({"role": "user", "content": f"第{i}条消息", "created_at": stamp})
+        a._history.append({"role": "assistant", "content": f"回复{i}", "created_at": stamp})
+    seen = []
+    a._short_task = lambda task, max_tokens=None, bilingual=False: (seen.append(task) or "摘要")
+
+    a._compact_history()
+
+    assert "[2026-08-21 10:00:00] 第0条消息" in seen[0]
+
+
 def test_history_compaction_failure_truncates(tmp_path):
     a = _agent_with_memory(tmp_path)
     a._history = []
