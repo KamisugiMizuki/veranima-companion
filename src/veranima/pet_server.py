@@ -19,7 +19,13 @@ import uuid
 
 import websockets
 
-from veranima.config import load_config, save_config
+from veranima.config import (
+    llm_profile_action,
+    llm_profiles_payload,
+    load_config,
+    normalize_llm_profiles,
+    save_config,
+)
 from veranima.llm.client import _split_sentences
 from veranima.core.render import render_tts
 
@@ -557,6 +563,7 @@ class PetServer:
                 elif mtype == "get_config":
                     # 设置窗口读配置：返回可编辑字段（api_key 打码）
                     cfg = load_config()
+                    normalize_llm_profiles(cfg)
                     llm = cfg.get("llm", {})
                     key = llm.get("api_key", "")
                     masked = (key[:4] + "****" + key[-4:]) if len(key) > 8 else ("****" if key else "")
@@ -564,10 +571,9 @@ class PetServer:
                     memory = cfg.get("memory", {}) or {}
                     attention = cfg.get("attention", {}) or {}
                     proactive = cfg.get("proactive", {}) or {}
+                    llm_payload = llm_profiles_payload(cfg)
                     await self._send({"type": "config", "id": msg.get("id"), "data": {
-                        "llm": {"base_url": llm.get("base_url", ""), "model": llm.get("model", ""),
-                                "temperature": llm.get("temperature", 0.8), "max_tokens": llm.get("max_tokens", 4096),
-                                "timeout": llm.get("timeout", 120), "api_key": masked},
+                        "llm": {**llm_payload, "legacy_api_key": masked},
                         "tts": {"base_url": cfg.get("tts", {}).get("base_url", ""),
                                 "model": cfg.get("tts", {}).get("model", ""),
                                 "voice": cfg.get("tts", {}).get("voice", "")},
@@ -609,12 +615,28 @@ class PetServer:
                     # character_card/tts/stt 等被静默丢弃，设置页形同虚设）
                     cfg = load_config()
                     d = msg.get("data", {})
+                    profile_action = d.get("llm_profile_action")
+                    if profile_action:
+                        try:
+                            result = llm_profile_action(cfg, str(profile_action), d.get("llm_profile") or {})
+                            save_config(cfg)
+                            await self._send({"type": "config_saved", "id": msg.get("id"), "ok": True,
+                                             "restart": "重启核心生效", "llm": result})
+                        except (TypeError, ValueError) as exc:
+                            await self._send({"type": "config_saved", "id": msg.get("id"), "ok": False,
+                                             "error": str(exc)})
+                        continue
                     llm = d.get("llm", {})
+                    normalize_llm_profiles(cfg)
+                    legacy_updates = {}
                     for k in ("base_url", "model", "temperature", "max_tokens", "timeout"):
                         if k in llm:
-                            cfg.setdefault("llm", {})[k] = llm[k]
+                            legacy_updates[k] = llm[k]
                     if llm.get("api_key") and "****" not in str(llm["api_key"]):
-                        cfg.setdefault("llm", {})["api_key"] = str(llm["api_key"]).strip()
+                        legacy_updates["api_key"] = str(llm["api_key"]).strip()
+                    if legacy_updates:
+                        legacy_updates["profile_id"] = cfg["llm"]["active_profile"]
+                        llm_profile_action(cfg, "update", legacy_updates)
                     tts = d.get("tts", {})
                     for k in ("base_url", "model", "voice"):
                         if k in tts:

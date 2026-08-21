@@ -660,6 +660,10 @@ ipcMain.handle('settings-save-config', async (e, data) => {
   }
   return ok;
 });
+ipcMain.handle('settings-profile-config', async (e, action, profile) => {
+  const resp = await wsRequest('save_config', { llm_profile_action: action, llm_profile: profile || {} });
+  return resp && resp.type === 'config_saved' ? resp : null;
+});
 ipcMain.on('core-restart', () => { restartCore(); });
 ipcMain.on('pet-reconnect', () => {
   // R3_SPEC 4：聊天窗 offline/failed → 重试连接（重置退避立即重连）

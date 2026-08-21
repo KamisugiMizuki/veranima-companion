@@ -32,12 +32,15 @@
       </div>
 
       <div class="page" data-page="model">
-        <div class="eyebrow">MODEL / PROVIDER</div><h1>模型连接</h1><p class="page-intro">配置聊天模型。密钥只在保存时写入，读取时始终打码。</p>
+        <div class="eyebrow">MODEL / PROVIDER</div><h1>模型连接</h1><p class="page-intro">每份配置独立保存连接地址、模型参数和密钥。切换后重启核心即可生效。</p>
+        <div class="field"><label for="llm-profile-select">当前配置</label><div class="inline-actions"><select id="llm-profile-select"></select><button id="llm-switch" type="button" class="subtle-button">切换</button><button id="llm-delete" type="button" class="subtle-button danger-button" title="删除当前选择的配置">删除</button></div><div id="llm-profile-status" class="hint"></div></div>
+        <div class="field"><label for="llm-profile-name">配置名称</label><input id="llm-profile-name" placeholder="例如：远程 API / LM Studio"></div>
         <div class="field"><label for="llm-base">Base URL</label><input id="llm-base" placeholder="https://api.example.com/v1"></div>
         <div class="field"><label for="llm-model">聊天模型</label><input id="llm-model" placeholder="model-name"></div>
         <div class="split-fields"><div class="field"><label for="llm-temp">Temperature</label><input id="llm-temp" type="number" step="0.1" min="0" max="2"></div><div class="field"><label for="llm-max-tokens">最大输出 token</label><input id="llm-max-tokens" type="number" min="256" max="32768" step="256"></div></div>
         <div class="field"><label for="llm-key">API Key</label><input id="llm-key" type="password" placeholder="留空保持现有密钥"><div id="llm-key-status" class="hint">未修改时不会覆盖现有密钥</div></div>
         <div class="field"><label for="llm-timeout">请求超时（秒）</label><input id="llm-timeout" type="number" min="10" max="600"></div>
+        <div class="inline-actions profile-actions"><button id="llm-save-profile" type="button" class="subtle-button">保存当前配置</button><button id="llm-add-profile" type="button" class="subtle-button">新增配置</button><span id="llm-profile-msg" class="hint"></span></div>
       </div>
 
       <div class="page" data-page="voice">

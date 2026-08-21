@@ -22,9 +22,15 @@ def test_settings_ui_ids_and_config_contract():
     for field in ("stt-enabled", "stt-device", "input_device_id"):
         assert field in html + js + server
     assert "getSttInputDevice" in preload
+    for field in ("llm-profile-select", "llm-profile-name", "llm-add-profile", "llm-switch", "llm-delete"):
+        assert field in html + js
+    for action in ("add", "update", "switch", "delete"):
+        assert f"'{action}'" in js
+    assert "llm_profile_action" in server
+    assert "profileConfig" in preload + js
 
 
 def test_settings_does_not_serialize_masked_key():
     js = (ROOT / "pet/settings-renderer.js").read_text(encoding="utf-8")
-    assert "if (key) data.llm.api_key = key" in js
+    assert "if (key) data.api_key = key" in js
     assert "llm-key-status" in js

@@ -116,7 +116,7 @@ def test_config_roundtrip(tmp_path):
     cfg_dir = tmp_path / "config"
     cfg_dir.mkdir(exist_ok=True)
     cfg_path = cfg_dir / "config.yaml"
-    save_config({"llm": {"base_url": "https://a.example/v1", "model": "m1", "api_key": "sk-abcdef1234567890"},
+    save_config({"llm": {"base_url": "https://a.example/v1", "model": "m1", "api_key": "test-key-value"},
                  "qq": {"allowed_qq": [10001]}}, cfg_path)
     results = {}
 
@@ -141,7 +141,7 @@ def test_config_roundtrip(tmp_path):
     asyncio.run(scenario())
     assert results["get"]["type"] == "config"
     assert results["get"]["id"] == 1
-    assert results["get"]["data"]["llm"]["api_key"] == "sk-a****7890"  # 打码
+    assert results["get"]["data"]["llm"]["api_key"] == "test****alue"  # 打码
     assert results["save"]["type"] == "config_saved"
     assert results["save"]["id"] == 2
     # 写回验证
@@ -149,3 +149,42 @@ def test_config_roundtrip(tmp_path):
     saved = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     assert saved["llm"]["model"] == "m2"
     assert saved["qq"]["allowed_qq"] == [10002]
+
+
+def test_llm_profile_actions_over_ws(tmp_path):
+    from veranima.config import save_config
+    port = _free_port()
+    cfg_path = tmp_path / "config" / "config.yaml"
+    cfg_path.parent.mkdir()
+    save_config({"llm": {"base_url": "https://a.example/v1", "model": "m1", "api_key": "test-key-value"}}, cfg_path)
+
+    async def scenario():
+        srv = PetServer(host="127.0.0.1", port=port)
+        task = asyncio.create_task(srv.run())
+        await asyncio.sleep(0.2)
+        import veranima.config as cfgmod
+        cfgmod.ROOT = tmp_path
+        async with websockets.connect(f"ws://127.0.0.1:{port}") as ws:
+            await ws.send(json.dumps({"type": "save_config", "id": 10, "data": {
+                "llm_profile_action": "add", "llm_profile": {
+                    "name": "LM Studio", "base_url": "http://localhost:12345/v1",
+                    "model": "local-model", "temperature": 0.8, "max_tokens": 4096,
+                    "timeout": 180, "api_key": "",
+                },
+            }}))
+            added = json.loads(await asyncio.wait_for(ws.recv(), timeout=3))
+            pid = added["llm"]["profile_id"]
+            await ws.send(json.dumps({"type": "save_config", "id": 11, "data": {
+                "llm_profile_action": "switch", "llm_profile": {"profile_id": pid},
+            }}))
+            switched = json.loads(await asyncio.wait_for(ws.recv(), timeout=3))
+        task.cancel()
+        return pid, added, switched
+
+    pid, added, switched = asyncio.run(scenario())
+    assert pid == "lm-studio"
+    assert added["ok"] is True
+    assert switched["llm"]["active_profile"] == "lm-studio"
+    import yaml
+    saved = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    assert saved["llm"]["model"] == "local-model"

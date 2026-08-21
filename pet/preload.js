@@ -40,6 +40,7 @@ contextBridge.exposeInMainWorld('pet', {
   // 设置窗口通道：请求 → main 转发 WS → 核心响应回传
   getConfig: () => ipcRenderer.invoke('settings-get-config'),
   saveConfig: (data) => ipcRenderer.invoke('settings-save-config', data),
+  profileConfig: (action, profile = {}) => ipcRenderer.invoke('settings-profile-config', action, profile),
   restartCore: () => ipcRenderer.send('core-restart'),
   // renderer → main
   sendEvent: (payload) => ipcRenderer.send('pet-event', payload),
