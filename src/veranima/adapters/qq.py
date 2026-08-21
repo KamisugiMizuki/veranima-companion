@@ -30,6 +30,8 @@ from aiocqhttp import CQHttp, Event, Message
 from ..core.agent import Agent
 from ..core.image_payload import ImagePayloadError, make_image_payload, payload_from_data_url
 from ..core.render import render_im
+from ..core.qq_advisor import QQProactiveAdvisor
+from ..core.qq_proactive import QQProactiveState
 
 logger = logging.getLogger(__name__)
 _FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
@@ -146,6 +148,10 @@ class QQAdapter:
         self._tick_interval = tick_interval
         self.quiet_hours = quiet_hours  # (开始小时, 结束小时)；None = 不限制
         self.proactive_delay_minutes = max(1, int(proactive_delay_minutes))
+        qq_proactive_cfg = ((getattr(agent, "config", {}) or {}).get("proactive", {}) or {}).get("channels", {}).get("qq", {})
+        self.qq_advisor = QQProactiveAdvisor(agent.memory, config=qq_proactive_cfg)
+        self._qq_evaluation_at: float = 0.0
+        self._qq_opportunity: dict | None = None
         self.stickers = sticker_library  # 8.6.3 表情包库（None = 关闭）
         self._lock = agent_lock or asyncio.Lock()
         from ..config import ROOT
@@ -177,6 +183,7 @@ class QQAdapter:
             logger.info("ignored private message from non-whitelist qq=%s", uid)
             return
         text = self._plain_text(event)
+        self.qq_advisor.note_user_message(text)
         # 8.6.2/8.6.3：图片段 → 下载 (data_url, raw_bytes)；下载失败降级，不阻塞对话
         images = await self._collect_images(event)
         if not text and not images:
@@ -196,12 +203,12 @@ class QQAdapter:
                 pass
             # R4_SPEC 4 忽略自愈：用户来消息 → 最近主动反馈标记 responded + 重置忽略
             try:
-                fb = self.agent.memory.recent_proactive_feedback(limit=3)
+                fb = self.agent.memory.recent_proactive_feedback(channel="qq", limit=3)
                 pending = [f for f in fb if not f["responded"]]
                 if pending:
                     src = pending[-1]["source"]
-                    self.agent.memory.record_proactive_feedback(source=src, responded=True)
-                    self.agent.gate.note_responded(src)
+                    self.agent.memory.record_proactive_feedback(source=src, channel="qq", responded=True)
+                    self.agent.gate.note_responded(src, channel="qq")
             except Exception:
                 pass
             result = await asyncio.to_thread(self.agent.handle, text, [d for d, _ in images], channel="im")
@@ -584,17 +591,8 @@ class QQAdapter:
             try:
                 if not self._in_quiet_hours():
                     if self.proactive:
-                        async with self._lock:
-                            messages = await asyncio.to_thread(self.agent.tick_proactive)
-                        for msg in messages:
-                            try:
-                                self.agent.memory.record_proactive_feedback(source="ritual")
-                            except Exception:
-                                pass
-                            await self._send_to_all_async(msg)
+                        await self._evaluate_qq_opportunity_async()
                         await self._flush_pending_proactive_async()
-                    if self.offline is not None:
-                        await self._tick_offline_think_async()
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -610,7 +608,115 @@ class QQAdapter:
         if time.time() - self._last_user_activity < self.proactive_delay_minutes * 60:
             return
         msg, self._pending_proactive = self._pending_proactive, None
-        await self._send_to_all_async(msg)
+        candidate = self._qq_candidate_from_text(msg, source="scene")
+        if not self.agent.gate.decide(
+            candidate, scene=self.agent.scene_lock.current(),
+            other_channel_active=self.agent.activity.blocking("qq"),
+        ).allow:
+            logger.info("pending qq proactive suppressed by gate")
+            return
+        text = render_im(msg, self.agent.state)
+        if not text:
+            return
+        if await self._send_to_all_async(text):
+            self.agent.record_proactive_message(text, channel="qq")
+            self.agent.gate.commit(candidate)
+            self.agent.memory.record_proactive_feedback(source=candidate.source, channel="qq")
+        else:
+            self._pending_proactive = msg
+
+    async def _evaluate_qq_opportunity_async(self) -> None:
+        """QQ-only readiness evaluation; never consumes desktop visual events."""
+        now = time.time()
+        interval = int(self.qq_advisor.engine.config.get("evaluation_interval_minutes", 15))
+        if now < self._qq_evaluation_at:
+            return
+        self._qq_evaluation_at = now + max(1, interval) * 60
+        import datetime
+        current = datetime.datetime.now().astimezone()
+        self.qq_advisor.refresh_state()
+        if not self.qq_advisor.state.last_user_message_at:
+            logger.info("qq proactive skipped: no QQ user history")
+            return
+        if not self.qq_advisor.engine.state_allows_proactive(self.qq_advisor.state, current):
+            logger.info("qq proactive suppressed: user state=%s", self.qq_advisor.state.user_state)
+            return
+        readiness, material = self.qq_advisor.evaluate(current, query=self.qq_advisor.last_user_text())
+        schedule = self.qq_advisor.engine.schedule(readiness.score)
+        logger.info("qq proactive evaluation score=%.3f material=%s action=%s",
+                    readiness.score, material.kind, schedule.action)
+        if schedule.action != "generate":
+            self._qq_evaluation_at = now + schedule.delay_minutes * 60
+            return
+        candidate = self._qq_candidate(material)
+        decision = self.agent.gate.decide(
+            candidate, scene=self.agent.scene_lock.current(),
+            other_channel_active=self.agent.activity.blocking("qq"), now=now,
+        )
+        if not decision.allow:
+            logger.info("qq proactive suppressed by gate: %s", decision.reason)
+            return
+        async with self._lock:
+            text = await asyncio.to_thread(self._generate_qq_proactive, material, current)
+        if not text:
+            self.agent.gate.note_failure(candidate)
+            return
+        self._qq_opportunity = {"candidate": candidate, "text": text, "created_at": now}
+        await self._send_qq_opportunity_async()
+
+    @staticmethod
+    def _qq_candidate(material):
+        from ..core.ambient import ProactiveCandidate
+        source = "shared_episode" if material.kind == "memory" else "scene"
+        return ProactiveCandidate(
+            channel="qq", source=source, reason=f"QQ 主动素材：{material.kind}",
+            relevance=max(0.65, material.confidence), urgency=0.4, intent="check_in",
+            context={"material": material.text, "source_id": material.source_id},
+        )
+
+    @staticmethod
+    def _qq_candidate_from_text(text: str, source: str = "scene"):
+        from ..core.ambient import ProactiveCandidate
+        return ProactiveCandidate(
+            channel="qq", source=source, reason="延迟主动消息", relevance=0.7,
+            urgency=0.3, intent="check_in", context={"text": text[:240]},
+        )
+
+    def _generate_qq_proactive(self, material, now) -> str:
+        elapsed = ""
+        last_at = self.qq_advisor.state.last_user_message_at
+        if last_at:
+            then = self.qq_advisor.engine._parse(last_at)
+            elapsed = f"距上次 QQ 对话约 {(now - then).total_seconds() / 3600:.1f} 小时。"
+        prefix = self.qq_advisor.engine.virtual_state_prefix(
+            (now - then).total_seconds() / 3600 if last_at else 72
+        )
+        task = (
+            "只为 QQ 文字聊天生成一条主动消息。QQ 是异步、高打扰媒介，消息要短、克制、可回可不回。"
+            f"{prefix}{elapsed}素材类型={material.kind}，素材={material.text[:240] or '无具体素材'}。"
+            "优先跟进真实素材；没有可靠素材时只发低负担存在确认。"
+            "不要编造后台活动、外部事实或用户没说过的回忆；不要输出解释、JSON或时间协议前缀。"
+        )
+        return str(self.agent._short_task(task, max_tokens=1024) or "").strip()
+
+    async def _send_qq_opportunity_async(self) -> None:
+        opportunity, self._qq_opportunity = self._qq_opportunity, None
+        if not opportunity:
+            return
+        candidate = opportunity["candidate"]
+        text = render_im(opportunity["text"], self.agent.state)
+        if not text:
+            self.agent.gate.note_failure(candidate)
+            return
+        if not await self._send_to_all_async(text):
+            self.agent.gate.note_failure(candidate)
+            return
+        self.agent.record_proactive_message(text, channel="qq")
+        self.agent.gate.commit(candidate)
+        self.agent.memory.record_proactive_feedback(
+            source=candidate.source, channel="qq",
+            candidate_id=f"qq-{int(opportunity['created_at'] * 1000)}",
+        )
 
     async def _tick_offline_think_async(self) -> None:
         if not self.offline.due(time.time(), self._last_user_activity):
@@ -623,13 +729,9 @@ class QQAdapter:
             if not msg:
                 msg = await asyncio.to_thread(self.agent.heartbeat)
         if msg:
-            try:
-                self.agent.memory.record_proactive_feedback(source="offline")
-            except Exception:
-                pass
             await self._send_to_all_async(msg)
 
-    async def _send_to_all_async(self, msg: str) -> None:
+    async def _send_to_all_async(self, msg: str) -> bool:
         try:
             card = self.agent.card
             emoji_freq = (card.veranima or {}).get("emoji_frequency", "low") if card else "low"
@@ -638,9 +740,10 @@ class QQAdapter:
             emoji_freq, attachment = "low", 0.5
         msg = render_im(msg, attachment=attachment, emoji_frequency=emoji_freq)
         if not msg:
-            return
+            return False
         for uid in self.allowed:
             await self.bot.send_private_msg(user_id=int(uid), message=msg)
+        return True
 
     def _bg_loop(self, stop: threading.Event) -> None:
         """后台线程：等待事件循环就绪后，周期性执行问候/节庆/离线思考。"""
@@ -660,36 +763,19 @@ class QQAdapter:
                     logger.debug("in quiet hours, proactive tick skipped")
                 else:
                     if self.proactive:
-                        for msg in self.agent.tick_proactive():
-                            # R4_SPEC 4：主动反馈记录（用户回应由 on_message 标记）
-                            try:
-                                self.agent.memory.record_proactive_feedback(source="ritual")
-                            except Exception:
-                                pass
-                            self._send_to_all(loop, msg)
                         self._flush_pending_proactive(loop)
-                    if self.offline is not None:
-                        self._tick_offline_think(loop)
+                        self._evaluate_qq_opportunity(loop)
             except Exception:
                 logger.exception("bg proactive tick failed")
             stop.wait(self._tick_interval)
 
     def _flush_pending_proactive(self, loop: asyncio.AbstractEventLoop) -> None:
-        """延迟主动消息：对话静默满 proactive_delay_minutes 后发送（2026-08-04）。
+        """standalone QQ 线程入口：复用 async pending 发送与通道 Gate。"""
+        asyncio.run_coroutine_threadsafe(self._flush_pending_proactive_async(), loop)
 
-        用户刚发完消息时回复 + 主动双连发很突兀；等对话冷下来再发，
-        像真人"过了会儿想起一件事"。
-        """
-        if not self._pending_proactive:
-            return
-        if self._last_user_activity is None:
-            return
-        if time.time() - self._last_user_activity < self.proactive_delay_minutes * 60:
-            return  # 对话还没冷下来
-        msg = self._pending_proactive
-        self._pending_proactive = None
-        logger.info("pending proactive flushed after %dmin: %s", self.proactive_delay_minutes, msg[:60])
-        self._send_to_all(loop, msg)
+    def _evaluate_qq_opportunity(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Standalone QQ entry: schedule the same async QQ evaluator on its bot loop."""
+        asyncio.run_coroutine_threadsafe(self._evaluate_qq_opportunity_async(), loop)
 
     def _in_quiet_hours(self, now: datetime.datetime | None = None) -> bool:
         """静默时段判定：(开始小时, 结束小时)，支持跨午夜（如 23:00-08:00）。"""
@@ -719,10 +805,6 @@ class QQAdapter:
         if msg:
             logger.info("offline think reply: %s", msg[:60])
             # R4_SPEC 4：离线主动反馈记录（用户回应由 on_message 标记）
-            try:
-                self.agent.memory.record_proactive_feedback(source="offline")
-            except Exception:
-                pass
             self._send_to_all(loop, msg)
 
     def _send_to_all(self, loop: asyncio.AbstractEventLoop, msg: str) -> None:

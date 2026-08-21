@@ -24,6 +24,29 @@ _LLM_DEFAULTS = {
 }
 
 
+def normalize_proactive_channels(data: dict) -> dict:
+    """将旧主动参数复制到独立的 QQ/pet 通道桶。"""
+    proactive = data.setdefault("proactive", {}) or {}
+    legacy = {
+        "enabled": True,
+        "max_per_day": int(proactive.get("max_per_day", 2)),
+        "min_gap_minutes": int(proactive.get("min_gap_minutes", 30)),
+        "source_gap_minutes": int(proactive.get("source_gap_minutes", 120)),
+    }
+    configured = proactive.get("channels") if isinstance(proactive.get("channels"), dict) else {}
+    defaults = {
+        "qq": {**legacy, "evaluation_interval_minutes": 15, "post_silence_buffer_minutes": 30,
+               "sleep_silence_hours": 8, "sleep_min_hours": 6, "sleep_max_hours": 12,
+               "low_activity_multiplier": 0.3, "ignored_reply_window_hours": 24},
+        "pet": dict(legacy),
+    }
+    proactive["channels"] = {
+        name: {**defaults[name], **(configured.get(name, {}) or {})}
+        for name in ("qq", "pet")
+    }
+    return data
+
+
 def _profile_id(name: str, existing: dict[str, dict]) -> str:
     normalized = unicodedata.normalize("NFKD", str(name)).encode("ascii", "ignore").decode("ascii")
     base = re.sub(r"[^a-zA-Z0-9]+", "-", normalized).strip("-").lower() or "profile"
@@ -169,6 +192,7 @@ def load_config(path: str | Path | None = None) -> dict:
             # 相对路径基于项目根解析
             data.setdefault("root", str(ROOT))
             normalize_llm_profiles(data)
+            normalize_proactive_channels(data)
             return data
     return {"root": str(ROOT)}
 
@@ -214,6 +238,7 @@ def save_config(data: dict, path: str | Path | None = None) -> Path:
     target = Path(path) if path else ROOT / "config" / "config.yaml"
     target.parent.mkdir(parents=True, exist_ok=True)
     normalize_llm_profiles(data)
+    normalize_proactive_channels(data)
     safe = {k: v for k, v in data.items() if k != "root"}
     target.write_text(
         yaml.safe_dump(safe, allow_unicode=True, sort_keys=False, default_flow_style=False),

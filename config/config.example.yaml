@@ -159,10 +159,26 @@ chat:
 proactive:
   enabled: true
   quiet_hours_enabled: true
-  max_per_day: 2
-  min_gap_minutes: 30
-  source_gap_minutes: 120
   quiet_hours: [23, 8]
+  global_max_per_day: 0
+  channels:
+    qq:
+      enabled: true
+      min_gap_minutes: 120
+      source_gap_minutes: 120
+      max_per_day: 2
+      evaluation_interval_minutes: 15
+      post_silence_buffer_minutes: 30
+      sleep_silence_hours: 8
+      sleep_min_hours: 6
+      sleep_max_hours: 12
+      low_activity_multiplier: 0.3
+      ignored_reply_window_hours: 24
+    pet:
+      enabled: true
+      min_gap_minutes: 30
+      source_gap_minutes: 120
+      max_per_day: 2
   ignore_backoff: true
   visual_candidates: true
 

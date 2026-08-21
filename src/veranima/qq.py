@@ -13,7 +13,7 @@ import sys
 
 from .adapters.qq import OfflineThinkTimer, QQAdapter
 from .app import create_agent
-from .config import load_config
+from .config import load_config, normalize_proactive_channels
 
 
 def build_adapter(cfg: dict, agent, *, agent_lock=None) -> QQAdapter | None:
@@ -34,6 +34,8 @@ def build_adapter(cfg: dict, agent, *, agent_lock=None) -> QQAdapter | None:
             growth_factor=float(think_cfg.get("growth_factor", 0.08)),
             max_probability=float(think_cfg.get("max_probability", 0.95)),
         )
+    proactive_cfg = cfg.get("proactive", {}) or {}
+    normalize_proactive_channels(cfg)
     proactive_cfg = cfg.get("proactive", {}) or {}
     qh = qq_cfg.get("quiet_hours", [23, 8]) if proactive_cfg.get("quiet_hours_enabled", True) else None
     quiet_hours = (int(qh[0]), int(qh[1])) if qh else None

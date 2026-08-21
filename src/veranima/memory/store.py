@@ -236,11 +236,12 @@ class MemoryStore:
                 logger.warning("vector index failed for memory %s: %s", mid, e)
         return entry
 
-    def store_message(self, role: str, content: str, energy: float | None = None, mood: str | None = None) -> int:
+    def store_message(self, role: str, content: str, energy: float | None = None,
+                      mood: str | None = None, channel: str = "qq") -> int:
         """零开销摄入：原始消息立即入库（FTS5 触发器同步索引），不等待 LLM。"""
         cur = self.con.execute(
-            "INSERT INTO messages(role, content, created_at, energy_at, mood_at) VALUES (?,?,?,?,?)",
-            (role, content, _now(), energy, mood),
+            "INSERT INTO messages(role, content, channel, created_at, energy_at, mood_at) VALUES (?,?,?,?,?,?)",
+            (role, content, channel or "qq", _now(), energy, mood),
         )
         self.con.commit()
         return int(cur.lastrowid)
@@ -494,9 +495,15 @@ class MemoryStore:
         current = [e for e in entries if e.id not in superseded and not e.is_expired()]
         return current[:limit]
 
-    def recent_messages(self, limit: int = 20) -> list[dict]:
+    def recent_messages(self, limit: int = 20, channel: str | None = None) -> list[dict]:
+        if channel:
+            rows = self.con.execute(
+                "SELECT id, role, content, channel, created_at FROM messages WHERE channel=? ORDER BY id DESC LIMIT ?",
+                (channel, limit),
+            ).fetchall()
+            return [dict(r) for r in reversed(rows)]
         rows = self.con.execute(
-            "SELECT id, role, content, created_at FROM messages ORDER BY id DESC LIMIT ?",
+            "SELECT id, role, content, channel, created_at FROM messages ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()
         return [dict(r) for r in reversed(rows)]
@@ -505,22 +512,52 @@ class MemoryStore:
 
     def record_proactive_feedback(self, *, source: str, responded: bool = False,
                                   interrupted: bool = False, user_sent_within: int | None = None,
-                                  dismissed: bool = False) -> None:
+                                  dismissed: bool = False, channel: str = "qq",
+                                  candidate_id: str = "", sent_at: str | None = None) -> None:
         """记录一次主动消息的反馈（忽略/响应/打断）。"""
+        if responded and sent_at is None:
+            clauses = ["source=?", "responded=0"]
+            params: list[object] = [source]
+            if channel:
+                clauses.append("channel=?")
+                params.append(channel)
+            row = self.con.execute(
+                "SELECT id FROM proactive_feedback WHERE " + " AND ".join(clauses)
+                + " ORDER BY id DESC LIMIT 1", params,
+            ).fetchone()
+            if row:
+                self.con.execute(
+                    "UPDATE proactive_feedback SET responded=1, user_sent_within=? WHERE id=?",
+                    (user_sent_within, row["id"]),
+                )
+                self.con.commit()
+                return
         self.con.execute(
             "INSERT INTO proactive_feedback"
-            " (sent_at, source, responded, interrupted, user_sent_within, dismissed)"
-            " VALUES (?,?,?,?,?,?)",
-            (_now(), source, int(responded), int(interrupted), user_sent_within, int(dismissed)),
+            " (sent_at, source, channel, candidate_id, responded, interrupted, user_sent_within, dismissed)"
+            " VALUES (?,?,?,?,?,?,?,?)",
+            (sent_at or _now(), source, channel or "qq", candidate_id or "",
+             int(responded), int(interrupted), user_sent_within, int(dismissed)),
         )
         self.con.commit()
 
-    def recent_proactive_feedback(self, source: str | None = None, limit: int = 10) -> list[dict]:
+    def recent_proactive_feedback(self, source: str | None = None, limit: int = 10,
+                                  channel: str | None = None) -> list[dict]:
         """最近主动反馈记录（连续忽略判断用）。"""
-        if source:
+        if source and channel:
+            rows = self.con.execute(
+                "SELECT * FROM proactive_feedback WHERE source=? AND channel=? ORDER BY id DESC LIMIT ?",
+                (source, channel, limit),
+            ).fetchall()
+        elif source:
             rows = self.con.execute(
                 "SELECT * FROM proactive_feedback WHERE source=? ORDER BY id DESC LIMIT ?",
                 (source, limit),
+            ).fetchall()
+        elif channel:
+            rows = self.con.execute(
+                "SELECT * FROM proactive_feedback WHERE channel=? ORDER BY id DESC LIMIT ?",
+                (channel, limit),
             ).fetchall()
         else:
             rows = self.con.execute(

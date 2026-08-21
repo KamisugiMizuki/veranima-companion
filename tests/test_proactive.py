@@ -123,6 +123,15 @@ def test_tick_proactive_morning_greeting(agent):
     assert recent[-1]["role"] == "assistant"
 
 
+def test_tick_proactive_can_defer_gate_commit(agent):
+    agent.memory.store_message("user", "昨天面试通过了", 80, "开心")
+
+    msgs = agent.tick_proactive(now=datetime.datetime(2026, 8, 3, 8, 0), commit=False)
+
+    assert msgs
+    assert agent.gate._today_count == {}
+
+
 def test_tick_proactive_holiday(agent):
     """1月1日 15:00（非问候窗口）：只触发节日，不触发问候。"""
     msgs = agent.tick_proactive(now=datetime.datetime(2026, 1, 1, 15, 0))

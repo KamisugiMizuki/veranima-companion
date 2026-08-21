@@ -74,6 +74,27 @@ def test_message_created_at_lookup(store):
     assert store.message_created_at(999999) is None
 
 
+def test_messages_keep_channel_and_can_filter(store):
+    store.store_message("user", "QQ 消息", channel="qq")
+    store.store_message("user", "桌宠消息", channel="pet")
+
+    rows = store.recent_messages(limit=10, channel="qq")
+
+    assert [row["content"] for row in rows] == ["QQ 消息"]
+    assert rows[0]["channel"] == "qq"
+
+
+def test_proactive_feedback_keeps_channel_and_candidate(store):
+    store.record_proactive_feedback(
+        source="shared_episode", channel="qq", candidate_id="qq-1"
+    )
+
+    row = store.recent_proactive_feedback(channel="qq", limit=1)[0]
+
+    assert row["channel"] == "qq"
+    assert row["candidate_id"] == "qq-1"
+
+
 def test_recall_by_similarity(store):
     store.store("episodic", "用户上个月通过了考试", importance=0.9)
     store.store("episodic", "用户最近在备考心理学", importance=0.7)

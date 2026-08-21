@@ -161,7 +161,7 @@ def test_late_reply_fallback_template_dedup(agent):
     agent.memory.store_message("user", "还有个问题想问", 80, "平静")
     # R4：清除 gate 冷却（同源 2h / 全局 30min 是闸门语义，与模板去重无关）
     agent.gate._last_sent.clear()
-    agent.gate._last_any = 0.0
+    agent.gate._last_any.clear()
     second = agent.late_reply()
     assert second
     assert second != first

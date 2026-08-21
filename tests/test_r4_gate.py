@@ -16,8 +16,9 @@ from veranima.core.ambient import ProactiveCandidate, ProactiveGate
 NOW = datetime.datetime(2026, 8, 19, 12, 0).timestamp()
 
 
-def _cand(source: str = "shared_episode", relevance: float = 0.8, **kw) -> ProactiveCandidate:
-    base = dict(source=source, reason="test", relevance=relevance)
+def _cand(source: str = "shared_episode", relevance: float = 0.8,
+          channel: str = "qq", **kw) -> ProactiveCandidate:
+    base = dict(channel=channel, source=source, reason="test", relevance=relevance)
     base.update(kw)
     return ProactiveCandidate(**base)
 
@@ -134,3 +135,45 @@ def test_note_failure_no_commit():
     assert gate.decide(cand).allow
     gate.note_failure(cand)  # 生成失败不 commit
     assert gate.decide(cand).allow  # 仍可再试（未计冷却/日上限）
+
+
+def test_channel_cooldowns_are_independent():
+    gate = ProactiveGate(config={
+        "channels": {
+            "qq": {"min_gap_minutes": 120, "source_gap_minutes": 120, "max_per_day": 2},
+            "pet": {"min_gap_minutes": 30, "source_gap_minutes": 120, "max_per_day": 2},
+        },
+    }, now=NOW)
+    qq = _cand(channel="qq")
+    pet = _cand(channel="pet", source="attention", context={"matched_episode": True})
+
+    gate.commit(qq)
+
+    assert not gate.decide(_cand(channel="qq", source="commitment")).allow
+    assert gate.decide(pet).allow
+
+
+def test_channel_daily_caps_are_independent():
+    gate = ProactiveGate(config={
+        "channels": {
+            "qq": {"min_gap_minutes": 0, "source_gap_minutes": 0, "max_per_day": 1},
+            "pet": {"min_gap_minutes": 0, "source_gap_minutes": 0, "max_per_day": 1},
+        },
+    }, now=NOW)
+    gate.commit(_cand(channel="qq"))
+
+    assert not gate.decide(_cand(channel="qq", source="commitment")).allow
+    assert gate.decide(_cand(channel="pet", source="attention",
+                             context={"matched_episode": True})).allow
+
+
+def test_legacy_gap_config_seeds_both_channels():
+    gate = ProactiveGate(config={
+        "min_gap_minutes": 45,
+        "source_gap_minutes": 90,
+        "max_per_day": 3,
+    }, now=NOW)
+
+    assert gate.channel_config("qq")["min_gap_minutes"] == 45
+    assert gate.channel_config("pet")["min_gap_minutes"] == 45
+    assert gate.channel_config("qq")["max_per_day"] == 3

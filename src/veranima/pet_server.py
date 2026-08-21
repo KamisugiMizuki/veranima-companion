@@ -218,6 +218,7 @@ class PetServer:
             intent="bridge",
             context={"event_id": ev.event_id, "category": obs.category,
                      "summary": obs.summary, "memory_id": related.id},
+            channel="pet",
         )
         decision = gate.decide(
             cand, scene=scene_lock.current(),
@@ -236,7 +237,7 @@ class PetServer:
             return False
         self._agent.gate.commit(cand)
         try:
-            self._agent.memory.record_proactive_feedback(source="attention")
+            self._agent.memory.record_proactive_feedback(source="attention", channel="pet")
         except Exception as e:
             logger.debug("feedback record failed: %s", e)
         logger.info("visual: event=%s action=proactive", ev.event_id)
@@ -482,14 +483,15 @@ class PetServer:
                     await self.speak("（流式需要接入 agent）", turn_id=turn_id, request_id=request_id)
                 return
             try:
-                fb = self._agent.memory.recent_proactive_feedback(limit=3)
+                fb = self._agent.memory.recent_proactive_feedback(channel="pet", limit=3)
                 pending = [f for f in fb if not f["responded"]]
                 if pending:
+                    source = pending[-1]["source"]
                     self._agent.memory.record_proactive_feedback(
-                        source=pending[-1]["source"], responded=True)
-                    self._agent.gate.note_responded(pending[-1]["source"])
+                        source=source, channel="pet", responded=True)
+                    self._agent.gate.note_responded(source, channel="pet")
                 if len(pending) >= 2:
-                    self._agent.gate.note_ignored(pending[-1]["source"])
+                    self._agent.gate.note_ignored(pending[-1]["source"], channel="pet")
             except Exception as e:
                 logger.debug("proactive feedback update failed: %s", e)
             r = await self._call_agent(msg_text, images)
@@ -594,8 +596,8 @@ class PetServer:
                         "attention": {k: attention.get(k) for k in (
                             "enabled", "paused", "global_scan_sec", "mouse_focus_stay_sec",
                             "habituation_sec", "observe_cache_ttl_sec", "observe_daily_budget", "crop_ratio")},
-                        "proactive": {k: proactive.get(k) for k in (
-                            "enabled", "quiet_hours_enabled", "max_per_day", "min_gap_minutes", "source_gap_minutes")},
+                        "proactive": {**{k: proactive.get(k) for k in ("enabled", "quiet_hours_enabled")},
+                                      "channels": proactive.get("channels", {})},
                     }})
                 elif mtype == "search_history":
                     data = msg.get("data") or {}
@@ -663,9 +665,11 @@ class PetServer:
                         if k in att:
                             cfg.setdefault("attention", {})[k] = att[k]
                     pro = d.get("proactive", {})
-                    for k in ("enabled", "quiet_hours_enabled", "max_per_day", "min_gap_minutes", "source_gap_minutes"):
+                    for k in ("enabled", "quiet_hours_enabled", "global_max_per_day"):
                         if k in pro:
                             cfg.setdefault("proactive", {})[k] = pro[k]
+                    if isinstance(pro.get("channels"), dict):
+                        cfg.setdefault("proactive", {})["channels"] = pro["channels"]
                     memory = d.get("memory", {})
                     for k in ("embedding_model", "recall_top_k", "recall_threshold", "max_injected_chars",
                               "core_profile_budget", "section_budget", "session_budget", "decay_enabled",

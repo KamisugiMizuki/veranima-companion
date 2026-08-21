@@ -12,6 +12,7 @@ import random
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from ..llm.client import LLMClient, LLMUnavailableError
 from .prompts import build_system_prompt, is_clarification
@@ -182,6 +183,10 @@ class Agent:
         self.activity = ChannelActivityTracker()
         # R4 统一主动入口（R4_SPEC 1/2）：ProactiveCandidate → ProactiveGate 9 闸门
         self.gate = ProactiveGate(self.config.get("proactive", {}))
+        try:
+            self.gate.restore_feedback(self.memory.recent_proactive_feedback(limit=200))
+        except Exception as e:
+            logger.debug("proactive gate restore failed: %s", e)
 
         # 联网搜索（DESIGN.md 8.5 方案 A：工具调用；默认关闭，config 开启）
         search_cfg = self.config.get("search", {})
@@ -398,7 +403,10 @@ class Agent:
             logger.info("interrupt L%d (topic count=%d)", interrupt_level, topic_count)
 
         # 2. 零开销摄入：消息立即入库（FTS5 同步索引）
-        user_msg_id = self.memory.store_message("user", store_text, self.state.energy, self.state.mood)
+        user_msg_id = self.memory.store_message(
+            "user", store_text, self.state.energy, self.state.mood,
+            channel="pet" if channel == "tts" else "qq",
+        )
 
         # ===== R0 阶段 2: build_turn_prompt（R0_SPEC 5）=====
         # 记忆检索（预算内注入）+ MVP2 附加块（风格/镜像/承诺）+ 打断指令
@@ -496,7 +504,8 @@ class Agent:
         check = getattr(self.llm, "is_model_loaded", None)
         if check is not None and not check():
             reply = "（我好像还没醒过来……服务没在运行。检查一下 API 配置？）"
-            self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
+            self.memory.store_message("assistant", reply, self.state.energy, self.state.mood,
+                                      channel="pet" if channel == "tts" else "qq")
             self._append_history_message("user", store_text, self._message_time_for_id(user_msg_id))
             self._append_history_message("assistant", reply)
             self.state.on_assistant_message()
@@ -558,8 +567,8 @@ class Agent:
             turn_reply = Reply(segments=[ReplySegment(text=reply)])
 
         # ===== R0 阶段 5: persist_turn（R0_SPEC 5）=====
-        # 回复入库 + 历史更新
-        self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
+        self.memory.store_message("assistant", reply, self.state.energy, self.state.mood,
+                                  channel="pet" if channel == "tts" else "qq")
         self._history.append(self._history_entry("user", store_text, self._message_time_for_id(user_msg_id)))
         self._history.append(self._history_entry("assistant", reply, self._local_message_time()))
         self.state.on_assistant_message()
@@ -995,7 +1004,7 @@ class Agent:
             return "", ""
         if not reply:
             return "", ""
-        self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
+        self.memory.store_message("assistant", reply, self.state.energy, self.state.mood, channel="pet")
         self._append_history_message("assistant", reply)
         return reply, ja
 
@@ -1043,7 +1052,7 @@ class Agent:
             return "", ""
         if not reply:
             return "", ""
-        self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
+        self.memory.store_message("assistant", reply, self.state.energy, self.state.mood, channel="pet")
         self._append_history_message("assistant", reply)
         return reply, ja
 
@@ -1103,7 +1112,7 @@ class Agent:
             return source != "commitment"
         return source in heavy
 
-    def tick_proactive(self, now=None) -> list[str]:
+    def tick_proactive(self, now=None, *, commit: bool = True, persist: bool | None = None) -> list[str]:
         """定时问候 + 节庆纪念检查（每日去重）。
 
         返回本次应发送的主动消息列表（已入档 memory）；adapter（CLI/QQ）
@@ -1121,6 +1130,7 @@ class Agent:
             source="ritual", reason="定时问候/节庆纪念",
             relevance=0.9, urgency=0.5, intent="share",
             context={"calendar_source": "greeter/occasion"},
+            channel="qq",
         )
         decision = self.gate.decide(
             cand, scene=self.scene_lock.current(),
@@ -1133,20 +1143,24 @@ class Agent:
         if slot:
             # 8.7.5 个性化问候（结合最近记忆；LLM 不可用回退模板）
             msg = self.greeting_message(slot)
-            self.memory.store_message("assistant", msg, self.state.energy, self.state.mood)
-            self._append_history_message("assistant", msg)
             msgs.append(msg)
         occasion = self.occasion.due_occasion(self.memory, now=now)
         if occasion:
             msg = self.occasion.occasion_reaction(occasion, self.card.name)
-            self.memory.store_message("assistant", msg, self.state.energy, self.state.mood)
-            self._append_history_message("assistant", msg)
             msgs.append(msg)
-        if msgs:
+        if not (persist is False) and msgs:
+            for msg in msgs:
+                self.record_proactive_message(msg, channel="qq")
+        if msgs and commit:
             self.gate.commit(cand)
         return msgs
 
-    def heartbeat(self) -> str:
+    def record_proactive_message(self, text: str, *, channel: str = "qq") -> None:
+        """发送成功后写入主动 assistant 消息，避免发送失败污染历史。"""
+        self.memory.store_message("assistant", text, self.state.energy, self.state.mood, channel=channel)
+        self._append_history_message("assistant", text)
+
+    def heartbeat(self, *, commit: bool = True) -> str:
         """R4 后台心跳（R4_SPEC 1）：对话已闭合 + 静默 → 主动发起破冰。
 
         与 late_reply 互补：late_reply 要求对话未闭合（有没回完的话），
@@ -1162,6 +1176,7 @@ class Agent:
             source="scene", reason="对话闭合后破冰衔接",
             relevance=0.7, urgency=0.4, intent="bridge",
             context={"closed_dialogue": True},
+            channel="qq",
         )
         if not self.gate.decide(
             cand, scene=self.scene_lock.current(),
@@ -1183,9 +1198,11 @@ class Agent:
                 )
                 reply = self._short_task(task, max_tokens=1024)
                 if reply:
-                    self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
+                    self.memory.store_message("assistant", reply, self.state.energy, self.state.mood,
+                                              channel="qq")
                     self._append_history_message("assistant", reply)
-                    self.gate.commit(cand)
+                    if commit:
+                        self.gate.commit(cand)
                     return reply
             except Exception as e:
                 logger.debug("heartbeat LLM failed, fallback to template: %s", e)
@@ -1196,12 +1213,13 @@ class Agent:
             "（离线整理完毕）我突然想起你上次说的那个计划，后来怎么样了？",
         ]
         reply = pool[0]
-        self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
+        self.memory.store_message("assistant", reply, self.state.energy, self.state.mood, channel="qq")
         self._append_history_message("assistant", reply)
-        self.gate.commit(cand)
+        if commit:
+            self.gate.commit(cand)
         return reply
 
-    def late_reply(self) -> str:
+    def late_reply(self, *, commit: bool = True) -> str:
         """8.7.4 离线思考：静默一段时间后，针对之前话题发一条"迟来的回应"。
 
         仅 QQ 形态启用（CLI 不调用——用户可能只是离开，主动消息=打扰）。
@@ -1220,6 +1238,7 @@ class Agent:
             source="shared_episode", reason="迟来的回应（未闭合对话）",
             relevance=0.75, urgency=0.5, intent="check_in",
             context={},
+            channel="qq",
         )
         if not self.gate.decide(
             cand, scene=self.scene_lock.current(),
@@ -1242,9 +1261,10 @@ class Agent:
                     )
                     reply = self._short_task(task, max_tokens=1024)
                     if reply:
-                        self.memory.store_message("assistant", reply, self.state.energy, self.state.mood)
+                        self.memory.store_message("assistant", reply, self.state.energy, self.state.mood, channel="qq")
                         self._append_history_message("assistant", reply)
-                        self.gate.commit(cand)
+                        if commit:
+                            self.gate.commit(cand)
                         return reply
             except Exception as e:
                 logger.debug("late reply LLM failed, fallback to template: %s", e)
@@ -1260,9 +1280,10 @@ class Agent:
         if not candidates:
             return ""
         msg = random.choice(candidates)
-        self.memory.store_message("assistant", msg, self.state.energy, self.state.mood)
+        self.memory.store_message("assistant", msg, self.state.energy, self.state.mood, channel="qq")
         self._append_history_message("assistant", msg)
-        self.gate.commit(cand)
+        if commit:
+            self.gate.commit(cand)
         return msg
 
     # ---------- 内部 ----------

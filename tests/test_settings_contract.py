@@ -12,7 +12,7 @@ def test_settings_ui_ids_and_config_contract():
     ids = set(re.findall(r'id="([^"]+)"', html))
     used = set(re.findall(r"\$\('([^']+)'\)", js))
     assert used <= ids
-    for field in ("max_tokens", "timeout", "embedding_model", "recall_top_k", "max_injected_chars", "curator_turns", "observe_daily_budget", "source_gap_minutes", "attention", "proactive"):
+    for field in ("max_tokens", "timeout", "embedding_model", "recall_top_k", "max_injected_chars", "curator_turns", "observe_daily_budget", "channels", "proactive"):
         assert field in server
     assert '"****" not in str(llm["api_key"])' in server
     assert "已暂停观察与截图" in html
@@ -23,6 +23,8 @@ def test_settings_ui_ids_and_config_contract():
         assert field in html + js + server
     assert "getSttInputDevice" in preload
     for field in ("llm-profile-select", "llm-profile-name", "llm-add-profile", "llm-switch", "llm-delete"):
+        assert field in html + js
+    for field in ("pro-qq-gap", "pro-pet-gap", "pro-qq-source-gap", "pro-pet-source-gap"):
         assert field in html + js
     for action in ("add", "update", "switch", "delete"):
         assert f"'{action}'" in js

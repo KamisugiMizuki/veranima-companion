@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS messages (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     role       TEXT NOT NULL CHECK (role IN ('user','assistant','system')),
     content    TEXT NOT NULL,
+    channel    TEXT NOT NULL DEFAULT 'qq',
     created_at TEXT NOT NULL,
     energy_at  REAL,
     mood_at    TEXT
@@ -64,6 +65,8 @@ CREATE TABLE IF NOT EXISTS proactive_feedback (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     sent_at          TEXT NOT NULL,
     source           TEXT NOT NULL,
+    channel          TEXT NOT NULL DEFAULT 'qq',
+    candidate_id     TEXT NOT NULL DEFAULT '',
     responded        INTEGER NOT NULL DEFAULT 0,
     interrupted      INTEGER NOT NULL DEFAULT 0,
     user_sent_within INTEGER,              -- 秒；主动后用户多久来消息（0=无）
@@ -197,5 +200,25 @@ def init_db(db_path: str | Path, dim: int = EMBEDDING_DIM, provider=None) -> sql
                 logger.info("agent_state migration: added column %s", name)
     except Exception as e:
         logger.warning("agent_state migration check failed: %s", e)
+    # R4/QQ proactive 迁移：旧反馈默认归 QQ，新记录按通道隔离。
+    try:
+        feedback_cols = {r["name"] for r in con.execute("PRAGMA table_info(proactive_feedback)").fetchall()}
+        for name, ddl in (
+            ("channel", "TEXT NOT NULL DEFAULT 'qq'"),
+            ("candidate_id", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if name not in feedback_cols:
+                con.execute(f"ALTER TABLE proactive_feedback ADD COLUMN {name} {ddl}")
+                logger.info("proactive_feedback migration: added column %s", name)
+        con.execute("CREATE INDEX IF NOT EXISTS idx_proactive_feedback_channel ON proactive_feedback(channel)")
+    except Exception as e:
+        logger.warning("proactive_feedback migration check failed: %s", e)
+    try:
+        message_cols = {r["name"] for r in con.execute("PRAGMA table_info(messages)").fetchall()}
+        if "channel" not in message_cols:
+            con.execute("ALTER TABLE messages ADD COLUMN channel TEXT NOT NULL DEFAULT 'qq'")
+            logger.info("messages migration: added channel")
+    except Exception as e:
+        logger.warning("messages channel migration check failed: %s", e)
     con.commit()
     return con
