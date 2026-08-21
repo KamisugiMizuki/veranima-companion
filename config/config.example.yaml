@@ -178,6 +178,21 @@ proactive:
       max_per_day: 2
   visual_candidates: true
 
+# AI 不满值/关系张力；内部数值不在设置页暴露
+relationship_tension:
+  enabled: true
+  max_value: 100
+  decay_step: 5
+  decay_interval_hours: 6
+  negative_daily_cap: 20
+  positive_daily_cap: 20
+  unanswered_reply_window_hours: 24
+  abandonment_window_minutes: 60
+  repair_turns_to_guarded: 2
+  repair_turns_to_calm: 5
+  explicit_pause: true
+  high_tension_proactive: false
+
 # R4 视觉注意力：默认只保存短期摘要，不保存原始截图
 attention:
   enabled: true

@@ -34,6 +34,16 @@ def test_explicit_length_enables_plan_on_simple_turn():
     assert plan is not None and plan.desired_length == "short"
 
 
+def test_response_plan_carries_relational_tension_hint():
+    state = _state()
+    state.relational_tension_band = "guarded"
+
+    plan = build_response_plan({"user_text": "继续说"}, PersonaBrief(), state)
+
+    assert plan is not None
+    assert plan.tension_hint == "guarded"
+
+
 def test_conflict_enables_plan():
     b = PersonaBrief(core_tensions=["渴望靠近 / 害怕失去边界"])
     p = build_response_plan({"user_text": "你为什么那样说"}, b, _state(conflict=0.7))

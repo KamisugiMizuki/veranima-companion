@@ -27,6 +27,12 @@ from .proactive import GreetingScheduler, OccasionChecker
 from .promises import PromiseBook
 from .review import MonthlyReview
 from .state import AgentState
+from .tension import RelationalTension, event_meta_from_memory
+from .tension_events import (
+    classify_low_investment_streak,
+    classify_user_tension_event,
+    extract_direct_question,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +163,12 @@ class Agent:
         # P-7 冲突跟踪（随 state.relationship 持久化；重启恢复）
         from .persona import ConflictTracker
         self._conflicts = ConflictTracker.from_dict(self.state.relationship.get("conflicts") if isinstance(self.state.relationship, dict) else None)
+        tension_snapshot = self.state.relationship.get("tension") if isinstance(self.state.relationship, dict) else None
+        tension_entries = self.memory.list_layer("episodic", limit=200)
+        self.tension = RelationalTension(
+            config=self.config.get("relationship_tension", {}) or {},
+        )
+        self.tension.restore(tension_snapshot, event_meta_from_memory(tension_entries))
 
         # P-6/P-9 状态：框架引用冷却（8 轮）、表层印记、轮次计数
         from .persona import ImprintTracker, ReuseCooldown
@@ -305,10 +317,80 @@ class Agent:
             rel = self.relationship.to_dict()
             rel["conflicts"] = self._conflicts.to_dict()
             rel["imprints"] = self._imprints.to_dict()
+            rel["tension"] = self.tension.snapshot()
             self.state.relationship = rel
             self.memory.save_state(self.state.to_snapshot())
         except Exception as e:
             logger.debug("state persist failed: %s", e)
+
+    def _apply_tension_event(self, **kwargs):
+        result = self.tension.apply_event(**kwargs)
+        if result.applied and result.event is not None:
+            self.memory.store(
+                "episodic",
+                result.event.reason,
+                importance=0.7,
+                confidence=result.event.confidence,
+                provenance=",".join(str(x) for x in result.event.evidence_message_ids) or None,
+                meta=result.event.to_meta(),
+            )
+            self._persist_state()
+        return result
+
+    def relationship_event_candidate(self) -> dict | None:
+        return self.tension.relationship_event_candidate()
+
+    def confirm_relationship_event(self, candidate: dict, *, confirmed: bool) -> bool:
+        """用户确认关系候选后才推动 conflict_tension；拒绝只保留候选审计。"""
+        if not confirmed or not isinstance(candidate, dict):
+            return False
+        if candidate.get("kind") != "relationship_event":
+            return False
+        from .persona import apply_relationship_event
+        event_id = str(candidate.get("event_id") or "")
+        self.relationship = apply_relationship_event(
+            self.relationship,
+            {"type": "major_event", "cause": str(candidate.get("content") or "关系事件"),
+             "event_id": event_id, "delta": {"conflict_tension": 0.08}},
+        )
+        self._persist_state()
+        return True
+
+    def _process_tension_user_message(self, text: str, *, channel: str, message_id: int) -> None:
+        """把用户本轮的明确关系信号送入 TV；普通短消息不产生负向事件。"""
+        normalized_channel = "pet" if channel == "tts" else "qq"
+        if any(token in text for token in ("别主动找我", "不要主动找我", "不要打扰", "别打扰我")):
+            self.tension.set_explicit_pause(True, reason="用户明确要求不要主动联系")
+            self._persist_state()
+            return
+        if any(token in text for token in ("可以主动找我", "恢复主动", "解除免打扰")):
+            self.tension.set_explicit_pause(False, reason="用户明确恢复主动联系")
+            self._persist_state()
+            return
+        previous = next((entry for entry in reversed(self._history) if entry.get("role") == "assistant"), None)
+        previous_text = str(previous.get("content") or "") if previous else ""
+        direct_question = extract_direct_question(previous_text)
+        new_conversation = any(token in text for token in ("我回来了", "我回来啦", "继续聊", "刚回来", "现在有空"))
+        candidate = classify_user_tension_event(
+            text, new_conversation=new_conversation, direct_question=direct_question,
+        )
+        if candidate is None:
+            candidate = classify_low_investment_streak(self._history, text)
+        if candidate is None:
+            return
+        self._apply_tension_event(
+            event_type=candidate.event_type,
+            channel=normalized_channel,
+            base_delta=candidate.base_delta,
+            reason=candidate.reason,
+            dedupe_key=f"{candidate.event_type}:message:{message_id}",
+            confidence=candidate.confidence,
+            context_factor=candidate.context_factor,
+            evidence_message_ids=[message_id],
+        )
+        if candidate.event_type in {"answered_question", "user_initiated"} and self.tension.state.open_event_ids:
+            self.tension.clear_open_event(self.tension.state.open_event_ids[0], resolved_by=candidate.reason)
+            self._persist_state()
 
     def start(self) -> str:
         """会话启动：恢复状态、时间问候或初遇开场白。"""
@@ -358,6 +440,7 @@ class Agent:
         # 1. 状态推进 + 用户反馈
         self.state.tick(self.config.get("state", {}).get("energy_decay_per_minute", 0.02))
         self.state.on_user_message(recover_per_message=self.config.get("state", {}).get("energy_recover_per_message", 3.0))
+        self.tension.decay(now=datetime.datetime.now(datetime.timezone.utc))
 
         # 1.5 R4 场景锁：用户消息进来时更新场景（进入/退出 busy/away）
         scene = self.scene_lock.note(user_text)
@@ -407,6 +490,7 @@ class Agent:
             "user", store_text, self.state.energy, self.state.mood,
             channel="pet" if channel == "tts" else "qq",
         )
+        self._process_tension_user_message(store_text, channel=channel, message_id=user_msg_id)
 
         # ===== R0 阶段 2: build_turn_prompt（R0_SPEC 5）=====
         # 记忆检索（预算内注入）+ MVP2 附加块（风格/镜像/承诺）+ 打断指令
@@ -441,6 +525,11 @@ class Agent:
                     "user_text": user_text,
                     "explicit_style_length": explicit_style_length,
                     "style_length": self.style.preferred_length(channel),
+                    "relational_tension_band": self.tension.band,
+                    "relational_tension_hint": self.tension.prompt_hint(
+                        channel=channel,
+                        expression_mode=((self.card.veranima or {}).get("tension_expression") or {}).get("mode", "neutral"),
+                    ),
                 },
                 pre_brief,
                 self.state,
@@ -463,6 +552,8 @@ class Agent:
                 plan_bits.append(f"开场={response_plan.opening_move}")
             if response_plan.conflict:
                 plan_bits.append(response_plan.conflict)
+            if response_plan.tension_hint and response_plan.tension_hint != "calm":
+                plan_bits.append(f"关系张力提示={response_plan.tension_hint}")
             extra_blocks.append(f"【表达意图】{'；'.join(plan_bits)}")
         if interrupt_level > 0:
             extra_blocks.append(_interrupt_prompt(interrupt_level))

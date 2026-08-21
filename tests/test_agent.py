@@ -109,6 +109,76 @@ def test_prompt_preserves_message_times_across_restart(agent):
     assert all(item.get("created_at") for item in a._history[-2:])
 
 
+def test_relational_tension_persists_across_agent_restart(agent):
+    card, memory = agent
+    first = Agent(card=card, memory=memory, llm=FakeLLM(), state=AgentState(), config={})
+    result = first._apply_tension_event(
+        event_type="unanswered_proactive", channel="qq", base_delta=10,
+        reason="测试未回复", dedupe_key="expectation:restart",
+        occurred_at="2026-08-22T00:00:00+00:00",
+    )
+    first._persist_state()
+
+    second = Agent(card=card, memory=memory, llm=FakeLLM(), state=None, config={})
+
+    assert result.applied
+    assert second.tension.state.value == 10
+    duplicate = second.tension.apply_event(
+        event_type="unanswered_proactive", channel="qq", base_delta=10,
+        reason="重复", dedupe_key="expectation:restart",
+        occurred_at="2026-08-22T00:00:00+00:00",
+    )
+    assert duplicate.applied is False
+
+
+def test_user_messages_update_relational_tension_with_explicit_pause_and_repair(agent):
+    card, memory = agent
+    a = Agent(card=card, memory=memory, llm=FakeLLM(), state=AgentState(), config={})
+    a._apply_tension_event(
+        event_type="unanswered_proactive", channel="qq", base_delta=30,
+        reason="测试未回复", dedupe_key="expectation:repair",
+        occurred_at="2026-08-22T00:00:00+00:00",
+    )
+    before = a.tension.state.value
+
+    a.handle("我回来啦，继续聊", channel="im")
+
+    assert a.tension.state.value < before
+    a.handle("以后别主动找我", channel="im")
+    assert a.tension.state.explicit_pause is True
+
+
+def test_answering_direct_question_closes_one_open_tension_event(agent):
+    card, memory = agent
+    a = Agent(card=card, memory=memory, llm=FakeLLM(), state=AgentState(), config={})
+    a._apply_tension_event(
+        event_type="unanswered_proactive", channel="qq", base_delta=10,
+        reason="测试未回复", dedupe_key="expectation:answer",
+        occurred_at="2026-08-22T00:00:00+00:00",
+    )
+    a._append_history_message("assistant", "你后来有没有试那个方案？")
+
+    a.handle("试了，昨天已经跑通了", channel="im")
+
+    assert a.tension.state.open_event_ids == []
+
+
+def test_relationship_event_requires_user_confirmation(agent):
+    card, memory = agent
+    a = Agent(card=card, memory=memory, llm=FakeLLM(), state=AgentState(), config={})
+    a.tension.state.value = 70
+    a.tension.state.band = "repair"
+    a.tension.state.open_event_ids = ["tension-e1"]
+    a.tension.state.last_cause = "测试关系张力"
+    candidate = a.relationship_event_candidate()
+    before = a.relationship.conflict_tension
+
+    assert a.confirm_relationship_event(candidate, confirmed=False) is False
+    assert a.relationship.conflict_tension == before
+    assert a.confirm_relationship_event(candidate, confirmed=True) is True
+    assert a.relationship.conflict_tension > before
+
+
 def test_generated_reply_does_not_echo_prompt_time_prefixes(agent):
     card, memory = agent
     llm = FakeLLM(

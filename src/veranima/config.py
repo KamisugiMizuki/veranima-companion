@@ -55,6 +55,20 @@ def normalize_proactive_channels(data: dict) -> dict:
     return data
 
 
+def normalize_relationship_tension(data: dict) -> dict:
+    cfg = data.setdefault("relationship_tension", {}) or {}
+    defaults = {
+        "enabled": True, "max_value": 100, "decay_step": 5,
+        "decay_interval_hours": 6, "negative_daily_cap": 20,
+        "positive_daily_cap": 20, "unanswered_reply_window_hours": 24,
+        "abandonment_window_minutes": 60, "repair_turns_to_guarded": 2,
+        "repair_turns_to_calm": 5, "explicit_pause": True,
+        "high_tension_proactive": False,
+    }
+    data["relationship_tension"] = {**defaults, **cfg}
+    return data
+
+
 def _profile_id(name: str, existing: dict[str, dict]) -> str:
     normalized = unicodedata.normalize("NFKD", str(name)).encode("ascii", "ignore").decode("ascii")
     base = re.sub(r"[^a-zA-Z0-9]+", "-", normalized).strip("-").lower() or "profile"
@@ -201,6 +215,7 @@ def load_config(path: str | Path | None = None) -> dict:
             data.setdefault("root", str(ROOT))
             normalize_llm_profiles(data)
             normalize_proactive_channels(data)
+            normalize_relationship_tension(data)
             return data
     return {"root": str(ROOT)}
 
@@ -247,6 +262,7 @@ def save_config(data: dict, path: str | Path | None = None) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     normalize_llm_profiles(data)
     normalize_proactive_channels(data)
+    normalize_relationship_tension(data)
     safe = {k: v for k, v in data.items() if k != "root"}
     target.write_text(
         yaml.safe_dump(safe, allow_unicode=True, sort_keys=False, default_flow_style=False),

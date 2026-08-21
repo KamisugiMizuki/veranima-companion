@@ -95,6 +95,29 @@ def test_proactive_feedback_keeps_channel_and_candidate(store):
     assert row["candidate_id"] == "qq-1"
 
 
+def test_proactive_feedback_keeps_reply_expectation(store):
+    store.record_proactive_feedback(
+        source="scene", channel="qq", candidate_id="c1",
+        requires_reply=True, direct_question="后来怎么样？",
+        expires_at="2026-08-23T00:00:00+00:00",
+    )
+
+    row = store.recent_proactive_feedback(channel="qq", limit=1)[0]
+
+    assert row["requires_reply"] == 1
+    assert row["direct_question"] == "后来怎么样？"
+    assert row["expires_at"] == "2026-08-23T00:00:00+00:00"
+    assert row["candidate_id"] == "c1"
+    assert row["expectation_status"] == "pending"
+
+    assert store.expire_proactive_expectation(row["id"]) is True
+    assert store.expire_proactive_expectation(row["id"]) is False
+    assert store.recent_proactive_feedback(channel="qq", limit=1)[0]["expectation_status"] == "expired"
+
+    store.record_proactive_feedback(source="scene", channel="qq", responded=True)
+    assert store.recent_proactive_feedback(channel="qq", limit=1)[0]["expectation_status"] == "expired"
+
+
 def test_recall_by_similarity(store):
     store.store("episodic", "用户上个月通过了考试", importance=0.9)
     store.store("episodic", "用户最近在备考心理学", importance=0.7)

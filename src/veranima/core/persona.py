@@ -746,6 +746,7 @@ class ResponsePlan:
     uncertainty_to_express: str = ""
     desired_length: str = "normal"
     association_target: str = ""
+    tension_hint: str = ""
 
 
 def build_response_plan(context: dict, brief: PersonaBrief, state) -> ResponsePlan | None:
@@ -760,6 +761,8 @@ def build_response_plan(context: dict, brief: PersonaBrief, state) -> ResponsePl
     has_fw = bool(brief.relevant_user_frameworks) or bool(brief.relevant_character_beliefs)
     has_sm = bool(brief.shared_meanings)
     explicit_style_length = str(context.get("explicit_style_length") or "")
+    tension_band = str(context.get("relational_tension_band") or getattr(state, "relational_tension_band", "calm"))
+    tension_hint = str(context.get("relational_tension_hint") or "")
     if explicit_style_length not in {"short", "long"}:
         explicit_style_length = ""
     requested_length = ""
@@ -767,12 +770,14 @@ def build_response_plan(context: dict, brief: PersonaBrief, state) -> ResponsePl
         requested_length = "short"
     elif any(word in q for word in ("详细", "展开说", "具体说明", "完整说明")):
         requested_length = "long"
-    if not has_fw and not has_sm and conflict <= 0.5 and valence >= 0.35 and not requested_length and not explicit_style_length:
+    if not has_fw and not has_sm and conflict <= 0.5 and valence >= 0.35 and tension_band == "calm" and not requested_length and not explicit_style_length:
         return None  # 简单轮：跳过计划
     if conflict > 0.5:
         intent, opening = "clarify", "先确认边界"
     elif valence < 0.35:
         intent, opening = "comfort", "先接住情绪"
+    elif tension_band in {"repair", "high"}:
+        intent, opening = "repair", "先处理必要的关系张力"
     elif has_sm and any(k in q for k in ("记得", "那晚", "上次", "那次")):
         intent, opening = "reflect", "从共同记忆切入"
     elif has_fw:
@@ -792,6 +797,8 @@ def build_response_plan(context: dict, brief: PersonaBrief, state) -> ResponsePl
         desired_length = explicit_style_length
     elif valence < 0.3:
         desired_length = "short"
+    elif tension_band in {"guarded", "cool", "repair", "high"}:
+        desired_length = "short"
     else:
         desired_length = style_length
     return ResponsePlan(
@@ -804,6 +811,7 @@ def build_response_plan(context: dict, brief: PersonaBrief, state) -> ResponsePl
         uncertainty_to_express="",
         desired_length=desired_length,
         association_target=target,
+        tension_hint=tension_hint or tension_band,
     )
 
 

@@ -14,6 +14,17 @@ def test_proactive_channel_defaults_split_legacy_config():
     assert "source_gap_minutes" not in data["proactive"]["channels"]["pet"]
 
 
+def test_relationship_tension_defaults_are_normalized():
+    from veranima.config import normalize_relationship_tension
+
+    data = {}
+    normalize_relationship_tension(data)
+
+    assert data["relationship_tension"]["enabled"] is True
+    assert data["relationship_tension"]["decay_interval_hours"] == 6
+    assert data["relationship_tension"]["high_tension_proactive"] is False
+
+
 def _legacy():
     return {
         "llm": {

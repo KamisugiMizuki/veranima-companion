@@ -571,6 +571,7 @@ class PetServer:
                     memory = cfg.get("memory", {}) or {}
                     attention = cfg.get("attention", {}) or {}
                     proactive = cfg.get("proactive", {}) or {}
+                    relationship_tension = cfg.get("relationship_tension", {}) or {}
                     llm_payload = llm_profiles_payload(cfg)
                     await self._send({"type": "config", "id": msg.get("id"), "data": {
                         "llm": {**llm_payload, "legacy_api_key": masked},
@@ -596,6 +597,7 @@ class PetServer:
                             "habituation_sec", "observe_cache_ttl_sec", "observe_daily_budget", "crop_ratio")},
                         "proactive": {**{k: proactive.get(k) for k in ("enabled", "quiet_hours_enabled")},
                                       "channels": proactive.get("channels", {})},
+                        "relationship_tension": {k: relationship_tension.get(k) for k in ("enabled", "high_tension_proactive")},
                     }})
                 elif mtype == "search_history":
                     data = msg.get("data") or {}
@@ -668,6 +670,10 @@ class PetServer:
                             cfg.setdefault("proactive", {})[k] = pro[k]
                     if isinstance(pro.get("channels"), dict):
                         cfg.setdefault("proactive", {})["channels"] = pro["channels"]
+                    tension = d.get("relationship_tension", {})
+                    for k in ("enabled", "high_tension_proactive"):
+                        if k in tension:
+                            cfg.setdefault("relationship_tension", {})[k] = bool(tension[k])
                     memory = d.get("memory", {})
                     for k in ("embedding_model", "recall_top_k", "recall_threshold", "max_injected_chars",
                               "core_profile_budget", "section_budget", "session_budget", "decay_enabled",

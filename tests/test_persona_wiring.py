@@ -66,6 +66,28 @@ def test_handle_returns_style_hint(tmp_path):
     assert r.style_hint in ("short", "normal", "long")
 
 
+def test_handle_injects_relational_tension_hint(tmp_path):
+    a, llm = _agent(tmp_path)
+    a.tension.state.value = 30
+    a.tension.state.band = "guarded"
+
+    a.handle("继续说")
+
+    assert "关系张力提示=关系有一点未消化的落差" in llm.last_prompt
+    assert "惩罚性冷淡" in llm.last_prompt
+
+
+def test_handle_uses_role_tension_expression_mode(tmp_path):
+    a, llm = _agent(tmp_path)
+    a.card.veranima["tension_expression"] = {"mode": "direct"}
+    a.tension.state.value = 45
+    a.tension.state.band = "cool"
+
+    a.handle("继续说")
+
+    assert "直接陈述具体事件和感受" in llm.last_prompt
+
+
 def test_handle_imprint_from_positive_feedback(tmp_path):
     a, _ = _agent(tmp_path)
     a.handle("你说得对，很有道理")  # POSITIVE_WORDS 命中 → depth 印记 candidate

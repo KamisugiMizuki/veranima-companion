@@ -26,6 +26,8 @@ def test_settings_ui_ids_and_config_contract():
         assert field in html + js
     for field in ("pro-qq-gap", "pro-pet-gap"):
         assert field in html + js
+    for field in ("tension-enabled", "tension-high-proactive"):
+        assert field in html + js + server
     for field in ("pro-gap", "pro-source-gap", "pro-max", "pro-qq-source-gap", "pro-pet-source-gap", "global_max_per_day"):
         assert field not in html + js + server
     for action in ("add", "update", "switch", "delete"):

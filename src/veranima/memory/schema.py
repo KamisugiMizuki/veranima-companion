@@ -67,6 +67,10 @@ CREATE TABLE IF NOT EXISTS proactive_feedback (
     source           TEXT NOT NULL,
     channel          TEXT NOT NULL DEFAULT 'qq',
     candidate_id     TEXT NOT NULL DEFAULT '',
+    requires_reply   INTEGER NOT NULL DEFAULT 0,
+    direct_question TEXT NOT NULL DEFAULT '',
+    expires_at      TEXT,
+    expectation_status TEXT NOT NULL DEFAULT 'none',
     responded        INTEGER NOT NULL DEFAULT 0,
     interrupted      INTEGER NOT NULL DEFAULT 0,
     user_sent_within INTEGER,              -- 秒；主动后用户多久来消息（0=无）
@@ -206,6 +210,10 @@ def init_db(db_path: str | Path, dim: int = EMBEDDING_DIM, provider=None) -> sql
         for name, ddl in (
             ("channel", "TEXT NOT NULL DEFAULT 'qq'"),
             ("candidate_id", "TEXT NOT NULL DEFAULT ''"),
+            ("requires_reply", "INTEGER NOT NULL DEFAULT 0"),
+            ("direct_question", "TEXT NOT NULL DEFAULT ''"),
+            ("expires_at", "TEXT"),
+            ("expectation_status", "TEXT NOT NULL DEFAULT 'none'"),
         ):
             if name not in feedback_cols:
                 con.execute(f"ALTER TABLE proactive_feedback ADD COLUMN {name} {ddl}")

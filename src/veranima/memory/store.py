@@ -513,7 +513,10 @@ class MemoryStore:
     def record_proactive_feedback(self, *, source: str, responded: bool = False,
                                   interrupted: bool = False, user_sent_within: int | None = None,
                                   dismissed: bool = False, channel: str = "qq",
-                                  candidate_id: str = "", sent_at: str | None = None) -> None:
+                                  candidate_id: str = "", sent_at: str | None = None,
+                                  requires_reply: bool = False, direct_question: str = "",
+                                  expires_at: str | None = None,
+                                  expectation_status: str | None = None) -> None:
         """记录一次主动消息的反馈（忽略/响应/打断）。"""
         if responded and sent_at is None:
             clauses = ["source=?", "responded=0"]
@@ -527,19 +530,35 @@ class MemoryStore:
             ).fetchone()
             if row:
                 self.con.execute(
-                    "UPDATE proactive_feedback SET responded=1, user_sent_within=? WHERE id=?",
+                    "UPDATE proactive_feedback SET responded=1, user_sent_within=?, "
+                    "expectation_status=CASE WHEN requires_reply=1 AND expectation_status='pending' "
+                    "THEN 'replied' ELSE expectation_status END "
+                    "WHERE id=?",
                     (user_sent_within, row["id"]),
                 )
                 self.con.commit()
                 return
         self.con.execute(
             "INSERT INTO proactive_feedback"
-            " (sent_at, source, channel, candidate_id, responded, interrupted, user_sent_within, dismissed)"
-            " VALUES (?,?,?,?,?,?,?,?)",
+            " (sent_at, source, channel, candidate_id, requires_reply, direct_question, expires_at, expectation_status,"
+            " responded, interrupted, user_sent_within, dismissed)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (sent_at or _now(), source, channel or "qq", candidate_id or "",
+             int(requires_reply), direct_question or "", expires_at,
+             expectation_status or ("pending" if requires_reply else "none"),
              int(responded), int(interrupted), user_sent_within, int(dismissed)),
         )
         self.con.commit()
+
+    def expire_proactive_expectation(self, feedback_id: int) -> bool:
+        """将未回复期待原子标记为 expired；重复 tick 不会重复处理。"""
+        cur = self.con.execute(
+            "UPDATE proactive_feedback SET expectation_status='expired' "
+            "WHERE id=? AND requires_reply=1 AND responded=0 AND expectation_status='pending'",
+            (int(feedback_id),),
+        )
+        self.con.commit()
+        return cur.rowcount == 1
 
     def recent_proactive_feedback(self, source: str | None = None, limit: int = 10,
                                   channel: str | None = None) -> list[dict]:

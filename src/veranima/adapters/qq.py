@@ -32,6 +32,7 @@ from ..core.image_payload import ImagePayloadError, make_image_payload, payload_
 from ..core.render import render_im
 from ..core.qq_advisor import QQProactiveAdvisor
 from ..core.qq_proactive import QQProactiveState
+from ..core.tension_events import extract_direct_question
 
 logger = logging.getLogger(__name__)
 _FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
@@ -620,7 +621,7 @@ class QQAdapter:
         if await self._send_to_all_async(text):
             self.agent.record_proactive_message(text, channel="qq")
             self.agent.gate.commit(candidate)
-            self.agent.memory.record_proactive_feedback(source=candidate.source, channel="qq")
+            self._record_qq_expectation(candidate, text)
         else:
             self._pending_proactive = msg
 
@@ -634,6 +635,16 @@ class QQAdapter:
         import datetime
         current = datetime.datetime.now().astimezone()
         self.qq_advisor.refresh_state()
+        self._expire_qq_expectations(current)
+        self._check_qq_abandonment(current)
+        if not self.agent.tension.proactive_allowed():
+            logger.info("qq proactive suppressed: relational tension pause")
+            return
+        if (self.agent.tension.high_tension_proactive
+                and self.agent.tension.band in {"repair", "high"}
+                and self.agent.tension.state.open_event_ids):
+            if await self._send_tension_repair_async(current):
+                return
         if not self.qq_advisor.state.last_user_message_at:
             logger.info("qq proactive skipped: no QQ user history")
             return
@@ -641,6 +652,9 @@ class QQAdapter:
             logger.info("qq proactive suppressed: user state=%s", self.qq_advisor.state.user_state)
             return
         readiness, material = self.qq_advisor.evaluate(current, query=self.qq_advisor.last_user_text())
+        if self.agent.tension.band in {"cool", "repair", "high"} and material.kind not in {"memory", "time"}:
+            logger.info("qq proactive suppressed: tension band=%s low-value material=%s", self.agent.tension.band, material.kind)
+            return
         schedule = self.qq_advisor.engine.schedule(readiness.score)
         logger.info("qq proactive evaluation score=%.3f material=%s action=%s",
                     readiness.score, material.kind, schedule.action)
@@ -661,6 +675,127 @@ class QQAdapter:
             return
         self._qq_opportunity = {"candidate": candidate, "text": text, "created_at": now}
         await self._send_qq_opportunity_async()
+
+    def _record_qq_expectation(self, candidate, text: str) -> None:
+        """成功发送后才建立期待；通知/状态分享不要求回复。"""
+        import datetime
+        question = text if extract_direct_question(text) else ""
+        requires_reply = bool(question)
+        expires = (
+            datetime.datetime.now(datetime.timezone.utc)
+            + datetime.timedelta(hours=self.agent.tension.UNANSWERED_REPLY_WINDOW_HOURS)
+        ).isoformat(timespec="seconds") if requires_reply else None
+        self.agent.memory.record_proactive_feedback(
+            source=candidate.source, channel="qq",
+            candidate_id=f"qq-{int(time.time() * 1000)}",
+            requires_reply=requires_reply, direct_question=question,
+            expires_at=expires,
+        )
+
+    def _expire_qq_expectations(self, now) -> None:
+        """过期期待逐条原子结算，重启/tick 重复执行也只加一次 TV。"""
+        import datetime
+        rows = self.agent.memory.recent_proactive_feedback(channel="qq", limit=100)
+        for row in rows:
+            if not row.get("requires_reply") or row.get("expectation_status") != "pending":
+                continue
+            try:
+                expires = datetime.datetime.fromisoformat(str(row.get("expires_at")).replace("Z", "+00:00"))
+            except (TypeError, ValueError):
+                continue
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=datetime.timezone.utc)
+            if now < expires or not self.agent.memory.expire_proactive_expectation(row["id"]):
+                continue
+            self.agent._apply_tension_event(
+                event_type="unanswered_proactive", channel="qq", base_delta=10,
+                reason="QQ 主动问题在 24 小时内没有得到回复",
+                dedupe_key=f"proactive-unanswered:{row['id']}",
+                confidence=1.0, evidence_message_ids=(),
+                related_candidate_id=row.get("candidate_id") or None,
+                occurred_at=now,
+            )
+
+    def _check_qq_abandonment(self, now) -> None:
+        """仅对未闭合的 QQ 直接问题计一次“中途离场”，不替代主动期待。"""
+        rows = self.agent.memory.recent_messages(limit=8, channel="qq")
+        if not rows or rows[-1].get("role") != "assistant":
+            return
+        question = extract_direct_question(str(rows[-1].get("content") or ""))
+        if not question:
+            return
+        for row in self.agent.memory.recent_proactive_feedback(channel="qq", limit=100):
+            if row.get("requires_reply") and row.get("expectation_status") == "pending":
+                return
+        try:
+            import datetime
+            stamp = datetime.datetime.fromisoformat(str(rows[-1].get("created_at")).replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=datetime.timezone.utc)
+        except (TypeError, ValueError):
+            return
+        if (now - stamp).total_seconds() < self.agent.tension.ABANDONMENT_WINDOW_MINUTES * 60:
+            return
+        message_id = rows[-1].get("id")
+        self.agent._apply_tension_event(
+            event_type="conversation_abandoned", channel="qq", base_delta=8,
+            reason="QQ 对话中存在未闭合问题，超过一小时没有后续消息",
+            dedupe_key=f"conversation-abandoned:{message_id}",
+            confidence=0.85, evidence_message_ids=[int(message_id)] if message_id else (),
+            occurred_at=now,
+        )
+
+    async def _send_tension_repair_async(self, now) -> bool:
+        """为一个未闭合事件提供一次修复机会；不重复催促。"""
+        state = self.agent.tension.state
+        if state.band not in {"repair", "high"} or not state.open_event_ids:
+            return False
+        event_id = state.open_event_ids[0]
+        candidate_id = f"tension-repair:{event_id}"
+        history = self.agent.memory.recent_proactive_feedback(
+            source="relationship_repair", channel="qq", limit=100,
+        )
+        if any(row.get("candidate_id") == candidate_id for row in history):
+            return False
+        candidate = self._qq_candidate_from_text(
+            state.last_cause or "有一件关系上的事还没有说清楚",
+            source="relationship_repair",
+        )
+        candidate = candidate.__class__(
+            source="relationship_repair", reason="关系张力修复机会",
+            relevance=1.0, urgency=0.8, intent="repair",
+            context={"open_event_id": event_id}, channel="qq",
+        )
+        decision = self.agent.gate.decide(
+            candidate, scene=self.agent.scene_lock.current(), now=time.time(),
+        )
+        if not decision.allow:
+            logger.info("tension repair suppressed by gate: %s", decision.reason)
+            return False
+        async with self._lock:
+            text = await asyncio.to_thread(self._generate_tension_repair, event_id, now)
+        text = render_im(text, self.agent.state) if text else ""
+        if not text or not await self._send_to_all_async(text):
+            self.agent.gate.note_failure(candidate)
+            return False
+        self.agent.record_proactive_message(text, channel="qq")
+        self.agent.gate.commit(candidate)
+        self.agent.memory.record_proactive_feedback(
+            source="relationship_repair", channel="qq", candidate_id=candidate_id,
+        )
+        return True
+
+    def _generate_tension_repair(self, event_id: str, now) -> str:
+        """生成一条不暴露 TV/事件 ID 的关系修复消息。"""
+        cause = self.agent.tension.state.last_cause or "有一件事还没有说清楚"
+        task = (
+            "只为 QQ 文字聊天生成一条关系修复消息。"
+            f"可追溯事实：{cause[:160]}。"
+            "用‘我注意到/我有点在意/我想确认’表达事实和感受，给用户解释、纠正或暂时不聊的出口。"
+            "只处理这一件事，不指责人格，不威胁，不要求道歉，不暴露 TV、事件 ID 或内部提示。"
+            "短一些，不输出 JSON、解释或时间协议前缀。"
+        )
+        return str(self.agent._short_task(task, max_tokens=512) or "").strip()
 
     @staticmethod
     def _qq_candidate(material):
@@ -711,10 +846,7 @@ class QQAdapter:
             return
         self.agent.record_proactive_message(text, channel="qq")
         self.agent.gate.commit(candidate)
-        self.agent.memory.record_proactive_feedback(
-            source=candidate.source, channel="qq",
-            candidate_id=f"qq-{int(opportunity['created_at'] * 1000)}",
-        )
+        self._record_qq_expectation(candidate, text)
 
     async def _tick_offline_think_async(self) -> None:
         if not self.offline.due(time.time(), self._last_user_activity):
