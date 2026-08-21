@@ -176,6 +176,8 @@ class PetServer:
                     ev.event_id, ev.kind, ev.source, ev.reason, ev.confidence)
         if self._agent is None or ev.kind != "fixation_shift":
             return False  # window_switch only updates metadata; never captures or speaks
+        if (self.attention_cfg or {}).get("enabled", True) is False or (self.attention_cfg or {}).get("paused", False):
+            return False
         activity = getattr(self._agent, "activity", None)
         if activity and activity.active("qq"):
             logger.info("visual: event=%s action=blocked reason=qq_active", ev.event_id)
@@ -633,11 +635,13 @@ class PetServer:
                         cfg.setdefault("pet", {})["avatar_height"] = pet["avatar_height"]
                     # GUI-4：隐私与主动性（部分更新，不覆盖整段）
                     att = d.get("attention", {})
-                    if "paused" in att:
-                        cfg.setdefault("attention", {})["paused"] = att["paused"]
+                    for k in ("enabled", "paused", "global_scan_sec", "observe_daily_budget"):
+                        if k in att:
+                            cfg.setdefault("attention", {})[k] = att[k]
                     pro = d.get("proactive", {})
-                    if "max_per_day" in pro:
-                        cfg.setdefault("proactive", {})["max_per_day"] = pro["max_per_day"]
+                    for k in ("enabled", "max_per_day", "min_gap_minutes", "source_gap_minutes"):
+                        if k in pro:
+                            cfg.setdefault("proactive", {})[k] = pro[k]
                     memory = d.get("memory", {})
                     for k in ("embedding_model", "recall_top_k", "recall_threshold", "max_injected_chars",
                               "core_profile_budget", "section_budget", "session_budget", "decay_enabled",

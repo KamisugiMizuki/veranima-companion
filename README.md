@@ -117,7 +117,8 @@ QQ 形态额外启用：定时问候/节庆、离线思考（静默 30 分钟后
 - **聊天**：点击形象打开 QQ 风格独立聊天窗口（右侧用户绿泡/左侧桌宠白泡+立绘头像，Enter 发送，IME 选词不误发，记录跨重启保留）
 - **右键菜单**：戳一下 / 打开聊天 / 清空聊天记录 / 显示隐藏 / 设置 / 日志 / 重启核心 / 退出
 - **TTS**：GPT-SoVITS v4 本地日语合成（端口 9880）。模型权重 + 参考音频在 `characters/yuki/voice/`（gitignore），配置在 config.yaml `[tts]` 段
-- **视觉注意力**：自动运行；窗口切换只记录元数据，注视转移才会在隐私策略通过后发送彩色区域截图（原始截图不落盘），参数在 config.yaml `[attention]` 段
+- **视觉注意力**：自动运行；窗口切换只记录元数据，注视转移才会在隐私策略通过后发送彩色区域截图（原始截图不落盘），参数在 config.yaml `[attention]` 段。`视觉注意力=关闭` 或 `临时暂停视觉观察=已暂停观察与截图` 都会停止屏幕扫描、截图和视觉主动触发。
+- **QQ 图片输入**：兼容 OneBot 图片 segment、CQ 图片字符串、`file/path/url` 及 `get_image` 回查；图片解析失败会记录并降级为文本处理。静态表情库仍需图片实际解析成功且模型标注返回字面 `is_sticker: true`。
 - **STT 实际配置**：`config/config.yaml` 已写入本地 SenseVoice 配置：`enabled=true`、`http://127.0.0.1:9890/v1`、`sensevoice-small`、`language=auto`、`language_priority=[zh,en,ja]`、FSMN-VAD 路径、CPU 和 120 秒超时；该文件被 Git 忽略。
 - **STT 录音链路**：聊天窗录音应经过 `MediaRecorder → preload IPC → pet/main.js → /v1/audio/transcriptions → SenseVoice`，识别结果只回填输入框，不自动发送。
 ### 桌宠所需的外部资源（gitignore，clone 后手动准备）

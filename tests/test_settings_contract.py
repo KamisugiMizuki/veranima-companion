@@ -12,9 +12,11 @@ def test_settings_ui_ids_and_config_contract():
     ids = set(re.findall(r'id="([^"]+)"', html))
     used = set(re.findall(r"\$\('([^']+)'\)", js))
     assert used <= ids
-    for field in ("max_tokens", "timeout", "embedding_model", "recall_top_k", "max_injected_chars", "curator_turns", "observe_daily_budget", "source_gap_minutes"):
+    for field in ("max_tokens", "timeout", "embedding_model", "recall_top_k", "max_injected_chars", "curator_turns", "observe_daily_budget", "source_gap_minutes", "attention", "proactive"):
         assert field in server
     assert '"****" not in str(llm["api_key"])' in server
+    assert "已暂停观察与截图" in html
+    assert "暂停后不会进行屏幕扫描、截图或视觉主动触发" in html
 
 
 def test_settings_does_not_serialize_masked_key():

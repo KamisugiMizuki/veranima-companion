@@ -140,6 +140,46 @@ def test_plain_text_from_raw_string():
     assert QQAdapter._plain_text({"message": " 直接文本 "}) == "直接文本"
 
 
+def test_image_segments_accept_cq_string_and_file_or_image_refs():
+    segments = QQAdapter._image_segments(
+        "[CQ:image,file=sticker%2Fabc.png,url=https%3A%2F%2Fexample.com%2Fa.png]"
+    )
+    assert segments == [{"file": "sticker/abc.png", "url": "https://example.com/a.png"}]
+
+
+def test_image_collection_falls_back_to_raw_message(adapter, monkeypatch):
+    payload = make_image_payload(_png_bytes(), source="qq")
+
+    async def resolved(self, data):
+        return payload
+
+    monkeypatch.setattr(QQAdapter, "_payload_from_segment", resolved)
+    async def collect():
+        return await adapter._collect_images({
+            "message": "[图片]",
+            "raw_message": "[CQ:image,file=sticker.png]",
+        })
+
+    images = run(collect())
+    assert images == [(payload.data_url, payload.raw)]
+
+
+def test_cq_image_only_message_reaches_agent_when_image_resolves(adapter, agent, monkeypatch):
+    payload = make_image_payload(_png_bytes(), source="qq")
+    async def resolved(self, data):
+        return payload
+    monkeypatch.setattr(QQAdapter, "_payload_from_segment", resolved)
+    called = []
+    agent.handle = lambda text, images=None, channel="im": (
+        called.append((text, images, channel)) or TurnResult(reply="收到", energy=80, mood="平静")
+    )
+    run(adapter._handle_private({
+        "user_id": 10001,
+        "message": "[CQ:image,file=sticker.png]",
+    }))
+    assert called == [("", [payload.data_url], "im")]
+
+
 def test_image_only_message_skipped(adapter, agent):
     """纯图片消息但无可下载 url（file 只是本地名）：跳过，不调用 handle。"""
     def fail(text, images=None):

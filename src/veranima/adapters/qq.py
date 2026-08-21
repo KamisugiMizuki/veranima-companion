@@ -16,11 +16,12 @@ import contextlib
 import ipaddress
 import logging
 import random
+import re
 import socket
 import threading
 import time
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, unquote_plus, urlparse
 
 import httpx
 
@@ -314,11 +315,15 @@ class QQAdapter:
 
     @staticmethod
     def _plain_text(event: Event) -> str:
-        """提取消息纯文本（CQ 码剥离；图片段单独走 _collect_images）。"""
+        """提取消息纯文本；结构化消息和 raw_message 都剥离媒体 CQ 码。"""
         msg = event.get("message", "")
         if isinstance(msg, Message):
-            return msg.extract_plain_text().strip()
-        return str(msg).strip()
+            text = msg.extract_plain_text().strip()
+        else:
+            text = re.sub(r"\[CQ:(?:image|file|face),[^\]]*\]", "", str(msg)).strip()
+        if text in {"[图片]", "[文件]", "[表情]"}:
+            return ""
+        return text
 
     async def _collect_images(self, event: Event) -> list[tuple[str, bytes]]:
         """8.6.2 图像输入：提取消息中的图片段并下载。
@@ -326,15 +331,11 @@ class QQAdapter:
         返回 [(data_url, raw_bytes), ...]；下载失败/无图片段返回 []。
         data_url 供 LLM 多模态看图；raw_bytes 供 8.6.3 表情包入库。
         """
-        msg = event.get("message", "")
-        if not isinstance(msg, Message):
-            return []
-        segments = []
-        for seg in msg:
-            if seg.get("type") != "image":
-                continue
-            data = seg.get("data") or {}
-            segments.append(data)
+        segments = self._image_segments(event.get("message", ""))
+        if not segments:
+            segments = self._image_segments(event.get("raw_message", ""))
+        if segments:
+            logger.info("qq image segments received: count=%d", len(segments))
         if not segments:
             return []
         if len(segments) > 4:
@@ -345,6 +346,33 @@ class QQAdapter:
         if len(ok) < len(segments):
             logger.warning("image resolve failed: %d/%d images dropped", len(segments) - len(ok), len(segments))
         return [(payload.data_url, payload.raw) for payload in ok]
+
+    @staticmethod
+    def _image_segments(msg) -> list[dict]:
+        """Accept OneBot segment arrays and CQ image strings from NapCat."""
+        if isinstance(msg, Message):
+            values = list(msg)
+        elif isinstance(msg, (list, tuple)):
+            values = list(msg)
+        else:
+            values = []
+            for raw in re.findall(r"\[CQ:image,([^\]]+)\]", str(msg or "")):
+                data = {}
+                for item in raw.split(","):
+                    key, sep, value = item.partition("=")
+                    if sep:
+                        data[key] = unquote_plus(value)
+                values.append({"type": "image", "data": data})
+        result = []
+        for seg in values:
+            if not isinstance(seg, dict) or seg.get("type") not in {"image", "file"}:
+                continue
+            data = seg.get("data") or {}
+            name = str(data.get("file") or data.get("name") or data.get("path") or "").lower()
+            mime = str(data.get("type") or data.get("mime") or "").lower()
+            if seg.get("type") == "image" or mime.startswith("image/") or name.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
+                result.append(data)
+        return result
 
     async def _payload_from_segment(self, data: dict, *, _allow_lookup: bool = True):
         """Resolve OneBot image data: data URL, HTTP URL, local file/path, get_image API."""
