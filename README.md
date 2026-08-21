@@ -118,7 +118,8 @@ QQ 形态额外启用：定时问候/节庆、离线思考（静默 30 分钟后
 - **右键菜单**：戳一下 / 打开聊天 / 清空聊天记录 / 显示隐藏 / 设置 / 日志 / 重启核心 / 退出
 - **TTS**：GPT-SoVITS v4 本地日语合成（端口 9880）。模型权重 + 参考音频在 `characters/yuki/voice/`（gitignore），配置在 config.yaml `[tts]` 段
 - **视觉注意力**：自动运行；窗口切换只记录元数据，注视转移才会在隐私策略通过后发送彩色区域截图（原始截图不落盘），参数在 config.yaml `[attention]` 段
-
+- **STT 实际配置**：`config/config.yaml` 已写入本地 SenseVoice 配置：`enabled=true`、`http://127.0.0.1:9890/v1`、`sensevoice-small`、`language=auto`、`language_priority=[zh,en,ja]`、FSMN-VAD 路径、CPU 和 120 秒超时；该文件被 Git 忽略。
+- **STT 录音链路**：聊天窗录音应经过 `MediaRecorder → preload IPC → pet/main.js → /v1/audio/transcriptions → SenseVoice`，识别结果只回填输入框，不自动发送。
 ### 桌宠所需的外部资源（gitignore，clone 后手动准备）
 
 | 资源 | 位置 | 说明 |
@@ -138,20 +139,25 @@ QQ 形态额外启用：定时问候/节庆、离线思考（静默 30 分钟后
 
 ## 状态
 
-**设计基线 v2.2（2026-08-19）**。R0-R5、MEMORY_SPEC M1-M8、VISION、GUI 与人格循环 P-0~P-9 已实现；SelfModel 章节编辑器仍暂缓：
+**设计基线 v2.2（2026-08-19）**。以下状态按当前代码、行为测试和实际 CLI/门禁结果核对；“实现”表示生产链路已接入，“部分实现”表示核心/API 已落地但设计中的 UI、运行时或扩展切片仍缺失。
 
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
-| R0 | 角色内核与统一 Reply（角色卡真值/prompt 分层/确定性解析/五阶段 handle） | ✅ 实现 |
-| R1 | 共同经历与状态连续性（记忆分类/状态字段/版本链） | ✅ 实现 |
-| R2 | 同一个人的表达（Reply DTO/IM/TTS 降级/turn_id 取消） | ✅ 实现 |
-| R3 | 桌宠闭环（R3 协议/状态机/聊天窗真实状态/错误恢复/历史分批） | ✅ 实现 |
-| R4 | 有分寸的在场（场景锁/通道互斥/9 闸门/忽略自愈/visual 只产候选） | ✅ 实现 |
-| R5 | 外部任务协作（workorder/dsh bridge 取消/超时/截断） | ✅ 实现 |
-| MEMORY_SPEC | M1 版本真值 / M2 写入契约 / M3 混合召回 / M4 Context Brief / M5 整理器 / M6 在线画像+离线语料抽样复核 / M7 用户控制 / M8 离线评测 | ✅ 实现 |
-| PERSONA LOOP | P0 角色核心 / P1 用户框架 / P2 共同意义 / P3 多维关系 / P4 Persona Brief / P5 反思 / P6 独立回用 / P7 冲突修复 / P8 评测 / P9 PAD+ResponsePlan+表层印记 | ✅ 第一版闭环；章节编辑器暂缓 |
-| VISION | 三层感知（L1/L2 禁 LLM、L3 只产 Observation）/敏感窗口/观察预算 | ✅ 实现 |
-| GUI | 状态广播/历史分批/历史搜索/人物档案章节/清空确认/立绘锚点布局/交叉淡入/IME/a11y | ✅ 实现 |
+| R0 | 角色内核与统一 Reply（角色卡真值/prompt 分层/确定性解析/五阶段 handle） | ✅ 行为测试覆盖 |
+| R1 | 共同经历与状态连续性（记忆分类/状态字段/版本链） | ✅ 行为测试覆盖 |
+| R2 | 同一个人的表达（Reply DTO/IM/TTS 降级/turn_id 取消） | ✅ 行为测试覆盖 |
+| R3 | 桌宠闭环（R3 协议/状态机/聊天窗/错误恢复/历史/搜索/STT/图片） | ✅ 核心实现；Electron 实机仍需人工验收 |
+| R4 | 有分寸的在场（场景锁/通道互斥/9 闸门/忽略自愈/visual 候选） | ✅ 行为测试覆盖；视觉与主动链路实机待验 |
+| R5 | 外部任务协作（workorder/dsh bridge 取消/超时/截断） | ⚠️ 核心实现；并发队列/Web UI/多工具编排暂缓 |
+| MEMORY_SPEC | M1 版本真值 / M2 写入 / M3 混合召回 / M4 Context Brief / M5 整理器 / M6 文风学习 / M7 用户控制 / M8 离线评测 | ✅ 核心实现；按专项暂缓项执行 |
+| PERSONA LOOP | P0-P9 角色核心/框架/共同意义/关系/PAD/Brief/反思/回用/冲突/表达控制 | ✅ 第一版闭环；章节编辑器和完整档案编辑器暂缓 |
+| VISION | 三层感知/显著度/扫视-注视/敏感窗口/观察预算 | ⚠️ 代码与测试已接入；桌面截图与主动联动需实机验收 |
+| GUI | 状态广播/历史分批/搜索/档案章节/清空/立绘布局/交叉淡入/IME/a11y | ⚠️ 代码与静态/行为测试已覆盖；Electron 视觉和交互实机待验 |
+| CHARPKG | `.charpkg` 安全归档、V3/legacy、哈希、路径校验、原子安装、CLI | ⚠️ Pkg-1/Pkg-2；版本更新 diff/完整回滚/设置页 UI 暂缓 |
+| SHARED CREATION | Project/Scene/Decision/Artifact/OpenThread、证据校验、确认后 shared_episode、CLI | ⚠️ C-1~C-3 后端；聊天工作台/项目时间线/关系候选/导出删除 UI 暂缓 |
+| STYLE LEARNING | 导入/脱敏/弱标注/复核/聚合画像/激活/删除/retention/跨进程保护 | ✅ MVP；LoRA、消息级撤回和原文修辞标签暂缓 |
+| IMAGE / STICKER | 图片边界、QQ/桌宠多模态链、静态表情库、标注与生命周期 | ✅ 行为测试覆盖；真实 NapCat 图片回传仍待人工验收 |
+| STT | SenseVoice auto、中英日 code-switch、FSMN-VAD、fallback、隔离 sidecar | ✅ 本地实测；实时字幕与自动发送明确不做 |
 
 ## 已知约束
 
@@ -159,3 +165,9 @@ QQ 形态额外启用：定时问候/节庆、离线思考（静默 30 分钟后
 - 本地 embedding 为 bge-m3（sentence-transformers）；远程 API 不支持 embeddings 时必需
 - 桌宠核心 WS 为单客户端设计（8765）；TTS 服务常驻（模型加载 ~60s，单句推理实时）
 - 视觉观察有日预算（默认 120 次）与敏感窗口策略，不截取/不发送敏感内容
+
+## 设计条目核验结论
+
+本次核验覆盖 `DESIGN.md`、`R0-R5_SPEC.md`、`MEMORY_SPEC.md`、`PERSONA_LOOP_SPEC.md`、`GUI_SPEC.md`、`VISION_SPEC.md`、`CHARPKG_SPEC.md`、`SHARED_CREATION_SPEC.md`、`STYLE_LEARNING_SPEC.md`、`STT_SPEC.md`、`IMAGE_MESSAGE_SPEC.md` 和 `QQ_STICKER_SPEC.md`。结论不是“所有设计条目均已实现”：核心闭环已落地，但各文档明确标注的暂缓切片仍未实现，且 Electron 视觉、真实 NapCat、远程 LLM/TTS 和持续运行桌宠属于未在自动门禁中证明的运行时范围。
+
+当前项目 venv 验证：`625 passed, 1 warning`；Hermes 门禁 `hermes verify --json --skip-start` 为 `ok=true`。唯一已知警告是 Starlette/httpx 的弃用提示。未经实机验收的功能不在上表标为“完全验收”。

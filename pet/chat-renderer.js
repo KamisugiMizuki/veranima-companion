@@ -469,7 +469,12 @@ recordAudio.addEventListener('click', async () => {
       try {
         const blob = new Blob(session.chunks, { type: mime });
         const text = await window.pet.transcribeAudio(await blob.arrayBuffer(), 'voice.webm');
-        if (text) { input.value = `${input.value}${input.value ? ' ' : ''}${text}`; resizeInput(); updateComposer(); }
+        if (text) {
+          input.value = `${input.value}${input.value ? ' ' : ''}${text}`;
+          resizeInput(); updateComposer();
+        } else {
+          showNotice('没有识别到清晰语音，请靠近麦克风再试。', null);
+        }
       } catch { showNotice('语音识别失败，文字输入仍可用。', null); }
     };
     recorder.start(1000); recordAudio.textContent = '■'; showNotice('正在录音，再点一次结束（最长 120 秒）。', null);

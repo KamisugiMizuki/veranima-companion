@@ -39,9 +39,13 @@ def test_clipboard_and_stt_are_connected():
     assert "localFeatureValue('stt', 'model'" in main
     assert "localFeatureValue('stt', 'language'" in main
     assert "AbortSignal.timeout(timeoutMs)" in main
+    assert "new Blob([raw], { type: 'audio/webm' })" in main
+    assert "Authorization: 'Bearer ' + apiKey" in main
+    assert "transcription complete: chars=" in main
     assert "MAX_RECORDING_BYTES = 20 * 1024 * 1024" in renderer
     assert "MAX_RECORDING_MS = 120 * 1000" in renderer
     assert "recorder.start(1000)" in renderer
+    assert "没有识别到清晰语音" in renderer
     assert "function cleanupRecording(discard = true)" in renderer
     assert "recorder.onerror" in renderer
     assert "stream.getTracks().forEach((track) => track.stop())" in renderer

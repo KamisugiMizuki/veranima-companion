@@ -1324,11 +1324,17 @@ ipcMain.handle('stt-transcribe', async (e, payload) => {
     form.append('model', model); form.append('language', language);
     const response = await fetch(endpoint, {
       method: 'POST', body: form, signal: AbortSignal.timeout(timeoutMs),
-      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+      headers: apiKey ? { Authorization: 'Bearer ' + apiKey } : {},
     });
-    if (!response.ok) throw new Error(`STT HTTP ${response.status}`);
+    if (!response.ok) {
+      const detail = (await response.text()).slice(0, 200);
+      throw new Error(`STT HTTP ${response.status}: ${detail}`);
+    }
     sttRestartDelay = 3000;
-    return String((await response.json()).text || '').trim();
+    const result = await response.json();
+    const text = String(result.text || '').trim();
+    pushLog('stt', `transcription complete: chars=${text.length}, language=${result.language || language}`);
+    return text;
   } catch (error) {
     pushLog('shell', `stt transcribe failed: ${error.message}`);
     startSTT();
