@@ -21,6 +21,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
+_ECHOED_TIME_PREFIX_RE = re.compile(
+    r"^(?:\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:[+-]\d{2}:?\d{2})?\]\s*)+"
+)
 
 
 @dataclass
@@ -74,10 +77,15 @@ def _strip_fence(raw: str) -> str:
 
 
 def _clean_text(value: Any, max_chars: int) -> str:
-    text = str(value or "").strip()
+    text = strip_echoed_time_prefixes(str(value or "").strip())
     if len(text) > max_chars:
         text = text[:max_chars]
     return text
+
+
+def strip_echoed_time_prefixes(text: str) -> str:
+    """Remove prompt protocol timestamps echoed at the start of an LLM reply."""
+    return _ECHOED_TIME_PREFIX_RE.sub("", text).lstrip()
 
 
 def _valid_tone(tone: str, card_tones: list[str] | None) -> str:
@@ -143,7 +151,7 @@ def _fallback_text(raw: str, max_chars: int) -> Reply:
     """
     cleaned = _strip_fence(raw)
     if cleaned:
-        cleaned = cleaned[:max_chars]
+        cleaned = strip_echoed_time_prefixes(cleaned)[:max_chars]
         return Reply(segments=[ReplySegment(text=cleaned, tone="", portrait="")])
     return Reply(degraded="empty_output")
 
@@ -164,7 +172,7 @@ def parse_reply(raw: str, *, channel: str = "im", card: Any = None,
         card_tones = list(card.tones) if card is not None else None
 
     if channel != "tts":
-        return Reply(segments=[ReplySegment(text=raw[:max_chars])])
+        return Reply(segments=[ReplySegment(text=strip_echoed_time_prefixes(raw)[:max_chars])])
 
     # TTS：确定性 JSON 解析
     cleaned = _strip_fence(raw)

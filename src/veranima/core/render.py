@@ -69,7 +69,7 @@ def render_im(reply, state=None, **old_kwargs) -> str:
     规则顺序：换行压缩 → 波浪号 → 感叹号 → 表情。
     只做可逆清理，不随机改写事实（R2_SPEC 3）。
     """
-    from .reply import Reply
+    from .reply import Reply, strip_echoed_time_prefixes
 
     if isinstance(reply, Reply):
         text = reply.text
@@ -86,7 +86,7 @@ def render_im(reply, state=None, **old_kwargs) -> str:
         attachment = old_kwargs.get("attachment", 0.5)
         emoji_frequency = old_kwargs.get("emoji_frequency", "low")
 
-    t = _compress_newlines(text)
+    t = strip_echoed_time_prefixes(_compress_newlines(text))
     t = _strip_tildes_below_threshold(t, float(attachment))
     t = _limit_exclamations(t)
     if emoji_frequency == "never":

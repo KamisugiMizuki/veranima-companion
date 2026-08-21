@@ -229,7 +229,8 @@ class Agent:
         return (
             "【消息时间规则】历史消息和当前消息正文前的方括号时间是发送时间，格式为 YYYY-MM-DD HH:MM:SS。"
             "判断刚才、今天、昨天、是否跨夜或间隔多久时，优先依据这些时间；"
-            "不要仅凭晚安、睡觉或早安推断已经跨日，时间没有跨日就按连续对话处理。"
+            "不要仅凭晚安、睡觉或早安推断已经跨日，时间没有跨日就按连续对话处理；"
+            "这些方括号时间是内部上下文标记，不要复制到回复正文。"
         )
 
     @classmethod
@@ -525,6 +526,10 @@ class Agent:
         if max_len and len(reply) > max_len:
             cut = reply[:max_len].rstrip("，。！？ ")
             reply = cut + "……（我这边有点忙，回头细说）"
+
+        # Prompt 协议时间只供模型理解；模型复述到正文时在共享出口剥离。
+        from .reply import strip_echoed_time_prefixes
+        reply = strip_echoed_time_prefixes(reply)
 
         # ===== R0 阶段 4: parse_reply（R0_SPEC 5）=====
         # R2 表情标签驱动：tts 通道解析结构化输出（text/tone/portrait）（R2_SPEC 2）
@@ -1294,7 +1299,7 @@ class Agent:
             max_tokens=max_tokens,
         )
         if not bilingual:
-            return reply
+            return strip_echoed_time_prefixes(reply)
         text, _tone, _portrait, ja = extract_segments(reply, bilingual=True, card=self.card)
         return text, ja
 

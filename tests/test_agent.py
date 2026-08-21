@@ -109,6 +109,19 @@ def test_prompt_preserves_message_times_across_restart(agent):
     assert all(item.get("created_at") for item in a._history[-2:])
 
 
+def test_generated_reply_does_not_echo_prompt_time_prefixes(agent):
+    card, memory = agent
+    llm = FakeLLM(
+        reply="[2026-08-21 13:20:30] [2026-08-21 13:20:34] [2026-08-21 13:20:37] 那就测试呗。"
+    )
+    a = Agent(card=card, memory=memory, llm=llm, state=AgentState(), config={})
+
+    result = a.handle("时间戳应该是加好了")
+
+    assert result.reply == "那就测试呗。"
+    assert memory.recent_messages(limit=1)[0]["content"] == "那就测试呗。"
+
+
 def test_handle_model_loaded_but_chat_fails(agent):
     """模型已加载但生成异常：异常分类兜底。（proactive 关掉，避免随机触发影响断言）"""
     card, memory = agent

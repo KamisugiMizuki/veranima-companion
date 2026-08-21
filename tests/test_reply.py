@@ -4,7 +4,7 @@
 """
 from __future__ import annotations
 
-from veranima.core.reply import Reply, parse_reply
+from veranima.core.reply import Reply, parse_reply, strip_echoed_time_prefixes
 
 
 class FakeCard:
@@ -19,6 +19,13 @@ def test_im_plain_text():
     assert not r.degraded
     assert r.text == "你好呀"
     assert len(r.segments) == 1
+
+
+def test_strip_echoed_time_prefixes_only_at_reply_start():
+    raw = "[2026-08-21 13:20:30] [2026-08-21 13:20:34] 那就测试呗。"
+    assert strip_echoed_time_prefixes(raw) == "那就测试呗。"
+    assert strip_echoed_time_prefixes("记录时间 [2026-08-21 13:20:30]") == "记录时间 [2026-08-21 13:20:30]"
+    assert strip_echoed_time_prefixes("[2026-08-21 13:20:30+08:00] 那就测试呗。") == "那就测试呗。"
 
 
 def test_im_truncated():
