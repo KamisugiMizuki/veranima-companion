@@ -564,6 +564,10 @@ class Agent:
             decision = self.search_trigger.determine(
                 user_text,
                 allow_implicit=bool(self.search_config.get("allow_implicit_freshness_search", False)),
+                known_entities={self.card.name, *(
+                    item.get("content", "") for item in self._history[-10:]
+                    if item.get("role") in {"user", "assistant"}
+                )},
             )
             if decision.should_search:
                 logger.info("explicit web search: %s", decision.query)

@@ -24,6 +24,22 @@ class SearchDecision:
     force_refresh: bool = False
 
 
+def classify_search_uncertainty(text: str) -> dict[str, bool]:
+    """规则版轻量分类器；升级 LLM 分类器时保持这个输出契约。"""
+    text = (text or "").strip()
+    entities = SearchTrigger.extract_entities(text)
+    factual = any(word in text for word in (
+        "是什么", "什么东西", "你知道", "听过", "谁做", "哪个公司", "哪一年",
+        "哪年", "什么时候", "何时", "哪里", "真的吗", "官方确认",
+    ))
+    return {
+        "has_entity": bool(entities),
+        "needs_factual_answer": factual,
+        "likely_out_of_knowledge": bool(entities),
+        "should_search": bool(entities and factual),
+    }
+
+
 class SearchTrigger:
     """显式搜索 + 低成本时效词判断；不调用 LLM 做分类。"""
 
@@ -32,17 +48,42 @@ class SearchTrigger:
     _freshness_words = ("最近", "今天", "昨天", "刚刚", "这周", "目前", "现在", "最新", "新出的", "更新", "上线", "发布", "风评", "后续")
     _stable_patterns = ("是哪年", "什么时候发行", "什么是", "怎么用", "是什么意思")
     _current_fact_patterns = ("哪一年发布", "哪年发布", "什么时候发布", "何时发布", "发布日期", "发行日期", "发售日", "上市时间", "上线时间")
+    _fact_words = ("是什么", "什么东西", "你知道", "听过", "谁做", "哪个公司", "哪一年", "哪年", "什么时候", "何时", "哪里", "真的吗", "官方确认")
+    _casual_words = ("好累", "陪我聊", "心情", "想你", "睡不着", "好困", "无聊")
 
-    def determine(self, text: str, *, allow_implicit: bool = False) -> SearchDecision:
+    @staticmethod
+    def extract_entities(text: str) -> list[str]:
+        quoted = re.findall(r"[《「『“\"']([^》」』”\"']{2,80})[》」』”\"']", text or "")
+        named = re.findall(r"(?:叫|名为|叫作)\s*([\w一-龥][\w一-龥 .·_-]{1,79})", text or "")
+        latin = re.findall(r"\b[A-Z][A-Za-z0-9._-]{2,}\b", text or "")
+        out: list[str] = []
+        for value in quoted + named + latin:
+            value = re.sub(r"[，。！？；：:,.!?]+$", "", value).strip()
+            if value and value not in out:
+                out.append(value)
+        return out
+
+    def determine(self, text: str, *, allow_implicit: bool = False,
+                  known_entities: set[str] | None = None) -> SearchDecision:
         text = (text or "").strip()
         if any(word in text for word in self._disable_words):
             return SearchDecision(False, "privacy_blocked")
         explicit = any(word in text for word in self._request_words)
         force_refresh = any(word in text for word in ("再查", "重新查", "刷新一下", "强制刷新"))
         is_current_fact = any(pattern in text for pattern in self._current_fact_patterns)
-        implicit = allow_implicit and (any(word in text for word in self._freshness_words) or is_current_fact)
+        uncertainty = classify_search_uncertainty(text)
+        entities = self.extract_entities(text)
+        known = {str(item).casefold() for item in (known_entities or set())}
+        unknown_entity = uncertainty["should_search"] and any(entity.casefold() not in known for entity in entities)
+        implicit = allow_implicit and (
+            any(word in text for word in self._freshness_words)
+            or is_current_fact
+            or unknown_entity
+        )
         if not explicit and not implicit:
             return SearchDecision(False, "no_explicit_request")
+        if implicit and not explicit and any(word in text for word in self._casual_words) and not uncertainty["needs_factual_answer"]:
+            return SearchDecision(False, "casual_chat")
         if implicit and not explicit and any(pattern in text for pattern in self._stable_patterns) and not is_current_fact:
             return SearchDecision(False, "stable_knowledge")
         query = text
@@ -51,7 +92,8 @@ class SearchTrigger:
         query = re.sub(r"[，。！？：:、]+", " ", query).strip()
         if not query:
             return SearchDecision(False, "empty_query", True)
-        return SearchDecision(True, "explicit_request" if explicit else "freshness", explicit, query[:240], force_refresh)
+        reason = "explicit_request" if explicit else "unknown_entity" if unknown_entity else "freshness"
+        return SearchDecision(True, reason, explicit, query[:240], force_refresh)
 
 
 @dataclass(frozen=True)

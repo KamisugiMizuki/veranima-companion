@@ -8,7 +8,7 @@ from veranima.core.agent import Agent
 from veranima.core.character import CharacterCard
 from veranima.core.state import AgentState
 from veranima.memory.store import MemoryStore
-from veranima.tools.search import EvidencePack, SearchTrigger, SearXNGClient
+from veranima.tools.search import EvidencePack, SearchTrigger, SearXNGClient, classify_search_uncertainty
 
 
 class FakeEmbed:
@@ -76,6 +76,16 @@ def test_implicit_freshness_trigger_and_refresh():
     assert trigger.determine("绝区零是什么", allow_implicit=True).should_search is False
     assert trigger.determine("一个新游戏是哪一年发布的", allow_implicit=True).should_search
     assert trigger.determine("绝区零有新消息吗？再查一下", allow_implicit=True).force_refresh
+    assert not trigger.determine("《绝区零》是什么", allow_implicit=True, known_entities={"绝区零"}).should_search
+
+
+def test_unknown_entity_fact_fallback_search():
+    trigger = SearchTrigger()
+    decision = trigger.determine("最近出了个叫《星痕共鸣》的游戏，你知道吗？", allow_implicit=True)
+    assert decision.should_search and decision.reason == "unknown_entity"
+    assert trigger.determine("你听过 Project Mugen 吗？", allow_implicit=True).should_search
+    assert not trigger.determine("今天好累，陪我聊会儿", allow_implicit=True).should_search
+    assert classify_search_uncertainty("一个叫《星痕共鸣》的东西是什么")["should_search"]
 
 
 def test_search_enabled_from_config(agent):
@@ -97,6 +107,14 @@ def test_agent_implicit_search_is_configured_not_forced(agent):
     agent.search = fake
     agent.search_config["allow_implicit_freshness_search"] = True
     agent.handle("绝区零最近更新了什么")
+    assert fake.calls == 1
+
+
+def test_agent_unknown_entity_fallback_flow(agent):
+    fake = FakeSearch()
+    agent.search = fake
+    agent.search_config["allow_implicit_freshness_search"] = True
+    agent.handle("一个叫《星痕共鸣》的游戏是什么？")
     assert fake.calls == 1
 
 
