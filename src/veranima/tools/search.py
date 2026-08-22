@@ -57,9 +57,10 @@ class SearchTrigger:
     _dynamic_words = (
         "活动", "复刻", "版本", "状态", "现在", "目前", "当前", "天气", "预报",
         "新番", "番剧", "新闻", "游戏", "软件", "发布", "上线", "更新", "价格",
-        "事件", "节目", "电影", "电视剧",
+        "事件", "节目", "电影", "电视剧", "联动", "合作", "跨界", "联名",
     )
     _generic_entity_words = {"什么", "哪个", "哪个东西", "谁", "哪里", "这次", "那个", "它"}
+    _retry_words = ("再试试看", "再试试", "再试一下", "再试一次", "再来一次", "重试一下", "重新试试")
 
     @staticmethod
     def extract_entities(text: str) -> list[str]:
@@ -74,7 +75,8 @@ class SearchTrigger:
         return out
 
     def determine(self, text: str, *, allow_implicit: bool = False,
-                  allow_explicit: bool = True, known_entities: set[str] | None = None) -> SearchDecision:
+                  allow_explicit: bool = True, known_entities: set[str] | None = None,
+                  today: dt.date | None = None) -> SearchDecision:
         text = (text or "").strip()
         if any(word in text for word in self._disable_words):
             return SearchDecision(False, "privacy_blocked")
@@ -92,9 +94,12 @@ class SearchTrigger:
         ambiguous_reference = allow_implicit and any(word in text for word in self._ambiguous_words) and any(
             word in text for word in self._dynamic_words
         )
-        date_reference = _time_range_for(text) is not None
+        time_range = _time_range_for(text, today=today)
+        date_reference = time_range is not None
+        dynamic_domain = any(word in text for word in self._dynamic_words)
+        post_cutoff = requires_post_cutoff_search(time_range)
         implicit = unknown_entity or (
-            allow_implicit and (
+            post_cutoff or allow_implicit and (
                 any(word in text for word in self._freshness_words)
                 or is_current_fact
                 or ambiguous_reference
@@ -105,16 +110,40 @@ class SearchTrigger:
             return SearchDecision(False, "no_explicit_request")
         if implicit and not explicit and any(word in text for word in self._casual_words) and not uncertainty["needs_factual_answer"]:
             return SearchDecision(False, "casual_chat")
-        if implicit and not explicit and any(pattern in text for pattern in self._stable_patterns) and not is_current_fact:
+        if implicit and not explicit and any(pattern in text for pattern in self._stable_patterns) and not is_current_fact and not post_cutoff:
             return SearchDecision(False, "stable_knowledge")
-        query = text
-        for word in self._request_words:
-            query = query.replace(word, " ")
+        query = self._query_text(text)
         query = re.sub(r"[，。！？：:、]+", " ", query).strip()
         if not query:
             return SearchDecision(False, "empty_query", True)
-        reason = "explicit_request" if explicit else "unknown_entity" if unknown_entity else "ambiguous_reference" if ambiguous_reference else "freshness"
+        reason = (
+            "explicit_request" if explicit else "unknown_entity" if unknown_entity
+            else "knowledge_cutoff" if post_cutoff else "ambiguous_reference" if ambiguous_reference
+            else "freshness"
+        )
         return SearchDecision(True, reason, explicit, query[:240], force_refresh)
+
+    @classmethod
+    def is_bare_retry(cls, text: str) -> bool:
+        value = (text or "").strip()
+        if not any(value.endswith(word + mark) or value.endswith(word) for word in cls._retry_words for mark in "。！？?! "):
+            return False
+        return bool(re.search(r"(?:^|[，。！？?!\s])(?:你)?(?:再试试看|再试试|再试一下|再试一次|再来一次|重试一下|重新试试)[。！？?! ]*$", value))
+
+    @classmethod
+    def _query_text(cls, text: str) -> str:
+        query = text
+        for word in ("再查一下", "重新查", "刷新一下", "强制刷新"):
+            query = query.replace(word, " ")
+        matches = [(query.rfind(word), len(word)) for word in cls._request_words if word in query]
+        if matches:
+            position, length = max(matches)
+            suffix = query[position + length:].strip()
+            if suffix:
+                query = suffix
+        for word in cls._request_words:
+            query = query.replace(word, " ")
+        return re.sub(r"[，。！？：:、]+", " ", query).strip()
 
 
 @dataclass(frozen=True)
@@ -141,6 +170,7 @@ _CN_NUMBERS = {
 }
 _COUNT_RE = r"(?:[0-9]{1,3}|[零〇一二两三四五六七八九十百]{1,4})"
 _YEAR_WORDS = {"前年": -2, "去年": -1, "今年": 0, "明年": 1, "后年": 2}
+KNOWLEDGE_CUTOFF = dt.date(2025, 1, 31)
 
 
 def _local_today() -> dt.date:
@@ -190,6 +220,14 @@ def _time_range_for(text: str, today: dt.date | None = None) -> TimeRange | None
 
     # Explicit year/month beats the generic month and relative-month patterns.
     month_token = r"([0-9]{1,2}|[一二两三四五六七八九十]{1,3})"
+    absolute_month = re.search(rf"((?:19|20)\d{{2}})\s*年\s*{month_token}\s*月", text)
+    if absolute_month:
+        month = _parse_count(absolute_month.group(2))
+        if month and 1 <= month <= 12:
+            return _month_range(int(absolute_month.group(1)), month)
+    absolute_year = re.search(r"((?:19|20)\d{2})\s*年", text)
+    if absolute_year:
+        return _year_range(int(absolute_year.group(1)))
     for word, offset in _YEAR_WORDS.items():
         match = re.search(rf"{word}\s*{month_token}\s*月", text)
         if match:
@@ -302,6 +340,13 @@ def normalize_time_in_query(text: str, time_range: TimeRange | None) -> str:
     return f"{text.strip()} {anchor}"
 
 
+def requires_post_cutoff_search(time_range: TimeRange | None) -> bool:
+    """Force external verification when a requested range reaches past 2025-01."""
+    if time_range is None:
+        return False
+    return time_range.end is None or time_range.end > KNOWLEDGE_CUTOFF
+
+
 def _subject_entity(text: str, context_text: str = "") -> str:
     quoted = SearchTrigger.extract_entities(text)
     if not quoted:
@@ -313,11 +358,13 @@ def _subject_entity(text: str, context_text: str = "") -> str:
         "帮我找找", "帮我看看", "帮我查一下", "查一下", "查查", "找找", "找一下", "搜一下", "搜索",
         "最近", "现在", "当前", "目前", "最新", "今天", "昨天", "明天", "后天",
         "今年", "去年", "前年", "明年", "后年", "上个月", "下个月", "本月",
-        "有什么", "有哪些", "开启的", "天气", "预报", "新番",
+        "有什么", "有哪些", "开启的", "天气", "预报", "新番", "联动", "合作", "联名", "跨界",
         "开启", "活动复刻", "复刻活动", "活动", "复刻", "什么游戏", "什么东西",
-        "吗", "呢", "？", "?",
+        "吗", "呢", "什么", "哪些", "怎么样", "如何", "更新", "发布", "上线", "风评",
+        "预报", "？", "?", "了",
     ):
         subject = subject.replace(token, " ")
+    subject = re.sub(r"(?:的)?(?:联动|合作|跨界|联名)(?:有哪些|有什么|列表)?", " ", subject)
     subject = re.sub(r"[，。！？；：:、]+", " ", subject)
     return re.sub(r"\s+", " ", subject).strip(" 的")[:80]
 
@@ -331,7 +378,9 @@ def analyze_search_intent(
     time_range = _time_range_for(text, today=today)
     ambiguous = any(word in text for word in ("那个", "这次", "它", "哪个", "叫什么"))
     dynamic_domain = any(word in text for word in SearchTrigger._dynamic_words)
-    if any(word in text for word in ("活动", "复刻", "开启", "有什么", "有哪些", "当前能", "还能用", "状态")):
+    if any(word in text for word in ("联动", "合作", "跨界", "联名")):
+        kind = "dynamic_event"
+    elif any(word in text for word in ("活动", "复刻", "开启", "有什么", "有哪些", "当前能", "还能用", "状态")):
         kind = "dynamic_state"
     elif any(word in text for word in ("现在怎么样", "目前版本", "刚更新了吗", "还能不能用", "天气", "预报")):
         kind = "current_state"
@@ -343,7 +392,10 @@ def analyze_search_intent(
         kind = "ambiguous_reference"
     else:
         kind = "static"
-    event_type = "复刻活动" if "复刻" in text else "活动" if "活动" in text else ""
+    event_type = (
+        "联动" if any(word in text for word in ("联动", "合作", "跨界", "联名"))
+        else "复刻活动" if "复刻" in text else "活动" if "活动" in text else ""
+    )
     return SearchIntent(text, kind, entity, event_type, time_range, ambiguous)
 
 
@@ -363,17 +415,24 @@ class SemanticLocator:
 
     @staticmethod
     def should_upgrade(intent: SearchIntent) -> bool:
-        return intent.kind in {"dynamic_state", "current_state", "ambiguous_reference"}
+        return intent.kind in {"dynamic_state", "current_state", "dynamic_event", "ambiguous_reference"}
 
     def _queries(self, intent: SearchIntent) -> list[str]:
         subject = intent.entity or intent.text[:80]
         anchor = format_time_range(intent.time_range) or dt.datetime.now().strftime("%Y年%m月")
         event = intent.event_type or "当前情况"
-        candidates = [
-            f"{subject} 官网 活动公告 {anchor}",
-            f"{subject} 近期 {event} {anchor}",
-            f"{subject} 现在 什么{event} {anchor}",
-        ]
+        if event == "联动":
+            candidates = [
+                f"{subject} 联动 合作 联名 官方公告 {anchor}",
+                f"{subject} 跨界 联动 合作活动 {anchor}",
+                f"{subject} 联动 活动列表 {anchor}",
+            ]
+        else:
+            candidates = [
+                f"{subject} 官网 活动公告 {anchor}",
+                f"{subject} 近期 {event} {anchor}",
+                f"{subject} 现在 什么{event} {anchor}",
+            ]
         return list(dict.fromkeys(q.strip() for q in candidates if q.strip()))[: self.max_queries]
 
     def locate(self, text: str, *, client: "SearXNGClient", language: str = "zh-CN",
@@ -463,6 +522,22 @@ def _within_time_range(item: SearchResult, time_range: TimeRange | tuple[str, st
         (normalized.start is None or published_date >= normalized.start)
         and (normalized.end is None or published_date <= normalized.end)
     )
+
+
+def _relevant_to_query(query: str, item: SearchResult) -> bool:
+    """Reject obvious backend noise when the query contains a distinctive entity."""
+    markers = ("联动", "合作", "联名", "跨界", "天气", "预报", "活动", "新番", "番剧", "更新", "发布", "上线", "价格")
+    if not any(marker in query for marker in markers):
+        return True
+    subject = _subject_entity(query)
+    subject = re.sub(r"(?:19|20)\d{2}年(?:\d{1,2}月)?(?:\d{1,2}日)?", " ", subject)
+    terms = re.findall(r"[一-龥]{2,}|[A-Za-z][A-Za-z0-9._-]{2,}", subject)
+    ignored = set(markers) | {"官方公告", "活动列表", "合作活动", "当前情况", "今年", "去年", "前年", "明年", "后年", "有哪些", "有什么"}
+    distinctive = [term for term in terms if term not in ignored and not term.isdigit()]
+    if not distinctive:
+        return True
+    corpus = f"{item.title} {item.snippet} {item.url}".casefold()
+    return any(term.casefold() in corpus for term in distinctive)
 
 
 @dataclass(frozen=True)
@@ -615,6 +690,8 @@ class SearXNGClient:
         for raw in data.get("results", []) if isinstance(data, dict) else []:
             item = SearchResult.from_raw(raw if isinstance(raw, dict) else {})
             if item is None:
+                continue
+            if not _relevant_to_query(query, item):
                 continue
             title_key = re.sub(r"\W+", "", item.title.casefold())
             if title_key in seen_titles:

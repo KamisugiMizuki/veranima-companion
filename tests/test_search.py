@@ -146,6 +146,39 @@ def test_explicit_weather_query_uses_absolute_tomorrow_date(agent, monkeypatch):
     assert fake.queries and "2026年8月23日" in fake.queries[0]
 
 
+def test_linkage_query_is_dynamic_and_uses_specific_search_terms():
+    intent = analyze_search_intent("今年明日方舟的联动有哪些", today=dt.date(2026, 8, 22))
+    assert intent.kind == "dynamic_event"
+    assert intent.event_type == "联动"
+    queries = SemanticLocator()._queries(intent)
+    assert any("联动" in query and "合作" in query for query in queries)
+
+
+def test_retry_without_operation_reuses_previous_search_topic(agent):
+    fake = FakeSearch()
+    agent.search = fake
+    agent.search_config["allow_implicit_freshness_search"] = True
+    agent.handle("找一下今年明日方舟的联动有哪些")
+    agent.handle("不行不行，你再试试")
+    assert fake.calls == 2
+    assert "明日方舟" in fake.queries[-1]
+    assert "联动" in fake.queries[-1]
+
+
+def test_retry_without_operation_does_not_search_without_previous_search(agent):
+    fake = FakeSearch()
+    agent.search = fake
+    agent.handle("你再试试")
+    assert fake.calls == 0
+
+
+def test_knowledge_cutoff_forces_post_2025_dynamic_search():
+    trigger = SearchTrigger()
+    assert trigger.determine("2024年明日方舟联动有哪些", allow_implicit=False).should_search is False
+    decision = trigger.determine("2026年明日方舟联动有哪些", allow_implicit=False)
+    assert decision.should_search and decision.reason == "knowledge_cutoff"
+
+
 def test_semantic_locator_is_bounded_and_collects_candidates():
     class Client:
         def __init__(self):
@@ -193,6 +226,7 @@ def test_agent_explicit_search_flow(agent):
     r = agent.handle("帮我查一下北京天气")
     assert fake.calls == 1  # 恰好一次搜索
     assert "我查到了" in r.reply
+    assert "使用规则：" not in r.reply
     assert any("本轮外部信息" in str(m.get("content")) for m in agent.llm.messages if m["role"] == "system")
 
 
@@ -378,6 +412,30 @@ def test_search_prefers_distinct_domains_before_duplicate_sources():
     finally:
         search_module.httpx.Client = original
     assert len({item["domain"] for item in result}) == 2
+
+
+def test_search_drops_backend_noise_unrelated_to_distinctive_entity():
+    client = SearXNGClient()
+    raw = {"results": [
+        {"title": "MAC地址查询", "url": "https://example.com/mac", "content": "MAC address"},
+        {"title": "明日方舟联动公告", "url": "https://example.com/ark", "content": "明日方舟联动合作活动"},
+    ]}
+    class Response:
+        content = b"{}"
+        def raise_for_status(self): pass
+        def json(self): return raw
+    class Client:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def get(self, *args, **kwargs): return Response()
+    import veranima.tools.search as search_module
+    original = search_module.httpx.Client
+    search_module.httpx.Client = lambda **kwargs: Client()
+    try:
+        result = client.search("明日方舟 联动 2026年", force_refresh=True)
+    finally:
+        search_module.httpx.Client = original
+    assert [item["title"] for item in result] == ["明日方舟联动公告"]
 
 
 def test_page_fetch_is_bounded_and_extracts_visible_text(monkeypatch):

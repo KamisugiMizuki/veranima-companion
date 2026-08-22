@@ -10,7 +10,7 @@ import datetime
 import logging
 import random
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 
@@ -131,6 +131,7 @@ class Agent:
         self.config = config or {}
         self._history: list[dict] = []
         self._last_reply_ts: float | None = None  # 上一条回复时间（延迟信号用）
+        self._last_search_request: dict[str, str] | None = None
 
         # R0 打断决策（R0_SPEC 5）：共享话题频率表 + 分级决策器
         self.topic_freq = TopicFrequency()
@@ -576,8 +577,27 @@ class Agent:
                 plan_bits.append(f"关系张力提示={response_plan.tension_hint}")
             extra_blocks.append(f"【表达意图】{'；'.join(plan_bits)}")
         if self.search_enabled:
+            bare_retry = self.search_trigger.is_bare_retry(user_text)
+            search_text = user_text
+            if not bare_retry:
+                self._last_search_request = None
+            elif self._last_search_request:
+                search_text = self._last_search_request["text"]
+            else:
+                previous_user = next(
+                    (item.get("content", "") for item in reversed(self._history) if item.get("role") == "user"),
+                    "",
+                )
+                previous_decision = self.search_trigger.determine(
+                    previous_user,
+                    allow_implicit=bool(self.search_config.get("allow_implicit_freshness_search", False)),
+                    allow_explicit=bool(self.search_config.get("allow_user_explicit_request", True)),
+                ) if previous_user else None
+                if previous_decision and previous_decision.should_search:
+                    self._last_search_request = {"text": previous_user, "query": previous_decision.query}
+                    search_text = previous_user
             decision = self.search_trigger.determine(
-                user_text,
+                search_text,
                 allow_implicit=bool(self.search_config.get("allow_implicit_freshness_search", False)),
                 known_entities={self.card.name, *(
                     item.get("content", "") for item in self._history[-10:]
@@ -585,16 +605,19 @@ class Agent:
                 )},
                 allow_explicit=bool(self.search_config.get("allow_user_explicit_request", True)),
             )
+            if bare_retry and decision.should_search:
+                decision = replace(decision, reason="retry_previous_search", force_refresh=True)
             if decision.should_search:
+                self._last_search_request = {"text": search_text, "query": decision.query}
                 logger.info("web search requested: reason=%s query_len=%d", decision.reason, len(decision.query))
                 language = str(self.search_config.get("default_language", "zh-CN"))
                 intent = analyze_search_intent(
-                    user_text,
+                    search_text,
                     " ".join(item.get("content", "") for item in self._history[-10:]),
                 )
                 if self.search_config.get("semantic_locator_enabled", False) and self.semantic_locator.should_upgrade(intent):
                     located = self.semantic_locator.locate(
-                        user_text,
+                        search_text,
                         client=self.search,
                         language=language,
                         force_refresh=decision.force_refresh,
@@ -686,8 +709,8 @@ class Agent:
             reply = cut + "……（我这边有点忙，回头细说）"
 
         # Prompt 协议时间只供模型理解；模型复述到正文时在共享出口剥离。
-        from .reply import strip_echoed_time_prefixes
-        reply = strip_echoed_time_prefixes(reply)
+        from .reply import strip_echoed_time_prefixes, strip_internal_prompt_leak
+        reply = strip_internal_prompt_leak(strip_echoed_time_prefixes(reply))
 
         # ===== R0 阶段 4: parse_reply（R0_SPEC 5）=====
         # R2 表情标签驱动：tts 通道解析结构化输出（text/tone/portrait）（R2_SPEC 2）
