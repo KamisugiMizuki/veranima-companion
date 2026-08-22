@@ -73,7 +73,7 @@ stt:
 # 角色卡（CCv3 兼容 JSON；留空则用内置示例卡）
 character_card: "config/character.json"
 
-# 联网搜索（本地 SearXNG；Phase 1 仅显式搜索，默认关闭）
+# 联网搜索（本地 SearXNG；Phase 2–3 已实现，默认关闭隐式触发）
 search:
   enabled: false
   base_url: "http://127.0.0.1:8080"

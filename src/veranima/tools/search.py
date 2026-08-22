@@ -6,6 +6,7 @@ import html
 import ipaddress
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -20,27 +21,35 @@ class SearchDecision:
     reason: str
     user_requested: bool = False
     query: str = ""
+    force_refresh: bool = False
 
 
 class SearchTrigger:
-    """Phase 1 只做显式搜索；隐式时效触发留给后续阶段。"""
+    """显式搜索 + 低成本时效词判断；不调用 LLM 做分类。"""
 
     _request_words = ("帮我查", "查一下", "查查", "搜一下", "搜搜", "搜索", "查最新", "看看最近")
     _disable_words = ("别联网", "不要联网", "不用联网", "不要搜索", "别搜索", "不用查")
+    _freshness_words = ("最近", "今天", "昨天", "刚刚", "这周", "目前", "现在", "最新", "新出的", "更新", "上线", "发布", "风评", "后续")
+    _stable_patterns = ("是哪年", "什么时候发行", "什么是", "怎么用", "是什么意思")
 
-    def determine(self, text: str) -> SearchDecision:
+    def determine(self, text: str, *, allow_implicit: bool = False) -> SearchDecision:
         text = (text or "").strip()
         if any(word in text for word in self._disable_words):
             return SearchDecision(False, "privacy_blocked")
-        if not any(word in text for word in self._request_words):
+        explicit = any(word in text for word in self._request_words)
+        force_refresh = any(word in text for word in ("再查", "重新查", "刷新一下", "强制刷新"))
+        implicit = allow_implicit and any(word in text for word in self._freshness_words)
+        if not explicit and not implicit:
             return SearchDecision(False, "no_explicit_request")
+        if implicit and not explicit and any(pattern in text for pattern in self._stable_patterns):
+            return SearchDecision(False, "stable_knowledge")
         query = text
         for word in self._request_words:
             query = query.replace(word, " ")
         query = re.sub(r"[，。！？：:、]+", " ", query).strip()
         if not query:
             return SearchDecision(False, "empty_query", True)
-        return SearchDecision(True, "explicit_request", True, query[:240])
+        return SearchDecision(True, "explicit_request" if explicit else "freshness", explicit, query[:240], force_refresh)
 
 
 @dataclass(frozen=True)
@@ -59,6 +68,7 @@ class SearchResult:
     domain: str = ""
     engine: str = ""
     published_at: str | None = None
+    quality: str = "medium"
 
     @classmethod
     def from_raw(cls, raw: dict) -> "SearchResult | None":
@@ -67,7 +77,9 @@ class SearchResult:
         snippet = _clean(raw.get("content", raw.get("snippet", "")), 300)
         if not title or not url or not snippet:
             return None
-        return cls(title, url, snippet, urlsplit(url).netloc, str(raw.get("engine", "")), raw.get("publishedDate"))
+        domain = urlsplit(url).netloc.lower()
+        quality = "high" if any(x in domain for x in ("github.com", "microsoft.com", "mihoyo.com", "hoyoverse.com")) or "官方" in title else "low" if any(x in domain for x in ("forum", "tieba", "reddit")) else "medium"
+        return cls(title, url, snippet, domain, str(raw.get("engine", "")), raw.get("publishedDate"), quality)
 
 
 @dataclass(frozen=True)
@@ -102,7 +114,9 @@ class EvidencePack:
             lines.append("没有返回结果；没有找到可用的近期外部信息，不要补写或猜测搜索结果。")
         else:
             for i, item in enumerate(self.results[:3], 1):
-                lines.append(f"{i}. {item.title}：{item.snippet}（来源：{item.url}）")
+                lines.append(f"{i}. [可信度：{item.quality}] {item.title}：{item.snippet}（来源：{item.url}）")
+            if self._has_conflict():
+                lines.append("提示：来源之间存在不同说法，不要强行裁决；需要时列出各自来源。")
         lines.extend([
             "使用规则：只能使用上述证据支持的内容；证据不足时明确说不确定。",
             "不得把搜索结果说成亲身经历或长期记忆；这是临时上下文，不要写入长期记忆。",
@@ -110,18 +124,30 @@ class EvidencePack:
         ])
         return "\n".join(lines)
 
+    def _has_conflict(self) -> bool:
+        positive = ("已修复", "已上线", "支持", "通过")
+        negative = ("未修复", "没有修复", "不支持", "失败", "尚未")
+        joined = " ".join(item.snippet for item in self.results)
+        return any(x in joined for x in positive) and any(x in joined for x in negative)
+
 
 class SearXNGClient:
     """SearXNG JSON API 客户端；失败返回空结果，不阻塞聊天。"""
 
     def __init__(self, base_url: str = "http://127.0.0.1:8080", max_results: int = 5,
-                 timeout: float = 8.0, max_response_bytes: int = 1_048_576):
+                 timeout: float = 8.0, max_response_bytes: int = 1_048_576, cache_ttl: float = 900):
         self.base_url = base_url.rstrip("/")
         self.max_results = max(1, min(int(max_results), 5))
         self.timeout = max(0.5, float(timeout))
         self.max_response_bytes = max_response_bytes
+        self.cache_ttl = max(0.0, float(cache_ttl))
+        self._cache: dict[tuple[str, str], tuple[float, list[dict]]] = {}
 
-    def search(self, query: str, *, language: str = "zh-CN") -> list[dict]:
+    def search(self, query: str, *, language: str = "zh-CN", force_refresh: bool = False) -> list[dict]:
+        cache_key = (query.strip().casefold(), language)
+        cached = self._cache.get(cache_key)
+        if cached and not force_refresh and time.monotonic() - cached[0] < self.cache_ttl:
+            return [dict(item) for item in cached[1]]
         try:
             with httpx.Client(timeout=self.timeout) as client:
                 resp = client.get(f"{self.base_url}/search", params={"q": query[:240], "format": "json", "language": language})
@@ -139,14 +165,15 @@ class SearXNGClient:
             item = SearchResult.from_raw(raw if isinstance(raw, dict) else {})
             if item is None:
                 continue
-            key = re.sub(r"\W+", "", item.title.casefold())
-            if key in seen_titles:
+            title_key = re.sub(r"\W+", "", item.title.casefold())
+            if title_key in seen_titles:
                 continue
-            seen_titles.add(key)
+            seen_titles.add(title_key)
             out.append({"title": item.title, "url": item.url, "snippet": item.snippet,
                         "domain": item.domain, "engine": item.engine, "published_at": item.published_at})
             if len(out) >= self.max_results:
                 break
+        self._cache[cache_key] = (time.monotonic(), out)
         return out
 
     def format_results(self, results: list[dict]) -> str:

@@ -209,6 +209,7 @@ class Agent:
             max_results=int(search_cfg.get("max_results", 5)),
             timeout=float(search_cfg.get("timeout_seconds", 8)),
             max_response_bytes=int(search_cfg.get("max_response_bytes", 1_048_576)),
+            cache_ttl=float(search_cfg.get("cache_ttl_seconds", 900)),
         )
         self.search_trigger = SearchTrigger()
 
@@ -560,7 +561,10 @@ class Agent:
                 plan_bits.append(f"关系张力提示={response_plan.tension_hint}")
             extra_blocks.append(f"【表达意图】{'；'.join(plan_bits)}")
         if self.search_enabled:
-            decision = self.search_trigger.determine(user_text)
+            decision = self.search_trigger.determine(
+                user_text,
+                allow_implicit=bool(self.search_config.get("allow_implicit_freshness_search", False)),
+            )
             if decision.should_search:
                 logger.info("explicit web search: %s", decision.query)
                 evidence = EvidencePack.from_results(
@@ -568,6 +572,7 @@ class Agent:
                     self.search.search(
                         decision.query,
                         language=str(self.search_config.get("default_language", "zh-CN")),
+                        force_refresh=decision.force_refresh,
                     ),
                 )
                 extra_blocks.append(evidence.to_prompt())

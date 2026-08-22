@@ -69,6 +69,13 @@ def test_explicit_search_trigger_and_privacy_block():
     assert not SearchTrigger().determine("别联网，帮我查一下天气").should_search
 
 
+def test_implicit_freshness_trigger_and_refresh():
+    trigger = SearchTrigger()
+    assert trigger.determine("绝区零最近更新了什么", allow_implicit=True).should_search
+    assert trigger.determine("绝区零是哪年发布的", allow_implicit=True).should_search is False
+    assert trigger.determine("绝区零有新消息吗？再查一下", allow_implicit=True).force_refresh
+
+
 def test_search_enabled_from_config(agent):
     assert agent.search_enabled
 
@@ -81,6 +88,14 @@ def test_agent_explicit_search_flow(agent):
     assert fake.calls == 1  # 恰好一次搜索
     assert "我查到了" in r.reply
     assert any("本轮外部信息" in str(m.get("content")) for m in agent.llm.messages if m["role"] == "system")
+
+
+def test_agent_implicit_search_is_configured_not_forced(agent):
+    fake = FakeSearch()
+    agent.search = fake
+    agent.search_config["allow_implicit_freshness_search"] = True
+    agent.handle("绝区零最近更新了什么")
+    assert fake.calls == 1
 
 
 def test_search_disabled_no_tools(tmp_path):
@@ -130,3 +145,38 @@ def test_evidence_pack_is_temporary_and_source_backed():
 def test_evidence_pack_rejects_private_result_urls():
     pack = EvidencePack.from_results("内网", [{"title": "内网", "url": "http://127.0.0.1/admin", "snippet": "x"}])
     assert not pack.results
+
+
+def test_evidence_pack_marks_quality_and_conflict():
+    pack = EvidencePack.from_results("更新", [
+        {"title": "官方补丁公告", "url": "https://example.com/a", "snippet": "已修复卡顿", "engine": "baidu"},
+        {"title": "玩家讨论", "url": "https://forum.example/b", "snippet": "有人说没有修复", "engine": "baidu"},
+    ])
+    prompt = pack.to_prompt()
+    assert "可信度" in prompt
+    assert "不同说法" in prompt
+
+
+def test_search_client_cache_avoids_duplicate_request():
+    client = SearXNGClient(cache_ttl=900)
+    calls = []
+
+    class Response:
+        content = b'{"results": [{"title": "T", "url": "https://example.com", "content": "S"}]}'
+        def raise_for_status(self): pass
+        def json(self): return {"results": [{"title": "T", "url": "https://example.com", "content": "S"}]}
+
+    class Client:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def get(self, *args, **kwargs): calls.append(1); return Response()
+
+    import veranima.tools.search as search_module
+    original = search_module.httpx.Client
+    search_module.httpx.Client = lambda **kwargs: Client()
+    try:
+        client.search("同一个主题")
+        client.search("同一个主题")
+    finally:
+        search_module.httpx.Client = original
+    assert len(calls) == 1
