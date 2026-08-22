@@ -20,7 +20,7 @@ from .segments import extract_segments
 from .ambient import ChannelActivityTracker, ProactiveCandidate, ProactiveGate, SceneLock
 from .interrupt import InterruptDecider, TopicFrequency
 from ..memory.store import MemoryStore
-from ..tools.search import SEARCH_TOOL, SearXNGClient
+from ..tools.search import EvidencePack, SearchTrigger, SearXNGClient
 from .character import CharacterCard
 from .learning import LanguageMirror, StyleLearner, extract_feedback
 from .proactive import GreetingScheduler, OccasionChecker
@@ -202,11 +202,15 @@ class Agent:
 
         # 联网搜索（DESIGN.md 8.5 方案 A：工具调用；默认关闭，config 开启）
         search_cfg = self.config.get("search", {})
+        self.search_config = search_cfg
         self.search_enabled = bool(search_cfg.get("enabled", False))
         self.search = SearXNGClient(
             base_url=search_cfg.get("base_url", "http://127.0.0.1:8080"),
-            max_results=int(search_cfg.get("max_results", 4)),
+            max_results=int(search_cfg.get("max_results", 5)),
+            timeout=float(search_cfg.get("timeout_seconds", 8)),
+            max_response_bytes=int(search_cfg.get("max_response_bytes", 1_048_576)),
         )
+        self.search_trigger = SearchTrigger()
 
     # ---------- MVP2 状态 ----------
 
@@ -555,6 +559,18 @@ class Agent:
             if response_plan.tension_hint and response_plan.tension_hint != "calm":
                 plan_bits.append(f"关系张力提示={response_plan.tension_hint}")
             extra_blocks.append(f"【表达意图】{'；'.join(plan_bits)}")
+        if self.search_enabled:
+            decision = self.search_trigger.determine(user_text)
+            if decision.should_search:
+                logger.info("explicit web search: %s", decision.query)
+                evidence = EvidencePack.from_results(
+                    decision.query,
+                    self.search.search(
+                        decision.query,
+                        language=str(self.search_config.get("default_language", "zh-CN")),
+                    ),
+                )
+                extra_blocks.append(evidence.to_prompt())
         if interrupt_level > 0:
             extra_blocks.append(_interrupt_prompt(interrupt_level))
         system = build_system_prompt(
@@ -606,13 +622,10 @@ class Agent:
         # 5. 生成（低精力时限短；联网搜索开启时走工具调用链路）
         low_energy = self.state.energy < 40
         try:
-            if self.search_enabled:
-                reply = self._chat_with_search(messages, low_energy)
-            else:
-                reply = self.llm.chat(
-                    messages,
-                    max_tokens=self.llm.low_energy_max_tokens if low_energy else None,
-                )
+            reply = self.llm.chat(
+                messages,
+                max_tokens=self.llm.low_energy_max_tokens if low_energy else None,
+            )
         except LLMUnavailableError as e:
             # 服务不可用（连接失败/鉴权失败）：角色化提示，不冒充"卡了"
             logger.warning("LLM unavailable during turn: %s", e)
@@ -1429,44 +1442,6 @@ class Agent:
         self._append_history_message("assistant", msg)
         return msg
 
-    def _chat_with_search(self, messages: list[dict], low_energy: bool) -> str:
-        """工具调用链路：带 search_web 工具 → 模型自主决定是否搜索 → 结果回填 → 最终回复。
-
-        约束：单轮最多 1 次搜索（设计 8.5 节）；搜索失败降级为直接回复。
-        """
-        import json
-        max_tokens = self.llm.low_energy_max_tokens if low_energy else None
-        msg = self.llm.chat_raw(messages, max_tokens=max_tokens, tools=[SEARCH_TOOL])
-        content = (msg.get("content") or "").strip()
-        tool_calls = msg.get("tool_calls") or []
-        if not tool_calls:
-            return content
-        # 执行 search_web（最多 1 个）
-        messages.append({"role": "assistant", "content": content or None, "tool_calls": tool_calls})
-        executed = False
-        for tc in tool_calls[:1]:
-            fn = tc.get("function", {})
-            if fn.get("name") != "search_web":
-                continue
-            try:
-                query = json.loads(fn.get("arguments") or "{}").get("query", "")
-            except Exception:
-                query = ""
-            if not query:
-                continue
-            logger.info("search_web: %s", query)
-            results = self.search.search(query)
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tc.get("id", "call_1"),
-                "content": self.search.format_results(results),
-            })
-            executed = True
-        if not executed:
-            return content
-        # 第二轮：基于搜索结果生成最终回复
-        final = self.llm.chat_raw(messages, max_tokens=max_tokens)
-        return (final.get("content") or "").strip()
 
     def _maybe_extract_events(self, user_text: str) -> None:
         """规则提取记忆（MVP1 简化，每条消息检查；MVP2 替换为 LLM 事件卡片提取）。

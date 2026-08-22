@@ -8,7 +8,7 @@ from veranima.core.agent import Agent
 from veranima.core.character import CharacterCard
 from veranima.core.state import AgentState
 from veranima.memory.store import MemoryStore
-from veranima.tools.search import SEARCH_TOOL, SearXNGClient
+from veranima.tools.search import EvidencePack, SearchTrigger, SearXNGClient
 
 
 class FakeEmbed:
@@ -20,30 +20,19 @@ class FakeEmbed:
 
 
 class ToolLLM:
-    """模拟带工具调用能力的 LLM：第一轮返回 search tool_call，第二轮返回最终回复。"""
+    """模拟普通主 LLM；搜索由 Agent 的确定性闸门控制。"""
 
     def __init__(self, tool_calls=True, search_result="晴，25°C"):
         self.tool_calls = tool_calls
         self.search_result = search_result
         self.rounds = 0
+        self.messages = []
         self.low_energy_max_tokens = 256
 
     def chat(self, messages, **kw):
         self.rounds += 1
-        return "直接回复"
-
-    def chat_raw(self, messages, **kw):
-        self.rounds += 1
-        if self.tool_calls and self.rounds == 1:
-            return {
-                "content": None,
-                "tool_calls": [{
-                    "id": "call_1",
-                    "type": "function",
-                    "function": {"name": "search_web", "arguments": '{"query": "北京天气"}'},
-                }],
-            }
-        return {"content": f"我查到了：{self.search_result}"}
+        self.messages = messages
+        return "我查到了：" + self.search_result
 
     def is_model_loaded(self):
         return True
@@ -54,7 +43,7 @@ class FakeSearch:
         self.results = results or [{"title": "北京天气", "url": "http://x", "snippet": "晴 25°C"}]
         self.calls = 0
 
-    def search(self, query):
+    def search(self, query, **kwargs):
         self.calls += 1
         return self.results
 
@@ -74,22 +63,24 @@ def agent(tmp_path):
     )
 
 
-def test_search_tool_definition():
-    assert SEARCH_TOOL["function"]["name"] == "search_web"
-    assert "query" in SEARCH_TOOL["function"]["parameters"]["properties"]
+def test_explicit_search_trigger_and_privacy_block():
+    decision = SearchTrigger().determine("帮我查一下最近《绝区零》的更新")
+    assert decision.should_search and decision.user_requested
+    assert not SearchTrigger().determine("别联网，帮我查一下天气").should_search
 
 
 def test_search_enabled_from_config(agent):
     assert agent.search_enabled
 
 
-def test_agent_tool_call_flow(agent, monkeypatch):
-    """模型请求搜索 → 执行 → 结果回填 → 最终回复。"""
+def test_agent_explicit_search_flow(agent):
+    """显式搜索 → SearXNG → 证据进入主 LLM prompt。"""
     fake = FakeSearch()
     agent.search = fake
-    r = agent.handle("北京天气怎么样？")
+    r = agent.handle("帮我查一下北京天气")
     assert fake.calls == 1  # 恰好一次搜索
     assert "我查到了" in r.reply
+    assert any("本轮外部信息" in str(m.get("content")) for m in agent.llm.messages if m["role"] == "system")
 
 
 def test_search_disabled_no_tools(tmp_path):
@@ -104,8 +95,8 @@ def test_search_disabled_no_tools(tmp_path):
     assert not a.search_enabled
 
 
-def test_search_no_tool_call_when_model_decides(tmp_path):
-    """模型没发起 tool_call → 直接回复，不搜索。"""
+def test_casual_chat_does_not_search(tmp_path):
+    """普通闲聊不搜索。"""
     card = CharacterCard(name="小V", description="测试", personality="温柔")
     a = Agent(
         card=card,
@@ -118,7 +109,7 @@ def test_search_no_tool_call_when_model_decides(tmp_path):
     a.search = fake
     r = a.handle("今天心情不错")
     assert fake.calls == 0
-    assert "我查到了" in r.reply  # ToolLLM(tool_calls=False) 第一轮直接返回最终内容
+    assert "我查到了" in r.reply
 
 
 def test_search_client_format():
@@ -126,3 +117,16 @@ def test_search_client_format():
     text = c.format_results([{"title": "T", "url": "http://u", "snippet": "S"}])
     assert "T" in text and "http://u" in text
     assert "没有返回结果" in c.format_results([])
+
+
+def test_evidence_pack_is_temporary_and_source_backed():
+    pack = EvidencePack.from_results("最近更新", [{"title": "公告", "url": "https://x.test/a", "snippet": "修复卡顿"}])
+    prompt = pack.to_prompt()
+    assert "本轮外部信息" in prompt
+    assert "https://x.test/a" in prompt
+    assert "长期记忆" in prompt
+
+
+def test_evidence_pack_rejects_private_result_urls():
+    pack = EvidencePack.from_results("内网", [{"title": "内网", "url": "http://127.0.0.1/admin", "snippet": "x"}])
+    assert not pack.results

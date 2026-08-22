@@ -1,8 +1,8 @@
 # Veranima 联网搜索策略设计
 
-> 状态：设计稿 v1.0，未实现。
+> 状态：设计稿 v1.0；Phase 0–1 已实现，Phase 2–3 未实现。
 >
-> 本文依据 `docs/newly_added/design_append.md` 整理，并针对当前 Veranima 的人格、记忆、双通道和远程 LLM 架构收敛为可实现契约。本文只设计联网搜索，不包含代码实现。
+> 本文依据 `docs/newly_added/design_append.md` 整理，并针对当前 Veranima 的人格、记忆、双通道和远程 LLM 架构收敛为可实现契约。本文是联网搜索的实现契约；当前实现范围以 Phase 0–1 为准。
 
 ## 1. 目标与非目标
 
