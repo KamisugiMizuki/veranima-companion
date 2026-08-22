@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import pytest
 
 from veranima.core.agent import Agent
@@ -13,8 +14,10 @@ from veranima.tools.search import (
     SearchTrigger,
     SemanticLocator,
     SearXNGClient,
+    TimeRange,
     analyze_search_intent,
     classify_search_uncertainty,
+    normalize_time_in_query,
     sanitize_search_query,
 )
 
@@ -50,9 +53,11 @@ class FakeSearch:
     def __init__(self, results=None):
         self.results = results or [{"title": "北京天气", "url": "http://x", "snippet": "晴 25°C"}]
         self.calls = 0
+        self.queries = []
 
     def search(self, query, **kwargs):
         self.calls += 1
+        self.queries.append(query)
         return self.results
 
     def format_results(self, results):
@@ -99,13 +104,46 @@ def test_unknown_entity_fact_fallback_search():
 
 
 def test_dynamic_state_intent_has_time_anchor():
-    intent = analyze_search_intent("帮我找找现在明日方舟开启的活动复刻")
+    intent = analyze_search_intent("帮我找找现在明日方舟开启的活动复刻", today=dt.date(2026, 8, 22))
     assert intent.kind == "dynamic_state"
-    assert intent.time_range == ("now-3d", "now+1d")
+    assert intent.time_range.start.isoformat() == "2026-08-19"
+    assert intent.time_range.end.isoformat() == "2026-08-23"
     assert SemanticLocator().should_upgrade(intent)
     contextual = analyze_search_intent("那个复刻活动叫什么", "我们之前聊的是《明日方舟》")
     assert contextual.entity == "明日方舟"
     assert contextual.kind == "dynamic_state"
+
+
+def test_absolute_chinese_time_is_normalized_to_query_dates():
+    today = dt.date(2026, 8, 22)
+    cases = {
+        "今年七月新番": ("2026-07-01", "2026-07-31", "2026年7月"),
+        "去年发布的游戏": ("2025-01-01", "2025-12-31", "2025年"),
+        "前年新闻": ("2024-01-01", "2024-12-31", "2024年"),
+        "明年活动": ("2027-01-01", "2027-12-31", "2027年"),
+        "后年活动": ("2028-01-01", "2028-12-31", "2028年"),
+        "上个月杭州天气": ("2026-07-01", "2026-07-31", "2026年7月"),
+        "五天前的新闻": ("2026-08-17", "2026-08-17", "2026年8月17日"),
+        "近五天内的新闻": ("2026-08-18", "2026-08-22", "2026年8月18日"),
+        "后面五天里的天气": ("2026-08-23", "2026-08-27", "2026年8月23日"),
+        "三个月之前的新闻": (None, "2026-05-22", "截至2026年5月22日以前"),
+        "过去三个月的新闻": ("2026-05-22", "2026-08-22", "2026年5月22日"),
+    }
+    for text, (start, end, marker) in cases.items():
+        intent = analyze_search_intent(text, today=today)
+        assert intent.time_range is not None, text
+        assert intent.time_range.start and intent.time_range.start.isoformat() == start if start else intent.time_range.start is None
+        assert intent.time_range.end.isoformat() == end, text
+        assert marker in normalize_time_in_query(text, intent.time_range), text
+
+
+def test_explicit_weather_query_uses_absolute_tomorrow_date(agent, monkeypatch):
+    import veranima.tools.search as search_module
+    monkeypatch.setattr(search_module, "_local_today", lambda: dt.date(2026, 8, 22))
+    fake = FakeSearch()
+    agent.search = fake
+    agent.handle("查查明天杭州的天气预报")
+    assert fake.queries and "2026年8月23日" in fake.queries[0]
 
 
 def test_semantic_locator_is_bounded_and_collects_candidates():

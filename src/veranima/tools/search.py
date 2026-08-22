@@ -1,6 +1,7 @@
 """Veranima 的最小联网搜索链：显式触发、SearXNG 清洗、临时证据注入。"""
 from __future__ import annotations
 
+import calendar
 import datetime as dt
 import html
 import ipaddress
@@ -45,7 +46,7 @@ def classify_search_uncertainty(text: str) -> dict[str, bool]:
 class SearchTrigger:
     """显式搜索 + 低成本时效词判断；不调用 LLM 做分类。"""
 
-    _request_words = ("帮我查", "查一下", "查查", "搜一下", "搜搜", "搜索", "查最新", "看看最近", "帮我找找", "帮我看看")
+    _request_words = ("帮我查", "查一下", "查查", "搜一下", "搜搜", "搜索", "查最新", "看看最近", "帮我找找", "找找", "找一下", "帮我看看")
     _explicit_fact_patterns = ("现在怎么样", "目前版本", "刚更新了吗", "真的吗", "官方确认", "有没有官方说法", "给我链接", "给个来源", "来源是什么")
     _disable_words = ("别联网", "不要联网", "不用联网", "不要搜索", "别搜索", "不用查")
     _freshness_words = ("最近", "今天", "昨天", "刚刚", "这周", "目前", "现在", "最新", "新出的", "更新", "上线", "发布", "风评", "后续")
@@ -53,7 +54,11 @@ class SearchTrigger:
     _current_fact_patterns = ("哪一年发布", "哪年发布", "什么时候发布", "何时发布", "发布日期", "发行日期", "发售日", "上市时间", "上线时间")
     _casual_words = ("好累", "陪我聊", "心情", "想你", "睡不着", "好困", "无聊")
     _ambiguous_words = ("那个", "这次", "它", "哪个", "叫什么")
-    _dynamic_words = ("活动", "复刻", "版本", "状态", "现在", "目前", "当前")
+    _dynamic_words = (
+        "活动", "复刻", "版本", "状态", "现在", "目前", "当前", "天气", "预报",
+        "新番", "番剧", "新闻", "游戏", "软件", "发布", "上线", "更新", "价格",
+        "事件", "节目", "电影", "电视剧",
+    )
     _generic_entity_words = {"什么", "哪个", "哪个东西", "谁", "哪里", "这次", "那个", "它"}
 
     @staticmethod
@@ -87,11 +92,13 @@ class SearchTrigger:
         ambiguous_reference = allow_implicit and any(word in text for word in self._ambiguous_words) and any(
             word in text for word in self._dynamic_words
         )
+        date_reference = _time_range_for(text) is not None
         implicit = unknown_entity or (
             allow_implicit and (
                 any(word in text for word in self._freshness_words)
                 or is_current_fact
                 or ambiguous_reference
+                or (date_reference and any(word in text for word in self._dynamic_words))
             )
         )
         if not explicit and not implicit:
@@ -116,20 +123,183 @@ class SearchIntent:
     kind: str
     entity: str = ""
     event_type: str = ""
-    time_range: tuple[str, str] | None = None
+    time_range: TimeRange | None = None
     ambiguous: bool = False
 
 
-def _time_range_for(text: str) -> tuple[str, str] | None:
-    if any(word in text for word in ("现在", "当前", "目前")):
-        return ("now-3d", "now+1d")
-    if "昨天" in text:
-        return ("now-48h", "now")
-    if "最新" in text:
-        return ("now-3d", "now")
-    if any(word in text for word in ("最近", "这几天", "这周")):
-        return ("now-7d", "now")
+@dataclass(frozen=True)
+class TimeRange:
+    """Inclusive calendar-day range; a missing endpoint means unbounded."""
+
+    start: dt.date | None
+    end: dt.date | None
+
+
+_CN_NUMBERS = {
+    "零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+    "五": 5, "六": 6, "七": 7, "八": 8, "九": 9,
+}
+_COUNT_RE = r"(?:[0-9]{1,3}|[零〇一二两三四五六七八九十百]{1,4})"
+_YEAR_WORDS = {"前年": -2, "去年": -1, "今年": 0, "明年": 1, "后年": 2}
+
+
+def _local_today() -> dt.date:
+    return dt.date.today()
+
+
+def _parse_count(value: str) -> int | None:
+    value = value.strip()
+    if value.isdigit():
+        return int(value)
+    if not value:
+        return None
+    if value in _CN_NUMBERS:
+        return _CN_NUMBERS[value]
+    if "百" in value:
+        head, tail = value.split("百", 1)
+        hundreds = _CN_NUMBERS.get(head, 1)
+        rest = _parse_count(tail) if tail else 0
+        return hundreds * 100 + (rest or 0)
+    if "十" in value:
+        head, tail = value.split("十", 1)
+        tens = _CN_NUMBERS.get(head, 1) if head else 1
+        ones = _CN_NUMBERS.get(tail, 0) if tail else 0
+        return tens * 10 + ones
     return None
+
+
+def _shift_month(value: dt.date, months: int) -> dt.date:
+    index = value.year * 12 + value.month - 1 + months
+    year, month_index = divmod(index, 12)
+    month = month_index + 1
+    day = min(value.day, calendar.monthrange(year, month)[1])
+    return value.replace(year=year, month=month, day=day)
+
+
+def _month_range(year: int, month: int) -> TimeRange:
+    return TimeRange(dt.date(year, month, 1), dt.date(year, month, calendar.monthrange(year, month)[1]))
+
+
+def _year_range(year: int) -> TimeRange:
+    return TimeRange(dt.date(year, 1, 1), dt.date(year, 12, 31))
+
+
+def _time_range_for(text: str, today: dt.date | None = None) -> TimeRange | None:
+    today = today or _local_today()
+    text = text or ""
+
+    # Explicit year/month beats the generic month and relative-month patterns.
+    month_token = r"([0-9]{1,2}|[一二两三四五六七八九十]{1,3})"
+    for word, offset in _YEAR_WORDS.items():
+        match = re.search(rf"{word}\s*{month_token}\s*月", text)
+        if match:
+            month = _parse_count(match.group(1))
+            if month and 1 <= month <= 12:
+                return _month_range(today.year + offset, month)
+    explicit_month = re.search(rf"(?<![0-9一二两三四五六七八九十]){month_token}\s*月", text)
+    if explicit_month and not re.search(rf"{_COUNT_RE}\s*个?月(?:前|后|之|以|内)", text):
+        month = _parse_count(explicit_month.group(1))
+        if month and 1 <= month <= 12:
+            return _month_range(today.year, month)
+
+    for word, offset in _YEAR_WORDS.items():
+        if word in text:
+            return _year_range(today.year + offset)
+
+    if "上个月" in text or "上月" in text:
+        value = _shift_month(today.replace(day=1), -1)
+        return _month_range(value.year, value.month)
+    if "下个月" in text or "下月" in text:
+        value = _shift_month(today.replace(day=1), 1)
+        return _month_range(value.year, value.month)
+    if "本月" in text or "这个月" in text:
+        return _month_range(today.year, today.month)
+
+    day_delta = {
+        "大前天": -3, "前天": -2, "昨天": -1, "今天": 0,
+        "明天": 1, "后天": 2,
+    }
+    for word, offset in day_delta.items():
+        if word in text:
+            value = today + dt.timedelta(days=offset)
+            return TimeRange(value, value)
+
+    match = re.search(rf"({_COUNT_RE})\s*天前", text)
+    if match:
+        value = today - dt.timedelta(days=_parse_count(match.group(1)) or 0)
+        return TimeRange(value, value)
+    match = re.search(rf"({_COUNT_RE})\s*天(?:之前|以前)", text)
+    if match:
+        return TimeRange(None, today - dt.timedelta(days=_parse_count(match.group(1)) or 0))
+    match = re.search(rf"(?:近|过去|最近)\s*({_COUNT_RE})\s*天(?:内|里|中)?", text)
+    if match:
+        count = _parse_count(match.group(1)) or 1
+        return TimeRange(today - dt.timedelta(days=count - 1), today)
+    match = re.search(rf"(?:后面|接下来|未来)\s*({_COUNT_RE})\s*天(?:内|里|中)?", text)
+    if match:
+        count = _parse_count(match.group(1)) or 1
+        return TimeRange(today + dt.timedelta(days=1), today + dt.timedelta(days=count))
+    match = re.search(rf"({_COUNT_RE})\s*天后", text)
+    if match:
+        value = today + dt.timedelta(days=_parse_count(match.group(1)) or 0)
+        return TimeRange(value, value)
+
+    match = re.search(rf"(?:近|过去|最近)\s*({_COUNT_RE})\s*个?月", text)
+    if match:
+        count = _parse_count(match.group(1)) or 1
+        return TimeRange(_shift_month(today, -count), today)
+    match = re.search(rf"({_COUNT_RE})\s*个?月(?:之前|以前)", text)
+    if match:
+        return TimeRange(None, _shift_month(today, -(_parse_count(match.group(1)) or 0)))
+    match = re.search(rf"({_COUNT_RE})\s*个?月前", text)
+    if match:
+        value = _shift_month(today, -(_parse_count(match.group(1)) or 0))
+        return TimeRange(value, value)
+    match = re.search(rf"(?:后面|接下来|未来)\s*({_COUNT_RE})\s*个?月", text)
+    if match:
+        count = _parse_count(match.group(1)) or 1
+        start = _shift_month(today.replace(day=1), 1)
+        end = _shift_month(today.replace(day=1), count + 1) - dt.timedelta(days=1)
+        return TimeRange(start, end)
+
+    if any(word in text for word in ("现在", "当前", "目前")):
+        return TimeRange(today - dt.timedelta(days=3), today + dt.timedelta(days=1))
+    if "最新" in text:
+        return TimeRange(today - dt.timedelta(days=2), today)
+    if any(word in text for word in ("最近", "这几天", "这周")):
+        return TimeRange(today - dt.timedelta(days=6), today)
+    return None
+
+
+def _format_date(value: dt.date) -> str:
+    return f"{value.year}年{value.month}月{value.day}日"
+
+
+def format_time_range(time_range: TimeRange | None) -> str:
+    if time_range is None:
+        return ""
+    start, end = time_range.start, time_range.end
+    if start is None and end is not None:
+        return f"截至{_format_date(end)}以前"
+    if start is not None and end is not None and start == end:
+        return _format_date(start)
+    if start is not None and end is not None:
+        if start.month == end.month and start.day == 1 and end.day == calendar.monthrange(end.year, end.month)[1]:
+            if start.year == end.year:
+                return f"{start.year}年{start.month}月"
+        if start.month == 1 and start.day == 1 and end.month == 12 and end.day == 31 and start.year == end.year:
+            return f"{start.year}年"
+        return f"{_format_date(start)}至{_format_date(end)}"
+    if start is not None:
+        return f"自{_format_date(start)}起"
+    return ""
+
+
+def normalize_time_in_query(text: str, time_range: TimeRange | None) -> str:
+    anchor = format_time_range(time_range)
+    if not anchor or anchor in text:
+        return text.strip()
+    return f"{text.strip()} {anchor}"
 
 
 def _subject_entity(text: str, context_text: str = "") -> str:
@@ -140,8 +310,10 @@ def _subject_entity(text: str, context_text: str = "") -> str:
         return quoted[0]
     subject = text
     for token in (
-        "帮我找找", "帮我看看", "帮我查一下", "查一下", "搜一下", "搜索",
-        "最近", "现在", "当前", "目前", "最新", "有什么", "有哪些", "开启的",
+        "帮我找找", "帮我看看", "帮我查一下", "查一下", "查查", "找找", "找一下", "搜一下", "搜索",
+        "最近", "现在", "当前", "目前", "最新", "今天", "昨天", "明天", "后天",
+        "今年", "去年", "前年", "明年", "后年", "上个月", "下个月", "本月",
+        "有什么", "有哪些", "开启的", "天气", "预报", "新番",
         "开启", "活动复刻", "复刻活动", "活动", "复刻", "什么游戏", "什么东西",
         "吗", "呢", "？", "?",
     ):
@@ -150,19 +322,22 @@ def _subject_entity(text: str, context_text: str = "") -> str:
     return re.sub(r"\s+", " ", subject).strip(" 的")[:80]
 
 
-def analyze_search_intent(text: str, context_text: str = "") -> SearchIntent:
+def analyze_search_intent(
+    text: str, context_text: str = "", *, today: dt.date | None = None,
+) -> SearchIntent:
     """将动态查询归类；仅做可解释规则，不调用 LLM。"""
     text = (text or "").strip()
     entity = _subject_entity(text, context_text)
-    time_range = _time_range_for(text)
+    time_range = _time_range_for(text, today=today)
     ambiguous = any(word in text for word in ("那个", "这次", "它", "哪个", "叫什么"))
+    dynamic_domain = any(word in text for word in SearchTrigger._dynamic_words)
     if any(word in text for word in ("活动", "复刻", "开启", "有什么", "有哪些", "当前能", "还能用", "状态")):
         kind = "dynamic_state"
-    elif any(word in text for word in ("现在怎么样", "目前版本", "刚更新了吗", "还能不能用")):
+    elif any(word in text for word in ("现在怎么样", "目前版本", "刚更新了吗", "还能不能用", "天气", "预报")):
         kind = "current_state"
     elif any(word in text for word in ("风评", "评价", "玩的人多", "热度", "人气")):
         kind = "opinion"
-    elif any(word in text for word in ("最近出了什么", "新游戏", "新软件", "最近发布")):
+    elif any(word in text for word in ("最近出了什么", "新游戏", "新软件", "最近发布")) or (time_range and dynamic_domain):
         kind = "dynamic_event"
     elif ambiguous:
         kind = "ambiguous_reference"
@@ -192,19 +367,19 @@ class SemanticLocator:
 
     def _queries(self, intent: SearchIntent) -> list[str]:
         subject = intent.entity or intent.text[:80]
-        month = dt.datetime.now().strftime("%Y年%m月")
+        anchor = format_time_range(intent.time_range) or dt.datetime.now().strftime("%Y年%m月")
         event = intent.event_type or "当前情况"
         candidates = [
-            f"{subject} 官网 活动公告 {month}",
-            f"{subject} 近期 {event} {month}",
-            f"{subject} 现在 什么{event} {month}",
+            f"{subject} 官网 活动公告 {anchor}",
+            f"{subject} 近期 {event} {anchor}",
+            f"{subject} 现在 什么{event} {anchor}",
         ]
         return list(dict.fromkeys(q.strip() for q in candidates if q.strip()))[: self.max_queries]
 
     def locate(self, text: str, *, client: "SearXNGClient", language: str = "zh-CN",
                force_refresh: bool = False, context_text: str = "") -> SemanticLocation:
         intent = analyze_search_intent(text, context_text)
-        queries = self._queries(intent)
+        queries = [normalize_time_in_query(query, intent.time_range) for query in self._queries(intent)]
         raw: list[dict] = []
         used: list[str] = []
         for query in queries:
@@ -219,6 +394,7 @@ class SemanticLocator:
         verified = False
         if self.max_verify_queries and (not pack.candidate_entities or len(pack.candidate_entities) > 1):
             verify = f"{intent.entity or text[:60]} {pack.candidate_entities[0] if pack.candidate_entities else event_type_for(intent)} 官方公告"
+            verify = normalize_time_in_query(verify, intent.time_range)
             used.append(verify)
             raw.extend(client.search(verify, language=language, force_refresh=force_refresh, time_range=intent.time_range))
             pack = EvidencePack.from_results(
@@ -248,10 +424,31 @@ def _candidate_entities(results: list[SearchResult]) -> tuple[str, ...]:
     return tuple(out[:5])
 
 
-def _within_time_range(item: SearchResult, time_range: tuple[str, str] | None,
+def _coerce_time_range(
+    value: TimeRange | tuple[str, str] | None,
+    reference: dt.datetime | None = None,
+) -> TimeRange | None:
+    if value is None or isinstance(value, TimeRange):
+        return value
+    ref = (reference or dt.datetime.now(dt.timezone.utc)).date()
+
+    def relative(raw: str) -> dt.date:
+        match = re.fullmatch(r"now([+-])(\d+)([dh])", raw)
+        if not match:
+            return ref
+        days = int(match.group(2))
+        if match.group(3) == "h":
+            days = (days + 23) // 24
+        return ref + dt.timedelta(days=days if match.group(1) == "+" else -days)
+
+    return TimeRange(relative(value[0]), relative(value[1]))
+
+
+def _within_time_range(item: SearchResult, time_range: TimeRange | tuple[str, str] | None,
                        reference: dt.datetime) -> bool:
     """只过滤明确早于窗口的结果；缺日期的结果保留但由 prompt 标记为未核实。"""
-    if not time_range or not item.published_at:
+    normalized = _coerce_time_range(time_range, reference)
+    if not normalized or not item.published_at:
         return True
     raw = str(item.published_at).strip().replace("Z", "+00:00")
     try:
@@ -261,24 +458,11 @@ def _within_time_range(item: SearchResult, time_range: tuple[str, str] | None,
         if not match:
             return True
         published = dt.datetime(*map(int, match.groups()))
-    if published.tzinfo is None:
-        published = published.replace(tzinfo=dt.timezone.utc)
-    else:
-        published = published.astimezone(dt.timezone.utc)
-    ref = reference if reference.tzinfo else reference.replace(tzinfo=dt.timezone.utc)
-    ref = ref.astimezone(dt.timezone.utc)
-
-    def offset(value: str) -> dt.timedelta:
-        match = re.fullmatch(r"now([+-])(\d+)([dh])", value)
-        if not match:
-            return dt.timedelta(0)
-        amount = int(match.group(2))
-        if match.group(3) == "h":
-            amount /= 24
-        return dt.timedelta(days=amount if match.group(1) == "+" else -amount)
-
-    start, end = (ref + offset(time_range[0]), ref + offset(time_range[1]))
-    return start <= published <= end
+    published_date = published.date()
+    return (
+        (normalized.start is None or published_date >= normalized.start)
+        and (normalized.end is None or published_date <= normalized.end)
+    )
 
 
 @dataclass(frozen=True)
@@ -322,19 +506,20 @@ class EvidencePack:
     searched_at: str
     results: tuple[SearchResult, ...] = field(default_factory=tuple)
     expires_minutes: int = 15
-    time_range: tuple[str, str] | None = None
+    time_range: TimeRange | tuple[str, str] | None = None
     intent_kind: str = ""
     candidate_entities: tuple[str, ...] = field(default_factory=tuple)
 
     @classmethod
     def from_results(cls, topic: str, results: list[dict], *, now: dt.datetime | None = None,
-                     time_range: tuple[str, str] | None = None, intent_kind: str = "") -> "EvidencePack":
+                     time_range: TimeRange | tuple[str, str] | None = None, intent_kind: str = "") -> "EvidencePack":
         seen: set[str] = set()
         clean: list[SearchResult] = []
         reference = now or dt.datetime.now(dt.timezone.utc)
+        normalized_range = _coerce_time_range(time_range, reference)
         for raw in results:
             item = raw if isinstance(raw, SearchResult) else SearchResult.from_raw(raw)
-            if item is None or item.url in seen or not _within_time_range(item, time_range, reference):
+            if item is None or item.url in seen or not _within_time_range(item, normalized_range, reference):
                 continue
             seen.add(item.url)
             clean.append(item)
@@ -342,7 +527,7 @@ class EvidencePack:
                 break
         stamp = reference.isoformat(timespec="seconds")
         candidates = _candidate_entities(clean)
-        return cls(topic[:160], stamp, tuple(clean), 15, time_range, intent_kind, candidates)
+        return cls(topic[:160], stamp, tuple(clean), 15, normalized_range, intent_kind, candidates)
 
     def to_prompt(self, *, channel: str = "im") -> str:
         lines = [
@@ -351,7 +536,7 @@ class EvidencePack:
             f"主题：{self.topic}",
         ]
         if self.time_range:
-            lines.append(f"时间范围：{self.time_range[0]} 至 {self.time_range[1]}")
+            lines.append(f"时间范围：{format_time_range(_coerce_time_range(self.time_range))}")
         if self.intent_kind:
             lines.append(f"查询类型：{self.intent_kind}")
         if not self.results:
@@ -406,7 +591,7 @@ class SearXNGClient:
         self._cache: dict[tuple[str, str, str], tuple[float, list[dict]]] = {}
 
     def search(self, query: str, *, language: str = "zh-CN", force_refresh: bool = False,
-               time_range: tuple[str, str] | None = None) -> list[dict]:
+               time_range: TimeRange | tuple[str, str] | None = None) -> list[dict]:
         query = sanitize_search_query(query)
         if not query:
             return []

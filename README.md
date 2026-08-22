@@ -295,6 +295,9 @@ search:
 - 可选的“最近/目前/最新/更新/风评”等时效搜索；
 - 新游戏、新软件、事件等疑似未知实体的事实兜底搜索；
 - 发布年份、发布日期、上线时间等事实查询联网核对；
+- 中文相对时间会归一化为绝对日期：今年/去年/前年/明年/后年、上/下个月、明天、N 天前、近 N 天、后面 N 天、过去 N 个月等；
+- 绝对日期会同时写入搜索词和 EvidencePack 时间范围，例如“明天杭州天气”会附加具体年月日；
+- “五天前”表示单个历史日期，“近五天内”表示包含今天的五日窗口，“后面五天里”表示从明天开始的五日窗口；
 - 动态状态语义定位：识别静态知识、动态状态、动态事件、观点/评价和模糊指代；
 - “现在/最近/最新”时间锚定、最多 3 个策略查询和最多 1 个验证查询；
 - 从结果中提取候选活动/事件名，无法区分时让模型向用户澄清；
@@ -475,7 +478,7 @@ hermes verify --json --skip-start
 "C:/Program Files/nodejs/node.exe" --check pet/settings-renderer.js
 ```
 
-最近一次验证结果：`715 passed, 1 warning`，Hermes `ok=true`（使用 `--skip-start`，因为通用 FastAPI runtime 探针不适配本项目 Electron/桌宠入口）。唯一 warning 来自依赖侧的 Starlette/httpx 弃用提示。Electron 视觉交互、NapCatQQ 真实消息回传、远程服务行为、本地大模型运行和页面正文补充的公网实际内容属于需要人工/环境条件的实机验收，不把静态测试当成实机通过。
+最近一次验证结果：`717 passed, 1 warning`，Hermes `ok=true`（使用 `--skip-start`，因为通用 FastAPI runtime 探针不适配本项目 Electron/桌宠入口）。唯一 warning 来自依赖侧的 Starlette/httpx 弃用提示。Electron 视觉交互、NapCatQQ 真实消息回传、远程服务行为、本地大模型运行和页面正文补充的公网实际内容属于需要人工/环境条件的实机验收，不把静态测试当成实机通过。
 
 ## 当前状态
 

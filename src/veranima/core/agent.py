@@ -20,7 +20,14 @@ from .segments import extract_segments
 from .ambient import ChannelActivityTracker, ProactiveCandidate, ProactiveGate, SceneLock
 from .interrupt import InterruptDecider, TopicFrequency
 from ..memory.store import MemoryStore
-from ..tools.search import EvidencePack, SearchTrigger, SemanticLocator, SearXNGClient, analyze_search_intent
+from ..tools.search import (
+    EvidencePack,
+    SearchTrigger,
+    SemanticLocator,
+    SearXNGClient,
+    analyze_search_intent,
+    normalize_time_in_query,
+)
 from .character import CharacterCard
 from .learning import LanguageMirror, StyleLearner, extract_feedback
 from .proactive import GreetingScheduler, OccasionChecker
@@ -596,12 +603,14 @@ class Agent:
                     evidence = located.evidence
                     logger.info("semantic search: kind=%s queries=%d verified=%s", intent.kind, len(located.queries), located.verified)
                 else:
+                    normalized_query = normalize_time_in_query(decision.query, intent.time_range)
                     evidence = EvidencePack.from_results(
-                        decision.query,
+                        normalized_query,
                         self.search.search(
-                            decision.query,
+                            normalized_query,
                             language=language,
                             force_refresh=decision.force_refresh,
+                            time_range=intent.time_range,
                         ),
                         time_range=intent.time_range,
                         intent_kind=intent.kind,
