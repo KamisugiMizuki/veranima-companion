@@ -315,3 +315,70 @@ def test_search_quality_sort_happens_before_result_limit():
     finally:
         search_module.httpx.Client = original
     assert result[0]["title"] == "官方公告"
+
+
+def test_search_prefers_distinct_domains_before_duplicate_sources():
+    client = SearXNGClient(max_results=2)
+    raw = {"results": [
+        {"title": "官方一", "url": "https://mihoyo.com/a", "content": "a"},
+        {"title": "官方二", "url": "https://mihoyo.com/b", "content": "b"},
+        {"title": "媒体", "url": "https://news.example/c", "content": "c"},
+    ]}
+    class Response:
+        content = b"{}"
+        def raise_for_status(self): pass
+        def json(self): return raw
+    class Client:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def get(self, *args, **kwargs): return Response()
+    import veranima.tools.search as search_module
+    original = search_module.httpx.Client
+    search_module.httpx.Client = lambda **kwargs: Client()
+    try:
+        result = client.search("来源多样性", force_refresh=True)
+    finally:
+        search_module.httpx.Client = original
+    assert len({item["domain"] for item in result}) == 2
+
+
+def test_page_fetch_is_bounded_and_extracts_visible_text(monkeypatch):
+    client = SearXNGClient(fetch_pages=True, page_char_limit=40, max_page_results=1)
+    calls = []
+    class Response:
+        status_code = 200
+        headers = {"content-type": "text/html; charset=utf-8"}
+        def iter_bytes(self): return iter([b"<html><script>secret()</script><body>Hello <b>world</b></body></html>"])
+    class Stream:
+        def __enter__(self): return Response()
+        def __exit__(self, *args): pass
+    class Client:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def stream(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return Stream()
+    import veranima.tools.search as search_module
+    monkeypatch.setattr(search_module.httpx, "Client", lambda **kwargs: Client())
+    monkeypatch.setattr(search_module.socket, "getaddrinfo", lambda *args, **kwargs: [(None, None, None, None, ("93.184.216.34", 443))])
+    assert client.fetch_page("https://example.com/page") == "Hello world"
+    assert calls[0][0][1].startswith("https://93.184.216.34:443/")
+    assert calls[0][1]["headers"]["Host"] == "example.com"
+    assert calls[0][1]["extensions"]["sni_hostname"] == "example.com"
+    assert client.fetch_page("http://127.0.0.1/admin") == ""
+    assert client.fetch_page("https://user:password@example.com/page") == ""
+    assert "不可信数据" in EvidencePack.from_results(
+        "页面", [{"title": "t", "url": "https://example.com", "snippet": "s"}]
+    ).to_prompt()
+
+
+def test_page_enrichment_limits_attempts_even_when_fetches_fail(monkeypatch):
+    client = SearXNGClient(fetch_pages=True, max_page_results=2)
+    calls = []
+    monkeypatch.setattr(client, "fetch_page", lambda url: calls.append(url) or "")
+    client._enrich_pages([
+        {"url": "https://a.example", "snippet": "a"},
+        {"url": "https://b.example", "snippet": "b"},
+        {"url": "https://c.example", "snippet": "c"},
+    ])
+    assert calls == ["https://a.example", "https://b.example"]

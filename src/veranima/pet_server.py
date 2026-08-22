@@ -598,7 +598,8 @@ class PetServer:
                         "search": {k: (cfg.get("search", {}) or {}).get(k) for k in (
                             "enabled", "base_url", "timeout_seconds", "cache_ttl_seconds",
                             "allow_implicit_freshness_search", "semantic_locator_enabled",
-                            "semantic_locator_max_queries", "semantic_locator_max_verify_queries")},
+                            "semantic_locator_max_queries", "semantic_locator_max_verify_queries",
+                            "fetch_pages", "max_page_results", "page_char_limit", "max_page_bytes")},
                         "proactive": {**{k: proactive.get(k) for k in ("enabled", "quiet_hours_enabled")},
                                       "channels": proactive.get("channels", {})},
                         "relationship_tension": {k: relationship_tension.get(k) for k in ("enabled", "high_tension_proactive")},
@@ -690,7 +691,8 @@ class PetServer:
                     search = d.get("search", {})
                     for k in ("enabled", "base_url", "timeout_seconds", "cache_ttl_seconds",
                               "allow_implicit_freshness_search", "semantic_locator_enabled",
-                              "semantic_locator_max_queries", "semantic_locator_max_verify_queries"):
+                              "semantic_locator_max_queries", "semantic_locator_max_verify_queries",
+                              "fetch_pages", "max_page_results", "page_char_limit", "max_page_bytes"):
                         if k in search: cfg.setdefault("search", {})[k] = search[k]
                     save_config(cfg)
                     await self._send({"type": "config_saved", "id": msg.get("id"), "ok": True,

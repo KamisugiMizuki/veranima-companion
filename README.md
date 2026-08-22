@@ -24,6 +24,7 @@ Veranima 是一个本地优先的 AI 陪伴系统。它把固定角色卡、长�
 | Style Learning | 本地私有语料清洗、分句、弱标注、抽样复核和聚合 StyleBrief；原文与产物留在 ignored 数据目录 |
 | 共同创作 | Project、Scene、Decision、Artifact、Thread 和确认后的共同经历，可通过 CLI 操作 |
 | 外部任务 | 可选 R5 管道：模糊指令转工单，再交给外部 `dsh` CLI；默认不启用 |
+| 联网搜索 | 本地 SearXNG、显式/时效/未知实体兜底搜索、动态状态语义定位、证据注入、缓存、来源质量、冲突提示和有界正文补充 |
 
 ## 架构
 
@@ -104,7 +105,11 @@ API key 只写入本地 `config/config.yaml` 或通过设置页保存，不要�
 
 默认示例中的 `character_card` 是兼容占位路径；如果它不存在，Agent 会回退到内置默认角色。要使用仓库中的角色，请明确改成 `characters/yuki/character.json` 或 `characters/zima/character.json`。
 
-日常配置优先使用桌宠设置页，包括模型 profile、TTS/STT、记忆、视觉观察、QQ、双通道主动间隔和关系张力开关。API key 在读取时只显示掩码。
+日常配置优先使用桌宠设置页，包括模型 profile、TTS/STT、记忆、视觉观察、QQ、双通道主动间隔、关系张力和联网搜索。API key 在读取时只显示掩码。
+
+### 模型配置 profile
+
+设置页支持多份 OpenAI 兼容模型配置：每份保存名称、Base URL、模型名、temperature、max tokens、超时和 API key。可以新增、编辑、切换和删除非当前 profile；当前 profile 和最后一份 profile 不能删除。旧版顶层 `llm` 字段保留兼容，真实 key 只存在本地配置。
 
 ## 启动
 
@@ -268,6 +273,48 @@ source_gap_minutes
 
 QQ 主动策略只读取 `messages.channel == "qq"` 的历史，不把桌宠 TTS 或视觉观察当成 QQ 素材。桌宠主动也不会更新 QQ 的通道间隔。
 
+消息表保留 `channel` 和 `created_at`：QQ、桌宠和 CLI 的历史可以按通道隔离召回，并在 prompt 中显示本地时间。主动反馈同样按 `channel` 持久化，QQ/桌宠分别维护 pending、responded、expired 和每日 Gate 状态。
+
+### 联网搜索
+
+联网搜索使用本机 SearXNG，默认地址为 `http://127.0.0.1:8080`。默认关闭，需要在设置页或本地 `config/config.yaml` 开启：
+
+```yaml
+search:
+  enabled: true
+  base_url: "http://127.0.0.1:8080"
+  allow_user_explicit_request: true
+  allow_implicit_freshness_search: false
+  semantic_locator_enabled: false
+  fetch_pages: false
+```
+
+已实现的搜索行为：
+
+- 显式“帮我查/搜一下/给我来源”触发搜索；
+- 可选的“最近/目前/最新/更新/风评”等时效搜索；
+- 新游戏、新软件、事件等疑似未知实体的事实兜底搜索；
+- 发布年份、发布日期、上线时间等事实查询联网核对；
+- 动态状态语义定位：识别静态知识、动态状态、动态事件、观点/评价和模糊指代；
+- “现在/最近/最新”时间锚定、最多 3 个策略查询和最多 1 个验证查询；
+- 从结果中提取候选活动/事件名，无法区分时让模型向用户澄清；
+- 结果 HTML 清洗、URL 追踪参数移除、私网/回环地址拒绝、查询隐私 fail-closed；
+- 15 分钟进程内缓存、强制刷新、发布日期过滤、来源质量排序和冲突提示；
+- EvidencePack 只注入当前 prompt，不写入长期记忆；TTS 机械移除来源 URL，不朗读链接；
+- 摘要不足时可选补充最多两条公开 HTML 页面正文，限制大小和字符数，失败自动回退。
+
+页面正文补充默认关闭：
+
+```yaml
+search:
+  fetch_pages: true
+  max_page_results: 2
+  page_char_limit: 1200
+  max_page_bytes: 524288
+```
+
+搜索失败、超时、空结果或页面抓取失败都会回退到普通对话，不把未经处理的搜索结果直接发给用户。搜索不会由桌宠视觉观察、TTS 或主动消息后台任务触发。
+
 ## 文风学习
 
 文风学习是本地私有功能。只有在你确认拥有明确的本地分析授权后，才导入语料：
@@ -331,8 +378,9 @@ unset PYTHONPATH
 ### 图片与表情
 
 - QQ 支持 OneBot image segment、CQ image 字符串、`file/path/url` 和 `get_image` 回查；
+- QQ 原生 `face` 段和 CQ face 会转换为 `[QQ表情：...]` 语义占位，混合文字不会丢失；
 - 桌宠聊天支持图片输入，持久化记录使用占位符，不把 base64 写进聊天历史；
-- 图片会先经过 MIME、文件头、大小、像素数和来源边界校验；
+- 图片会先经过 MIME、文件头、大小、像素数和来源边界校验；QQ 本地回查路径必须落在配置的 `image_roots` 白名单内，远程图片主机还要通过允许列表和公网 IP 校验；
 - 动态 GIF/WebP 只用于当前轮视觉理解，不写入静态表情库；
 - 静态表情库需要多模态模型完成标注，并按情绪/情境匹配发送。
 
@@ -349,6 +397,8 @@ MediaRecorder → Electron preload IPC → 本地 STT HTTP → 回填输入框
 ```
 
 不会自动发送识别结果。模型文件和 runtime 不在 Git 中。单独调试服务时可参考：
+
+设置页保存 STT 开关、地址、模型、语言和输入设备后会重启核心并按开关启动/停止 sidecar；关闭 STT 不会阻塞普通文字聊天。
 
 ```bash
 unset PYTHONPATH
@@ -388,6 +438,7 @@ tts/gpt-sovits/
 - [PERSONA_LOOP_SPEC.md](docs/PERSONA_LOOP_SPEC.md)：人格循环、关系和表达
 - [RELATIONAL_TENSION_SPEC.md](docs/RELATIONAL_TENSION_SPEC.md)：AI 不满值/关系张力
 - [QQ_PROACTIVE_SPEC.md](docs/QQ_PROACTIVE_SPEC.md)：QQ 主动对话与用户状态
+- [WEB_SEARCH_SPEC.md](docs/WEB_SEARCH_SPEC.md)：SearXNG 联网搜索、未知实体兜底和动态内容语义定位
 
 ### 桌面端与输入输出
 
@@ -424,7 +475,7 @@ hermes verify --json --skip-start
 "C:/Program Files/nodejs/node.exe" --check pet/settings-renderer.js
 ```
 
-最近一次验证结果：`697 passed, 1 warning`，Hermes `ok=true`。唯一 warning 来自依赖侧的 Starlette/httpx 弃用提示。Electron 视觉交互、NapCatQQ 真实消息回传、远程服务行为和本地大模型运行属于需要人工/环境条件的实机验收，不把静态测试当成实机通过。
+最近一次验证结果：`715 passed, 1 warning`，Hermes `ok=true`（使用 `--skip-start`，因为通用 FastAPI runtime 探针不适配本项目 Electron/桌宠入口）。唯一 warning 来自依赖侧的 Starlette/httpx 弃用提示。Electron 视觉交互、NapCatQQ 真实消息回传、远程服务行为、本地大模型运行和页面正文补充的公网实际内容属于需要人工/环境条件的实机验收，不把静态测试当成实机通过。
 
 ## 当前状态
 
@@ -432,11 +483,11 @@ hermes verify --json --skip-start
 |---|---|
 | Agent、角色卡、记忆、状态、PAD、关系模型 | 已实现，行为测试覆盖 |
 | TV 不满值与关系张力 T0–T4 | 核心已实现，行为测试覆盖；关系事件确认暂无独立编辑器 |
-| QQ 主动策略与 QQ 用户状态 | 已实现，真实 NapCat 消息链仍需实机验收 |
+| QQ 主动策略与 QQ 用户状态 | 五维时机、睡眠/不要打扰、反馈闭环和失败不消耗额度已实现，真实 NapCat 消息链仍需实机验收 |
 | QQ/桌宠独立主动间隔 | 已实现；每通道只有一个 `min_gap_minutes` |
 | Electron 桌宠、聊天窗口、设置和日志 | 代码与测试已覆盖，真实桌面交互需人工验收 |
 | 视觉注意力 | 代码与测试已覆盖，屏幕捕获和视觉主动需人工验收 |
-| STT | 本地服务和测试已覆盖，持续 sidecar/真实麦克风需人工验收 |
+| STT | 本地服务、设置页重启和关闭 sidecar 行为已覆盖，持续 sidecar/真实麦克风需人工验收 |
 | Style Learning | MVP 已实现；LoRA、消息级撤回和原文修辞标签暂缓 |
 | CHARPKG | 安全导入导出与 CLI 已实现；完整版本 diff/设置页编辑器暂缓 |
 | SHARED CREATION | 后端和 CLI 已实现；聊天工作台、时间线和导出 UI 暂缓 |

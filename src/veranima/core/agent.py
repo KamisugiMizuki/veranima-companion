@@ -210,6 +210,10 @@ class Agent:
             timeout=float(search_cfg.get("timeout_seconds", 8)),
             max_response_bytes=int(search_cfg.get("max_response_bytes", 1_048_576)),
             cache_ttl=float(search_cfg.get("cache_ttl_seconds", 900)),
+            fetch_pages=bool(search_cfg.get("fetch_pages", False)),
+            max_page_results=int(search_cfg.get("max_page_results", 2)),
+            page_char_limit=int(search_cfg.get("page_char_limit", 1200)),
+            max_page_bytes=int(search_cfg.get("max_page_bytes", 524_288)),
         )
         self.search_trigger = SearchTrigger()
         self.semantic_locator = SemanticLocator(

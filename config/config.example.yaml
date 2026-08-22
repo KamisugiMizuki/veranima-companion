@@ -90,6 +90,10 @@ search:
   semantic_locator_enabled: false
   semantic_locator_max_queries: 3
   semantic_locator_max_verify_queries: 1
+  fetch_pages: false
+  max_page_results: 2
+  page_char_limit: 1200
+  max_page_bytes: 524288
   write_to_long_term_memory: false
 
 # 记忆
