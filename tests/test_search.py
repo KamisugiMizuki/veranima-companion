@@ -72,7 +72,9 @@ def test_explicit_search_trigger_and_privacy_block():
 def test_implicit_freshness_trigger_and_refresh():
     trigger = SearchTrigger()
     assert trigger.determine("绝区零最近更新了什么", allow_implicit=True).should_search
-    assert trigger.determine("绝区零是哪年发布的", allow_implicit=True).should_search is False
+    assert trigger.determine("绝区零是哪年发布的", allow_implicit=True).should_search
+    assert trigger.determine("绝区零是什么", allow_implicit=True).should_search is False
+    assert trigger.determine("一个新游戏是哪一年发布的", allow_implicit=True).should_search
     assert trigger.determine("绝区零有新消息吗？再查一下", allow_implicit=True).force_refresh
 
 

@@ -31,6 +31,7 @@ class SearchTrigger:
     _disable_words = ("别联网", "不要联网", "不用联网", "不要搜索", "别搜索", "不用查")
     _freshness_words = ("最近", "今天", "昨天", "刚刚", "这周", "目前", "现在", "最新", "新出的", "更新", "上线", "发布", "风评", "后续")
     _stable_patterns = ("是哪年", "什么时候发行", "什么是", "怎么用", "是什么意思")
+    _current_fact_patterns = ("哪一年发布", "哪年发布", "什么时候发布", "何时发布", "发布日期", "发行日期", "发售日", "上市时间", "上线时间")
 
     def determine(self, text: str, *, allow_implicit: bool = False) -> SearchDecision:
         text = (text or "").strip()
@@ -38,10 +39,11 @@ class SearchTrigger:
             return SearchDecision(False, "privacy_blocked")
         explicit = any(word in text for word in self._request_words)
         force_refresh = any(word in text for word in ("再查", "重新查", "刷新一下", "强制刷新"))
-        implicit = allow_implicit and any(word in text for word in self._freshness_words)
+        is_current_fact = any(pattern in text for pattern in self._current_fact_patterns)
+        implicit = allow_implicit and (any(word in text for word in self._freshness_words) or is_current_fact)
         if not explicit and not implicit:
             return SearchDecision(False, "no_explicit_request")
-        if implicit and not explicit and any(pattern in text for pattern in self._stable_patterns):
+        if implicit and not explicit and any(pattern in text for pattern in self._stable_patterns) and not is_current_fact:
             return SearchDecision(False, "stable_knowledge")
         query = text
         for word in self._request_words:
