@@ -152,7 +152,7 @@ def _valid_portrait(portrait: str, card: Any) -> str:
 
 
 def _segments_from_data(data: dict, *, bilingual: bool, max_segments: int,
-                        max_chars: int, card_tones: list[str], card: Any) -> list[ReplySegment]:
+                        max_chars: int, card_tones: list[str] | None, card: Any) -> list[ReplySegment]:
     segs = data.get("segments") if isinstance(data, dict) else None
     if not isinstance(segs, list):
         return []
@@ -176,6 +176,8 @@ def _segments_from_data(data: dict, *, bilingual: bool, max_segments: int,
             )
         else:
             text = _clean_text(item.get("text"), max_chars)
+            if not text:
+                continue
             seg = ReplySegment(
                 text=text,
                 tone=_valid_tone(str(item.get("tone") or "").strip(), card_tones),
@@ -183,6 +185,27 @@ def _segments_from_data(data: dict, *, bilingual: bool, max_segments: int,
             )
         out.append(seg)
     return out
+
+
+def _parse_structured_segments(raw: str, *, max_chars: int) -> list[ReplySegment] | None:
+    """Parse the user-visible JSON contract shared by IM and TTS."""
+    try:
+        data = json.loads(_strip_fence(raw))
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("segments"), list):
+        return None
+    return _segments_from_data(
+        data, bilingual=False, max_segments=6, max_chars=max_chars,
+        card_tones=None, card=None,
+    )
+
+
+def _is_json_object(raw: str) -> bool:
+    try:
+        return isinstance(json.loads(_strip_fence(raw)), dict)
+    except (json.JSONDecodeError, TypeError):
+        return False
 
 
 def _fallback_text(raw: str, max_chars: int) -> Reply:
@@ -214,6 +237,13 @@ def parse_reply(raw: str, *, channel: str = "im", card: Any = None,
         card_tones = list(card.tones) if card is not None else None
 
     if channel != "tts":
+        structured = _parse_structured_segments(raw, max_chars=max_chars)
+        if structured is not None and structured:
+            return Reply(segments=structured)
+        if structured is not None:
+            return Reply(degraded="empty_structured_output")
+        if _is_json_object(raw):
+            return Reply(degraded="invalid_structured_output")
         return Reply(segments=[ReplySegment(text=strip_thinking_trace(strip_internal_prompt_leak(strip_echoed_time_prefixes(raw)))[:max_chars])])
 
     # TTS：确定性 JSON 解析
@@ -243,6 +273,10 @@ def parse_reply(raw: str, *, channel: str = "im", card: Any = None,
                         })
             return Reply(segments=segs, stance=stance, follow_up=follow_up,
                          memory_candidates=candidates)
+        if isinstance(data.get("segments"), list):
+            return Reply(degraded="empty_structured_output")
+        if isinstance(data, dict):
+            return Reply(degraded="invalid_structured_output")
         return _fallback_text(raw, max_chars)
     except (json.JSONDecodeError, ValueError):
         # 容错：模型可能输出残缺/重复 JSON —— 用正则找候选对象逐个尝试

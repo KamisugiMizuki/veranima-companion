@@ -7,6 +7,8 @@
 """
 from __future__ import annotations
 
+import json
+
 from .reply import parse_reply
 
 __all__ = ["extract_segments"]
@@ -30,6 +32,13 @@ def extract_segments(reply: str, *, bilingual: bool = False,
         max_chars=1200,
     )
     if parsed.degraded:
+        try:
+            data = json.loads(reply.strip().removeprefix("```json").removesuffix("```").strip())
+            item = (data.get("segments") or [{}])[0] if isinstance(data, dict) else {}
+            if isinstance(item, dict) and isinstance(data.get("segments"), list):
+                return reply, str(item.get("tone") or ""), str(item.get("portrait") or ""), ""
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            pass
         return reply, "", "", ""  # 兼容旧接口：失败时 tone/portrait/ja 为空
     seg = parsed.segments[0] if parsed.segments else None
     if seg is None:

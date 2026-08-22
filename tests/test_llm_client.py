@@ -1,10 +1,4 @@
-"""LLM 客户端错误分类测试：400 jinja 模板错误 ≠ 模型未加载。
-
-回归 2026-08-04：llama.cpp 模板拒绝消息序列时返回 400（错误体含 jinja），
-但 client 之前把 400 一律归为"模型未加载"，导致模型明明加载着却回复
-"（我好像还没醒过来……）"的误导性兜底。
-"""
-
+"""LLM 客户端错误分类与结构化输出测试。"""
 from __future__ import annotations
 
 import httpx
@@ -14,7 +8,7 @@ from veranima.llm.client import LLMClient, LLMError, LLMUnavailableError
 
 
 class _FakeTransport:
-    """模拟 httpx.Client：post 返回指定状态码+文本（>=400 抛 HTTPStatusError）。"""
+    """模拟 httpx.Client：post 返回指定状态码+文本。"""
 
     def __init__(self, status: int, text: str):
         self._status = status
@@ -44,7 +38,6 @@ def _stub_http(monkeypatch, status: int, text: str) -> None:
 
 
 def test_400_jinja_template_error_is_llm_error(client, monkeypatch):
-    """400 + jinja 模板错误：请求内容问题 → LLMError（不是模型未加载）。"""
     _stub_http(monkeypatch, 400,
                '{"error":"Error rendering prompt with jinja template: \\"No user query found in messages\\"."}')
     with pytest.raises(LLMError):
@@ -52,21 +45,70 @@ def test_400_jinja_template_error_is_llm_error(client, monkeypatch):
 
 
 def test_400_plain_model_not_loaded_is_unavailable(client, monkeypatch):
-    """400 + 非模板错误（如模型未加载）：仍归 LLMUnavailableError。"""
     _stub_http(monkeypatch, 400, '{"error":"model not loaded"}')
     with pytest.raises(LLMUnavailableError):
         client.chat([{"role": "user", "content": "hi"}])
 
 
 def test_404_is_unavailable(client, monkeypatch):
-    """404（模型未加载典型响应）：LLMUnavailableError。"""
     _stub_http(monkeypatch, 404, "not found")
     with pytest.raises(LLMUnavailableError):
         client.chat([{"role": "user", "content": "hi"}])
 
 
 def test_422_is_unavailable(client, monkeypatch):
-    """422：LLMUnavailableError。"""
     _stub_http(monkeypatch, 422, "unprocessable")
     with pytest.raises(LLMUnavailableError):
         client.chat([{"role": "user", "content": "hi"}])
+
+
+def test_chat_structured_requests_json_object(monkeypatch):
+    calls = []
+
+    class Transport:
+        def __enter__(self): return self
+        def __exit__(self, *exc): return False
+        def post(self, url, **kwargs):
+            calls.append(kwargs["json"])
+            req = httpx.Request("POST", url)
+            return httpx.Response(200, json={"choices": [{"message": {"content": '{"segments":[]}'}}]}, request=req)
+
+    monkeypatch.setattr(httpx, "Client", lambda **kw: Transport())
+    client = LLMClient({"base_url": "https://api.example.com/v1", "model": "qwen3-8b"})
+    client.chat_structured([{"role": "user", "content": "hi"}])
+    assert calls[0]["response_format"] == {"type": "json_object"}
+
+
+def test_chat_structured_falls_back_when_provider_rejects_json(monkeypatch):
+    calls = []
+
+    class Transport:
+        def __enter__(self): return self
+        def __exit__(self, *exc): return False
+        def post(self, url, **kwargs):
+            calls.append(kwargs["json"])
+            req = httpx.Request("POST", url)
+            if "response_format" in kwargs["json"]:
+                resp = httpx.Response(400, text='{"error":"response_format json_object unsupported"}', request=req)
+                raise httpx.HTTPStatusError("400 error", request=req, response=resp)
+            return httpx.Response(200, json={"choices": [{"message": {"content": "plain fallback"}}]}, request=req)
+
+    monkeypatch.setattr(httpx, "Client", lambda **kw: Transport())
+    client = LLMClient({"base_url": "https://api.example.com/v1", "model": "qwen3-8b"})
+    assert client.chat_structured([{"role": "user", "content": "hi"}]) == "plain fallback"
+    assert "response_format" in calls[0]
+    assert "response_format" not in calls[1]
+
+
+def test_chat_structured_rejects_invalid_json(monkeypatch):
+    class Transport:
+        def __enter__(self): return self
+        def __exit__(self, *exc): return False
+        def post(self, url, **kwargs):
+            req = httpx.Request("POST", url)
+            return httpx.Response(200, json={"choices": [{"message": {"content": "truncated"}}]}, request=req)
+
+    monkeypatch.setattr(httpx, "Client", lambda **kw: Transport())
+    client = LLMClient({"base_url": "https://api.example.com/v1", "model": "qwen3-8b"})
+    with pytest.raises(LLMError, match="invalid structured JSON"):
+        client.chat_structured([{"role": "user", "content": "hi"}], max_tokens=256)

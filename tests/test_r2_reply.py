@@ -39,6 +39,11 @@ def test_im_reply_strips_think_tags():
     assert parse_reply(raw, channel="im").text == "早点睡吧。"
 
 
+def test_render_im_is_final_safety_net_for_raw_thinking_trace():
+    raw = "1. **分析输入**：用户困了。\n\n6. **最终调整**：早点睡吧。\n\n早点睡吧。"
+    assert render_im(raw, AgentState()) == "早点睡吧。"
+
+
 def test_render_im_reply_signature():
     """R2_SPEC 3：render_im(reply, state) -> str。"""
     st = AgentState(attachment=0.5)
@@ -70,12 +75,34 @@ def test_render_tts_bilingual():
     assert segs[0].display_text == "你好"
 
 
+def test_tts_bilingual_json_preserves_ja_for_speech_and_zh_for_display():
+    raw = '{"segments":[{"ja":"おやすみ、いい夢を。","zh":"晚安，做个好梦。","tone":"温柔"}]}'
+    parsed = parse_reply(raw, channel="tts", bilingual=True, card=type("Card", (), {"tones": ["温柔"], "veranima": {}})())
+    segs = render_tts(parsed)
+    assert parsed.text == "晚安，做个好梦。"
+    assert parsed.ja_text == "おやすみ、いい夢を。"
+    assert segs[0].text == "おやすみ、いい夢を。"
+    assert segs[0].display_text == "晚安，做个好梦。"
+
+
+def test_tts_empty_structured_json_does_not_echo_payload():
+    parsed = parse_reply('{"segments":[],"thinking":"secret"}', channel="tts")
+    assert parsed.degraded == "empty_structured_output"
+    assert parsed.text == ""
+
+
 def test_render_tts_mono():
     """单语：text=原文。"""
     r = _reply(ReplySegment(text="嗯，在的"))
     segs = render_tts(r)
     assert segs[0].text == "嗯，在的"
     assert segs[0].display_text == ""
+
+
+def test_tts_invalid_structured_json_does_not_echo_internal_object():
+    parsed = parse_reply('{"thinking":"secret","analysis":"hidden"}', channel="tts")
+    assert parsed.degraded == "invalid_structured_output"
+    assert parsed.text == ""
 
 
 def test_render_tts_removes_source_urls_from_speech():

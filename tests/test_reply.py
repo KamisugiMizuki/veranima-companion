@@ -21,6 +21,20 @@ def test_im_plain_text():
     assert len(r.segments) == 1
 
 
+def test_im_structured_json_keeps_only_visible_segment_text():
+    raw = '{"segments":[{"text":"晚安，快睡。","thinking":"内部分析，不可见","tone":"调侃"}]}'
+    r = parse_reply(raw, channel="im")
+    assert not r.degraded
+    assert r.text == "晚安，快睡。"
+    assert "thinking" not in r.text
+
+
+def test_empty_structured_json_does_not_echo_payload():
+    r = parse_reply('{"segments":[],"thinking":"secret"}', channel="im")
+    assert r.degraded == "empty_structured_output"
+    assert r.text == ""
+
+
 def test_strip_echoed_time_prefixes_only_at_reply_start():
     raw = "[2026-08-21 13:20:30] [2026-08-21 13:20:34] 那就测试呗。"
     assert strip_echoed_time_prefixes(raw) == "那就测试呗。"
@@ -28,9 +42,21 @@ def test_strip_echoed_time_prefixes_only_at_reply_start():
     assert strip_echoed_time_prefixes("[2026-08-21 13:20:30+08:00] 那就测试呗。") == "那就测试呗。"
 
 
+def test_invalid_structured_json_does_not_echo_internal_object():
+    r = parse_reply('{"thinking":"secret","analysis":"hidden"}', channel="im")
+    assert r.degraded == "invalid_structured_output"
+    assert r.text == ""
+
+
 def test_im_truncated():
     r = parse_reply("x" * 2000, channel="im", max_chars=1200)
     assert len(r.text) == 1200
+
+
+def test_im_ignores_tts_only_fields_instead_of_echoing_them():
+    r = parse_reply('{"segments":[{"ja":"おやすみ","zh":"晚安"}]}', channel="im")
+    assert r.degraded == "empty_structured_output"
+    assert r.text == ""
 
 
 def test_empty_degraded():

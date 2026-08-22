@@ -205,6 +205,13 @@ def test_agent_persists_only_visible_final_answer_when_llm_returns_thinking(agen
     assert stored == "早点睡，明天再补高数吧。"
 
 
+def test_agent_accepts_structured_json_reply_on_im(agent):
+    agent.llm.chat = lambda messages, **kwargs: '{"segments":[{"text":"晚安，快睡。","thinking":"不要泄漏"}]}'
+    result = agent.handle("晚安老婆么么哒")
+    assert result.reply == "晚安，快睡。"
+    assert agent.memory.recent_messages(limit=1)[0]["content"] == "晚安，快睡。"
+
+
 def test_semantic_locator_is_bounded_and_collects_candidates():
     class Client:
         def __init__(self):

@@ -42,20 +42,27 @@ REALITY_BOUNDARY = (
     "（例如「见面的话……还是算了，线上聊就挺好」）。不虚构自己参与过现实活动。"
 )
 
+# 交互回复统一结构化输出：按通道选择可见/语音字段，thinking 等字段不消费
+IM_STRUCTURED_OUTPUT_INSTRUCTION = (
+    "【输出格式·文字聊天】你的回复必须只输出 JSON，不要输出思考过程、分析步骤、草稿、规则核对或 Markdown。"
+    '{"segments":[{"text":"给用户看的文字回复","tone":"语气标签","portrait":"表情标签"}]}。'
+    "text 是唯一的可见文本；不要添加 thinking、analysis、reasoning、ja、zh 等字段。"
+)
+
 # R2 表情标签驱动（R2_SPEC 2）：tts 通道要求结构化 JSON 输出
 SEGMENTED_OUTPUT_INSTRUCTION = (
-    "【输出格式】语音对话时，你的回复必须以 JSON 输出："
-    '{"segments":[{"text":"回复内容","tone":"语气标签","portrait":"表情标签"}]}'
-    "。tone 从角色语气里选，portrait 只能从可用表情列表里选（列出的表情标签）。"
-    "不要输出 JSON 以外的任何内容。"
+    "【输出格式·单语语音】你的回复必须以 JSON 输出："
+    '{"segments":[{"text":"要显示并送 TTS 的台词","tone":"语气标签","portrait":"表情标签"}]}'
+    "。text 同时用于气泡显示和语音合成；tone 从角色语气里选，portrait 只能从可用表情列表里选。"
+    "不要添加 thinking、analysis、reasoning 字段，不要输出 JSON 以外的任何内容。"
 )
 
 # R2 双语输出（角色卡 bilingual.enabled 时生效；如由岐：日语配音 + 中文显示）
 BILINGUAL_OUTPUT_INSTRUCTION = (
-    "【双语输出】你的回复必须同时提供日语与中文："
+    "【输出格式·双语语音】你的回复必须同时提供日语与中文："
     '{"segments":[{"ja":"日本語のセリフ（声優役・TTS用）","zh":"中文对照（显示用）","tone":"语气标签","portrait":"表情标签"}]}'
-    "。ja 是你要说出的台词（自然口语，符合角色语气），zh 是同一句的中文翻译（给用户看的）。"
-    "tone 从角色语气里选，portrait 只能从可用表情列表里选。不要输出 JSON 以外的任何内容。"
+    "。ja 是送给 TTS 的日语台词，zh 是聊天气泡显示的中文翻译；两者表达同一内容。"
+    "tone 从角色语气里选，portrait 只能从可用表情列表里选。不要添加 thinking、analysis、reasoning 字段，不要输出 JSON 以外的任何内容。"
 )
 
 
@@ -101,6 +108,8 @@ def build_system_prompt(
         # R2 双语（角色卡 bilingual.enabled）：ja 送 TTS / zh 显示
         bilingual = bool(((card.veranima or {}).get("bilingual") or {}).get("enabled"))
         parts.append(BILINGUAL_OUTPUT_INSTRUCTION if bilingual else SEGMENTED_OUTPUT_INSTRUCTION)
+    else:
+        parts.append(IM_STRUCTURED_OUTPUT_INSTRUCTION)
 
     # E. 相关记忆（MEMORY_SPEC 10.4：Context Brief 统一预算，完整 item 截断）
     from ..memory.brief import build_brief, format_brief

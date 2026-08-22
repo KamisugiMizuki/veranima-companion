@@ -690,7 +690,8 @@ class Agent:
         # 5. 生成（低精力时限短；联网搜索开启时走工具调用链路）
         low_energy = self.state.energy < 40
         try:
-            reply = self.llm.chat(
+            chat_fn = getattr(self.llm, "chat_structured", None) or self.llm.chat
+            reply = chat_fn(
                 messages,
                 max_tokens=self.llm.low_energy_max_tokens if low_energy else None,
             )
@@ -728,15 +729,20 @@ class Agent:
                 max_chars=int((self.config.get("output", {}) or {}).get("max_text_chars", 1200)),
             )
             turn_reply = parsed
-            reply = parsed.text or reply
+            reply = parsed.text or ("（我这边没拿到可显示的回复，再说一遍？）" if parsed.degraded else reply)
             tone = parsed.tone
             portrait = parsed.portrait
             ja_text = parsed.ja_text
             if portrait and not self._portrait_valid(portrait):
                 portrait = ""  # 词表外标签回退（防 OOC）
         else:
-            from .reply import Reply, ReplySegment
-            turn_reply = Reply(segments=[ReplySegment(text=reply)])
+            from .reply import parse_reply
+            parsed = parse_reply(
+                reply, channel="im",
+                max_chars=int((self.config.get("output", {}) or {}).get("max_text_chars", 1200)),
+            )
+            turn_reply = parsed
+            reply = parsed.text or reply
 
         # ===== R0 阶段 5: persist_turn（R0_SPEC 5）=====
         self.memory.store_message("assistant", reply, self.state.energy, self.state.mood,

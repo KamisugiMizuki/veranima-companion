@@ -325,6 +325,7 @@ search:
 - 动态查询会丢弃标题、摘要和 URL 都不包含目标实体的后端噪声，例如 MAC 地址或股票教程结果；
 - 如果模型回显内部风格参数或搜索规则，统一回复出口会清理这些内部 prompt 文本。
 - 如果模型输出“思考过程”、`最终调整`草稿或 `<think>...</think>`，只保留最终答案；清理后才保存历史、渲染 QQ/桌宠回复。
+- IM/TTS 主对话现在统一要求结构化 JSON `{"segments":[...]}`：IM/单语 TTS 使用 `text`，双语 TTS 使用 `ja`（送语音）+ `zh`（显示）；OpenAI 兼容 API 支持时发送 `response_format=json_object`，不支持则自动回退普通请求并继续清理。
 
 ## 文风学习
 
@@ -486,7 +487,7 @@ hermes verify --json --skip-start
 "C:/Program Files/nodejs/node.exe" --check pet/settings-renderer.js
 ```
 
-最近一次验证结果：`728 passed, 1 warning`，Hermes `ok=true`（使用 `--skip-start`，因为通用 FastAPI runtime 探针不适配本项目 Electron/桌宠入口）。唯一 warning 来自依赖侧的 Starlette/httpx 弃用提示。Electron 视觉交互、NapCatQQ 真实消息回传、远程服务行为、本地大模型运行和页面正文补充的公网实际内容属于需要人工/环境条件的实机验收，不把静态测试当成实机通过。
+最近一次验证结果：`740 passed, 1 warning`，Hermes `ok=true`（使用 `--skip-start`，因为通用 FastAPI runtime 探针不适配本项目 Electron/桌宠入口）。分通道结构化 JSON（IM `text`、单语 TTS `text`、双语 TTS `ja`/`zh`）与当前远程 API 的真实 IM/TTS Agent→解析→持久化→渲染环路已验证通过。唯一 warning 来自依赖侧的 Starlette/httpx 弃用提示。Electron 视觉交互、NapCatQQ 真实消息回传、远程服务行为、本地大模型运行和页面正文补充的公网实际内容属于需要人工/环境条件的实机验收，不把静态测试当成实机通过。
 
 ## 当前状态
 

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -60,6 +61,33 @@ class LLMClient:
             logger.warning("LLM returned empty content (reasoning %d chars)", len(reasoning))
             raise LLMError("empty completion: token budget consumed by thinking")
         return content
+
+    def chat_structured(self, messages: list[dict], *, max_tokens: int | None = None,
+                        temperature: float | None = None) -> str:
+        """请求 JSON object；服务端拒绝 response_format 时退回普通 chat。"""
+        budget = max(1024, int(max_tokens or self.max_tokens))
+        try:
+            msg = self.chat_raw(
+                messages, max_tokens=budget, temperature=temperature,
+                response_format={"type": "json_object"},
+            )
+            content = (msg.get("content") or "").strip()
+            if not content:
+                raise LLMError("empty structured completion")
+            try:
+                data = json.loads(content)
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise LLMError("invalid structured JSON contract") from exc
+            if not isinstance(data, dict) or not isinstance(data.get("segments"), list):
+                raise LLMError("invalid structured JSON contract")
+            return content
+        except TypeError:
+            return self.chat(messages, max_tokens=budget, temperature=temperature)
+        except LLMError as exc:
+            if "structured response unsupported" in str(exc).lower():
+                logger.warning("structured output rejected; falling back to plain chat")
+                return self.chat(messages, max_tokens=budget, temperature=temperature)
+            raise
 
     def stream_chat(self, messages: list[dict], *, max_tokens: int | None = None,
                     temperature: float | None = None) -> list[str]:
@@ -143,7 +171,8 @@ class LLMClient:
             return ""
 
     def chat_raw(self, messages: list[dict], *, max_tokens: int | None = None,
-                 temperature: float | None = None, tools: list[dict] | None = None) -> dict:
+                 temperature: float | None = None, tools: list[dict] | None = None,
+                 response_format: dict | None = None) -> dict:
         """对话生成（完整 message 返回，含 tool_calls）。tools 为 OpenAI 格式工具定义。"""
         payload = {
             "model": self.model,
@@ -154,6 +183,8 @@ class LLMClient:
         }
         if tools:
             payload["tools"] = tools
+        if response_format:
+            payload["response_format"] = response_format
         try:
             with httpx.Client(timeout=self._timeout) as client:
                 resp = client.post(f"{self.base_url}/chat/completions", json=payload, headers=self._headers())
@@ -170,6 +201,12 @@ class LLMClient:
             # 401/403 是鉴权失败。400 且非鉴权类时归 LLMError 而非 Unavailable，
             # 避免误导性的"服务不可用"唤醒兜底（2026-08-04 修复）。
             body = (e.response.text or "").lower()
+            structured_unsupported = bool(response_format) and (
+                "response_format" in body or "json_object" in body
+                or "structured output" in body or "json mode" in body
+            )
+            if structured_unsupported:
+                raise LLMError(f"structured response unsupported: {e.response.text[:200]}") from e
             is_template_error = e.response.status_code == 400 and (
                 "jinja" in body or "prompt template" in body or "template" in body
             )
