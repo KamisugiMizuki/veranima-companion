@@ -179,6 +179,32 @@ def test_knowledge_cutoff_forces_post_2025_dynamic_search():
     assert decision.should_search and decision.reason == "knowledge_cutoff"
 
 
+def test_lifestyle_schedule_with_date_words_does_not_force_search():
+    decision = SearchTrigger().determine(
+        "早上起得早，四点出头就醒了，明天把今天的份补上吧",
+        allow_implicit=True,
+        today=dt.date(2026, 8, 22),
+    )
+    assert decision.should_search is False
+    assert SearchTrigger().determine("明天看电影", allow_implicit=True, today=dt.date(2026, 8, 22)).should_search is False
+
+
+def test_agent_persists_only_visible_final_answer_when_llm_returns_thinking(agent):
+    raw = (
+        "思考过程：\n\n"
+        "1. **分析输入**：用户今天很累。\n\n"
+        "2. **角色扮演定位**：应该关心用户。\n\n"
+        "6. **最终调整**：\n"
+        "早点睡，明天再补高数吧。\n\n"
+        "早点睡，明天再补高数吧。"
+    )
+    agent.llm.chat = lambda messages, **kwargs: raw
+    result = agent.handle("今天没力气，明天把高数补上吧")
+    assert result.reply == "早点睡，明天再补高数吧。"
+    stored = agent.memory.recent_messages(limit=1)[0]["content"]
+    assert stored == "早点睡，明天再补高数吧。"
+
+
 def test_semantic_locator_is_bounded_and_collects_candidates():
     class Client:
         def __init__(self):

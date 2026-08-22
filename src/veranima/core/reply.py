@@ -77,7 +77,7 @@ def _strip_fence(raw: str) -> str:
 
 
 def _clean_text(value: Any, max_chars: int) -> str:
-    text = strip_internal_prompt_leak(strip_echoed_time_prefixes(str(value or "").strip()))
+    text = strip_thinking_trace(strip_internal_prompt_leak(strip_echoed_time_prefixes(str(value or "").strip())))
     if len(text) > max_chars:
         text = text[:max_chars]
     return text
@@ -107,6 +107,27 @@ def strip_internal_prompt_leak(text: str) -> str:
     text = re.sub(r"(?m)^\s*【风格参数（学习所得.*$\r?\n?", "", text)
     text = re.sub(r"(?m)^\s*【表达意图】.*$\r?\n?", "", text)
     return _INTERNAL_SEARCH_LINES.sub("", text).strip()
+
+
+def strip_thinking_trace(text: str) -> str:
+    """Keep the final answer when a model emits a visible reasoning draft."""
+    value = str(text or "").strip()
+    value = re.sub(r"<think>.*?</think>\s*", "", value, flags=re.S | re.I)
+    if not re.search(r"(?:思考过程|分析输入|草拟回复|规则核对|最终调整|最终回复)", value):
+        return value
+    matches = list(re.finditer(
+        r"(?:^|\n)\s*(?:\d+\.\s*)?\*{0,2}(?:最终调整|最终回复|最终答案)\*{0,2}\s*[:：]?\s*",
+        value,
+    ))
+    if matches:
+        value = value[matches[-1].end():].strip()
+    else:
+        value = re.split(r"(?:思考过程|分析输入|角色扮演定位|草拟回复|精简与风格化|规则核对)\s*[:：]", value, maxsplit=1)[-1].strip()
+    value = re.sub(r"\n\s*\d+\.\s+\*\*[^\n]+\*\*[^\n]*", "\n", value)
+    paragraphs = [part.strip() for part in re.split(r"\n{2,}", value) if part.strip()]
+    if len(paragraphs) >= 2 and paragraphs[-1] == paragraphs[-2]:
+        paragraphs.pop()
+    return "\n\n".join(paragraphs).strip()
 
 
 def _valid_tone(tone: str, card_tones: list[str] | None) -> str:
@@ -172,7 +193,7 @@ def _fallback_text(raw: str, max_chars: int) -> Reply:
     """
     cleaned = _strip_fence(raw)
     if cleaned:
-        cleaned = strip_echoed_time_prefixes(cleaned)[:max_chars]
+        cleaned = strip_thinking_trace(strip_internal_prompt_leak(strip_echoed_time_prefixes(cleaned)))[:max_chars]
         return Reply(segments=[ReplySegment(text=cleaned, tone="", portrait="")])
     return Reply(degraded="empty_output")
 
@@ -193,7 +214,7 @@ def parse_reply(raw: str, *, channel: str = "im", card: Any = None,
         card_tones = list(card.tones) if card is not None else None
 
     if channel != "tts":
-        return Reply(segments=[ReplySegment(text=strip_internal_prompt_leak(strip_echoed_time_prefixes(raw))[:max_chars])])
+        return Reply(segments=[ReplySegment(text=strip_thinking_trace(strip_internal_prompt_leak(strip_echoed_time_prefixes(raw)))[:max_chars])])
 
     # TTS：确定性 JSON 解析
     cleaned = _strip_fence(raw)

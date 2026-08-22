@@ -52,6 +52,13 @@ class SearchTrigger:
     _freshness_words = ("最近", "今天", "昨天", "刚刚", "这周", "目前", "现在", "最新", "新出的", "更新", "上线", "发布", "风评", "后续")
     _stable_patterns = ("是哪年", "什么时候发行", "什么是", "怎么用", "是什么意思")
     _current_fact_patterns = ("哪一年发布", "哪年发布", "什么时候发布", "何时发布", "发布日期", "发行日期", "发售日", "上市时间", "上线时间")
+    _date_fact_patterns = ("有哪些", "有什么", "是什么", "哪一年", "哪年", "什么时候", "何时", "谁", "哪里", "多少")
+    _lifestyle_words = (
+        "睡觉", "好困", "困了", "补上", "高数", "作业", "学习", "复习", "作息", "休息",
+        "吃饭", "起床", "醒了", "上班", "下班", "回家", "出门", "安排", "计划", "准备",
+        "答应", "承诺", "没力气", "没劲", "累了",
+        "看电影", "追剧", "看剧", "打游戏", "玩游戏",
+    )
     _casual_words = ("好累", "陪我聊", "心情", "想你", "睡不着", "好困", "无聊")
     _ambiguous_words = ("那个", "这次", "它", "哪个", "叫什么")
     _dynamic_words = (
@@ -98,13 +105,28 @@ class SearchTrigger:
         date_reference = time_range is not None
         dynamic_domain = any(word in text for word in self._dynamic_words)
         post_cutoff = requires_post_cutoff_search(time_range)
+        date_fact_intent = dynamic_domain or is_current_fact or any(
+            pattern in text for pattern in self._date_fact_patterns
+        )
+        lifestyle_intent = any(word in text for word in self._lifestyle_words)
+        # 日期词本身不是事实查询："明天补作业"、"今天早点睡"等生活安排
+        # 不应因知识截止线被送进搜索。只有带动态领域/事实问法时才升级。
+        factual_question = is_current_fact or any(
+            pattern in text for pattern in self._date_fact_patterns
+        )
+        post_cutoff = post_cutoff and date_fact_intent and not (
+            lifestyle_intent and not factual_question
+        )
+        implicit_freshness = post_cutoff or allow_implicit and (
+            any(word in text for word in self._freshness_words)
+            or is_current_fact
+            or ambiguous_reference
+            or (date_reference and any(word in text for word in self._dynamic_words))
+        )
+        if lifestyle_intent and not factual_question:
+            implicit_freshness = False
         implicit = unknown_entity or (
-            post_cutoff or allow_implicit and (
-                any(word in text for word in self._freshness_words)
-                or is_current_fact
-                or ambiguous_reference
-                or (date_reference and any(word in text for word in self._dynamic_words))
-            )
+            implicit_freshness
         )
         if not explicit and not implicit:
             return SearchDecision(False, "no_explicit_request")

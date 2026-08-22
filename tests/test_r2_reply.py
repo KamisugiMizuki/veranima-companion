@@ -34,6 +34,11 @@ def test_im_reply_strips_multiline_internal_preferences():
     assert parse_reply(raw, channel="im").text == "真正的回答。"
 
 
+def test_im_reply_strips_think_tags():
+    raw = "<think>用户很累，应该劝他休息。</think>\n早点睡吧。"
+    assert parse_reply(raw, channel="im").text == "早点睡吧。"
+
+
 def test_render_im_reply_signature():
     """R2_SPEC 3：render_im(reply, state) -> str。"""
     st = AgentState(attachment=0.5)

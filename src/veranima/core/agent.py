@@ -709,8 +709,8 @@ class Agent:
             reply = cut + "……（我这边有点忙，回头细说）"
 
         # Prompt 协议时间只供模型理解；模型复述到正文时在共享出口剥离。
-        from .reply import strip_echoed_time_prefixes, strip_internal_prompt_leak
-        reply = strip_internal_prompt_leak(strip_echoed_time_prefixes(reply))
+        from .reply import strip_echoed_time_prefixes, strip_internal_prompt_leak, strip_thinking_trace
+        reply = strip_thinking_trace(strip_internal_prompt_leak(strip_echoed_time_prefixes(reply)))
 
         # ===== R0 阶段 4: parse_reply（R0_SPEC 5）=====
         # R2 表情标签驱动：tts 通道解析结构化输出（text/tone/portrait）（R2_SPEC 2）
