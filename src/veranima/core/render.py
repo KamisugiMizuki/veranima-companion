@@ -20,6 +20,7 @@ _MULTI_NL = re.compile(r"\n{3,}")
 _EMOJI = re.compile(
     "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F000-\U0001F0FF\uFE0F\u2764\u2B50]"
 )
+_URL = re.compile(r"https?://[^\s)）]+")
 
 
 def _limit_exclamations(text: str) -> str:
@@ -108,15 +109,15 @@ def render_tts(reply, state=None) -> list:
     for seg in reply.segments:
         if seg.suppress_tts:
             out.append(SpeechSegment(
-                text=seg.ja_text or seg.text, tone=seg.tone, portrait=seg.portrait,
+                text=_URL.sub("", seg.ja_text or seg.text).strip(), tone=seg.tone, portrait=seg.portrait,
                 display_text=seg.translation or seg.text,
                 suppress_tts=True,
             ))
         elif seg.ja_text:
             out.append(SpeechSegment(
-                text=seg.ja_text, tone=seg.tone, portrait=seg.portrait,
+                text=_URL.sub("", seg.ja_text).strip(), tone=seg.tone, portrait=seg.portrait,
                 display_text=seg.translation or seg.text,
             ))
         else:
-            out.append(SpeechSegment(text=seg.text, tone=seg.tone, portrait=seg.portrait))
+            out.append(SpeechSegment(text=_URL.sub("", seg.text).strip(), tone=seg.tone, portrait=seg.portrait))
     return out

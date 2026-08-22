@@ -595,6 +595,10 @@ class PetServer:
                         "attention": {k: attention.get(k) for k in (
                             "enabled", "paused", "global_scan_sec", "mouse_focus_stay_sec",
                             "habituation_sec", "observe_cache_ttl_sec", "observe_daily_budget", "crop_ratio")},
+                        "search": {k: (cfg.get("search", {}) or {}).get(k) for k in (
+                            "enabled", "base_url", "timeout_seconds", "cache_ttl_seconds",
+                            "allow_implicit_freshness_search", "semantic_locator_enabled",
+                            "semantic_locator_max_queries", "semantic_locator_max_verify_queries")},
                         "proactive": {**{k: proactive.get(k) for k in ("enabled", "quiet_hours_enabled")},
                                       "channels": proactive.get("channels", {})},
                         "relationship_tension": {k: relationship_tension.get(k) for k in ("enabled", "high_tension_proactive")},
@@ -683,6 +687,11 @@ class PetServer:
                     for k in ("enabled", "paused", "global_scan_sec", "mouse_focus_stay_sec",
                               "habituation_sec", "observe_cache_ttl_sec", "observe_daily_budget", "crop_ratio"):
                         if k in attention: cfg.setdefault("attention", {})[k] = attention[k]
+                    search = d.get("search", {})
+                    for k in ("enabled", "base_url", "timeout_seconds", "cache_ttl_seconds",
+                              "allow_implicit_freshness_search", "semantic_locator_enabled",
+                              "semantic_locator_max_queries", "semantic_locator_max_verify_queries"):
+                        if k in search: cfg.setdefault("search", {})[k] = search[k]
                     save_config(cfg)
                     await self._send({"type": "config_saved", "id": msg.get("id"), "ok": True,
                                      "restart": "重启核心生效"})

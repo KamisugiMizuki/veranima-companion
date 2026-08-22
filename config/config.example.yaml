@@ -73,7 +73,7 @@ stt:
 # 角色卡（CCv3 兼容 JSON；留空则用内置示例卡）
 character_card: "config/character.json"
 
-# 联网搜索（本地 SearXNG；Phase 2–3 已实现，默认关闭隐式触发）
+# 联网搜索（本地 SearXNG；Phase 2–4 已实现，语义定位默认关闭）
 search:
   enabled: false
   base_url: "http://127.0.0.1:8080"
@@ -87,6 +87,9 @@ search:
   default_categories: [general, news]
   allow_user_explicit_request: true
   allow_implicit_freshness_search: false
+  semantic_locator_enabled: false
+  semantic_locator_max_queries: 3
+  semantic_locator_max_verify_queries: 1
   write_to_long_term_memory: false
 
 # 记忆

@@ -54,6 +54,12 @@ def test_render_tts_mono():
     assert segs[0].display_text == ""
 
 
+def test_render_tts_removes_source_urls_from_speech():
+    r = _reply(ReplySegment(text="详情见 https://example.com/news"))
+    segs = render_tts(r)
+    assert "https://" not in segs[0].text
+
+
 def test_render_tts_suppress_tts():
     """双语缺 ja：suppress_tts → 仍给 display_text，不送日语。"""
     r = _reply(ReplySegment(text="只有中文", translation="只有中文", suppress_tts=True))

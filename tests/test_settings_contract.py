@@ -26,6 +26,10 @@ def test_settings_ui_ids_and_config_contract():
         assert field in html + js
     for field in ("pro-qq-gap", "pro-pet-gap"):
         assert field in html + js
+    for field in ("search-enabled", "search-base", "search-timeout", "search-cache", "search-implicit", "search-semantic"):
+        assert field in html + js + server
+    for field in ("semantic_locator_enabled", "semantic_locator_max_queries", "semantic_locator_max_verify_queries"):
+        assert field in server
     for field in ("tension-enabled", "tension-high-proactive"):
         assert field in html + js + server
     for field in ("pro-gap", "pro-source-gap", "pro-max", "pro-qq-source-gap", "pro-pet-source-gap", "global_max_per_day"):

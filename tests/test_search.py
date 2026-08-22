@@ -8,7 +8,15 @@ from veranima.core.agent import Agent
 from veranima.core.character import CharacterCard
 from veranima.core.state import AgentState
 from veranima.memory.store import MemoryStore
-from veranima.tools.search import EvidencePack, SearchTrigger, SearXNGClient, classify_search_uncertainty
+from veranima.tools.search import (
+    EvidencePack,
+    SearchTrigger,
+    SemanticLocator,
+    SearXNGClient,
+    analyze_search_intent,
+    classify_search_uncertainty,
+    sanitize_search_query,
+)
 
 
 class FakeEmbed:
@@ -86,10 +94,58 @@ def test_unknown_entity_fact_fallback_search():
     assert trigger.determine("你听过 Project Mugen 吗？", allow_implicit=True).should_search
     assert not trigger.determine("今天好累，陪我聊会儿", allow_implicit=True).should_search
     assert classify_search_uncertainty("一个叫《星痕共鸣》的东西是什么")["should_search"]
+    assert sanitize_search_query("帮我查一下《星痕共鸣》")
+    assert sanitize_search_query("我的 API key 是 sk-secret，帮我查") is None
+
+
+def test_dynamic_state_intent_has_time_anchor():
+    intent = analyze_search_intent("帮我找找现在明日方舟开启的活动复刻")
+    assert intent.kind == "dynamic_state"
+    assert intent.time_range == ("now-3d", "now+1d")
+    assert SemanticLocator().should_upgrade(intent)
+    contextual = analyze_search_intent("那个复刻活动叫什么", "我们之前聊的是《明日方舟》")
+    assert contextual.entity == "明日方舟"
+    assert contextual.kind == "dynamic_state"
+
+
+def test_semantic_locator_is_bounded_and_collects_candidates():
+    class Client:
+        def __init__(self):
+            self.calls = []
+
+        def search(self, query, **kwargs):
+            self.calls.append(query)
+            return [{
+                "title": "《火蓝之心》复刻活动公告",
+                "url": "https://example.com/arknights",
+                "snippet": "明日方舟当前开启火蓝之心复刻活动",
+            }]
+
+    client = Client()
+    result = SemanticLocator(max_queries=3, max_verify_queries=1).locate(
+        "帮我找找现在明日方舟开启的活动复刻", client=client,
+    )
+    assert 1 <= len(client.calls) <= 4
+    assert "火蓝之心" in result.evidence.candidate_entities
+    assert "时间范围" in result.evidence.to_prompt()
+
+
+def test_time_range_filters_old_dated_results_but_keeps_unknown_dates():
+    now = __import__("datetime").datetime(2026, 8, 22, tzinfo=__import__("datetime").timezone.utc)
+    pack = EvidencePack.from_results("活动", [
+        {"title": "旧", "url": "https://example.com/old", "snippet": "old", "publishedDate": "2020-01-01"},
+        {"title": "新", "url": "https://example.com/new", "snippet": "new", "publishedDate": "2026-08-21"},
+        {"title": "未知日期", "url": "https://example.com/unknown", "snippet": "unknown"},
+    ], now=now, time_range=("now-3d", "now+1d"))
+    assert [item.title for item in pack.results] == ["新", "未知日期"]
+    assert "发布日期未核实" in pack.to_prompt()
+    assert "不要朗读 URL" in pack.to_prompt(channel="tts")
+    assert "不要朗读 URL" not in pack.to_prompt(channel="im")
 
 
 def test_search_enabled_from_config(agent):
     assert agent.search_enabled
+    assert not SearchTrigger().determine("帮我查一下天气", allow_explicit=False).should_search
 
 
 def test_agent_explicit_search_flow(agent):
@@ -116,6 +172,22 @@ def test_agent_unknown_entity_fallback_flow(agent):
     agent.search_config["allow_implicit_freshness_search"] = True
     agent.handle("一个叫《星痕共鸣》的游戏是什么？")
     assert fake.calls == 1
+
+
+def test_agent_semantic_locator_flow_is_opt_in(agent):
+    fake = FakeSearch([{
+        "title": "《火蓝之心》复刻活动公告",
+        "url": "https://example.com/arknights",
+        "snippet": "明日方舟当前开启火蓝之心复刻活动",
+    }])
+    agent.search = fake
+    agent.search_config.update({
+        "allow_implicit_freshness_search": True,
+        "semantic_locator_enabled": True,
+    })
+    agent.handle("帮我找找现在明日方舟开启的活动复刻")
+    assert 1 <= fake.calls <= 4
+    assert any("时间范围" in str(m.get("content")) for m in agent.llm.messages if m["role"] == "system")
 
 
 def test_search_disabled_no_tools(tmp_path):
@@ -200,3 +272,46 @@ def test_search_client_cache_avoids_duplicate_request():
     finally:
         search_module.httpx.Client = original
     assert len(calls) == 1
+
+
+def test_search_healthcheck_uses_bounded_probe(monkeypatch):
+    client = SearXNGClient()
+    class Response:
+        status_code = 200
+        def json(self): return {"results": []}
+    class Client:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def get(self, *args, **kwargs): return Response()
+    import veranima.tools.search as search_module
+    monkeypatch.setattr(search_module.httpx, "Client", lambda **kwargs: Client())
+    assert client.healthcheck() is True
+
+
+def test_search_quality_sort_happens_before_result_limit():
+    client = SearXNGClient(max_results=1)
+    raw = {
+        "results": [
+            {"title": "论坛传言", "url": "https://forum.example/a", "content": "有人说", "publishedDate": "2026-08-22"},
+            {"title": "官方公告", "url": "https://mihoyo.com/b", "content": "官方确认", "publishedDate": "2026-08-20"},
+        ]
+    }
+
+    class Response:
+        content = b"{}"
+        def raise_for_status(self): pass
+        def json(self): return raw
+
+    class Client:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def get(self, *args, **kwargs): return Response()
+
+    import veranima.tools.search as search_module
+    original = search_module.httpx.Client
+    search_module.httpx.Client = lambda **kwargs: Client()
+    try:
+        result = client.search("质量排序", force_refresh=True)
+    finally:
+        search_module.httpx.Client = original
+    assert result[0]["title"] == "官方公告"

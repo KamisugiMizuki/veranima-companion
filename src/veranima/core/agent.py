@@ -20,7 +20,7 @@ from .segments import extract_segments
 from .ambient import ChannelActivityTracker, ProactiveCandidate, ProactiveGate, SceneLock
 from .interrupt import InterruptDecider, TopicFrequency
 from ..memory.store import MemoryStore
-from ..tools.search import EvidencePack, SearchTrigger, SearXNGClient
+from ..tools.search import EvidencePack, SearchTrigger, SemanticLocator, SearXNGClient, analyze_search_intent
 from .character import CharacterCard
 from .learning import LanguageMirror, StyleLearner, extract_feedback
 from .proactive import GreetingScheduler, OccasionChecker
@@ -212,6 +212,10 @@ class Agent:
             cache_ttl=float(search_cfg.get("cache_ttl_seconds", 900)),
         )
         self.search_trigger = SearchTrigger()
+        self.semantic_locator = SemanticLocator(
+            max_queries=int(search_cfg.get("semantic_locator_max_queries", 3)),
+            max_verify_queries=int(search_cfg.get("semantic_locator_max_verify_queries", 1)),
+        )
 
     # ---------- MVP2 状态 ----------
 
@@ -568,18 +572,37 @@ class Agent:
                     item.get("content", "") for item in self._history[-10:]
                     if item.get("role") in {"user", "assistant"}
                 )},
+                allow_explicit=bool(self.search_config.get("allow_user_explicit_request", True)),
             )
             if decision.should_search:
-                logger.info("explicit web search: %s", decision.query)
-                evidence = EvidencePack.from_results(
-                    decision.query,
-                    self.search.search(
-                        decision.query,
-                        language=str(self.search_config.get("default_language", "zh-CN")),
-                        force_refresh=decision.force_refresh,
-                    ),
+                logger.info("web search requested: reason=%s query_len=%d", decision.reason, len(decision.query))
+                language = str(self.search_config.get("default_language", "zh-CN"))
+                intent = analyze_search_intent(
+                    user_text,
+                    " ".join(item.get("content", "") for item in self._history[-10:]),
                 )
-                extra_blocks.append(evidence.to_prompt())
+                if self.search_config.get("semantic_locator_enabled", False) and self.semantic_locator.should_upgrade(intent):
+                    located = self.semantic_locator.locate(
+                        user_text,
+                        client=self.search,
+                        language=language,
+                        force_refresh=decision.force_refresh,
+                        context_text=" ".join(item.get("content", "") for item in self._history[-10:]),
+                    )
+                    evidence = located.evidence
+                    logger.info("semantic search: kind=%s queries=%d verified=%s", intent.kind, len(located.queries), located.verified)
+                else:
+                    evidence = EvidencePack.from_results(
+                        decision.query,
+                        self.search.search(
+                            decision.query,
+                            language=language,
+                            force_refresh=decision.force_refresh,
+                        ),
+                        time_range=intent.time_range,
+                        intent_kind=intent.kind,
+                    )
+                extra_blocks.append(evidence.to_prompt(channel=channel))
         if interrupt_level > 0:
             extra_blocks.append(_interrupt_prompt(interrupt_level))
         system = build_system_prompt(
