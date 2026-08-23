@@ -116,7 +116,7 @@ def strip_thinking_trace(text: str) -> str:
     if not re.search(r"(?:思考过程|分析输入|草拟回复|规则核对|最终调整|最终回复)", value):
         return value
     matches = list(re.finditer(
-        r"(?:^|\n)\s*(?:\d+\.\s*)?\*{0,2}(?:最终调整|最终回复|最终答案)\*{0,2}\s*[:：]?\s*",
+        r"(?:^|\n)\s*(?:\d+\.\s*)?(?:\*{2}(?:最终调整|最终回复|最终答案)\*{2}\s*[:：]?|(?:最终调整|最终回复|最终答案)\s*[:：])\s*",
         value,
     ))
     if matches:
@@ -187,12 +187,37 @@ def _segments_from_data(data: dict, *, bilingual: bool, max_segments: int,
     return out
 
 
+def _structured_data_candidates(raw: str) -> list[dict]:
+    """从混合 Markdown/分析文本中提取可解析的 segments JSON 对象。"""
+    text = _strip_fence(raw)
+    decoder = json.JSONDecoder()
+    candidates: list[dict] = []
+    for index, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            value, _end = decoder.raw_decode(text, index)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(value, dict) and isinstance(value.get("segments"), list):
+            candidates.append(value)
+    return candidates
+
+
 def _parse_structured_segments(raw: str, *, max_chars: int) -> list[ReplySegment] | None:
-    """Parse the user-visible JSON contract shared by IM and TTS."""
+    """Parse the last visible segments object in a mixed model response."""
     try:
         data = json.loads(_strip_fence(raw))
     except (json.JSONDecodeError, TypeError):
-        return None
+        candidates = _structured_data_candidates(raw)
+        data = None
+        for candidate in reversed(candidates):
+            if _segments_from_data(
+                candidate, bilingual=False, max_segments=6, max_chars=max_chars,
+                card_tones=None, card=None,
+            ):
+                data = candidate
+                break
     if not isinstance(data, dict) or not isinstance(data.get("segments"), list):
         return None
     return _segments_from_data(
@@ -279,7 +304,15 @@ def parse_reply(raw: str, *, channel: str = "im", card: Any = None,
             return Reply(degraded="invalid_structured_output")
         return _fallback_text(raw, max_chars)
     except (json.JSONDecodeError, ValueError):
-        # 容错：模型可能输出残缺/重复 JSON —— 用正则找候选对象逐个尝试
+        # 混合分析文本/多个 JSON：优先取最后一个完整且有可见文本的 segments 对象。
+        for data in reversed(_structured_data_candidates(raw)):
+            segs = _segments_from_data(
+                data, bilingual=bilingual, max_segments=max_segments,
+                max_chars=max_chars, card_tones=card_tones, card=card,
+            )
+            if segs:
+                return Reply(segments=segs)
+        # 再兼容残缺对象：模型可能只留下一个可恢复的 segment。
         for m in re.finditer(r"\{[^{}]*\"(?:text|ja|zh)\"[^{}]*\}", cleaned):
             try:
                 obj = json.loads(m.group(0))

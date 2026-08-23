@@ -91,6 +91,28 @@ def test_tts_empty_structured_json_does_not_echo_payload():
     assert parsed.text == ""
 
 
+def test_tts_mixed_analysis_and_multiple_json_uses_last_visible_reply():
+    raw = (
+        "1. **分析输入**：用户又修了代码。\n"
+        '`{"segments":[{"text":"草稿回复","tone":"调侃"}]}\n'
+        "由岐的语言风格比较利落。\n"
+        '`{"segments":[{"text":"最后这一版","tone":"调侃"}]}\n'
+    )
+    parsed = parse_reply(raw, channel="tts", card=type("Card", (), {"tones": ["调侃"], "veranima": {}})())
+    assert parsed.text == "最后这一版"
+
+
+def test_tts_mixed_bilingual_uses_last_ja_zh_reply():
+    raw = (
+        "分析输入：先想一遍。\n"
+        '`{"segments":[{"ja":"草稿","zh":"草稿"}]}\n'
+        '`{"segments":[{"ja":"おはよう","zh":"早上好"}]}\n'
+    )
+    parsed = parse_reply(raw, channel="tts", bilingual=True, card=type("Card", (), {"tones": ["温柔"], "veranima": {}})())
+    assert parsed.text == "早上好"
+    assert parsed.ja_text == "おはよう"
+
+
 def test_render_tts_mono():
     """单语：text=原文。"""
     r = _reply(ReplySegment(text="嗯，在的"))

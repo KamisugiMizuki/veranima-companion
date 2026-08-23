@@ -29,6 +29,26 @@ def test_im_structured_json_keeps_only_visible_segment_text():
     assert "thinking" not in r.text
 
 
+def test_im_mixed_thinking_and_multiple_json_uses_last_visible_reply():
+    raw = (
+        "1. **分析输入**：用户又修了代码。\n\n"
+        '`{"segments":[{"text":"草稿回复","tone":"调侃"}]}\n\n'
+        "由岐的语言风格比较利落。\n"
+        '`{"segments":[{"text":"吃饱了就又钻回代码堆里了是吧？","tone":"调侃"}]}\n'
+    )
+    parsed = parse_reply(raw, channel="im")
+    assert parsed.text == "吃饱了就又钻回代码堆里了是吧？"
+
+
+def test_im_mixed_empty_first_json_uses_later_visible_reply():
+    raw = '`{"segments":[]}` 之后 `{"segments":[{"text":"实际回复"}]}`'
+    assert parse_reply(raw, channel="im").text == "实际回复"
+
+
+def test_plain_final_reply_phrase_is_not_stripped():
+    assert parse_reply("最终回复", channel="im").text == "最终回复"
+
+
 def test_empty_structured_json_does_not_echo_payload():
     r = parse_reply('{"segments":[],"thinking":"secret"}', channel="im")
     assert r.degraded == "empty_structured_output"

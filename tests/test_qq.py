@@ -111,6 +111,18 @@ def test_whitelist_processed(adapter, agent):
     assert adapter.bot.sent == [("send", "你好呀")]
 
 
+def test_mixed_model_reply_reaches_qq_as_last_visible_text(adapter, agent):
+    mixed = (
+        "1. **分析输入**：用户又修了代码。\n"
+        '`{"segments":[{"text":"草稿回复","tone":"调侃"}]}\n'
+        "说明文字。\n"
+        '`{"segments":[{"text":"最后一版给用户看的话","tone":"调侃"}]}\n'
+    )
+    agent.llm.reply = mixed
+    run(adapter._handle_private({"user_id": 10001, "message_type": "private", "message": "又修了一个半小时代码"}))
+    assert adapter.bot.sent == [("send", "最后一版给用户看的话")]
+
+
 def test_whitelist_str_and_int(agent):
     """白名单支持字符串/数字混写。"""
     a = QQAdapter(agent, allowed_qq=[10001, "20002"])
