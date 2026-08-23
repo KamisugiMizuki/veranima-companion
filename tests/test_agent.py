@@ -192,6 +192,25 @@ def test_generated_reply_does_not_echo_prompt_time_prefixes(agent):
     assert memory.recent_messages(limit=1)[0]["content"] == "那就测试呗。"
 
 
+def test_busy_scene_prefers_concise_without_shortening_mixed_reply(agent):
+    card, memory = agent
+    visible = "哟，终于舍得把高数书翻开了？看你今天状态还行，继续保持，别又看两页就钻回代码里了啊。先把手机放远一点，认真学一会儿。"
+    mixed = (
+        "1. **分析输入**：用户开始学习。\n"
+        f'`{{"segments":[{{"text":"{visible}","tone":"调侃"}}]}}\n'
+    )
+    llm = FakeLLM(reply=mixed)
+    a = Agent(card=card, memory=memory, llm=llm, state=AgentState(), config={})
+    result = a.handle("已严肃开始学习")
+    stored = memory.recent_messages(limit=1)[0]["content"]
+    assert result.reply == visible
+    assert result.reply_obj.text == visible
+    assert "我这边有点忙" not in result.reply
+    assert stored == result.reply
+    assert "场景偏好·忙碌" in llm.last_messages[0]["content"]
+    assert "尽量简短" in llm.last_messages[0]["content"]
+
+
 def test_handle_model_loaded_but_chat_fails(agent):
     """模型已加载但生成异常：异常分类兜底。（proactive 关掉，避免随机触发影响断言）"""
     card, memory = agent

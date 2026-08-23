@@ -123,6 +123,27 @@ def test_mixed_model_reply_reaches_qq_as_last_visible_text(adapter, agent):
     assert adapter.bot.sent == [("send", "最后一版给用户看的话")]
 
 
+def test_busy_mixed_reply_preserves_complete_visible_text(adapter, agent):
+    visible = "哟，终于舍得把高数书翻开了？看你今天状态还行，继续保持，别又看两页就钻回代码里了啊。先把手机放远一点，认真学一会儿。"
+    agent.llm.reply = (
+        "1. **分析输入**：用户开始学习。\n"
+        f'`{{"segments":[{{"text":"{visible}","tone":"调侃"}}]}}\n'
+    )
+    run(adapter._handle_private({"user_id": 10001, "message_type": "private", "message": "已严肃开始学习"}))
+    sent = adapter.bot.sent[0][1]
+    assert sent == visible
+    assert "（我这边有点忙，回头细说）" not in sent
+    assert len(sent) > 40
+
+
+def test_busy_reply_obj_preserves_complete_structured_text(adapter, agent):
+    full_text = "哟，终于舍得把高数书翻开了？看你今天状态还行，继续保持，今天先认真学一会儿，别又看两页就钻回代码里了啊。"
+    agent.llm.reply = '{"segments":[{"text":"' + full_text + '"}]}'
+    run(adapter._handle_private({"user_id": 10001, "message_type": "private", "message": "已严肃开始学习"}))
+    sent = adapter.bot.sent[0][1]
+    assert sent == full_text
+
+
 def test_whitelist_str_and_int(agent):
     """白名单支持字符串/数字混写。"""
     a = QQAdapter(agent, allowed_qq=[10001, "20002"])

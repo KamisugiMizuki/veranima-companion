@@ -566,6 +566,11 @@ class Agent:
             self.mirror.to_prompt_block(),
             self.promises.to_prompt_block(query_hint=query_hint),
         ]
+        if scene == "busy":
+            extra_blocks.append(
+                "【场景偏好·忙碌】用户正在学习或处理事情。回复尽量简短，优先直接回应当前输入；"
+                "但必须先保证事实、语义和协议完整，不得截断句子，不得省略必要信息，不得输出忙碌状态或内部处理说明。"
+            )
         if response_plan is not None:
             # P-9：表达意图注入（不暴露内部思考；只给意图与开场）
             plan_bits = [f"intent={response_plan.intent}", f"长度={response_plan.desired_length}"]
@@ -702,12 +707,6 @@ class Agent:
         except Exception as e:
             logger.error("chat failed: %s", e)
             reply = "（我这边有点卡……让我缓一下，你再说一遍？）"
-
-        # 5.5 场景锁（R4）：busy 场景截短回复（模拟"在忙，简单回一句"）
-        max_len = self.scene_lock.max_len()
-        if max_len and len(reply) > max_len:
-            cut = reply[:max_len].rstrip("，。！？ ")
-            reply = cut + "……（我这边有点忙，回头细说）"
 
         # Prompt 协议时间只供模型理解；模型复述到正文时在共享出口剥离。
         from .reply import strip_echoed_time_prefixes, strip_internal_prompt_leak, strip_thinking_trace

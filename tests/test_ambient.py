@@ -17,11 +17,10 @@ def agent(tmp_path):
 
 # ---------- 场景锁 ----------
 
-def test_scene_enter_busy_and_shorten():
+def test_scene_enter_busy():
     lock = SceneLock(now=1000.0)
     assert lock.note("我去看个电影了") == "busy"
     assert lock.current() == "busy"
-    assert lock.max_len() == 40  # busy 限制回复长度
     assert lock.reply_delay() == 30
 
 
@@ -36,7 +35,6 @@ def test_scene_exit_on_return():
     lock.note("我去看个电影了")
     assert lock.note("看完了，回来了") == "normal"
     assert lock.current() == "normal"
-    assert lock.max_len() is None
 
 
 def test_scene_auto_reset_after_2h():

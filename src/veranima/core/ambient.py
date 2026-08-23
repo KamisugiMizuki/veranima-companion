@@ -38,7 +38,6 @@ class SceneLock:
     """
 
     AUTO_RESET_SECONDS = 2 * 3600   # 2h 无触碰自动恢复
-    BUSY_MAX_LEN = 40               # busy 场景回复长度上限（字）
     BUSY_DELAY_SECONDS = 30         # busy 场景回复延迟下限（模拟「在忙没看到」）
     AWAY_DELAY_SECONDS = 300        # away 场景回复延迟（不打扰，等回来）
 
@@ -96,11 +95,6 @@ class SceneLock:
         if s == "busy":
             return self.BUSY_DELAY_SECONDS
         return 0.0
-
-    def max_len(self) -> int | None:
-        """当前场景回复长度上限（字）；None=不限制。"""
-        return self.BUSY_MAX_LEN if self.current() == "busy" else None
-
 
 class ChannelActivityTracker:
     """通道互斥（DESIGN 5.4 通道互斥）：各通道最近活动时间，30min 窗口。"""
