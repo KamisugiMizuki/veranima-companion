@@ -133,6 +133,27 @@ def test_late_reply_uses_last_user_msg(agent):
     assert msg
 
 
+def test_late_reply_strips_structured_json_before_persisting(agent):
+    agent.memory.store_message("user", "昨天我认真回答了一个问题", 80, "平静")
+    agent.llm.reply = '{"segments":[{"text":"刚醒。昨天你那么认真地回答，我可是好好记着了。","tone":"率直","portrait":"微笑"}]}'
+    msg = agent.late_reply()
+    assert msg == "刚醒。昨天你那么认真地回答，我可是好好记着了。"
+    assert "segments" not in msg
+    assert agent.memory.recent_messages(limit=1)[0]["content"] == msg
+
+
+def test_late_reply_does_not_echo_truncated_structured_json(agent):
+    agent.memory.store_message("user", "今天继续推进高数", 80, "平静")
+    agent.llm.reply = (
+        '**\n    `{"segments":[{"text":"今天的高数推得怎么样了？要是头大就先搁着，不用急着回我。",'
+        '"tone":"慵懒","portrait'
+    )
+    msg = agent.late_reply()
+    assert "segments" not in msg
+    assert "portrait" not in msg
+    assert msg
+
+
 def test_late_reply_fallback_without_llm(agent):
     agent.memory.store_message("user", "下周要去面试了", 80, "平静")
     agent.llm = FakeLLM()

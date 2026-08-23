@@ -233,6 +233,48 @@ def _is_json_object(raw: str) -> bool:
         return False
 
 
+def _looks_like_structured_response(raw: str) -> bool:
+    """识别 JSON/Markdown 结构化协议残片，避免把协议回退成可见文本。"""
+    value = str(raw or "")
+    return bool(re.search(r"[\"']segments[\"']\s*:\s*\[|[\"'](?:tone|portrait|thinking|reasoning)[\"']\s*:", value))
+
+
+def _truncated_segment(raw: str, *, bilingual: bool, max_chars: int,
+                       card_tones: list[str] | None = None, card: Any = None) -> ReplySegment | None:
+    """从被截断的结构化响应中恢复可见 text/zh/ja，禁止回显协议残片。"""
+    value = str(raw or "")
+    keys = ("zh", "text", "ja") if bilingual else ("text",)
+    key_pattern = "|".join(keys)
+    match = re.search(
+        rf"[\"'](?:{key_pattern})[\"']\s*:\s*([\"'])(?P<text>(?:\\.|(?!\1).)*)",
+        value,
+        flags=re.S,
+    )
+    if not match:
+        return None
+    try:
+        text = json.loads('"' + match.group("text") + '"')
+    except (json.JSONDecodeError, TypeError):
+        text = match.group("text")
+    text = _clean_text(text, max_chars)
+    if not text:
+        return None
+    if not bilingual:
+        return ReplySegment(
+            text=text,
+            tone=_valid_tone("", card_tones),
+            portrait="",
+        )
+    ja_match = re.search(r"[\"']ja[\"']\s*:\s*([\"'])(?P<ja>(?:\\.|(?!\1).)*)", value, flags=re.S)
+    ja = ""
+    if ja_match:
+        try:
+            ja = _clean_text(json.loads('"' + ja_match.group("ja") + '"'), max_chars)
+        except (json.JSONDecodeError, TypeError):
+            ja = _clean_text(ja_match.group("ja"), max_chars)
+    return ReplySegment(text=text, translation=text, ja_text=ja, suppress_tts=not bool(ja))
+
+
 def _fallback_text(raw: str, max_chars: int) -> Reply:
     """解析失败：从原文提取可读文本（去 fence、strip 后截断）。
 
@@ -267,6 +309,14 @@ def parse_reply(raw: str, *, channel: str = "im", card: Any = None,
             return Reply(segments=structured)
         if structured is not None:
             return Reply(degraded="empty_structured_output")
+        if _looks_like_structured_response(raw):
+            segment = _truncated_segment(
+                raw, bilingual=False, max_chars=max_chars,
+                card_tones=card_tones, card=card,
+            )
+            if segment is not None:
+                return Reply(segments=[segment])
+            return Reply(degraded="invalid_structured_output")
         if _is_json_object(raw):
             return Reply(degraded="invalid_structured_output")
         return Reply(segments=[ReplySegment(text=strip_thinking_trace(strip_internal_prompt_leak(strip_echoed_time_prefixes(raw)))[:max_chars])])
@@ -326,4 +376,12 @@ def parse_reply(raw: str, *, channel: str = "im", card: Any = None,
             )
             if segs:
                 return Reply(segments=segs)
+        if _looks_like_structured_response(raw):
+            segment = _truncated_segment(
+                raw, bilingual=bilingual, max_chars=max_chars,
+                card_tones=card_tones, card=card,
+            )
+            if segment is not None:
+                return Reply(segments=[segment])
+            return Reply(degraded="invalid_structured_output")
         return _fallback_text(raw, max_chars)

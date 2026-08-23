@@ -324,7 +324,7 @@ search:
 - 搜索失败、超时、空结果或页面抓取失败都会回退到普通对话，不把未经处理的搜索结果直接发给用户。远程 LLM 的读取超时只表示本次请求未在时限内完成，不等于服务未启动；搜索不会由桌宠视觉观察、TTS 或主动消息后台任务触发。
 - 动态查询会丢弃标题、摘要和 URL 都不包含目标实体的后端噪声，例如 MAC 地址或股票教程结果；
 - 如果模型回显内部风格参数或搜索规则，统一回复出口会清理这些内部 prompt 文本。
-- 如果模型输出“思考过程”、`最终调整`草稿或 `<think>...</think>`，只保留最终答案；清理后才保存历史、渲染 QQ/桌宠回复。
+- 如果模型输出“思考过程”、`最终调整`草稿或 `<think>...</think>`，只保留最终答案；清理后才保存历史、渲染 QQ/桌宠回复。主动问候、迟来回应、QQ 主动消息和桌宠衔接语也必须经过同一 `Reply` 解析出口，不能直接发送原始短任务 JSON 或残缺协议。
 - IM/TTS 主对话现在统一要求结构化 JSON `{"segments":[...]}`：IM/单语 TTS 使用 `text`，双语 TTS 使用 `ja`（送语音）+ `zh`（显示）；OpenAI 兼容 API 支持时发送 `response_format=json_object`，不支持则自动回退普通请求并继续清理。
 - HTTP 200 但模型偶尔返回普通文本或错误 JSON 时不重复请求：交给对应通道解析器提取可见内容；混合“分析文本 + 多个 JSON 候选”时取最后一个有可见 `segments` 的对象；busy 场景只向模型注入“回复尽量简短”的偏好，完整性优先，不截断用户可见文本、不追加内部状态文案，并同步 `Reply` 对象；只有真正空响应、网络、鉴权或服务端错误才显示卡顿兜底。
 
@@ -488,7 +488,7 @@ hermes verify --json --skip-start
 "C:/Program Files/nodejs/node.exe" --check pet/settings-renderer.js
 ```
 
-最近一次验证结果：`740 passed, 1 warning`，Hermes `ok=true`（使用 `--skip-start`，因为通用 FastAPI runtime 探针不适配本项目 Electron/桌宠入口）。分通道结构化 JSON（IM `text`、单语 TTS `text`、双语 TTS `ja`/`zh`）与当前远程 API 的真实 IM/TTS Agent→解析→持久化→渲染环路已验证通过。唯一 warning 来自依赖侧的 Starlette/httpx 弃用提示。Electron 视觉交互、NapCatQQ 真实消息回传、远程服务行为、本地大模型运行和页面正文补充的公网实际内容属于需要人工/环境条件的实机验收，不把静态测试当成实机通过。
+最近一次验证结果：`757 passed, 1 warning`，Hermes `ok=true`（使用 `--skip-start`，因为通用 FastAPI runtime 探针不适配本项目 Electron/桌宠入口）。分通道结构化 JSON（IM `text`、单语 TTS `text`、双语 TTS `ja`/`zh`）与当前远程 API 的真实 IM/TTS Agent→解析→持久化→渲染环路已验证通过；主动消息连续 10 次真实远程生成的结构化协议泄漏为 `0/10`。唯一 warning 来自依赖侧的 Starlette/httpx 弃用提示。Electron 视觉交互、NapCatQQ 真实消息回传、远程服务行为、本地大模型运行和页面正文补充的公网实际内容属于需要人工/环境条件的实机验收，不把静态测试当成实机通过。
 
 ## 当前状态
 

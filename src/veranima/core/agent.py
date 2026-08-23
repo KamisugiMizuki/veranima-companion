@@ -1496,11 +1496,21 @@ class Agent:
             ],
             max_tokens=max_tokens,
         )
+        from .reply import parse_reply
+        output_cfg = self.config.get("output", {}) or {}
+        max_chars = int(output_cfg.get("max_text_chars", 1200))
         if not bilingual:
-            from .reply import strip_echoed_time_prefixes
-            return strip_echoed_time_prefixes(reply)
-        text, _tone, _portrait, ja = extract_segments(reply, bilingual=True, card=self.card)
-        return text, ja
+            parsed = parse_reply(reply, channel="im", card=self.card, max_chars=max_chars)
+            return parsed.text if parsed.segments else ""
+        parsed = parse_reply(
+            reply,
+            channel="tts",
+            card=self.card,
+            bilingual=True,
+            max_segments=int(output_cfg.get("max_segments", 6)),
+            max_chars=max_chars,
+        )
+        return parsed.text, parsed.ja_text
 
     def _time_greeting(self) -> str:
         import datetime

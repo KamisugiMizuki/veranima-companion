@@ -201,7 +201,16 @@ class LLMClient:
                     resp = client.post(f"{self.base_url}/chat/completions", json=payload, headers=self._headers())
                     resp.raise_for_status()
                     data = resp.json()
-                return data["choices"][0]["message"]
+                choice = data["choices"][0]
+                message = choice["message"]
+                finish_reason = str(choice.get("finish_reason") or "")
+                if finish_reason and finish_reason != "stop":
+                    logger.warning(
+                        "LLM completion ended with finish_reason=%s (content_chars=%d)",
+                        finish_reason,
+                        len(str(message.get("content") or "")),
+                    )
+                return message
             except LLMUnavailableError:
                 raise
             except httpx.TimeoutException as e:
