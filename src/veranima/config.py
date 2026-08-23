@@ -13,14 +13,15 @@ logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[2]
 
-LLM_PROFILE_FIELDS = ("base_url", "model", "temperature", "max_tokens", "api_key", "timeout")
+LLM_PROFILE_FIELDS = ("base_url", "model", "temperature", "max_tokens", "api_key", "timeout", "timeout_retries")
 _LLM_DEFAULTS = {
     "base_url": "",
     "model": "qwen3:8b",
     "temperature": 0.8,
     "max_tokens": 4096,
     "api_key": "",
-    "timeout": 120,
+    "timeout": 30,
+    "timeout_retries": 3,
 }
 
 
@@ -95,6 +96,7 @@ def _coerce_profile(raw: dict | None, *, name: str = "") -> dict:
         "max_tokens": int(raw.get("max_tokens", _LLM_DEFAULTS["max_tokens"])),
         "api_key": str(raw.get("api_key") or ""),
         "timeout": int(raw.get("timeout", _LLM_DEFAULTS["timeout"])),
+        "timeout_retries": int(raw.get("timeout_retries", _LLM_DEFAULTS["timeout_retries"])),
     })
     if not 0 <= profile["temperature"] <= 2:
         raise ValueError("temperature 必须在 0-2 之间")
@@ -102,6 +104,8 @@ def _coerce_profile(raw: dict | None, *, name: str = "") -> dict:
         raise ValueError("max_tokens 必须为正整数")
     if profile["timeout"] <= 0:
         raise ValueError("timeout 必须为正整数")
+    if profile["timeout_retries"] < 0:
+        raise ValueError("timeout_retries 必须为非负整数")
     return profile
 
 

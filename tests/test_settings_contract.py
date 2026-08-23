@@ -9,11 +9,12 @@ def test_settings_ui_ids_and_config_contract():
     html = (ROOT / "pet/settings.html").read_text(encoding="utf-8")
     js = (ROOT / "pet/settings-renderer.js").read_text(encoding="utf-8")
     server = (ROOT / "src/veranima/pet_server.py").read_text(encoding="utf-8")
+    config = (ROOT / "src/veranima/config.py").read_text(encoding="utf-8")
     ids = set(re.findall(r'id="([^"]+)"', html))
     used = set(re.findall(r"\$\('([^']+)'\)", js))
     assert used <= ids
-    for field in ("max_tokens", "timeout", "embedding_model", "recall_top_k", "max_injected_chars", "curator_turns", "observe_daily_budget", "channels", "proactive"):
-        assert field in server
+    for field in ("max_tokens", "timeout", "timeout_retries", "embedding_model", "recall_top_k", "max_injected_chars", "curator_turns", "observe_daily_budget", "channels", "proactive"):
+        assert field in server + config
     assert '"****" not in str(llm["api_key"])' in server
     assert "已暂停观察与截图" in html
     assert "暂停后不会进行屏幕扫描、截图或视觉主动触发" in html
@@ -22,7 +23,7 @@ def test_settings_ui_ids_and_config_contract():
     for field in ("stt-enabled", "stt-device", "input_device_id"):
         assert field in html + js + server
     assert "getSttInputDevice" in preload
-    for field in ("llm-profile-select", "llm-profile-name", "llm-add-profile", "llm-switch", "llm-delete"):
+    for field in ("llm-profile-select", "llm-profile-name", "llm-add-profile", "llm-switch", "llm-delete", "llm-timeout-retries"):
         assert field in html + js
     for field in ("pro-qq-gap", "pro-pet-gap"):
         assert field in html + js

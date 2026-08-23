@@ -39,7 +39,7 @@
         <div class="field"><label for="llm-model">聊天模型</label><input id="llm-model" placeholder="model-name"></div>
         <div class="split-fields"><div class="field"><label for="llm-temp">Temperature</label><input id="llm-temp" type="number" step="0.1" min="0" max="2"></div><div class="field"><label for="llm-max-tokens">最大输出 token</label><input id="llm-max-tokens" type="number" min="256" max="32768" step="256"></div></div>
         <div class="field"><label for="llm-key">API Key</label><input id="llm-key" type="password" placeholder="留空保持现有密钥"><div id="llm-key-status" class="hint">未修改时不会覆盖现有密钥</div></div>
-        <div class="field"><label for="llm-timeout">请求超时（秒）</label><input id="llm-timeout" type="number" min="10" max="600"></div>
+        <div class="split-fields"><div class="field"><label for="llm-timeout">单次请求超时（秒）</label><input id="llm-timeout" type="number" min="10" max="600"></div><div class="field"><label for="llm-timeout-retries">超时重试次数</label><input id="llm-timeout-retries" type="number" min="0" max="5"></div></div><div class="hint">默认 30 秒 + 3 次重试，最多等待约 120 秒。仅超时重试，鉴权或请求错误不重试。</div>
         <div class="inline-actions profile-actions"><button id="llm-save-profile" type="button" class="subtle-button">保存当前配置</button><button id="llm-add-profile" type="button" class="subtle-button">新增配置</button><span id="llm-profile-msg" class="hint"></span></div>
       </div>
 

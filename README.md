@@ -109,7 +109,7 @@ API key 只写入本地 `config/config.yaml` 或通过设置页保存，不要�
 
 ### 模型配置 profile
 
-设置页支持多份 OpenAI 兼容模型配置：每份保存名称、Base URL、模型名、temperature、max tokens、超时和 API key。可以新增、编辑、切换和删除非当前 profile；当前 profile 和最后一份 profile 不能删除。旧版顶层 `llm` 字段保留兼容，真实 key 只存在本地配置。
+设置页支持多份 OpenAI 兼容模型配置：每份保存名称、Base URL、模型名、temperature、max tokens、单次超时、超时重试次数和 API key。默认单次超时 30 秒、自动重试 3 次，最多等待约 120 秒；仅超时重试，鉴权或请求错误不重试。可以新增、编辑、切换和删除非当前 profile；当前 profile 和最后一份 profile 不能删除。旧版顶层 `llm` 字段保留兼容，真实 key 只存在本地配置。
 
 ## 启动
 

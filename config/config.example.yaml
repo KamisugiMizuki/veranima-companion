@@ -15,7 +15,8 @@ llm:
   short_task_max_tokens: 1024
   # 低精力时的简短回复配置
   low_energy_max_tokens: 256
-  timeout: 120
+  timeout: 30
+  timeout_retries: 3                 # 超时后重试次数；总尝试次数 = 1 + 此值
   active_profile: default
   profiles:
     default:
@@ -25,7 +26,8 @@ llm:
       api_key: ""
       temperature: 0.8
       max_tokens: 4096
-      timeout: 120
+      timeout: 30
+      timeout_retries: 3
     lm-studio:
       name: "LM Studio"
       base_url: "http://localhost:12345/v1"
@@ -33,7 +35,8 @@ llm:
       api_key: ""
       temperature: 0.8
       max_tokens: 4096
-      timeout: 180
+      timeout: 30
+      timeout_retries: 3
 
 # R0 统一 Reply 输出契约（R0_SPEC 6）
 output:

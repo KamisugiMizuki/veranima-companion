@@ -109,6 +109,7 @@ def test_lm_studio_import_keeps_local_defaults():
     assert pid == "lm-studio"
     assert cfg["llm"]["profiles"][pid]["api_key"] == ""
     assert cfg["llm"]["profiles"][pid]["timeout"] == 180
+    assert cfg["llm"]["profiles"][pid]["timeout_retries"] == 3
 
 
 def test_switch_changes_effective_llm_client_config():
@@ -125,3 +126,4 @@ def test_switch_changes_effective_llm_client_config():
     assert client.temperature == 0.6
     assert client.max_tokens == 3072
     assert client._timeout == 180
+    assert client._timeout_retries == 3

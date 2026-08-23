@@ -74,6 +74,68 @@ def test_read_timeout_is_not_model_unavailable(client, monkeypatch):
         client.chat([{"role": "user", "content": "hi"}])
 
 
+def test_timeout_retries_three_times_then_returns_fourth_response(monkeypatch):
+    calls = []
+    client_timeouts = []
+
+    class Transport:
+        def __enter__(self): return self
+        def __exit__(self, *exc): return False
+        def post(self, url, **kwargs):
+            calls.append(kwargs["json"])
+            if len(calls) <= 3:
+                raise httpx.ReadTimeout("read timed out")
+            req = httpx.Request("POST", url)
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": "第四次成功"}}]},
+                request=req,
+            )
+
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **kw: (client_timeouts.append(kw["timeout"]) or Transport()),
+    )
+    client = LLMClient({
+        "base_url": "https://api.example.com/v1",
+        "model": "qwen3-8b",
+        "timeout": 30,
+        "timeout_retries": 3,
+    })
+    assert client.chat([{"role": "user", "content": "hi"}]) == "第四次成功"
+    assert len(calls) == 4
+    assert client_timeouts == [30.0, 30.0, 30.0, 30.0]
+
+
+def test_timeout_retries_three_times_then_raises_after_four_attempts(monkeypatch):
+    calls = []
+    client_timeouts = []
+
+    class Transport:
+        def __enter__(self): return self
+        def __exit__(self, *exc): return False
+        def post(self, *args, **kwargs):
+            calls.append(1)
+            raise httpx.ReadTimeout("read timed out")
+
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **kw: (client_timeouts.append(kw["timeout"]) or Transport()),
+    )
+    client = LLMClient({
+        "base_url": "https://api.example.com/v1",
+        "model": "qwen3-8b",
+        "timeout": 30,
+        "timeout_retries": 3,
+    })
+    with pytest.raises(LLMTimeoutError):
+        client.chat([{"role": "user", "content": "hi"}])
+    assert len(calls) == 4
+    assert client_timeouts == [30.0, 30.0, 30.0, 30.0]
+
+
 def test_chat_structured_requests_json_object(monkeypatch):
     calls = []
 

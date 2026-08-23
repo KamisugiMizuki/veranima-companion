@@ -42,7 +42,8 @@ class LLMClient:
         self.temperature = config.get("temperature", 0.8)
         self.max_tokens = config.get("max_tokens", 1024)
         self.low_energy_max_tokens = config.get("low_energy_max_tokens", 256)
-        self._timeout = config.get("timeout", 120.0)
+        self._timeout = float(config.get("timeout", 30.0))
+        self._timeout_retries = max(0, int(config.get("timeout_retries", 3)))
 
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
@@ -193,42 +194,51 @@ class LLMClient:
             payload["tools"] = tools
         if response_format:
             payload["response_format"] = response_format
-        try:
-            with httpx.Client(timeout=self._timeout) as client:
-                resp = client.post(f"{self.base_url}/chat/completions", json=payload, headers=self._headers())
-                resp.raise_for_status()
-                data = resp.json()
-            return data["choices"][0]["message"]
-        except LLMUnavailableError:
-            raise
-        except httpx.TimeoutException as e:
-            logger.error("LLM request timed out: %s", e)
-            raise LLMTimeoutError(str(e)) from e
-        except httpx.ConnectError as e:
-            logger.error("LLM unavailable: %s", e)
-            raise LLMUnavailableError(str(e)) from e
-        except httpx.HTTPStatusError as e:
-            # 4xx/5xx：远程 API 返回 400 可能是请求内容问题（模型其实在线），
-            # 401/403 是鉴权失败。400 且非鉴权类时归 LLMError 而非 Unavailable，
-            # 避免误导性的"服务不可用"唤醒兜底（2026-08-04 修复）。
-            body = (e.response.text or "").lower()
-            structured_unsupported = bool(response_format) and (
-                "response_format" in body or "json_object" in body
-                or "structured output" in body or "json mode" in body
-            )
-            if structured_unsupported:
-                raise LLMError(f"structured response unsupported: {e.response.text[:200]}") from e
-            is_template_error = e.response.status_code == 400 and (
-                "jinja" in body or "prompt template" in body or "template" in body
-            )
-            if not is_template_error and e.response.status_code in (400, 404, 422):
-                logger.error("LLM model not loaded or bad request: %s", e.response.text[:200])
-                raise LLMUnavailableError(f"model not loaded: {e.response.status_code}") from e
-            logger.error("LLM server error: %s", e.response.text[:200])
-            raise LLMError(str(e)) from e
-        except Exception as e:
-            logger.error("LLM chat failed: %s", e)
-            raise LLMError(str(e)) from e
+        attempts = self._timeout_retries + 1
+        for attempt in range(1, attempts + 1):
+            try:
+                with httpx.Client(timeout=self._timeout) as client:
+                    resp = client.post(f"{self.base_url}/chat/completions", json=payload, headers=self._headers())
+                    resp.raise_for_status()
+                    data = resp.json()
+                return data["choices"][0]["message"]
+            except LLMUnavailableError:
+                raise
+            except httpx.TimeoutException as e:
+                if attempt < attempts:
+                    logger.warning(
+                        "LLM request timed out; retrying (%d/%d)",
+                        attempt, attempts - 1,
+                    )
+                    continue
+                logger.error("LLM request timed out after %d attempts: %s", attempts, e)
+                raise LLMTimeoutError(str(e)) from e
+            except httpx.ConnectError as e:
+                logger.error("LLM unavailable: %s", e)
+                raise LLMUnavailableError(str(e)) from e
+            except httpx.HTTPStatusError as e:
+                # 4xx/5xx：远程 API 返回 400 可能是请求内容问题（模型其实在线），
+                # 401/403 是鉴权失败。400 且非鉴权类时归 LLMError 而非 Unavailable，
+                # 避免误导性的"服务不可用"唤醒兜底（2026-08-04 修复）。
+                body = (e.response.text or "").lower()
+                structured_unsupported = bool(response_format) and (
+                    "response_format" in body or "json_object" in body
+                    or "structured output" in body or "json mode" in body
+                )
+                if structured_unsupported:
+                    raise LLMError(f"structured response unsupported: {e.response.text[:200]}") from e
+                is_template_error = e.response.status_code == 400 and (
+                    "jinja" in body or "prompt template" in body or "template" in body
+                )
+                if not is_template_error and e.response.status_code in (400, 404, 422):
+                    logger.error("LLM model not loaded or bad request: %s", e.response.text[:200])
+                    raise LLMUnavailableError(f"model not loaded: {e.response.status_code}") from e
+                logger.error("LLM server error: %s", e.response.text[:200])
+                raise LLMError(str(e)) from e
+            except Exception as e:
+                logger.error("LLM chat failed: %s", e)
+                raise LLMError(str(e)) from e
+        raise LLMTimeoutError("LLM request timed out")
 
     def is_available(self) -> bool:
         try:

@@ -51,7 +51,7 @@ function renderProfiles(payload) {
 function fillProfile(profile) {
   set('llm-profile-name', profile.name || profile.id);
   set('llm-base', profile.base_url); set('llm-model', profile.model);
-  num('llm-temp', profile.temperature, 0.8); num('llm-max-tokens', profile.max_tokens, 4096); num('llm-timeout', profile.timeout, 120);
+  num('llm-temp', profile.temperature, 0.8); num('llm-max-tokens', profile.max_tokens, 4096); num('llm-timeout', profile.timeout, 30); num('llm-timeout-retries', profile.timeout_retries, 3);
   $('llm-key').value = '';
   $('llm-key-status').textContent = profile.has_api_key ? `已配置：${profile.api_key}` : '未配置；填写后保存会写入该配置';
   $('llm-summary').textContent = `${profile.base_url || '未配置'} · ${profile.model || '未选择模型'}`;
@@ -60,7 +60,7 @@ function profileFields(includeName = true) {
   const data = {
     base_url: $('llm-base').value.trim(), model: $('llm-model').value.trim(),
     temperature: Number($('llm-temp').value), max_tokens: Number($('llm-max-tokens').value),
-    timeout: Number($('llm-timeout').value),
+    timeout: Number($('llm-timeout').value), timeout_retries: Number($('llm-timeout-retries').value),
   };
   if (includeName) data.name = $('llm-profile-name').value.trim();
   const key = $('llm-key').value.trim(); if (key) data.api_key = key;

@@ -115,7 +115,8 @@ persist_turn(context, reply) -> None
 llm:
   max_tokens: 4096
   short_task_max_tokens: 1024
-  timeout: 120
+  timeout: 30
+  timeout_retries: 3
 output:
   max_segments: 6
   max_text_chars: 1200
