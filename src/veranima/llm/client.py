@@ -76,10 +76,11 @@ class LLMClient:
                 raise LLMError("empty structured completion")
             try:
                 data = json.loads(content)
-            except (json.JSONDecodeError, TypeError) as exc:
-                raise LLMError("invalid structured JSON contract") from exc
+            except (json.JSONDecodeError, TypeError):
+                logger.warning("structured response is not JSON; passing content to reply parser")
+                return content
             if not isinstance(data, dict) or not isinstance(data.get("segments"), list):
-                raise LLMError("invalid structured JSON contract")
+                logger.warning("structured response shape invalid; passing content to reply parser")
             return content
         except TypeError:
             return self.chat(messages, max_tokens=budget, temperature=temperature)

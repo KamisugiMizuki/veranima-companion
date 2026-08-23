@@ -742,7 +742,7 @@ class Agent:
                 max_chars=int((self.config.get("output", {}) or {}).get("max_text_chars", 1200)),
             )
             turn_reply = parsed
-            reply = parsed.text or reply
+            reply = parsed.text or ("（我这边没拿到可显示的回复，再说一遍？）" if parsed.degraded else reply)
 
         # ===== R0 阶段 5: persist_turn（R0_SPEC 5）=====
         self.memory.store_message("assistant", reply, self.state.energy, self.state.mood,
@@ -1495,6 +1495,7 @@ class Agent:
             max_tokens=max_tokens,
         )
         if not bilingual:
+            from .reply import strip_echoed_time_prefixes
             return strip_echoed_time_prefixes(reply)
         text, _tone, _portrait, ja = extract_segments(reply, bilingual=True, card=self.card)
         return text, ja

@@ -100,15 +100,14 @@ def test_chat_structured_falls_back_when_provider_rejects_json(monkeypatch):
     assert "response_format" not in calls[1]
 
 
-def test_chat_structured_rejects_invalid_json(monkeypatch):
+def test_chat_structured_accepts_plain_content_for_text_fallback(monkeypatch):
     class Transport:
         def __enter__(self): return self
         def __exit__(self, *exc): return False
         def post(self, url, **kwargs):
             req = httpx.Request("POST", url)
-            return httpx.Response(200, json={"choices": [{"message": {"content": "truncated"}}]}, request=req)
+            return httpx.Response(200, json={"choices": [{"message": {"content": "plain fallback"}}]}, request=req)
 
     monkeypatch.setattr(httpx, "Client", lambda **kw: Transport())
     client = LLMClient({"base_url": "https://api.example.com/v1", "model": "qwen3-8b"})
-    with pytest.raises(LLMError, match="invalid structured JSON"):
-        client.chat_structured([{"role": "user", "content": "hi"}], max_tokens=256)
+    assert client.chat_structured([{"role": "user", "content": "hi"}], max_tokens=256) == "plain fallback"
