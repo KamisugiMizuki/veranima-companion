@@ -4,7 +4,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from veranima.llm.client import LLMClient, LLMError, LLMUnavailableError
+from veranima.llm.client import LLMClient, LLMError, LLMTimeoutError, LLMUnavailableError
 
 
 class _FakeTransport:
@@ -59,6 +59,18 @@ def test_404_is_unavailable(client, monkeypatch):
 def test_422_is_unavailable(client, monkeypatch):
     _stub_http(monkeypatch, 422, "unprocessable")
     with pytest.raises(LLMUnavailableError):
+        client.chat([{"role": "user", "content": "hi"}])
+
+
+def test_read_timeout_is_not_model_unavailable(client, monkeypatch):
+    class Transport:
+        def __enter__(self): return self
+        def __exit__(self, *exc): return False
+        def post(self, *args, **kwargs):
+            raise httpx.ReadTimeout("read timed out")
+
+    monkeypatch.setattr(httpx, "Client", lambda **kw: Transport())
+    with pytest.raises(LLMTimeoutError):
         client.chat([{"role": "user", "content": "hi"}])
 
 

@@ -29,6 +29,10 @@ class LLMError(RuntimeError):
     """LLM 服务在线但生成失败。"""
 
 
+class LLMTimeoutError(LLMError):
+    """LLM 请求超时：服务状态未知，不等同于模型未启动。"""
+
+
 class LLMClient:
     def __init__(self, config: dict):
         self.config = config
@@ -127,7 +131,10 @@ class LLMClient:
                             continue
                         if delta:
                             chunks.append(delta)
-        except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout) as e:
+        except httpx.TimeoutException as e:
+            logger.error("LLM stream timed out: %s", e)
+            raise LLMTimeoutError(str(e)) from e
+        except httpx.ConnectError as e:
             logger.error("LLM stream unavailable: %s", e)
             raise LLMUnavailableError(str(e)) from e
         except Exception as e:
@@ -194,7 +201,10 @@ class LLMClient:
             return data["choices"][0]["message"]
         except LLMUnavailableError:
             raise
-        except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout) as e:
+        except httpx.TimeoutException as e:
+            logger.error("LLM request timed out: %s", e)
+            raise LLMTimeoutError(str(e)) from e
+        except httpx.ConnectError as e:
             logger.error("LLM unavailable: %s", e)
             raise LLMUnavailableError(str(e)) from e
         except httpx.HTTPStatusError as e:

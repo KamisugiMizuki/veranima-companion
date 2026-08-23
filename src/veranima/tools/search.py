@@ -62,7 +62,7 @@ class SearchTrigger:
     _casual_words = ("好累", "陪我聊", "心情", "想你", "睡不着", "好困", "无聊")
     _ambiguous_words = ("那个", "这次", "它", "哪个", "叫什么")
     _dynamic_words = (
-        "活动", "复刻", "版本", "状态", "现在", "目前", "当前", "天气", "预报",
+        "活动", "复刻", "版本", "状态", "天气", "预报",
         "新番", "番剧", "新闻", "游戏", "软件", "发布", "上线", "更新", "价格",
         "事件", "节目", "电影", "电视剧", "联动", "合作", "跨界", "联名",
     )
@@ -118,10 +118,10 @@ class SearchTrigger:
             lifestyle_intent and not factual_question
         )
         implicit_freshness = post_cutoff or allow_implicit and (
-            any(word in text for word in self._freshness_words)
-            or is_current_fact
+            is_current_fact
             or ambiguous_reference
-            or (date_reference and any(word in text for word in self._dynamic_words))
+            or dynamic_domain
+            or (date_reference and dynamic_domain)
         )
         if lifestyle_intent and not factual_question:
             implicit_freshness = False
@@ -371,7 +371,7 @@ def requires_post_cutoff_search(time_range: TimeRange | None) -> bool:
 
 def _subject_entity(text: str, context_text: str = "") -> str:
     quoted = SearchTrigger.extract_entities(text)
-    if not quoted:
+    if not quoted and any(word in text for word in ("那个", "这次", "它", "哪个", "叫什么")):
         quoted = SearchTrigger.extract_entities(context_text)
     if quoted:
         return quoted[0]

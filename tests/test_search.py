@@ -189,6 +189,19 @@ def test_lifestyle_schedule_with_date_words_does_not_force_search():
     assert SearchTrigger().determine("明天看电影", allow_implicit=True, today=dt.date(2026, 8, 22)).should_search is False
 
 
+def test_casual_correction_with_current_word_does_not_search():
+    decision = SearchTrigger().determine("现在夏天呢姐姐", allow_implicit=True)
+    assert decision.should_search is False
+
+
+def test_casual_correction_does_not_search_from_image_context(agent):
+    fake = FakeSearch()
+    agent.search = fake
+    agent._history.append({"role": "assistant", "content": "图片识别结果：faceIndex"})
+    agent.handle("现在夏天呢姐姐")
+    assert fake.calls == 0
+
+
 def test_agent_persists_only_visible_final_answer_when_llm_returns_thinking(agent):
     raw = (
         "思考过程：\n\n"

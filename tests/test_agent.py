@@ -10,7 +10,7 @@ import pytest
 from veranima.core.agent import Agent
 from veranima.core.character import CharacterCard
 from veranima.core.state import AgentState
-from veranima.llm.client import LLMError, LLMUnavailableError
+from veranima.llm.client import LLMError, LLMTimeoutError, LLMUnavailableError
 from veranima.memory.store import MemoryStore
 
 
@@ -218,6 +218,20 @@ def test_handle_model_loaded_but_chat_fails(agent):
     r = a.handle("在吗？")
     assert "还没醒" in r.reply
     assert a.llm.calls == 1
+
+
+def test_handle_timeout_does_not_claim_service_is_not_running(agent):
+    card, memory = agent
+    a = Agent(
+        card=card,
+        memory=memory,
+        llm=FakeLLM(error=LLMTimeoutError("read timed out"), loaded=True),
+        state=AgentState(),
+        config={"chat": {"proactive_message_prob": 0.0}},
+    )
+    result = a.handle("在吗？")
+    assert "服务没在运行" not in result.reply
+    assert "再说一遍" in result.reply
 
 
 def test_handle_llm_generic_error_returns_fallback(agent):

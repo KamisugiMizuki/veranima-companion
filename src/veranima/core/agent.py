@@ -14,7 +14,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 
-from ..llm.client import LLMClient, LLMUnavailableError
+from ..llm.client import LLMClient, LLMTimeoutError, LLMUnavailableError
 from .prompts import build_system_prompt, is_clarification
 from .segments import extract_segments
 from .ambient import ChannelActivityTracker, ProactiveCandidate, ProactiveGate, SceneLock
@@ -700,6 +700,9 @@ class Agent:
                 messages,
                 max_tokens=self.llm.low_energy_max_tokens if low_energy else None,
             )
+        except LLMTimeoutError as e:
+            logger.warning("LLM timed out during turn: %s", e)
+            reply = "（连接有点慢……我没拿到这句回复，再说一遍？）"
         except LLMUnavailableError as e:
             # 服务不可用（连接失败/鉴权失败）：角色化提示，不冒充"卡了"
             logger.warning("LLM unavailable during turn: %s", e)
