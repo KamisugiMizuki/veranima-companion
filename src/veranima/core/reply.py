@@ -126,20 +126,54 @@ def is_failure_fallback_reply(text: str) -> bool:
     }
 
 
+def is_internal_reply(text: str) -> bool:
+    """识别不应作为 assistant 历史再次注入的协议/分析输出。"""
+    value = str(text or "").strip()
+    if not value or is_failure_fallback_reply(value) or _INTERNAL_TRACE_RE.search(value):
+        return True
+    if _ANALYSIS_HEADING_RE.search(value):
+        return True
+    if re.search(r"[\"']segments[\"']\s*:\s*\[", value):
+        return True
+    try:
+        parsed = json.loads(_strip_fence(value))
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return isinstance(parsed, dict) and any(
+        key in parsed for key in ("segments", "thinking", "analysis", "reasoning")
+    )
+
+
+_ANALYSIS_HEADING_RE = re.compile(
+    r"(?:^|\n)\s*(?:\d+\.\s*)?(?:\*{1,2}\s*)?"
+    r"(?:思考过程|分析输入|角色扮演定位|草拟回复|精简与风格化|规则核对)"
+    r"(?:\s*\*{1,2})?\s*[:：]",
+    re.I,
+)
+_FINAL_HEADING_RE = re.compile(
+    r"(?:^|\n)\s*(?:\d+\.\s*)?(?:"
+    r"\*{1,2}\s*(?:最终调整|最终回复|最终答案)\s*\*{1,2}\s*[:：]?|"
+    r"(?:最终调整|最终回复|最终答案)\s*[:：])",
+    re.I,
+)
+_INTERNAL_TRACE_RE = re.compile(
+    r"(?:PONYTAIL\s+MODE\s+ACTIVE|ACTIVE\s+EVERY\s+RESPONSE|"
+    r"(?:^|\n)\s*#\s*Ponytail\b|"
+    r"(?:^|\n)\s*##\s*(?:Persistence|The ladder|Rules|Output|Boundaries)\b)",
+    re.I,
+)
+
+
 def strip_thinking_trace(text: str) -> str:
-    """Keep the final answer when a model emits a visible reasoning draft."""
+    """Keep the explicit final answer; analysis-only output is not user-visible."""
     value = str(text or "").strip()
     value = re.sub(r"<think>.*?</think>\s*", "", value, flags=re.S | re.I)
-    if not re.search(r"(?:思考过程|分析输入|草拟回复|规则核对|最终调整|最终回复)", value):
+    if not _ANALYSIS_HEADING_RE.search(value) and not _FINAL_HEADING_RE.search(value):
         return value
-    matches = list(re.finditer(
-        r"(?:^|\n)\s*(?:\d+\.\s*)?(?:\*{2}(?:最终调整|最终回复|最终答案)\*{2}\s*[:：]?|(?:最终调整|最终回复|最终答案)\s*[:：])\s*",
-        value,
-    ))
-    if matches:
-        value = value[matches[-1].end():].strip()
-    else:
-        value = re.split(r"(?:思考过程|分析输入|角色扮演定位|草拟回复|精简与风格化|规则核对)\s*[:：]", value, maxsplit=1)[-1].strip()
+    matches = list(_FINAL_HEADING_RE.finditer(value))
+    if not matches:
+        return ""
+    value = value[matches[-1].end():].strip()
     value = re.sub(r"\n\s*\d+\.\s+\*\*[^\n]+\*\*[^\n]*", "\n", value)
     paragraphs = [part.strip() for part in re.split(r"\n{2,}", value) if part.strip()]
     if len(paragraphs) >= 2 and paragraphs[-1] == paragraphs[-2]:
@@ -301,6 +335,8 @@ def _fallback_text(raw: str, max_chars: int) -> Reply:
     cleaned = _strip_fence(raw)
     if cleaned:
         cleaned = strip_thinking_trace(strip_internal_prompt_leak(strip_echoed_time_prefixes(cleaned)))[:max_chars]
+        if not cleaned and _ANALYSIS_HEADING_RE.search(raw):
+            return Reply(degraded="analysis_without_final_answer")
         return Reply(segments=[ReplySegment(text=cleaned, tone="", portrait="")])
     return Reply(degraded="empty_output")
 
@@ -316,6 +352,8 @@ def parse_reply(raw: str, *, channel: str = "im", card: Any = None,
     raw = raw.strip()
     if not raw:
         return Reply(degraded="empty_output")
+    if _INTERNAL_TRACE_RE.search(raw):
+        return Reply(degraded="internal_trace")
 
     if card_tones is None:
         card_tones = list(card.tones) if card is not None else None
@@ -336,7 +374,10 @@ def parse_reply(raw: str, *, channel: str = "im", card: Any = None,
             return Reply(degraded="invalid_structured_output")
         if _is_json_object(raw):
             return Reply(degraded="invalid_structured_output")
-        return Reply(segments=[ReplySegment(text=strip_thinking_trace(strip_internal_prompt_leak(strip_echoed_time_prefixes(raw)))[:max_chars])])
+        cleaned = strip_thinking_trace(strip_internal_prompt_leak(strip_echoed_time_prefixes(raw)))[:max_chars]
+        if not cleaned and _ANALYSIS_HEADING_RE.search(raw):
+            return Reply(degraded="analysis_without_final_answer")
+        return Reply(segments=[ReplySegment(text=cleaned)])
 
     # TTS：确定性 JSON 解析
     cleaned = _strip_fence(raw)
@@ -401,4 +442,6 @@ def parse_reply(raw: str, *, channel: str = "im", card: Any = None,
             if segment is not None:
                 return Reply(segments=[segment])
             return Reply(degraded="invalid_structured_output")
+        if _ANALYSIS_HEADING_RE.search(raw) and not _FINAL_HEADING_RE.search(raw):
+            return Reply(degraded="analysis_without_final_answer")
         return _fallback_text(raw, max_chars)

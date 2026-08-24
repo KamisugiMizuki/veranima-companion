@@ -189,6 +189,7 @@ def test_clarification_detection():
     from veranima.core.prompts import is_clarification
     assert is_clarification("那到底是什么时候说的？") is True
     assert is_clarification("具体是几点来着") is True
+    assert is_clarification("啥事？") is True
     assert is_clarification("今天天气不错") is False
 
 

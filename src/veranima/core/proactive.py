@@ -8,12 +8,20 @@
 from __future__ import annotations
 
 import logging
+import hashlib
+import random
 import re
 from dataclasses import dataclass, field
 
 from ..memory.store import MemoryStore
 
 logger = logging.getLogger(__name__)
+
+MEAL_SLOTS = {
+    "breakfast": (8, "到饭点了，先去吃点早饭。"),
+    "lunch": (12, "到饭点了，先去吃午饭。"),
+    "dinner": (17, "到饭点了，先去吃晚饭。"),
+}
 
 # 系统节日（公历固定日期；农历节日暂不处理）
 FIXED_HOLIDAYS = {
@@ -67,6 +75,58 @@ class GreetingScheduler:
         if slot == "noon":
             return "中午好，吃过饭了吗？"
         return "晚上好。今天过得怎么样？"
+
+
+@dataclass
+class MealReminderScheduler:
+    """三餐提醒：每天各在锚点前后 10 分钟内确定性随机一次。"""
+
+    jitter_minutes: int = 10
+    enabled: bool = True
+    slots: dict = field(default_factory=lambda: dict(MEAL_SLOTS))
+
+    def __init__(self, config: dict | None = None):
+        config = config or {}
+        self.enabled = bool(config.get("enabled", True))
+        self.jitter_minutes = max(0, int(config.get("jitter_minutes", 10)))
+        self.slots = dict(MEAL_SLOTS)
+        for meal, default in MEAL_SLOTS.items():
+            raw = config.get(meal, {}) or {}
+            if isinstance(raw, dict):
+                hour = int(raw.get("hour", default[0]))
+                text = str(raw.get("text", default[1])).strip() or default[1]
+            else:
+                hour, text = default
+            self.slots[meal] = (max(0, min(23, hour)), text)
+
+    def scheduled_at(self, day, meal: str):
+        import datetime
+        hour, _text = self.slots[meal]
+        digest = hashlib.sha256(f"{day.isoformat()}:{meal}".encode()).digest()
+        offset = random.Random(int.from_bytes(digest[:8], "big")).randint(
+            -self.jitter_minutes, self.jitter_minutes,
+        )
+        return datetime.datetime.combine(day, datetime.time(hour=hour)) + datetime.timedelta(minutes=offset)
+
+    def due(self, *, now=None, sent_ids: set[str] | None = None):
+        import datetime
+        now = now or datetime.datetime.now()
+        if now.tzinfo is not None:
+            now = now.astimezone().replace(tzinfo=None)
+        if not self.enabled:
+            return None
+        sent_ids = sent_ids or set()
+        for meal, (hour, text) in self.slots.items():
+            candidate_id = f"meal:{now.date().isoformat()}:{meal}"
+            if candidate_id in sent_ids:
+                continue
+            target = self.scheduled_at(now.date(), meal)
+            window_end = datetime.datetime.combine(now.date(), datetime.time(hour=hour)) + datetime.timedelta(
+                minutes=self.jitter_minutes,
+            )
+            if target <= now <= window_end:
+                return meal, text, candidate_id
+        return None
 
 
 @dataclass

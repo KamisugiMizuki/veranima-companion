@@ -4,10 +4,11 @@ from veranima.core.qq_advisor import QQProactiveAdvisor
 
 
 class _Entry:
-    def __init__(self, content, confidence=0.9, id=1):
+    def __init__(self, content, confidence=0.9, id=1, meta=None):
         self.content = content
         self.confidence = confidence
         self.id = id
+        self.meta = meta or {}
 
 
 class _Memory:
@@ -45,3 +46,19 @@ def test_advisor_cold_start_uses_neutral_routine_and_social():
 
     assert advisor.routine_multiplier(__import__("datetime").datetime.now().astimezone()) == 1.0
     assert advisor.social_multiplier() == 1.0
+
+
+def test_advisor_skips_internal_tension_memory():
+    memory = _Memory()
+    memory.rows = [{"role": "user", "content": "今天继续学高数", "created_at": "2026-08-24T09:00:00+08:00", "id": 9}]
+    memory.recall = lambda query, top_k=3, layer=None: [
+        _Entry(
+            "QQ 对话中存在未闭合问题，超过一小时没有后续消息",
+            0.85,
+            167,
+            {"kind": "relational_tension_event"},
+        )
+    ] if layer == "episodic" else []
+    material = QQProactiveAdvisor(memory).material("高数")
+    assert material.kind == "time_followup"
+    assert material.text == "今天继续学高数"

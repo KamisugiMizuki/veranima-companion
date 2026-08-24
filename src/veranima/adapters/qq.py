@@ -32,12 +32,36 @@ from ..core.image_payload import ImagePayloadError, make_image_payload, payload_
 from ..core.render import render_im
 from ..core.qq_advisor import QQProactiveAdvisor
 from ..core.qq_proactive import QQProactiveState
+from ..core.proactive import MealReminderScheduler
 from ..core.tension_events import extract_direct_question
 
 logger = logging.getLogger(__name__)
 _FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
 _DEFAULT_QQ_IMAGE_HOSTS = ("multimedia.nt.qq.com", "multimedia.nt.qq.com.cn")
+_UNANCHORED_PROACTIVE = re.compile(
+    r"(?:之前|上次)?(?:那|这)(?:件)?事|(?:之前|上次)(?:那个|说的(?:那个|那件)?)"
+)
+_ANCHOR_STOPWORDS = {
+    "用户", "今天", "昨天", "明天", "刚刚", "之前", "上次", "继续", "然后",
+    "后来", "现在", "最近", "那个", "这件", "事情", "问题", "进度", "一下",
+    "说过", "提过", "想起", "跟进", "回复", "消息", "对话", "学", "做", "看",
+    "吃", "聊", "说", "去", "要", "想", "把", "了", "的", "在", "很", "又",
+    "还", "和", "与", "跟", "是", "有", "没", "未", "存在", "超过", "一小时",
+}
 
+
+def _proactive_anchor_terms(material: str) -> list[str]:
+    value = str(material or "")
+    for stopword in sorted(_ANCHOR_STOPWORDS, key=len, reverse=True):
+        value = value.replace(stopword, " ")
+    terms: list[str] = []
+    for chunk in re.findall(r"[一-龥]{2,}|[A-Za-z0-9]{2,}", value):
+        if len(chunk) <= 4:
+            terms.append(chunk)
+            continue
+        terms.append(chunk)
+        terms.extend(chunk[i:i + size] for size in (2, 3, 4) for i in range(len(chunk) - size + 1))
+    return list(dict.fromkeys(term for term in terms if term not in _ANCHOR_STOPWORDS))
 
 class OfflineThinkTimer:
     """8.7.4 离线思考定时器：静默 N 分钟后低概率触发（窗口去重）。
@@ -151,6 +175,9 @@ class QQAdapter:
         self.proactive_delay_minutes = max(1, int(proactive_delay_minutes))
         qq_proactive_cfg = ((getattr(agent, "config", {}) or {}).get("proactive", {}) or {}).get("channels", {}).get("qq", {})
         self.qq_advisor = QQProactiveAdvisor(agent.memory, config=qq_proactive_cfg)
+        meal_cfg = ((getattr(agent, "config", {}) or {}).get("proactive", {}) or {}).get("meal_reminders", {})
+        self.meal_scheduler = MealReminderScheduler(meal_cfg)
+        self._meal_send_inflight = False
         self._qq_evaluation_at: float = 0.0
         self._qq_opportunity: dict | None = None
         self.stickers = sticker_library  # 8.6.3 表情包库（None = 关闭）
@@ -592,6 +619,7 @@ class QQAdapter:
             try:
                 if not self._in_quiet_hours():
                     if self.proactive:
+                        await self._send_due_meal_reminder_async()
                         await self._evaluate_qq_opportunity_async()
                         await self._flush_pending_proactive_async()
             except asyncio.CancelledError:
@@ -602,6 +630,45 @@ class QQAdapter:
                 await asyncio.wait_for(stop.wait(), timeout=self._tick_interval)
             except asyncio.TimeoutError:
                 pass
+
+    async def _send_due_meal_reminder_async(self, now=None) -> bool:
+        if self._meal_send_inflight:
+            return False
+        self._meal_send_inflight = True
+        try:
+            return await self._send_due_meal_reminder_once_async(now)
+        finally:
+            self._meal_send_inflight = False
+
+    async def _send_due_meal_reminder_once_async(self, now=None) -> bool:
+        import datetime
+        now = now or datetime.datetime.now().astimezone()
+        feedback = self.agent.memory.recent_proactive_feedback(source="meal", channel="qq", limit=30)
+        sent_ids = {str(row.get("candidate_id") or "") for row in feedback}
+        due = self.meal_scheduler.due(now=now, sent_ids=sent_ids)
+        if not due:
+            return False
+        meal, text, candidate_id = due
+        candidate = self._qq_candidate_from_text(text, source="ritual")
+        candidate = candidate.__class__(
+            source="ritual", reason=f"{meal} meal reminder",
+            relevance=1.0, urgency=0.6, intent="remind",
+            context={"calendar_source": "meal", "meal": meal}, channel="qq",
+        )
+        if not self.agent.gate.decide(
+            candidate, scene=self.agent.scene_lock.current(), now=now.timestamp(),
+        ).allow:
+            return False
+        async with self._lock:
+            if not await self._send_to_all_async(text):
+                self.agent.gate.note_failure(candidate)
+                return False
+            self.agent.record_proactive_message(text, channel="qq")
+            self.agent.gate.commit(candidate)
+            self.agent.memory.record_proactive_feedback(
+                source="meal", channel="qq", candidate_id=candidate_id,
+            )
+            return True
 
     async def _flush_pending_proactive_async(self) -> None:
         if not self._pending_proactive or self._last_user_activity is None:
@@ -827,10 +894,19 @@ class QQAdapter:
         task = (
             "只为 QQ 文字聊天生成一条主动消息。QQ 是异步、高打扰媒介，消息要短、克制、可回可不回。"
             f"{prefix}{elapsed}素材类型={material.kind}，素材={material.text[:240] or '无具体素材'}。"
-            "优先跟进真实素材；没有可靠素材时只发低负担存在确认。"
+            "优先跟进真实素材；必须直接点明具体主题，使用素材里的明确名词或短引用，"
+            "禁止只说‘那事’‘之前那个’‘上次说的’等脱离上下文就无法理解的指代。"
+            "没有可靠素材时只发低负担存在确认。"
             "不要编造后台活动、外部事实或用户没说过的回忆；不要输出解释、JSON或时间协议前缀。"
         )
-        return str(self.agent._short_task(task, max_tokens=1024) or "").strip()
+        text = str(self.agent._short_task(task, max_tokens=1024) or "").strip()
+        if _UNANCHORED_PROACTIVE.search(text):
+            return ""
+        anchors = _proactive_anchor_terms(material.text)
+        if anchors and not any(anchor in text for anchor in anchors):
+            logger.info("qq proactive suppressed: no material anchor in generated text")
+            return ""
+        return text
 
     async def _send_qq_opportunity_async(self) -> None:
         opportunity, self._qq_opportunity = self._qq_opportunity, None
@@ -893,6 +969,7 @@ class QQAdapter:
                     logger.debug("in quiet hours, proactive tick skipped")
                 else:
                     if self.proactive:
+                        asyncio.run_coroutine_threadsafe(self._send_due_meal_reminder_async(), loop)
                         self._flush_pending_proactive(loop)
                         self._evaluate_qq_opportunity(loop)
             except Exception:

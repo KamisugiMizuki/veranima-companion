@@ -180,6 +180,12 @@ proactive:
   enabled: true
   quiet_hours_enabled: true
   quiet_hours: [23, 8]
+  meal_reminders:
+    enabled: true
+    jitter_minutes: 10
+    breakfast: {hour: 8, text: "到饭点了，先去吃点早饭。"}
+    lunch: {hour: 12, text: "到饭点了，先去吃午饭。"}
+    dinner: {hour: 17, text: "到饭点了，先去吃晚饭。"}
   channels:
     qq:
       enabled: true

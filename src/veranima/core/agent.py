@@ -16,7 +16,7 @@ from typing import Literal
 
 from ..llm.client import LLMClient, LLMTimeoutError, LLMUnavailableError
 from .prompts import build_system_prompt, is_clarification
-from .reply import is_failure_fallback_reply
+from .reply import is_failure_fallback_reply, is_internal_reply
 from .segments import extract_segments
 from .ambient import ChannelActivityTracker, ProactiveCandidate, ProactiveGate, SceneLock
 from .interrupt import InterruptDecider, TopicFrequency
@@ -153,7 +153,7 @@ class Agent:
                 self._history_entry(m["role"], m["content"], m.get("created_at"))
                 for m in recent
                 if m["role"] in ("user", "assistant")
-                and not (m["role"] == "assistant" and is_failure_fallback_reply(m["content"]))
+                and not (m["role"] == "assistant" and is_internal_reply(m["content"]))
             ]
             if self._history:
                 logger.info("restored %d history messages for continuity", len(self._history))
@@ -278,6 +278,43 @@ class Agent:
     def _message_context_line(cls, message: dict) -> str:
         role = {"user": "用户", "assistant": "我"}.get(message.get("role"), message.get("role", "消息"))
         return f"{role}: {cls._format_history_content(message.get('content', ''), message.get('created_at'))}"
+
+    def _adjacent_proactive_context(self, user_text: str, channel: str) -> str:
+        """仅为紧邻主动消息的澄清追问提供上一条主动原文。"""
+        if channel != "im" or not is_clarification(user_text):
+            return ""
+        rows = self.memory.recent_messages(limit=8, channel="qq")
+        if len(rows) < 2 or rows[-1].get("role") != "user":
+            return ""
+        previous = rows[-2]
+        if previous.get("role") != "assistant":
+            return ""
+        try:
+            previous_at = datetime.datetime.fromisoformat(
+                str(previous.get("created_at")).replace("Z", "+00:00")
+            )
+            if previous_at.tzinfo is None:
+                previous_at = previous_at.replace(tzinfo=datetime.timezone.utc)
+        except (TypeError, ValueError):
+            return ""
+        for feedback in self.memory.recent_proactive_feedback(channel="qq", limit=20):
+            try:
+                sent_at = datetime.datetime.fromisoformat(
+                    str(feedback.get("sent_at")).replace("Z", "+00:00")
+                )
+                if sent_at.tzinfo is None:
+                    sent_at = sent_at.replace(tzinfo=datetime.timezone.utc)
+            except (TypeError, ValueError):
+                continue
+            if abs((previous_at - sent_at).total_seconds()) > 180:
+                continue
+            return (
+                "【主动消息追问衔接】用户正在追问你上一条主动消息。"
+                f"上一条主动消息原文：{previous['content'][:300]}。"
+                "只解释这条消息实际指向的内容；不要提主动任务来源、内部状态或时间。"
+                "不要重新猜测多个事件，不要列分析输入/候选，不要输出 JSON 或解释草稿。"
+            )
+        return ""
 
     def _append_history_message(self, role: str, content: str, created_at: str | None = None) -> None:
         self._history.append(self._history_entry(role, content, created_at or self._local_message_time()))
@@ -569,6 +606,9 @@ class Agent:
             self.mirror.to_prompt_block(),
             self.promises.to_prompt_block(query_hint=query_hint),
         ]
+        proactive_context = self._adjacent_proactive_context(user_text, channel)
+        if proactive_context:
+            extra_blocks.append(proactive_context)
         if scene == "busy":
             extra_blocks.append(
                 "【场景偏好·忙碌】用户正在学习或处理事情。回复尽量简短，优先直接回应当前输入；"
@@ -714,10 +754,6 @@ class Agent:
             reply = "（我这边有点卡……让我缓一下，你再说一遍？）"
             generation_failed = True
 
-        # Prompt 协议时间只供模型理解；模型复述到正文时在共享出口剥离。
-        from .reply import strip_echoed_time_prefixes, strip_internal_prompt_leak, strip_thinking_trace
-        reply = strip_thinking_trace(strip_internal_prompt_leak(strip_echoed_time_prefixes(reply)))
-
         # ===== R0 阶段 4: parse_reply（R0_SPEC 5）=====
         # R2 表情标签驱动：tts 通道解析结构化输出（text/tone/portrait）（R2_SPEC 2）
         #     R2 双语（角色卡 bilingual.enabled）：ja_text 送 TTS / reply(zh) 显示（R2_SPEC 2）
@@ -734,6 +770,8 @@ class Agent:
                 max_chars=int((self.config.get("output", {}) or {}).get("max_text_chars", 1200)),
             )
             turn_reply = parsed
+            if parsed.degraded:
+                generation_failed = True
             reply = parsed.text or ("（我这边没拿到可显示的回复，再说一遍？）" if parsed.degraded else reply)
             tone = parsed.tone
             portrait = parsed.portrait
@@ -747,6 +785,8 @@ class Agent:
                 max_chars=int((self.config.get("output", {}) or {}).get("max_text_chars", 1200)),
             )
             turn_reply = parsed
+            if parsed.degraded:
+                generation_failed = True
             reply = parsed.text or ("（我这边没拿到可显示的回复，再说一遍？）" if parsed.degraded else reply)
 
         if is_failure_fallback_reply(reply):

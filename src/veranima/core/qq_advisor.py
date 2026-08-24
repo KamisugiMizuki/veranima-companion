@@ -90,9 +90,9 @@ class QQProactiveAdvisor:
     def material(self, query: str = "") -> QQMaterial:
         if query:
             for layer in ("episodic", "procedural", "semantic"):
-                hits = self.memory.recall(query, top_k=3, layer=layer)
-                if hits:
-                    entry = hits[0]
+                for entry in self.memory.recall(query, top_k=3, layer=layer):
+                    if (getattr(entry, "meta", None) or {}).get("kind") == "relational_tension_event":
+                        continue
                     if entry.confidence >= 0.65:
                         return QQMaterial("memory", entry.content, entry.confidence, entry.id)
         rows = self._messages(8)

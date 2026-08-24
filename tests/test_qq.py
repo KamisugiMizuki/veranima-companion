@@ -18,6 +18,7 @@ from veranima.core.agent import Agent, TurnResult
 from veranima.core.character import CharacterCard
 from veranima.core.image_payload import make_image_payload
 from veranima.core.state import AgentState
+from veranima.core.qq_advisor import QQMaterial
 from veranima.memory.store import MemoryStore
 
 
@@ -142,6 +143,35 @@ def test_busy_reply_obj_preserves_complete_structured_text(adapter, agent):
     run(adapter._handle_private({"user_id": 10001, "message_type": "private", "message": "已严肃开始学习"}))
     sent = adapter.bot.sent[0][1]
     assert sent == full_text
+
+
+def test_qq_proactive_rejects_unanchored_reference(adapter):
+    adapter.agent._short_task = lambda *args, **kwargs: "醒了。之前那事后来搞定没？"
+    material = QQMaterial("memory", "用户今天继续学高数", 0.9, 1)
+    assert adapter._generate_qq_proactive(material, datetime.datetime.now().astimezone()) == ""
+
+
+def test_qq_proactive_rejects_message_without_material_topic(adapter):
+    adapter.agent._short_task = lambda *args, **kwargs: "后来搞定没？"
+    material = QQMaterial("memory", "用户今天继续学高数", 0.9, 1)
+    assert adapter._generate_qq_proactive(material, datetime.datetime.now().astimezone()) == ""
+
+
+def test_qq_proactive_keeps_explicit_topic_anchor(adapter):
+    adapter.agent._short_task = lambda *args, **kwargs: "醒了。今天高数进度怎么样了？"
+    material = QQMaterial("memory", "用户今天继续学高数", 0.9, 1)
+    assert adapter._generate_qq_proactive(material, datetime.datetime.now().astimezone()) == "醒了。今天高数进度怎么样了？"
+
+
+def test_qq_meal_reminder_uses_gate_and_persists_after_send(adapter, monkeypatch):
+    now = datetime.datetime(2026, 8, 24, 12, 0).astimezone()
+    monkeypatch.setattr(adapter.meal_scheduler, "due", lambda **kwargs: (
+        "lunch", "到饭点了，先去吃午饭。", "meal:2026-08-24:lunch",
+    ))
+    assert run(adapter._send_due_meal_reminder_async(now)) is True
+    assert adapter.bot.sent[-1][1]["message"] == "到饭点了，先去吃午饭。"
+    feedback = adapter.agent.memory.recent_proactive_feedback(source="meal", channel="qq", limit=1)
+    assert feedback and feedback[0]["candidate_id"] == "meal:2026-08-24:lunch"
 
 
 def test_whitelist_str_and_int(agent):

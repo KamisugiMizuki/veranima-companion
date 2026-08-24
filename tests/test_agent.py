@@ -267,6 +267,50 @@ def test_handle_does_not_persist_model_echo_of_failure_fallback(agent):
     assert fallback not in rows[0]["content"]
 
 
+def test_clarification_after_proactive_reuses_adjacent_proactive_context(agent):
+    card, memory = agent
+    proactive = "醒了。今天高数进度怎么样了？"
+    memory.store_message("assistant", proactive, 80, "平静", channel="qq")
+    proactive_at = memory.recent_messages(limit=1)[0]["created_at"]
+    memory.record_proactive_feedback(
+        source="shared_episode", channel="qq", candidate_id="qq-context-1",
+        sent_at=proactive_at,
+    )
+    llm = FakeLLM(reply="我刚才指的是今天的高数，刚才说得有点含糊。")
+    a = Agent(card=card, memory=memory, llm=llm, state=AgentState(), config={"chat": {"proactive_message_prob": 0.0}})
+    result = a.handle("啥事？")
+    system = llm.last_messages[0]["content"]
+    assert result.reply == "我刚才指的是今天的高数，刚才说得有点含糊。"
+    assert "醒了。今天高数进度怎么样了？" in system
+    assert "不要重新猜测多个事件" in system
+
+
+def test_handle_analysis_only_response_is_not_persisted(agent):
+    card, memory = agent
+    raw = (
+        "1. **分析输入**：用户问：啥事？\n"
+        "* 可能是代码格式，也可能是高数。\n"
+        "* 候选：后来搞定没？\n"
+        "* 输出格式：JSON。"
+    )
+    a = Agent(card=card, memory=memory, llm=FakeLLM(reply=raw), state=AgentState(), config={})
+    result = a.handle("啥事？")
+    assert "分析输入" not in result.reply
+    assert "候选" not in result.reply
+    assert [row["role"] for row in memory.recent_messages(limit=3)] == ["user"]
+    assert memory.con.execute(
+        "SELECT count(*) FROM messages WHERE role='assistant'"
+    ).fetchone()[0] == 0
+
+
+def test_restore_history_filters_legacy_structured_and_analysis_rows(agent):
+    card, memory = agent
+    memory.store_message("user", "上一条用户消息", 80, "平静")
+    memory.store_message("assistant", '{"segments":[{"text":"旧 JSON"}]}', 80, "平静")
+    memory.store_message("assistant", "1. **分析输入**：内部草稿", 80, "平静")
+    assert [row["content"] for row in memory.recent_messages(limit=10)] == ["上一条用户消息"]
+
+
 def test_handle_llm_generic_error_returns_fallback(agent):
     """LLM 在线但生成失败：返回通用兜底。"""
     card, memory = agent

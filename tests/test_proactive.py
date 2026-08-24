@@ -6,7 +6,7 @@ import datetime
 
 import pytest
 
-from veranima.core.proactive import GreetingScheduler, OccasionChecker
+from veranima.core.proactive import GreetingScheduler, MealReminderScheduler, OccasionChecker
 from veranima.memory.store import MemoryStore
 
 
@@ -49,6 +49,40 @@ def test_greeting_daily_dedup():
     assert g.due_greeting(now=datetime.datetime(2026, 8, 3, 8, 0)) == "morning"
     assert g.due_greeting(now=datetime.datetime(2026, 8, 3, 9, 0)) is None  # 同日同段不重复
     assert g.due_greeting(now=datetime.datetime(2026, 8, 4, 8, 0)) == "morning"  # 次日重新允许
+
+
+# ---------- 三餐提醒 ----------
+
+def test_meal_schedule_is_stable_and_within_ten_minutes():
+    scheduler = MealReminderScheduler()
+    day = datetime.date(2026, 8, 24)
+    first = scheduler.scheduled_at(day, "breakfast")
+    second = MealReminderScheduler().scheduled_at(day, "breakfast")
+    assert first == second
+    assert datetime.datetime(2026, 8, 24, 7, 50) <= first <= datetime.datetime(2026, 8, 24, 8, 10)
+
+
+def test_meal_due_once_after_scheduled_time():
+    scheduler = MealReminderScheduler()
+    target = scheduler.scheduled_at(datetime.date(2026, 8, 24), "lunch")
+    assert scheduler.due(now=target - datetime.timedelta(minutes=1), sent_ids=set()) is None
+    due = scheduler.due(now=target, sent_ids=set())
+    assert due and due[0] == "lunch" and "午饭" in due[1]
+    assert scheduler.due(now=target, sent_ids={due[2]}) is None
+
+
+def test_meal_does_not_fire_after_window():
+    scheduler = MealReminderScheduler()
+    assert scheduler.due(
+        now=datetime.datetime(2026, 8, 24, 17, 11), sent_ids=set(),
+    ) is None
+
+
+def test_meal_due_accepts_timezone_aware_clock():
+    scheduler = MealReminderScheduler()
+    target = scheduler.scheduled_at(datetime.date(2026, 8, 24), "lunch")
+    aware = target.replace(tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
+    assert scheduler.due(now=aware, sent_ids=set())
 
 
 # ---------- 节庆与纪念日 ----------

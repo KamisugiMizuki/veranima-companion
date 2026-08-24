@@ -45,6 +45,38 @@ def test_im_mixed_empty_first_json_uses_later_visible_reply():
     assert parse_reply(raw, channel="im").text == "实际回复"
 
 
+def test_im_analysis_only_without_final_answer_is_degraded():
+    raw = (
+        "1. **分析输入**：\n"
+        "* 用户问：啥事？\n"
+        "* 可以回复代码问题，也可以回复高数进度。\n\n"
+        "* 候选一：还能有啥，你的代码格式问题。\n"
+        "* 候选二：还有今天的高数债。\n"
+        "* 输出格式：JSON。"
+    )
+    parsed = parse_reply(raw, channel="im")
+    assert parsed.degraded == "analysis_without_final_answer"
+    assert parsed.text == ""
+
+
+def test_im_internal_instruction_trace_is_degraded():
+    parsed = parse_reply(
+        "PONYTAIL MODE ACTIVE — level: full\n\n# Ponytail\n\n## Persistence\nACTIVE EVERY RESPONSE.",
+        channel="im",
+    )
+    assert parsed.degraded == "internal_trace"
+    assert parsed.text == ""
+
+
+def test_tts_analysis_only_without_final_answer_is_degraded():
+    parsed = parse_reply(
+        "1. **分析输入**：用户问：啥事？\n* 候选：代码或高数。",
+        channel="tts",
+    )
+    assert parsed.degraded == "analysis_without_final_answer"
+    assert parsed.text == ""
+
+
 def test_plain_final_reply_phrase_is_not_stripped():
     assert parse_reply("最终回复", channel="im").text == "最终回复"
 
