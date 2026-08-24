@@ -154,6 +154,17 @@ def test_late_reply_does_not_echo_truncated_structured_json(agent):
     assert msg
 
 
+def test_late_reply_does_not_persist_failure_fallback(agent):
+    agent.memory.store_message("user", "今天继续推进高数", 80, "平静")
+    agent.llm.reply = "（我好像还没醒过来……服务没在运行。检查一下 API 配置？）"
+    msg = agent.late_reply()
+    assert msg != "（我好像还没醒过来……服务没在运行。检查一下 API 配置？）"
+    assert all(
+        "服务没在运行" not in row["content"]
+        for row in agent.memory.recent_messages(limit=4)
+    )
+
+
 def test_late_reply_fallback_without_llm(agent):
     agent.memory.store_message("user", "下周要去面试了", 80, "平静")
     agent.llm = FakeLLM()

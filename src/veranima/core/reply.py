@@ -109,6 +109,23 @@ def strip_internal_prompt_leak(text: str) -> str:
     return _INTERNAL_SEARCH_LINES.sub("", text).strip()
 
 
+_FAILURE_FALLBACK_REPLIES = frozenset({
+    "（我好像还没醒过来……服务没在运行。检查一下 API 配置？）",
+    "（连接有点慢……我没拿到这句回复，再说一遍？）",
+    "（我这边有点卡……让我缓一下，你再说一遍？）",
+    "（我这边没拿到可显示的回复，再说一遍？）",
+    "（我这边暂时没拿到回复，再说一遍？）",
+})
+
+
+def is_failure_fallback_reply(text: str) -> bool:
+    """识别运行时故障文案，防止模型复述后进入正常历史。"""
+    normalized = re.sub(r"\s+", "", str(text or ""))
+    return normalized in {
+        re.sub(r"\s+", "", value) for value in _FAILURE_FALLBACK_REPLIES
+    }
+
+
 def strip_thinking_trace(text: str) -> str:
     """Keep the final answer when a model emits a visible reasoning draft."""
     value = str(text or "").strip()

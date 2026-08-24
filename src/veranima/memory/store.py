@@ -255,6 +255,8 @@ class MemoryStore:
 
     def search_messages(self, query: str, limit: int = 50, before_id: int | None = None) -> list[dict]:
         """历史搜索：复用 messages_fts，按消息 id 倒序；空查询不返回全库。"""
+        from ..core.reply import is_failure_fallback_reply
+
         query = str(query or "").strip()
         if not query:
             return []
@@ -269,7 +271,9 @@ class MemoryStore:
                 "SELECT id, role, content, created_at FROM messages "
                 "WHERE content LIKE ? AND id < ? ORDER BY id DESC LIMIT ?"
             )
-            return [dict(r) for r in self.con.execute(sql, params).fetchall()]
+            rows = self.con.execute(sql, params).fetchall()
+            return [dict(r) for r in rows
+                    if not (r["role"] == "assistant" and is_failure_fallback_reply(r["content"]))]
         fts_query = self._fts_query(query)
         if before_id is None:
             rows = self.con.execute(
@@ -286,7 +290,8 @@ class MemoryStore:
                    ORDER BY m.id DESC LIMIT ?""",
                 (fts_query, int(before_id), limit),
             ).fetchall()
-        return [dict(r) for r in rows]
+        return [dict(r) for r in rows
+                if not (r["role"] == "assistant" and is_failure_fallback_reply(r["content"]))]
 
     def store_self_model_chapter(self, *, title: str, self_interpretation: str = "",
                                  key_events: list[int] | None = None,
@@ -496,17 +501,20 @@ class MemoryStore:
         return current[:limit]
 
     def recent_messages(self, limit: int = 20, channel: str | None = None) -> list[dict]:
+        from ..core.reply import is_failure_fallback_reply
         if channel:
             rows = self.con.execute(
                 "SELECT id, role, content, channel, created_at FROM messages WHERE channel=? ORDER BY id DESC LIMIT ?",
                 (channel, limit),
             ).fetchall()
-            return [dict(r) for r in reversed(rows)]
+            return [dict(r) for r in reversed(rows)
+                    if not (r["role"] == "assistant" and is_failure_fallback_reply(r["content"]))]
         rows = self.con.execute(
             "SELECT id, role, content, channel, created_at FROM messages ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()
-        return [dict(r) for r in reversed(rows)]
+        return [dict(r) for r in reversed(rows)
+                if not (r["role"] == "assistant" and is_failure_fallback_reply(r["content"]))]
 
     # ---------- R4 主动反馈持久化（R4_SPEC 4） ----------
 

@@ -72,12 +72,12 @@ def test_handle_llm_unavailable_returns_wakeup(agent, tmp_path):
     llm = FakeLLM(error=LLMUnavailableError("model not loaded"), loaded=False)
     a = Agent(card=card, memory=memory, llm=llm, state=AgentState(), config={"chat": {"proactive_message_prob": 0.0}})
     r = a.handle("在吗？")
-    assert "还没醒" in r.reply
-    assert "API" in r.reply
+    assert "暂时没拿到回复" in r.reply
+    assert "API" not in r.reply
     assert llm.calls == 0  # 关键：不可用时不发 chat 请求
     msgs = memory.recent_messages(limit=4)
-    assert len(msgs) == 2  # user + assistant 兜底
-    assert msgs[-1]["role"] == "assistant"
+    assert len(msgs) == 1  # 只保留 user；故障兜底不进入 assistant 历史
+    assert msgs[-1]["role"] == "user"
 
 
 def test_prompt_preserves_message_times_across_restart(agent):
@@ -107,6 +107,19 @@ def test_prompt_preserves_message_times_across_restart(agent):
     assert llm.last_messages[-1]["content"].endswith("不对，我根本还没睡")
     assert "不要仅凭晚安、睡觉或早安推断已经跨日" in llm.last_messages[0]["content"]
     assert all(item.get("created_at") for item in a._history[-2:])
+
+
+def test_restore_history_ignores_persisted_failure_fallback(agent):
+    card, memory = agent
+    memory.store_message("user", "之前的用户消息", 80, "平静")
+    memory.store_message("assistant", "（我好像还没醒过来……服务没在运行。检查一下 API 配置？）", 80, "平静")
+    memory.store_message("assistant", "正常的历史回复", 80, "平静")
+    assert all("服务没在运行" not in row["content"] for row in memory.recent_messages(limit=10))
+    assert all("服务没在运行" not in row["content"] for row in memory.search_messages("服务没在运行"))
+    restored = Agent(card=card, memory=memory, llm=FakeLLM(), state=AgentState(), config={})
+    contents = [item["content"] for item in restored._history]
+    assert "正常的历史回复" in contents
+    assert all("服务没在运行" not in content for content in contents)
 
 
 def test_relational_tension_persists_across_agent_restart(agent):
@@ -216,8 +229,9 @@ def test_handle_model_loaded_but_chat_fails(agent):
     card, memory = agent
     a = Agent(card=card, memory=memory, llm=FakeLLM(error=LLMUnavailableError("server hiccup"), loaded=True), state=AgentState(), config={"chat": {"proactive_message_prob": 0.0}})
     r = a.handle("在吗？")
-    assert "还没醒" in r.reply
+    assert "暂时没拿到回复" in r.reply
     assert a.llm.calls == 1
+    assert [m["role"] for m in memory.recent_messages(limit=3)] == ["user"]
 
 
 def test_handle_timeout_does_not_claim_service_is_not_running(agent):
@@ -232,6 +246,25 @@ def test_handle_timeout_does_not_claim_service_is_not_running(agent):
     result = a.handle("在吗？")
     assert "服务没在运行" not in result.reply
     assert "再说一遍" in result.reply
+    assert [m["role"] for m in memory.recent_messages(limit=3)] == ["user"]
+
+
+def test_handle_does_not_persist_model_echo_of_failure_fallback(agent):
+    card, memory = agent
+    fallback = "（我好像还没醒过来……服务没在运行。检查一下 API 配置？）"
+    a = Agent(
+        card=card,
+        memory=memory,
+        llm=FakeLLM(reply=fallback, loaded=True),
+        state=AgentState(),
+        config={"chat": {"proactive_message_prob": 0.0}},
+    )
+    result = a.handle("起床。搞点东西吃吃，吃完开学")
+    assert result.reply != fallback
+    assert "再说一遍" in result.reply
+    rows = memory.recent_messages(limit=3)
+    assert [m["role"] for m in rows] == ["user"]
+    assert fallback not in rows[0]["content"]
 
 
 def test_handle_llm_generic_error_returns_fallback(agent):
@@ -239,7 +272,8 @@ def test_handle_llm_generic_error_returns_fallback(agent):
     card, memory = agent
     a = Agent(card=card, memory=memory, llm=FakeLLM(error=LLMError("server 500")), state=AgentState(), config={})
     r = a.handle("在吗？")
-    assert "有点卡" in r.reply
+    assert "暂时没拿到回复" in r.reply
+    assert [m["role"] for m in memory.recent_messages(limit=3)] == ["user"]
 
 
 def test_handle_proactive_does_not_need_llm(agent):

@@ -16,6 +16,7 @@ from typing import Literal
 
 from ..llm.client import LLMClient, LLMTimeoutError, LLMUnavailableError
 from .prompts import build_system_prompt, is_clarification
+from .reply import is_failure_fallback_reply
 from .segments import extract_segments
 from .ambient import ChannelActivityTracker, ProactiveCandidate, ProactiveGate, SceneLock
 from .interrupt import InterruptDecider, TopicFrequency
@@ -150,7 +151,9 @@ class Agent:
             recent = self.memory.recent_messages(limit=hist_limit)
             self._history = [
                 self._history_entry(m["role"], m["content"], m.get("created_at"))
-                for m in recent if m["role"] in ("user", "assistant")
+                for m in recent
+                if m["role"] in ("user", "assistant")
+                and not (m["role"] == "assistant" and is_failure_fallback_reply(m["content"]))
             ]
             if self._history:
                 logger.info("restored %d history messages for continuity", len(self._history))
@@ -683,17 +686,14 @@ class Agent:
         # 模型可用性前置检查（远程 API：is_model_loaded 恒 True，防御性保留）
         check = getattr(self.llm, "is_model_loaded", None)
         if check is not None and not check():
-            reply = "（我好像还没醒过来……服务没在运行。检查一下 API 配置？）"
-            self.memory.store_message("assistant", reply, self.state.energy, self.state.mood,
-                                      channel="pet" if channel == "tts" else "qq")
+            reply = "（我这边暂时没拿到回复，再说一遍？）"
             self._append_history_message("user", store_text, self._message_time_for_id(user_msg_id))
-            self._append_history_message("assistant", reply)
-            self.state.on_assistant_message()
             self._persist_state()
             return TurnResult(reply=reply, energy=self.state.energy, mood=self.state.mood)
 
         # 5. 生成（低精力时限短；联网搜索开启时走工具调用链路）
         low_energy = self.state.energy < 40
+        generation_failed = False
         try:
             chat_fn = getattr(self.llm, "chat_structured", None) or self.llm.chat
             reply = chat_fn(
@@ -703,13 +703,16 @@ class Agent:
         except LLMTimeoutError as e:
             logger.warning("LLM timed out during turn: %s", e)
             reply = "（连接有点慢……我没拿到这句回复，再说一遍？）"
+            generation_failed = True
         except LLMUnavailableError as e:
             # 服务不可用（连接失败/鉴权失败）：角色化提示，不冒充"卡了"
             logger.warning("LLM unavailable during turn: %s", e)
-            reply = "（我好像还没醒过来……服务没在运行。检查一下 API 配置？）"
+            reply = "（我这边暂时没拿到回复，再说一遍？）"
+            generation_failed = True
         except Exception as e:
             logger.error("chat failed: %s", e)
             reply = "（我这边有点卡……让我缓一下，你再说一遍？）"
+            generation_failed = True
 
         # Prompt 协议时间只供模型理解；模型复述到正文时在共享出口剥离。
         from .reply import strip_echoed_time_prefixes, strip_internal_prompt_leak, strip_thinking_trace
@@ -745,6 +748,29 @@ class Agent:
             )
             turn_reply = parsed
             reply = parsed.text or ("（我这边没拿到可显示的回复，再说一遍？）" if parsed.degraded else reply)
+
+        if is_failure_fallback_reply(reply):
+            if not generation_failed:
+                logger.warning("model echoed an internal failure fallback; suppressing it")
+            generation_failed = True
+            reply = "（我这边暂时没拿到回复，再说一遍？）"
+            turn_reply = None
+            portrait = ""
+            tone = ""
+            ja_text = ""
+
+        if generation_failed:
+            self._history.append(self._history_entry("user", store_text, self._message_time_for_id(user_msg_id)))
+            self._persist_state()
+            return TurnResult(
+                reply=reply,
+                energy=self.state.energy,
+                mood=self.state.mood,
+                portrait=portrait,
+                tone=tone,
+                ja_text=ja_text,
+                reply_obj=turn_reply,
+            )
 
         # ===== R0 阶段 5: persist_turn（R0_SPEC 5）=====
         self.memory.store_message("assistant", reply, self.state.energy, self.state.mood,
@@ -1501,7 +1527,8 @@ class Agent:
         max_chars = int(output_cfg.get("max_text_chars", 1200))
         if not bilingual:
             parsed = parse_reply(reply, channel="im", card=self.card, max_chars=max_chars)
-            return parsed.text if parsed.segments else ""
+            text = parsed.text if parsed.segments else ""
+            return "" if is_failure_fallback_reply(text) else text
         parsed = parse_reply(
             reply,
             channel="tts",
@@ -1510,6 +1537,8 @@ class Agent:
             max_segments=int(output_cfg.get("max_segments", 6)),
             max_chars=max_chars,
         )
+        if is_failure_fallback_reply(parsed.text):
+            return "", ""
         return parsed.text, parsed.ja_text
 
     def _time_greeting(self) -> str:
