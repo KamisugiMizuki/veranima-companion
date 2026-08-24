@@ -147,7 +147,7 @@ def is_internal_reply(text: str) -> bool:
 _ANALYSIS_HEADING_RE = re.compile(
     r"(?:^|\n)\s*(?:\d+\.\s*)?(?:\*{1,2}\s*)?"
     r"(?:思考过程|分析输入|角色扮演定位|草拟回复|精简与风格化|规则核对)"
-    r"(?:\s*\*{1,2})?\s*[:：]",
+    r"(?:(?:\s*\*{1,2})?\s*[:：]|\s*\*+\s*[…\.]{2,})",
     re.I,
 )
 _FINAL_HEADING_RE = re.compile(

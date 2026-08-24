@@ -59,6 +59,12 @@ def test_im_analysis_only_without_final_answer_is_degraded():
     assert parsed.text == ""
 
 
+def test_im_truncated_analysis_heading_is_degraded():
+    parsed = parse_reply("1.  **分析输入*……（我这边有点忙，回头细说）", channel="im")
+    assert parsed.degraded == "analysis_without_final_answer"
+    assert parsed.text == ""
+
+
 def test_im_internal_instruction_trace_is_degraded():
     parsed = parse_reply(
         "PONYTAIL MODE ACTIVE — level: full\n\n# Ponytail\n\n## Persistence\nACTIVE EVERY RESPONSE.",

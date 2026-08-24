@@ -490,7 +490,7 @@ hermes verify --json --skip-start
 "C:/Program Files/nodejs/node.exe" --check pet/settings-renderer.js
 ```
 
-最近一次验证结果：`757 passed, 1 warning`，Hermes `ok=true`（使用 `--skip-start`，因为通用 FastAPI runtime 探针不适配本项目 Electron/桌宠入口）。分通道结构化 JSON（IM `text`、单语 TTS `text`、双语 TTS `ja`/`zh`）与当前远程 API 的真实 IM/TTS Agent→解析→持久化→渲染环路已验证通过；主动消息连续 10 次真实远程生成的结构化协议泄漏为 `0/10`。唯一 warning 来自依赖侧的 Starlette/httpx 弃用提示。Electron 视觉交互、NapCatQQ 真实消息回传、远程服务行为、本地大模型运行和页面正文补充的公网实际内容属于需要人工/环境条件的实机验收，不把静态测试当成实机通过。
+最近一次验证结果：`776 passed, 1 warning`，Hermes `ok=true`（使用 `--skip-start`，因为通用 FastAPI runtime 探针不适配本项目 Electron/桌宠入口）。分通道结构化 JSON（IM `text`、单语 TTS `text`、双语 TTS `ja`/`zh`）与当前远程 API 的真实 IM/TTS Agent→解析→持久化→渲染环路已验证通过；主动消息连续 10 次真实远程生成的结构化协议泄漏为 `0/10`。唯一 warning 来自依赖侧的 Starlette/httpx 弃用提示。Electron 视觉交互、NapCatQQ 真实消息回传、远程服务行为、本地大模型运行和页面正文补充的公网实际内容属于需要人工/环境条件的实机验收，不把静态测试当成实机通过。
 
 ## 当前状态
 
