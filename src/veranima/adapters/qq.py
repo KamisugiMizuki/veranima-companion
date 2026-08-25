@@ -729,6 +729,11 @@ class QQAdapter:
             self._qq_evaluation_at = now + schedule.delay_minutes * 60
             return
         candidate = self._qq_candidate(material)
+        feedback_id = self._qq_feedback_id(candidate, current)
+        if any(row.get("candidate_id") == feedback_id
+               for row in self.agent.memory.recent_proactive_feedback(channel="qq", limit=100)):
+            logger.info("qq proactive suppressed: source already used today (%s)", feedback_id)
+            return
         decision = self.agent.gate.decide(
             candidate, scene=self.agent.scene_lock.current(),
         )
@@ -754,10 +759,17 @@ class QQAdapter:
         ).isoformat(timespec="seconds") if requires_reply else None
         self.agent.memory.record_proactive_feedback(
             source=candidate.source, channel="qq",
-            candidate_id=f"qq-{int(time.time() * 1000)}",
+            candidate_id=self._qq_feedback_id(candidate),
             requires_reply=requires_reply, direct_question=question,
             expires_at=expires,
         )
+
+    @staticmethod
+    def _qq_feedback_id(candidate, now=None) -> str:
+        import datetime
+        now = now or datetime.datetime.now().astimezone()
+        base = str((candidate.context or {}).get("dedupe_key") or "").strip()
+        return f"{base}:{now.date().isoformat()}" if base else f"qq-{int(time.time() * 1000)}"
 
     def _expire_qq_expectations(self, now) -> None:
         """过期期待逐条原子结算，重启/tick 重复执行也只加一次 TV。"""
@@ -868,10 +880,12 @@ class QQAdapter:
     def _qq_candidate(material):
         from ..core.ambient import ProactiveCandidate
         source = "shared_episode" if material.kind == "memory" else "scene"
+        source_id = material.source_id
         return ProactiveCandidate(
             channel="qq", source=source, reason=f"QQ 主动素材：{material.kind}",
             relevance=max(0.65, material.confidence), urgency=0.4, intent="check_in",
-            context={"material": material.text, "source_id": material.source_id},
+            context={"material": material.text, "source_id": source_id,
+                     "dedupe_key": f"qq:{source}:{source_id}" if source_id else ""},
         )
 
     @staticmethod
@@ -883,6 +897,9 @@ class QQAdapter:
         )
 
     def _generate_qq_proactive(self, material, now) -> str:
+        if material.kind not in {"memory", "time_followup"} or not material.source_id:
+            logger.info("qq proactive suppressed: no historical source anchor")
+            return ""
         elapsed = ""
         last_at = self.qq_advisor.state.last_user_message_at
         if last_at:

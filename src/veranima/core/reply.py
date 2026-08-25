@@ -24,6 +24,9 @@ _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 _ECHOED_TIME_PREFIX_RE = re.compile(
     r"^(?:\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:[+-]\d{2}:?\d{2})?\]\s*)+"
 )
+_TRANSCRIPT_CONTINUATION_RE = re.compile(
+    r"(?<=[。！？!?…])\s*\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:[+-]\d{2}:?\d{2})?\]\s*"
+)
 
 
 @dataclass
@@ -84,8 +87,10 @@ def _clean_text(value: Any, max_chars: int) -> str:
 
 
 def strip_echoed_time_prefixes(text: str) -> str:
-    """Remove prompt protocol timestamps echoed at the start of an LLM reply."""
-    return _ECHOED_TIME_PREFIX_RE.sub("", text).lstrip()
+    """Remove echoed prompt timestamps and model-continued transcript turns."""
+    value = _ECHOED_TIME_PREFIX_RE.sub("", text).lstrip()
+    continuation = _TRANSCRIPT_CONTINUATION_RE.search(value)
+    return value[:continuation.start()].rstrip() if continuation else value
 
 
 _INTERNAL_SEARCH_LINES = re.compile(
@@ -255,6 +260,38 @@ def _structured_data_candidates(raw: str) -> list[dict]:
     return candidates
 
 
+def _memory_candidates_from_data(data: dict) -> list[dict]:
+    """Read bounded ADD-only memory candidates; provenance is attached by Agent."""
+    raw_candidates = data.get("memory_candidates") if isinstance(data, dict) else None
+    if not isinstance(raw_candidates, list):
+        return []
+    out: list[dict] = []
+    text_fields = {"kind": 40, "topic": 120, "content": 500, "status": 20, "intent": 20}
+    for item in raw_candidates[:5]:
+        if not isinstance(item, dict) or not str(item.get("content") or "").strip():
+            continue
+        candidate = {
+            key: str(item[key]).strip()[:limit]
+            for key, limit in text_fields.items()
+            if item.get(key) is not None and str(item[key]).strip()
+        }
+        for key in ("follow_up_days", "confidence", "importance"):
+            value = item.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                candidate[key] = value
+        out.append(candidate)
+    return out
+
+
+def _memory_candidates_from_raw(raw: str) -> list[dict]:
+    try:
+        data = json.loads(_strip_fence(raw))
+    except (json.JSONDecodeError, TypeError):
+        candidates = _structured_data_candidates(raw)
+        data = candidates[-1] if candidates else None
+    return _memory_candidates_from_data(data) if isinstance(data, dict) else []
+
+
 def _parse_structured_segments(raw: str, *, max_chars: int) -> list[ReplySegment] | None:
     """Parse the last visible segments object in a mixed model response."""
     try:
@@ -361,7 +398,10 @@ def parse_reply(raw: str, *, channel: str = "im", card: Any = None,
     if channel != "tts":
         structured = _parse_structured_segments(raw, max_chars=max_chars)
         if structured is not None and structured:
-            return Reply(segments=structured)
+            return Reply(
+                segments=structured,
+                memory_candidates=_memory_candidates_from_raw(raw),
+            )
         if structured is not None:
             return Reply(degraded="empty_structured_output")
         if _looks_like_structured_response(raw):
@@ -395,17 +435,12 @@ def parse_reply(raw: str, *, channel: str = "im", card: Any = None,
             follow_up = str(data.get("follow_up") or "none").strip()
             if follow_up not in ("none", "answer", "ask", "offer", "remind", "invite", "close"):
                 follow_up = "none"
-            mcs = data.get("memory_candidates")
-            candidates = []
-            if isinstance(mcs, list):
-                for mc in mcs[:5]:
-                    if isinstance(mc, dict) and mc.get("content"):
-                        candidates.append({
-                            "content": str(mc["content"])[:500],
-                            "kind": str(mc.get("kind") or "user_fact"),
-                        })
-            return Reply(segments=segs, stance=stance, follow_up=follow_up,
-                         memory_candidates=candidates)
+            return Reply(
+                segments=segs,
+                stance=stance,
+                follow_up=follow_up,
+                memory_candidates=_memory_candidates_from_data(data),
+            )
         if isinstance(data.get("segments"), list):
             return Reply(degraded="empty_structured_output")
         if isinstance(data, dict):

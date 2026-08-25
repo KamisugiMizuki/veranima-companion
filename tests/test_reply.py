@@ -196,3 +196,48 @@ def test_reply_properties_empty():
     assert r.tone == "中性"
     assert r.portrait == ""
     assert r.ja_text == ""
+
+
+def test_im_truncates_model_continued_timestamp_transcript():
+    raw = (
+        "赶紧睡吧，梦里什么都有。晚安。"
+        "[2026-08-26 08:24:20] 昨晚那么认真地回我，谢啦。"
+        "[2026-08-26 12:38:09] 你的程序跑得怎么样了？要是报错了别硬撑着。"
+        "[2026-08-26 13:42:15] 你的程序跑得怎么样了？要是报错了别硬撑着。"
+    )
+
+    assert parse_reply(raw, channel="im").text == "赶紧睡吧，梦里什么都有。晚安。"
+
+
+def test_timestamp_in_ordinary_prose_is_preserved():
+    raw = "日志里的 [2026-08-26 08:24:20] 是启动时间。"
+
+    assert parse_reply(raw, channel="im").text == raw
+
+
+def test_structured_segment_truncates_continued_timestamp_transcript():
+    raw = '{"segments":[{"text":"晚安。[2026-08-26 08:24:20] 明早我再问你。"}]}'
+
+    assert parse_reply(raw, channel="im").text == "晚安。"
+
+
+def test_im_extracts_bounded_conversation_event_candidate():
+    raw = (
+        '{"segments":[{"text":"知道了。"}],"memory_candidates":['
+        '{"kind":"conversation_event","topic":"临时作息","content":"用户最近午餐偏晚",'
+        '"status":"active","intent":"remind","follow_up_days":3,"confidence":0.82,'
+        '"source_message_id":999}]}'
+    )
+
+    reply = parse_reply(raw, channel="im")
+
+    assert reply.text == "知道了。"
+    assert reply.memory_candidates == [{
+        "kind": "conversation_event",
+        "topic": "临时作息",
+        "content": "用户最近午餐偏晚",
+        "status": "active",
+        "intent": "remind",
+        "follow_up_days": 3,
+        "confidence": 0.82,
+    }]

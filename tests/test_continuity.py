@@ -39,6 +39,20 @@ def test_validate_candidate_rejects():
     assert validate_candidate({"kind": "user_fact", "content": "x"})  # 缺 source
 
 
+def test_validate_conversation_event_contract():
+    base = {
+        "kind": "conversation_event", "content": "待跟进的临时事项",
+        "confidence": 0.8, "importance": 0.6, "source": "llm_extract",
+        "source_message_id": 1, "topic": "临时事项", "status": "active",
+        "follow_up_days": 3,
+    }
+    assert validate_candidate(base) == []
+    assert validate_candidate({**base, "topic": ""})
+    assert validate_candidate({**base, "follow_up_days": 8})
+    assert validate_candidate({**base, "status": "done"})
+    assert validate_candidate({**base, "status": "completed", "follow_up_days": 1})
+
+
 def test_rule_extract_user_fact():
     a = object.__new__(Agent)  # 纯规则方法，跳过 __init__（不依赖 memory/LLM）
     cands = a._rule_extract("我喜欢下雨天", 1)
@@ -111,3 +125,71 @@ def test_format_memory_line_prefix():
                      meta={"kind": "shared_episode", "event_time": "上周"})
     line2 = format_memory_line(e2)
     assert line2.startswith("[共同经历|置信度:中|时间:上周]")
+
+
+def test_conversation_event_uses_versioned_lifecycle(tmp_path):
+    store = _store(tmp_path)
+    agent = object.__new__(Agent)
+    agent.memory = store
+
+    agent._store_candidate({
+        "kind": "conversation_event",
+        "topic": "临时作息",
+        "content": "用户最近的日常安排发生了临时偏移",
+        "status": "active",
+        "intent": "remind",
+        "follow_up_days": 3,
+        "confidence": 0.82,
+        "importance": 0.65,
+        "source": "llm_extract",
+        "source_message_id": 11,
+    })
+    first = next(e for e in store.list_layer("episodic")
+                 if e.meta.get("kind") == "conversation_event")
+
+    assert first.meta["topic"] == "临时作息"
+    assert first.meta["status"] == "active"
+    assert first.meta["source_message_ids"] == [11]
+    assert first.meta["expires_at"]
+
+    agent._store_candidate({
+        "kind": "conversation_event",
+        "topic": "临时作息",
+        "content": "用户说明这项临时安排已经结束",
+        "status": "completed",
+        "intent": "check_in",
+        "follow_up_days": 0,
+        "confidence": 0.9,
+        "importance": 0.65,
+        "source": "llm_extract",
+        "source_message_id": 19,
+    })
+    current = [e for e in store.list_layer("episodic")
+               if e.meta.get("kind") == "conversation_event"]
+
+    assert len(current) == 1
+    assert current[0].version == 2
+    assert current[0].meta["status"] == "completed"
+    assert current[0].meta["supersedes"] == first.id
+    assert current[0].meta["source_message_ids"] == [11, 19]
+    assert current[0].meta.get("expires_at") == ""
+
+
+def test_conversation_event_status_change_versions_even_when_content_is_same(tmp_path):
+    store = _store(tmp_path)
+    agent = object.__new__(Agent)
+    agent.memory = store
+    base = {
+        "kind": "conversation_event", "topic": "阶段性事项",
+        "content": "用户有一项阶段性事项", "intent": "check_in",
+        "confidence": 0.85, "importance": 0.6, "source": "llm_extract",
+    }
+    agent._store_candidate({**base, "status": "active", "follow_up_days": 2, "source_message_id": 1})
+    agent._store_candidate({**base, "status": "paused", "follow_up_days": 0, "source_message_id": 2})
+
+    current = [e for e in store.list_layer("episodic")
+               if e.meta.get("kind") == "conversation_event"]
+
+    assert len(current) == 1
+    assert current[0].version == 2
+    assert current[0].meta["status"] == "paused"

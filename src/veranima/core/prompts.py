@@ -46,8 +46,14 @@ REALITY_BOUNDARY = (
 # 交互回复统一结构化输出：按通道选择可见/语音字段，thinking 等字段不消费
 IM_STRUCTURED_OUTPUT_INSTRUCTION = (
     "【输出格式·文字聊天】你的回复必须只输出 JSON，不要输出思考过程、分析步骤、草稿、规则核对或 Markdown。"
-    '{"segments":[{"text":"给用户看的文字回复","tone":"语气标签","portrait":"表情标签"}]}。'
-    "text 是唯一的可见文本；不要添加 thinking、analysis、reasoning、ja、zh 等字段。"
+    '{"segments":[{"text":"给用户看的文字回复","tone":"语气标签","portrait":"表情标签"}],'
+    '"memory_candidates":[{"kind":"conversation_event","topic":"可复用的具体主题",'
+    '"content":"只概括用户本轮明确表达的临时事件或状态变化","status":"active|paused|completed|abandoned",'
+    '"intent":"check_in|remind","follow_up_days":0,"confidence":0.0}]}。'
+    "text 是唯一的可见文本；memory_candidates 可省略。只在本轮确实包含可后续跟进的事件、"
+    "临时习惯或其状态变化时输出 conversation_event；topic 必须能与同一事件的后续状态对齐，"
+    "不得从 assistant 猜测、假设句或例子生成。active 的 follow_up_days 只能为 1-7，"
+    "其他状态必须为 0。不要添加 thinking、analysis、reasoning、ja、zh 等字段。"
 )
 
 # R2 表情标签驱动（R2_SPEC 2）：tts 通道要求结构化 JSON 输出

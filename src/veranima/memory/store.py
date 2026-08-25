@@ -37,6 +37,7 @@ LAYER_R1_MAP = {
     "shared_meaning": "episodic",
     "relationship_event": "episodic",
     "interaction_rule": "procedural",
+    "conversation_event": "episodic",
 }
 LAYER_R1_REVERSE = {v: k for k, v in LAYER_R1_MAP.items()}
 
@@ -45,8 +46,9 @@ CANDIDATE_KINDS = (
     "user_fact", "shared_episode", "commitment", "session",
     # P-1（PERSONA_LOOP_SPEC 4 数据映射）
     "user_framework", "character_belief", "shared_meaning", "relationship_event", "interaction_rule",
+    "conversation_event",
 )
-VALID_STATUS = ("active", "open", "done", "cancelled", "expired")
+VALID_STATUS = ("active", "open", "paused", "completed", "abandoned", "done", "cancelled", "expired")
 SECRET_PATTERNS = (
     "password", "passwd", "api_key", "apikey", "secret", "token",
     "验证码", "密码", "私钥", "密钥", "支付密码", "卡号",
@@ -103,6 +105,20 @@ def validate_candidate(cand: dict) -> list[str]:
     status = cand.get("status")
     if status is not None and status not in VALID_STATUS:
         issues.append(f"status 非法: {status!r}")
+    if kind == "conversation_event":
+        if not str(cand.get("topic") or "").strip():
+            issues.append("conversation_event 缺 topic")
+        if status not in ("active", "paused", "completed", "abandoned"):
+            issues.append("conversation_event status 非法")
+        if "follow_up_days" in cand:
+            try:
+                days = int(cand["follow_up_days"])
+                if not 0 <= days <= 7:
+                    issues.append("conversation_event follow_up_days 超出 0-7")
+                if status != "active" and days != 0:
+                    issues.append("conversation_event 非 active 状态不能设置 follow_up_days")
+            except (TypeError, ValueError):
+                issues.append("conversation_event follow_up_days 不是整数")
     return issues
 
 

@@ -91,10 +91,26 @@ class QQProactiveAdvisor:
         if query:
             for layer in ("episodic", "procedural", "semantic"):
                 for entry in self.memory.recall(query, top_k=3, layer=layer):
-                    if (getattr(entry, "meta", None) or {}).get("kind") == "relational_tension_event":
+                    meta = getattr(entry, "meta", None) or {}
+                    if meta.get("kind") == "relational_tension_event":
+                        continue
+                    if (meta.get("kind") == "conversation_event"
+                            and meta.get("status", "active") != "active"):
                         continue
                     if entry.confidence >= 0.65:
                         return QQMaterial("memory", entry.content, entry.confidence, entry.id)
+        try:
+            active_events = [
+                entry for entry in self.memory.list_layer("episodic", limit=100)
+                if (getattr(entry, "meta", None) or {}).get("kind") == "conversation_event"
+                and (getattr(entry, "meta", None) or {}).get("status", "active") == "active"
+                and entry.confidence >= 0.65
+            ]
+            if active_events:
+                entry = active_events[0]
+                return QQMaterial("memory", entry.content, entry.confidence, entry.id)
+        except Exception:
+            pass
         rows = self._messages(8)
         for row in reversed(rows):
             if row.get("role") == "user" and len(str(row.get("content") or "")) >= 6:

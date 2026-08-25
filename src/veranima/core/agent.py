@@ -1143,6 +1143,9 @@ class Agent:
                     "source_message_id": user_msg_id,
                     "needs_confirmation": True,  # LLM 候选默认低置信待确认
                 }
+                for key in ("topic", "status", "intent", "follow_up_days", "importance"):
+                    if key in mc:
+                        cand[key] = mc[key]
                 self._store_candidate(cand)
             except Exception as e:
                 logger.warning("llm candidate store failed (non-blocking): %s", e)
@@ -1157,15 +1160,41 @@ class Agent:
         kind = cand["kind"]
         layer = self.memory_store_layer(kind)
         content = cand["content"]
+        source_id = int(cand["source_message_id"])
+        existing_event = next(
+            (entry for entry in self.memory.list_layer(layer, limit=100)
+             if (entry.meta or {}).get("kind") == kind
+             and kind == "conversation_event"
+             and cand.get("topic")
+             and (entry.meta or {}).get("topic") == cand.get("topic")),
+            None,
+        )
+        if kind == "conversation_event":
+            days = max(0, min(7, int(cand.get("follow_up_days", 3))))
+            expires_at = cand.get("expires_at") or ""
+            if cand.get("status") == "active" and not expires_at and days:
+                expires_at = (datetime.datetime.now(datetime.timezone.utc)
+                              + datetime.timedelta(days=days)).isoformat(timespec="seconds")
+            if cand.get("status") != "active":
+                expires_at = ""
+            previous_ids = list((existing_event.meta if existing_event else {}).get("source_message_ids") or [])
+            source_ids = list(dict.fromkeys(previous_ids + [source_id]))
+        else:
+            expires_at = cand.get("expires_at")
+            source_ids = [source_id]
         # meta 透传扩展字段（MEMORY_SPEC 5 候选契约）
         meta = {
             "kind": kind,
             "source_message_id": cand.get("source_message_id"),
+            "source_message_ids": source_ids,
             "subject": cand.get("subject", "user"),
             "event_time": cand.get("event_time"),
             "emotion": cand.get("emotion"),
-            "expires_at": cand.get("expires_at"),
+            "expires_at": expires_at,
             "status": cand.get("status", "active"),
+            "topic": cand.get("topic"),
+            "intent": cand.get("intent"),
+            "follow_up_days": cand.get("follow_up_days"),
             "needs_confirmation": bool(cand.get("needs_confirmation", False)),
             "correction": bool(cand.get("correction", False)),
             # P-1（PERSONA_LOOP_SPEC）：persona 候选透传字段
@@ -1181,11 +1210,15 @@ class Agent:
         # 去重：同层已有高度重叠记忆
         existing = self.memory.list_layer(layer, limit=50)
         for e in existing:
+            if kind == "conversation_event" and existing_event is not None and e.id != existing_event.id:
+                continue
             sim = self._text_similarity(content, e.content)
-            if sim >= 0.92 and not cand.get("correction"):
+            if sim >= 0.92 and not cand.get("correction") and not (
+                kind == "conversation_event" and existing_event is not None
+            ):
                 logger.debug("candidate dup ignored (sim=%.2f): %s", sim, content[:30])
                 return
-            if sim >= 0.78 or cand.get("correction"):
+            if (kind == "conversation_event" and existing_event is not None and e.id == existing_event.id) or sim >= 0.78 or cand.get("correction"):
                 # 保留新版本，旧版本入链（R1_SPEC 3：meta.supersedes=old_id）
                 # P-1：人格 kind 二次确认 → stability 提升（cap 1.0）
                 merged = {**e.meta, "supersedes": e.id, **meta}

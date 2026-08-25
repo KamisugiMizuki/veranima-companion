@@ -163,6 +163,29 @@ def test_qq_proactive_keeps_explicit_topic_anchor(adapter):
     assert adapter._generate_qq_proactive(material, datetime.datetime.now().astimezone()) == "醒了。今天高数进度怎么样了？"
 
 
+def test_qq_proactive_requires_historical_source_anchor(adapter):
+    material = QQMaterial("presence", "", 0.0, None)
+
+    assert adapter._generate_qq_proactive(material, datetime.datetime.now().astimezone()) == ""
+
+
+def test_qq_proactive_candidate_uses_historical_source_id(adapter):
+    material = QQMaterial("memory", "用户有一项待跟进安排", 0.9, 31)
+
+    candidate = adapter._qq_candidate(material)
+
+    assert candidate.context["source_id"] == 31
+
+
+def test_qq_proactive_feedback_id_is_stable_for_source_and_day(adapter):
+    import datetime
+    candidate = adapter._qq_candidate(QQMaterial("memory", "待跟进安排", 0.9, 31))
+    now = datetime.datetime(2026, 8, 26, 10, tzinfo=datetime.timezone.utc)
+
+    assert adapter._qq_feedback_id(candidate, now) == "qq:shared_episode:31:2026-08-26"
+    assert adapter._qq_feedback_id(candidate, now) == adapter._qq_feedback_id(candidate, now)
+
+
 def test_qq_meal_reminder_uses_gate_and_persists_after_send(adapter, monkeypatch):
     now = datetime.datetime(2026, 8, 24, 12, 0).astimezone()
     monkeypatch.setattr(adapter.meal_scheduler, "due", lambda **kwargs: (
