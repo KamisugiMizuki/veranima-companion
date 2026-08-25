@@ -216,9 +216,15 @@ def test_timestamp_in_ordinary_prose_is_preserved():
 
 
 def test_structured_segment_truncates_continued_timestamp_transcript():
-    raw = '{"segments":[{"text":"晚安。[2026-08-26 08:24:20] 明早我再问你。"}]}'
+    raw = '{"segments":[{"text":"晚安。[2026-08-26 08:24:20] 明早我再问你。[2026-08-26 12:38:09] 午饭别忘了。"}]}'
 
     assert parse_reply(raw, channel="im").text == "晚安。"
+
+
+def test_single_timestamp_in_reply_prose_is_preserved():
+    raw = '{"segments":[{"text":"晚安。[2026-08-26 08:24:20] 明早我再问你。"}]}'
+
+    assert parse_reply(raw, channel="im").text == "晚安。[2026-08-26 08:24:20] 明早我再问你。"
 
 
 def test_im_extracts_bounded_conversation_event_candidate():
