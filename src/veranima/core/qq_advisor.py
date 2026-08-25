@@ -13,6 +13,8 @@ class QQMaterial:
     text: str
     confidence: float = 0.0
     source_id: int | None = None
+    source_memory_id: int | None = None
+    source_message_id: int | None = None
 
 
 class QQProactiveAdvisor:
@@ -98,7 +100,13 @@ class QQProactiveAdvisor:
                             and meta.get("status", "active") != "active"):
                         continue
                     if entry.confidence >= 0.65:
-                        return QQMaterial("memory", entry.content, entry.confidence, entry.id)
+                        meta = getattr(entry, "meta", None) or {}
+                        source_ids = meta.get("source_message_ids") or []
+                        message_id = meta.get("source_message_id") or (source_ids[-1] if source_ids else None)
+                        return QQMaterial(
+                            "memory", entry.content, entry.confidence, entry.id,
+                            source_memory_id=entry.id, source_message_id=message_id,
+                        )
         try:
             active_events = [
                 entry for entry in self.memory.list_layer("episodic", limit=100)
@@ -108,13 +116,22 @@ class QQProactiveAdvisor:
             ]
             if active_events:
                 entry = active_events[0]
-                return QQMaterial("memory", entry.content, entry.confidence, entry.id)
+                meta = getattr(entry, "meta", None) or {}
+                source_ids = meta.get("source_message_ids") or []
+                message_id = meta.get("source_message_id") or (source_ids[-1] if source_ids else None)
+                return QQMaterial(
+                    "memory", entry.content, entry.confidence, entry.id,
+                    source_memory_id=entry.id, source_message_id=message_id,
+                )
         except Exception:
             pass
         rows = self._messages(8)
         for row in reversed(rows):
             if row.get("role") == "user" and len(str(row.get("content") or "")) >= 6:
-                return QQMaterial("time_followup", str(row["content"]), 0.5, row.get("id"))
+                return QQMaterial(
+                    "time_followup", str(row["content"]), 0.5, row.get("id"),
+                    source_message_id=row.get("id"),
+                )
         return QQMaterial("presence", "", 0.0, None)
 
     def evaluate(self, now: datetime.datetime, *, query: str = ""):

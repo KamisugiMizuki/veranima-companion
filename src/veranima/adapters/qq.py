@@ -885,6 +885,8 @@ class QQAdapter:
             channel="qq", source=source, reason=f"QQ 主动素材：{material.kind}",
             relevance=max(0.65, material.confidence), urgency=0.4, intent="check_in",
             context={"material": material.text, "source_id": source_id,
+                     "source_memory_id": material.source_memory_id,
+                     "source_message_id": material.source_message_id,
                      "dedupe_key": f"qq:{source}:{source_id}" if source_id else ""},
         )
 
@@ -897,7 +899,7 @@ class QQAdapter:
         )
 
     def _generate_qq_proactive(self, material, now) -> str:
-        if material.kind not in {"memory", "time_followup"} or not material.source_id:
+        if material.kind not in {"memory", "time_followup"} or not material.source_message_id:
             logger.info("qq proactive suppressed: no historical source anchor")
             return ""
         elapsed = ""

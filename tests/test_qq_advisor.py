@@ -41,6 +41,8 @@ def test_advisor_prefers_high_confidence_memory():
 
     assert material.kind == "memory"
     assert material.source_id == 7
+    assert material.source_memory_id == 7
+    assert material.source_message_id is None
     assert readiness.material_multiplier == 2.0
 
 
@@ -91,6 +93,21 @@ def test_advisor_returns_active_conversation_event_source():
 
     assert material.kind == "memory"
     assert material.source_id == 31
+
+
+def test_advisor_keeps_event_memory_and_message_ids_distinct():
+    memory = _Memory()
+    memory.recall = lambda query, top_k=3, layer=None: [
+        _Entry("用户近期有一项待跟进安排", 0.85, 31,
+               {"kind": "conversation_event", "topic": "待跟进安排",
+                "status": "active", "source_message_ids": [12, 19]})
+    ] if layer == "episodic" else []
+
+    material = QQProactiveAdvisor(memory).material("安排")
+
+    assert material.source_id == 31
+    assert material.source_memory_id == 31
+    assert material.source_message_id == 19
 
 
 def test_advisor_uses_latest_active_event_without_query_match():

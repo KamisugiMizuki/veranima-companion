@@ -159,7 +159,7 @@ def test_qq_proactive_rejects_message_without_material_topic(adapter):
 
 def test_qq_proactive_keeps_explicit_topic_anchor(adapter):
     adapter.agent._short_task = lambda *args, **kwargs: "醒了。今天高数进度怎么样了？"
-    material = QQMaterial("memory", "用户今天继续学高数", 0.9, 1)
+    material = QQMaterial("memory", "用户今天继续学高数", 0.9, 1, source_memory_id=1, source_message_id=9)
     assert adapter._generate_qq_proactive(material, datetime.datetime.now().astimezone()) == "醒了。今天高数进度怎么样了？"
 
 
