@@ -257,25 +257,31 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _task_cmd(args) -> int:
-    """R5 任务管道（R5_SPEC 2/3）：指令 → 工单 → 追问或转交 dsh。"""
-    from .core.workorder import build_workorder, build_workorder_llm, clarification_question, is_task_request
-    from .tools.dsh_bridge import dsh_available, run_dsh_task
+    """R5 任务管道（R5_SPEC 2/3 + HERMES_AGENT_INTEGRATION_SPEC 阶段 2）。
+
+    backend=hermes（默认）：WorkOrder → Hermes /v1/runs → 轮询到终态。
+    backend=dsh：过渡期显式回滚路径（SPEC §10），不再自动兜底。
+    """
+    from .core.workorder import build_workorder, build_workorder_llm, clarification_question, is_task_request, validate_workorder
+    from .tools.hermes_bridge import HermesBridgeError, HermesExecutionBridge, load_bridge_config
 
     text = " ".join(args.text)
     if not is_task_request(text):
         print("（这是闲聊，不转交任务管道）")
         return 0
-    if not dsh_available():
-        print("桌面助手（dsh）未安装：")
-        print("  1. cd dsh")
-        print("  2. npm install @deepseek-ai/dsh@0.1.0-rc.6")
-        print("  3. 设置 DEEPSEEK_BASE_URL / DEEPSEEK_API_KEY 环境变量（独立于 veranima 配置）")
-        print("  4. 重新执行本命令")
+    try:
+        cfg = load_config()
+    except Exception:
+        cfg = {}
+    tasks_cfg = cfg.get("tasks", {}) or {}
+    backend = str(tasks_cfg.get("backend", "hermes"))
+    if not tasks_cfg.get("enabled"):
+        print("任务功能未启用（config.yaml tasks.enabled: false）。")
         return 1
     # LLM 版意图补全（无 LLM 时自动降级规则版）
+    wo = None
     try:
         from .app import create_agent
-        cfg = load_config()
         llm = create_agent(cfg).llm
         wo = build_workorder_llm(llm, text) if llm.is_available() else build_workorder(text)
     except Exception:
@@ -284,13 +290,64 @@ def _task_cmd(args) -> int:
     q = clarification_question(wo)
     if q:
         print(f"需澄清: {q}")
-        print("（回复补充信息后重新发起即可；演示模式直接转交 dsh）")
-    print("已安排，任务交给桌面助手处理中……")
-    result = run_dsh_task(wo.to_json())
-    print(f"结果: exit={result['exit_code']}")
-    out = result["output"]
+        print("（回复补充信息后重新发起即可；不澄清不执行——LLM 不得猜路径）")
+        return 1
+    issues = validate_workorder(wo)
+    if issues:
+        for i in issues:
+            print(f"工单校验未通过: {i}")
+        return 1
+    if backend == "dsh":
+        # 过渡期回滚路径：仅当配置显式选择 dsh 时使用（SPEC §10）
+        from .tools.dsh_bridge import dsh_available, run_dsh_task
+        if not dsh_available():
+            print("dsh 未安装且 backend=dsh 为显式回滚配置；建议改回 backend=hermes。")
+            return 1
+        print("已安排，任务交给桌面助手处理中……（backend=dsh 回滚模式）")
+        result = run_dsh_task(wo.to_json())
+        print(f"结果: exit={result['exit_code']}")
+        out = result["output"]
+        print((out[:600] + "…") if len(out) > 600 else out)
+        return 0 if result["ok"] else 1
+    # ---- hermes 后端 ----
+    bridge = HermesExecutionBridge(load_bridge_config(tasks_cfg))
+    ok_health, reason = bridge.health()
+    if not ok_health:
+        print(f"hermes 不可用（{reason}）。任务拒绝执行，陪伴对话不受影响。")
+        print("检查项：API Server 是否启动（hermes gateway）、tasks.hermes.base_url、VERANIMA_HERMES_KEY* 环境变量。")
+        return 1
+    print("已安排，任务已提交给 Hermes 执行器……")
+    try:
+        from .app import create_agent as _ca
+        memory = _ca(cfg).memory
+    except Exception:
+        from .memory.store import MemoryStore
+        memory = MemoryStore(db_path="data/veranima.db", config={"decay_enabled": False})
+    try:
+        run = bridge.submit(wo.to_json())
+        memory.task_run_upsert(run.task_id, run.run_id, run.status, run.raw_status)
+        final = bridge.wait_terminal(
+            run.task_id, run.run_id,
+            on_run=lambda r: memory.task_run_upsert(
+                r.task_id, r.run_id, r.status, r.raw_status, r.output, r.error,
+                {"changed_files": list(r.changed_files), "test_summary": r.test_summary,
+                 "warnings": list(r.warnings)},
+            ),
+        )
+    except HermesBridgeError as e:
+        print(f"任务失败：{e}")
+        return 1
+    memory.task_run_upsert(final.task_id, final.run_id, final.status, final.raw_status,
+                           final.output, final.error,
+                           {"changed_files": list(final.changed_files),
+                            "test_summary": final.test_summary,
+                            "warnings": list(final.warnings)})
+    print(f"结果: status={final.status} (raw={final.raw_status})")
+    if final.warnings:
+        print(f"报告警告: {', '.join(final.warnings)}")
+    out = final.output or final.error
     print((out[:600] + "…") if len(out) > 600 else out)
-    return 0 if result["ok"] else 1
+    return 0 if final.status == "succeeded" else 1
 
 
 if __name__ == "__main__":

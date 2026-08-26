@@ -252,6 +252,45 @@ class MemoryStore:
         self.con.commit()
         return True
 
+    # ---------- Hermes 任务运行记录（HERMES_AGENT_INTEGRATION_SPEC，执行审计层） ----------
+
+    def task_run_upsert(self, task_id: str, run_id: str = "", status: str = "queued",
+                        raw_status: str = "", output: str = "", error: str = "",
+                        report: dict | None = None) -> None:
+        now = _now()
+        report_json = json.dumps(report or {}, ensure_ascii=False)
+        row = self.con.execute("SELECT id FROM task_runs WHERE task_id=?", (task_id,)).fetchone()
+        if row is None:
+            self.con.execute(
+                "INSERT INTO task_runs (task_id, run_id, status, raw_status, output, error, report_json, created_at, updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?)",
+                (task_id, run_id, status, raw_status, output, error, report_json, now, now),
+            )
+        else:
+            self.con.execute(
+                "UPDATE task_runs SET run_id=?, status=?, raw_status=?, output=?, error=?, report_json=?, updated_at=? WHERE task_id=?",
+                (run_id, status, raw_status, output, error, report_json, now, task_id),
+            )
+        self.con.commit()
+
+    def task_run_get(self, task_id: str) -> dict | None:
+        row = self.con.execute("SELECT * FROM task_runs WHERE task_id=?", (task_id,)).fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        try:
+            d["report"] = json.loads(d.pop("report_json") or "{}")
+        except json.JSONDecodeError:
+            d["report"] = {}
+        return d
+
+    def task_runs_unfinished(self) -> list[dict]:
+        """非终态任务（启动恢复扫描用）。"""
+        rows = self.con.execute(
+            "SELECT * FROM task_runs WHERE status IN ('queued','running','waiting_for_approval')"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     # ---------- 写入 ----------
 
     def store(

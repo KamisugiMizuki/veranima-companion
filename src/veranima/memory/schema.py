@@ -42,6 +42,20 @@ CREATE TABLE IF NOT EXISTS memory_review_inbox (
     decided_at  TEXT
 );
 
+-- HERMES_AGENT_INTEGRATION_SPEC：task_id <-> run_id 执行审计（不属于五层人物记忆）
+CREATE TABLE IF NOT EXISTS task_runs (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id       TEXT NOT NULL UNIQUE,
+    run_id        TEXT NOT NULL DEFAULT '',
+    status        TEXT NOT NULL DEFAULT 'queued',
+    raw_status    TEXT NOT NULL DEFAULT '',
+    output        TEXT NOT NULL DEFAULT '',
+    error         TEXT NOT NULL DEFAULT '',
+    report_json   TEXT NOT NULL DEFAULT '{{}}',
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
+);
+
 -- 原始消息（零开销摄入：写入即存，不等待 LLM）
 CREATE TABLE IF NOT EXISTS messages (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
