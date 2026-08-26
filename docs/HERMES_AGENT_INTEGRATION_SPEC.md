@@ -237,6 +237,8 @@ tasks:
     profile: veranima-worker
     multiplex_profiles: true
     worktree_for_code: false  # 阶段 3 隔离探针通过后才允许改为 true
+    workspace_root: D:/Hermes_workspace/veranima  # 写操作唯一允许目录
+    approval_timeout_seconds: 600  # 审批等待超时，超时自动 deny
 ```
 
 API bearer key 不写入此文件。它由环境变量或受保护的 secret source 注入。
@@ -476,6 +478,7 @@ veranima 将其翻译为 WorkOrder，Hermes 在独立工作会话和 worktree �
 - 身份关联：task ID、run ID 原样传递，不混用；approval 事件只关联同一 run。
 - 状态机：queued → running → terminal；waiting_for_approval；stopping 不算 cancelled；completed 归一化为 succeeded 时保留 raw status。
 - 隔离：任务结果不写人物 memory；工具输出不进入聊天 history。
+- 决议补充（§15）：审批关键词硬匹配（零命中/多命中/否定语境均不执行）；摘要 brief/detail 分片与长度上限；workspace 越写检测（changed_files 不全在 workspace_root 内 → violation 并要求回滚）；审批超时自动 deny；断连恢复后补报未推送终态。
 
 ### 11.2 生产接线测试
 
@@ -504,6 +507,7 @@ veranima 将其翻译为 WorkOrder，Hermes 在独立工作会话和 worktree �
 5. worktree 中修改一行代码、运行定向测试、返回 diff；
 6. veranima 重启而 Hermes 保持运行时恢复同一 run；Hermes 重启后把非终态 run 标为 orphaned，并从 session/worktree/产物读回，不误报终态；
 7. Hermes 离线时普通 QQ/桌宠聊天仍可用。
+8. 审批请求超时未答，确认自动 deny 且 run 继续走到终态；
 
 ### 11.4 完成定义
 
@@ -573,7 +577,75 @@ veranima 将其翻译为 WorkOrder，Hermes 在独立工作会话和 worktree �
 - 不默认自动 commit、push、merge、发布或修改安全门禁。
 - 不为尚不存在的多后端需求提前设计插件式 executor 框架。
 
-## 15. 本地依据
+## 15. 运行时决议补充（2026-08-26）
+
+### 15.1 模型分离
+
+现状真值：veranima 普通对话模型由 `config/config.yaml` 的 `llm` 段配置（当前远程 API profile），Hermes 工作模型由 Hermes 自己的 profile 配置；两者 base_url、key、模型名物理隔离，互不读取。
+
+决议：无论普通对话是否迁移，陪伴模型与工作模型必须始终保持两个独立配置域。若后续 veranima 对话后端改由 Hermes 承接，必须另建独立 companion profile（例如 `veranima-companion`），与 `veranima-worker` 使用不同 profile/model/key/session；禁止两种职责共用同一 profile 的模型配置。验收方式：两个 profile 的 `/v1/models` 各自返回各自名称；worker bridge 不得 import 或读取陪伴链路配置。
+
+### 15.2 LLM 判断点策略
+
+原则：凡直接决定用户体验质量的语义判断，优先各发起一次低成本 LLM 调用；既有规则只承担预过滤与降级兜底，不再充当最终质量层。
+
+现状盘点：
+
+- 搜索意图：`tools/search.py::SearchTrigger` 注释明确「不调用 LLM」，纯关键词/正则；
+- 任务分类：`classify_task_type()` 关键词粗分类（精确分类原设计就交给 LLM 补全阶段）；
+- 任务结果转述：`Agent.task_result_story()` 成功路径已走 LLM，失败路径固定文案；
+- 三餐提醒：固定文案 + 时间抖动，无个性化；
+- 主动消息：Gate 规则筛选素材后由主对话 LLM 生成正文（已是 LLM 判断）。
+
+统一规范：
+
+1. 判断类调用固定小成本参数：max_tokens ≤ 256、timeout ≤ 8s、单轮无工具；输出必须是单个 JSON 对象，解析失败 fail-closed 回退现有规则路径；
+2. 每个判断点在 config `llm_judgments` 段登记（enabled/max_tokens/timeout），支持一键关闭回退纯规则模式；
+3. 三餐提醒升级为两级：规则负责时间窗与去重，LLM 结合近期事件记忆生成个性化一句文案（如昨日提到午饭吃太晚 → 提醒今天按时吃）；无可用事件时回落现固定文案；仍受主动 Gate、每日上限和冷却约束；
+4. 搜索意图在规则预筛命中「可能需要搜」后再过一次 LLM 复核，降低误触发；隐私禁词路径保持纯规则、不走 LLM。
+
+### 15.3 工作结果摘要分层
+
+问题：Hermes 对工作内容的描述信息量不可控——太少则隐含修改用户不知情，太多则超出 QQ 单条限制并触碰风控。
+
+设计：
+
+1. TaskRun 增加派生 `report` 结构：`{brief, detail, changed_files, warnings}`。`brief` ≤120 字符，进聊天气泡与 TTS；`detail` 为完整技术说明，仅文本通道；
+2. Hermes 任务 prompt 强制要求最终输出含四段结构：「做了什么 / 改动文件清单 / 验证结果 / 未验证项」。bridge 解析该结构；缺失段落写入 `warnings`（报告不完整），禁止用 LLM 编造补齐；
+3. QQ 发送策略：先发 brief；detail 按安全分片长度（约 2000 字符/条）拆多条顺序发送，超过 3 条时改为发送首条 + 「回复『详情』查看剩余」按需拉取；
+4. detail 发送前经过现有 IM 协议泄漏过滤；不新增敏感词白名单魔法；
+5. 桌宠气泡与语音只消费 brief。
+
+### 15.4 工作区边界
+
+决议：veranima 下达的任务对文件的写操作只允许发生在用户设定的 `tasks.hermes.workspace_root`（默认项目根）内；工作区外允许读、禁止写/删除/移动。
+
+实现层次（诚实标注强度）：
+
+1. WorkOrder 与任务 prompt 显式声明边界（软约束）；
+2. Hermes approval 对越界危险写操作把关（中强度，依赖审批策略）；
+3. 事后审计：run 结束后校验 `changed_files` 全部位于 workspace_root 内，否则标记 `violation`、通知用户并要求回滚（确定性检出）；
+4. 硬性沙箱（进程级 cwd/权限隔离）只有阶段 3 worktree 能力实测后才成立；在此之前写任务仅限 workspace 内显式传入的临时子目录。
+
+### 15.5 审批交互协议
+
+1. 收到 `waiting_for_approval` 时，veranima 将 `approval.request` 原文与「once / session / always / deny」四个关键词一同原文发送给用户；
+2. 用户下一条消息进入硬匹配：默认严格模式要求 trim 后整句等于某一关键词；宽松模式（config 开启）允许消息中恰好出现一个关键词，且命中位置前方紧邻否定词（不要/别/不想/拒绝）时视为歧义、不执行；
+3. 零命中、多关键词同时出现、或其他任何文本一律不执行，并提示重新选择；聊天上下文与角色扮演内容永远不被当作审批；
+4. 匹配通过后调用 `POST /v1/runs/{run_id}/approval` 传递对应 choice；409 `approval_not_pending` 视为已过期，如实告知，不改投其他 run。
+
+### 15.6 通信死锁防护
+
+场景：Hermes 修改 veranima 自身代码期间，veranima 核心崩溃、QQ 断连或用户无可用对话核心，导致审批无人应答或结果无人接收。
+
+防护：
+
+1. 审批等待超时（`approval_timeout_seconds`，默认 600s）：超时自动以 `deny` 应答并继续轮询 run 至终态；deny 是安全方向（拒绝危险操作），不会放行；
+2. run 到达终态但通知通道不可用时，TaskRun 已持久化在 `task_runs`；QQ 重连或桌宠重启后启动扫描，补报所有未推送的终态记录；
+3. Hermes 侧完成代码任务后绝不重启 veranima 进程；合并与应用变更始终是独立的用户确认步骤，避免「正在被修改的核心负责批准修改」的自举死锁；
+4. bridge 心跳：submit 后周期 GET status，连续 3 次网络错误标记 `connection_lost`；本地超时仍无法确认终态时按 orphaned 处理并补报。
+
+## 16. 本地依据
 
 - veranima 总纲：[`DESIGN.md`](DESIGN.md)
 - veranima R5：[`R5_SPEC.md`](R5_SPEC.md)
