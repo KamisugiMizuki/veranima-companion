@@ -669,7 +669,7 @@ ipcMain.handle('settings-save-config', async (e, data) => {
     const h = data && data.pet && data.pet.avatar_height;
     if (h) win && win.webContents.send('avatar-height', Number(h));  // 立绘尺寸
   }
-  return ok;
+  return resp || { ok: false, error: '核心未连接或未返回保存结果' };
 });
 ipcMain.handle('settings-profile-config', async (e, action, profile) => {
   const resp = await wsRequest('save_config', { llm_profile_action: action, llm_profile: profile || {} });

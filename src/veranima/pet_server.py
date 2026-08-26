@@ -108,11 +108,17 @@ def _validate_image_roots(values) -> list[str]:
     return errors
 
 
-def _validate_sticker_dir(value) -> list[str]:
-    """表情库目录必须是已存在的本地目录。"""
+def _validate_sticker_dir(value, *, base_dir: str | Path | None = None) -> list[str]:
+    """表情库目录必须是已存在的本地目录；相对路径按项目根解析。"""
     raw = str(value or "").strip()
     path = Path(raw)
-    if not raw or not path.is_absolute() or not path.exists() or not path.is_dir():
+    if not path.is_absolute():
+        if base_dir:
+            path = Path(base_dir) / path
+        else:
+            from veranima.config import ROOT
+            path = ROOT / path
+    if not raw or not path.exists() or not path.is_dir():
         return [f"表情包目录无效: {value}"]
     return []
 
@@ -904,7 +910,10 @@ class PetServer:
                         current_stickers = cfg.get("qq", {}).get("stickers", {}) or {}
                         sticker_candidate = {**_sticker_settings_payload(cfg), **current_stickers, **sticker_in}
                         errors = _validate_sticker_settings(sticker_candidate)
-                        errors.extend(_validate_sticker_dir(sticker_candidate.get("dir")))
+                        errors.extend(_validate_sticker_dir(
+                            sticker_candidate.get("dir"),
+                            base_dir=cfg.get("root"),
+                        ))
                         if errors:
                             await self._send({"type": "config_saved", "id": msg.get("id"),
                                               "ok": False, "error": "; ".join(errors)})

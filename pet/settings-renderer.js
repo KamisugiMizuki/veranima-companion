@@ -258,8 +258,8 @@ $('save').addEventListener('click', async () => {
   const role = $('role-select').value; if (role) data.character_card = `characters/${role}/character.json`;
   $('save').disabled = true; showMsg('正在保存…', true);
   try {
-    const ok = await window.pet.saveConfig(data);
-    if (!ok) throw new Error('核心未连接或保存失败');
+    const result = await window.pet.saveConfig(data);
+    if (!result || result.ok !== true) throw new Error((result && result.error) || '核心未连接或保存失败');
     showMsg('已保存，核心正在重启', true); window.pet.restartCore();
   } catch (e) { showMsg(e.message || '保存失败', false); }
   finally { $('save').disabled = false; }

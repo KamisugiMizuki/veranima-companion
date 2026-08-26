@@ -43,3 +43,24 @@ def test_sticker_settings_reject_nonexistent_or_file_image_roots(tmp_path):
     assert _validate_image_roots([str(tmp_path / "missing")])
     assert _validate_image_roots([str(file_path)])
     assert _validate_image_roots([str(tmp_path)]) == []
+
+
+def test_relative_default_sticker_dir_is_accepted_against_project_root(tmp_path):
+    from veranima.pet_server import _validate_sticker_dir
+
+    (tmp_path / "data" / "stickers").mkdir(parents=True)
+    assert _validate_sticker_dir("data/stickers", base_dir=tmp_path) == []
+
+
+def test_sticker_settings_send_payload_has_all_runtime_fields():
+    renderer = (ROOT / "pet" / "settings-renderer.js").read_text(encoding="utf-8")
+    assert "stickerSettings()" in renderer
+    assert "stickers: stickerSettings()" in renderer
+    assert "trusted_image_proxy" in renderer
+
+
+def test_settings_save_preserves_server_error_response_for_renderer():
+    main = (ROOT / "pet" / "main.js").read_text(encoding="utf-8")
+    renderer = (ROOT / "pet" / "settings-renderer.js").read_text(encoding="utf-8")
+    assert "return resp || { ok: false" in main
+    assert "result && result.error" in renderer
