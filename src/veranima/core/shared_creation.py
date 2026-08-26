@@ -93,6 +93,7 @@ class SharedEvent:
     evidence_message_ids: list[int]
     confirmed: bool
     memory_id: int | None
+    relationship_candidate: dict | None = None  # C-4：待审核关系候选
 
 
 class SharedCreationStore:
@@ -360,6 +361,20 @@ class SharedCreationStore:
                 existing["event_id"], existing["project_id"], existing["summary"],
                 json.loads(existing["evidence_json"]), bool(existing["confirmed"]), existing["memory_id"],
             )
+        prior_count = self.con.execute(
+            "SELECT count(*) FROM shared_events WHERE project_id=?", (project_id,),
+        ).fetchone()[0]
+        event_id = _id("event")
+        from .creation_relationship import build_shared_creation_relationship_candidate
+        rel_candidate = build_shared_creation_relationship_candidate(
+            project_id=project_id,
+            project_title=self.get_project(project_id).title,
+            summary=normalized_summary,
+            event_id=event_id,
+            evidence_message_ids=evidence_ids,
+            completed=(self.get_project(project_id).status == "completed"),
+            prior_events_in_project=int(prior_count),
+        )
         content = f"共同项目：{self.get_project(project_id).title}。共同事件：{normalized_summary}。"
         if user_interpretation.strip():
             content += f"用户解释：{user_interpretation.strip()}。"
@@ -400,7 +415,6 @@ class SharedCreationStore:
                         provenance=str(evidence_ids[0]),
                         meta={**memory_candidate["meta"], "project_id": project_id},
                     )
-        event_id = _id("event")
         self.con.execute(
             """INSERT INTO shared_events
                (event_id,event_key,project_id,summary,evidence_json,user_interpretation,
@@ -410,7 +424,8 @@ class SharedCreationStore:
              user_interpretation.strip()[:500], character_interpretation.strip()[:500], 1, entry.id, _now()),
         )
         self._touch(project_id); self.con.commit()
-        return SharedEvent(event_id, project_id, normalized_summary[:500], evidence_ids, True, entry.id)
+        return SharedEvent(event_id, project_id, normalized_summary[:500], evidence_ids, True, entry.id,
+                           relationship_candidate=rel_candidate)
 
     def _require_scene(self, project_id: str, scene_id: str) -> None:
         row = self.con.execute("SELECT 1 FROM shared_scenes WHERE scene_id=? AND project_id=?", (scene_id, project_id)).fetchone()

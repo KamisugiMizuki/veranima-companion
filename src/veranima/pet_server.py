@@ -652,6 +652,9 @@ class PetServer:
                     for k in ("enabled", "base_url", "model", "language", "input_device_id"):
                         if k in stt:
                             cfg.setdefault("stt", {})[k] = stt[k]
+                    mem = d.get("memory", {})
+                    if "db_path" in mem and str(mem["db_path"]).strip():
+                        cfg.setdefault("memory", {})["db_path"] = str(mem["db_path"]).strip()
                     qq = d.get("qq", {})
                     if "allowed" in qq:
                         cfg.setdefault("qq", {})["allowed_qq"] = qq["allowed"]

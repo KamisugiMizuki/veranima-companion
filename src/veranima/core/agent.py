@@ -407,8 +407,23 @@ class Agent:
             return False
         if candidate.get("kind") != "relationship_event":
             return False
+        # C-4（SHARED_CREATION_SPEC §5.3）：同项目连续事件不线性累加——
+        # 冷却期内的 shared_creation 候选只保留审计，不更新任何维度。
+        if candidate.get("source") == "shared_creation" and candidate.get("cooldown_active"):
+            logger.info("relationship candidate in cooldown (project=%s), audit only",
+                        candidate.get("project_id"))
+            return True
         from .persona import apply_relationship_event
         event_id = str(candidate.get("event_id") or "")
+        if candidate.get("source") == "shared_creation":
+            etype = str(candidate.get("event_type") or "user_confirm")
+            self.relationship = apply_relationship_event(
+                self.relationship,
+                {"type": etype, "cause": str(candidate.get("content") or "共同创作事件"),
+                 "event_id": event_id},
+            )
+            self._persist_state()
+            return True
         self.relationship = apply_relationship_event(
             self.relationship,
             {"type": "major_event", "cause": str(candidate.get("content") or "关系事件"),

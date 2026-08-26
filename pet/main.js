@@ -1,6 +1,6 @@
 // Veranima 桌宠壳 main 进程（R3_SPEC 1.进程与协议）
 // 职责：窗口管理（主窗口/日志窗口）、spawn 核心、WS 连核心、日志汇聚、health 自愈
-const { app, BrowserWindow, Tray, Menu, ipcMain, powerSaveBlocker, screen, nativeImage } = require('electron');
+const { dialog, app, BrowserWindow, Tray, Menu, ipcMain, powerSaveBlocker, screen, nativeImage } = require('electron');
 
 // 主动对话（L0 衔接语等）无用户手势：Chromium autoplay 策略默认拒绝
 // audio.play() → 音频不播 + renderer catch 立即清气泡（实测「消失过快」）。
@@ -674,6 +674,42 @@ ipcMain.handle('settings-save-config', async (e, data) => {
 ipcMain.handle('settings-profile-config', async (e, action, profile) => {
   const resp = await wsRequest('save_config', { llm_profile_action: action, llm_profile: profile || {} });
   return resp && resp.type === 'config_saved' ? resp : null;
+});
+// 设置页「测试连接」：main 进程直连 OpenAI 兼容 /v1/models（不经核心、不落配置）。
+// 返回模型 id 列表供下拉选择（用户要求：模型不允许自由填写，从 API 返回中选定）。
+ipcMain.handle('settings-test-llm', async (e, payload) => {
+  const base = String((payload && payload.base_url) || '').replace(/\/+$/, '');
+  if (!base) return { ok: false, error: '未填写 base_url' };
+  const headers = { 'Content-Type': 'application/json' };
+  const key = String((payload && payload.api_key) || '').trim();
+  if (key && !key.includes('****')) headers['Authorization'] = `Bearer ${key}`;
+  try {
+    const resp = await fetch(`${base}/models`, { headers, signal: AbortSignal.timeout(8000) });
+    if (!resp.ok) return { ok: false, error: `HTTP ${resp.status}` };
+    const data = await resp.json();
+    const ids = (Array.isArray(data.data) ? data.data : [])
+      .map((m) => m && m.id).filter((x) => typeof x === 'string' && x.length > 0);
+    return { ok: true, models: ids };
+  } catch (err) {
+    return { ok: false, error: String(err && err.message || err) };
+  }
+});
+// 设置页路径选择：原生文件/目录浏览框（用户要求：本地路径用交互选择，不让手打）。
+// type: 'file' | 'dir'；返回所选绝对路径或 null。
+ipcMain.handle('settings-pick-path', async (e, payload) => {
+  const type = (payload && payload.type) === 'dir' ? 'openDirectory' : 'openFile';
+  const opts = {
+    properties: [type],
+    title: (payload && payload.title) || '选择路径',
+    defaultPath: (payload && payload.default_path) || undefined,
+  };
+  if (type === 'openFile') {
+    const filters = payload && payload.filters;
+    if (Array.isArray(filters) && filters.length) opts.filters = filters;
+  }
+  const result = await dialog.showOpenDialog(settingsWin || win, opts);
+  if (result.canceled || !result.filePaths.length) return null;
+  return result.filePaths[0];
 });
 ipcMain.on('core-restart', () => { restartCore(); });
 ipcMain.on('pet-reconnect', () => {

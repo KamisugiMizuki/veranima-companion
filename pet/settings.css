@@ -26,3 +26,5 @@ input:hover,select:hover { border-color:#aeb9c5; } input:focus,select:focus { bo
 #msg { min-height:18px; font-size:12px; } #msg.ok { color:var(--ok); } #msg.err { color:var(--err); }
 @media (max-width:700px) { .settings-shell { padding:0; gap:0; }.nav-card { width:145px; border-radius:0; }.content-card { border-radius:0; padding:18px; }.split-fields { grid-template-columns:1fr; gap:0; } }
 @media (prefers-reduced-motion:reduce) { * { scroll-behavior:auto!important; transition:none!important; animation:none!important; } }
+
+.ok-text { color: var(--ok, #3a9d6e); }

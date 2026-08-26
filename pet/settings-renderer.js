@@ -51,6 +51,10 @@ function renderProfiles(payload) {
 function fillProfile(profile) {
   set('llm-profile-name', profile.name || profile.id);
   set('llm-base', profile.base_url); set('llm-model', profile.model);
+  // 模型下拉重置为「需重新测试」；已配置的模型名保留在 readonly 输入框里
+  const sel = $('llm-model-select');
+  sel.innerHTML = '<option value="">先测试连接获取模型列表</option>';
+  if (profile.has_api_key) setTestStatus(`API Key 已配置（${profile.api_key}）；可点「测试连接」刷新模型列表`, false);
   num('llm-temp', profile.temperature, 0.8); num('llm-max-tokens', profile.max_tokens, 4096); num('llm-timeout', profile.timeout, 30); num('llm-timeout-retries', profile.timeout_retries, 3);
   $('llm-key').value = '';
   $('llm-key-status').textContent = profile.has_api_key ? `已配置：${profile.api_key}` : '未配置；填写后保存会写入该配置';
@@ -91,7 +95,8 @@ window.pet.getConfig().then((cfg) => {
   set('stt-base', stt.base_url); set('stt-model', stt.model); set('stt-language', stt.language); bool('stt-enabled', stt.enabled ?? true);
   if ($('stt-device')) loadAudioDevices(stt.input_device_id);
   set('mem-embedding', mem.embedding_model); num('mem-top-k', mem.recall_top_k, 5); num('mem-threshold', mem.recall_threshold, 0.3); num('mem-total-budget', mem.max_injected_chars, 5600); num('mem-curator-turns', mem.curator_turns, 8); bool('mem-decay', mem.decay_enabled);
-  $('mem-status').textContent = `数据库：${mem.db_path || 'data/veranima.db'}`; $('mem-db').textContent = mem.db_path || 'data/veranima.db'; $('mem-effective').textContent = mem.embedding_model || '未配置';
+  $('mem-status').textContent = `数据库：${mem.db_path || 'data/veranima.db'}`; $('mem-db').textContent = mem.db_path || 'data/veranima.db';
+  set('mem-db-path', mem.db_path || 'data/veranima.db'); $('mem-effective').textContent = mem.embedding_model || '未配置';
   bool('att-enabled', att.enabled ?? true); bool('att-paused', att.paused); num('att-scan', att.global_scan_sec, 5); num('att-budget', att.observe_daily_budget, 120);
   const channels = pro.channels || {}; const qqPro = channels.qq || pro; const petPro = channels.pet || pro;
   const tension = cfg.relationship_tension || {};
@@ -110,6 +115,46 @@ $('llm-switch').addEventListener('click', async () => {
   try { await profileAction('switch', { profile_id: $('llm-profile-select').value }, '已切换配置，核心正在重启'); }
   catch (e) { showMsg(e.message || '切换失败', false); }
 });
+function setTestStatus(text, ok) { const el = $('llm-test-status'); el.textContent = text; el.className = ok ? 'hint ok-text' : 'hint'; }
+$('llm-test').addEventListener('click', async () => {
+  const btn = $('llm-test'); btn.disabled = true;
+  setTestStatus('正在测试连接…', false);
+  try {
+    const payload = { base_url: $('llm-base').value.trim(), api_key: $('llm-key').value.trim() };
+    if (!payload.base_url) throw new Error('请先填写 Base URL');
+    // key 留空且已有配置密钥时无法在 renderer 拿明文 → 提示用户输入一次
+    if (!payload.api_key && !$('llm-key-status').textContent.includes('已配置')) {
+      throw new Error('请填写 API Key 后再测试');
+    }
+    const result = await window.pet.testLlm(payload);
+    if (!result || !result.ok) throw new Error((result && result.error) || '连接失败');
+    const sel = $('llm-model-select');
+    sel.innerHTML = '';
+    (result.models || []).forEach((id) => {
+      const option = document.createElement('option');
+      option.value = id; option.textContent = id;
+      sel.appendChild(option);
+    });
+    if (!result.models || !result.models.length) { setTestStatus('连接成功，但服务未返回任何模型', false); return; }
+    // 当前模型在列表中则选中，否则选第一个并同步输入框
+    const current = $('llm-model').value.trim();
+    sel.value = result.models.includes(current) ? current : result.models[0];
+    $('llm-model').value = sel.value;
+    setTestStatus(`连接成功，返回 ${result.models.length} 个模型；已从下拉选定`, true);
+  } catch (e) { setTestStatus(`测试失败：${e.message || e}`, false); }
+  finally { btn.disabled = false; }
+});
+$('llm-model-select').addEventListener('change', () => {
+  const v = $('llm-model-select').value;
+  if (v) $('llm-model').value = v;
+});
+// 记忆数据库位置：原生浏览框
+$('mem-db-browse').addEventListener('click', async () => {
+  const picked = await window.pet.pickPath({ type: 'file', title: '选择记忆数据库文件',
+    filters: [{ name: 'SQLite', extensions: ['db', 'sqlite'] }] });
+  if (picked) { $('mem-db-path').value = picked; showMsg('数据库路径已选择，保存后重启核心生效', true); }
+});
+
 $('llm-save-profile').addEventListener('click', async () => {
   try { await profileAction('update', { profile_id: selectedProfileId, ...profileFields() }); }
   catch (e) { showMsg(e.message || '保存配置失败', false); }
@@ -131,7 +176,7 @@ $('save').addEventListener('click', async () => {
   const data = {
     tts: { base_url: $('tts-base').value.trim(), model: $('tts-model').value.trim(), voice: $('tts-voice').value.trim() },
     stt: { enabled: $('stt-enabled').value === 'true', base_url: $('stt-base').value.trim(), model: $('stt-model').value.trim(), language: $('stt-language').value.trim(), input_device_id: $('stt-device').value },
-    memory: { embedding_model: $('mem-embedding').value.trim(), recall_top_k: Number($('mem-top-k').value) || 5, recall_threshold: Number($('mem-threshold').value) || 0.3, max_injected_chars: Number($('mem-total-budget').value) || 5600, curator_turns: Number($('mem-curator-turns').value) || 8, decay_enabled: $('mem-decay').value === 'true' },
+    memory: { embedding_model: $('mem-embedding').value.trim(), db_path: $('mem-db-path').value.trim(), recall_top_k: Number($('mem-top-k').value) || 5, recall_threshold: Number($('mem-threshold').value) || 0.3, max_injected_chars: Number($('mem-total-budget').value) || 5600, curator_turns: Number($('mem-curator-turns').value) || 8, decay_enabled: $('mem-decay').value === 'true' },
     attention: { enabled: $('att-enabled').value === 'true', paused: $('att-paused').value === 'true', global_scan_sec: Number($('att-scan').value) || 5, observe_daily_budget: Number($('att-budget').value) || 120 },
     search: { enabled: $('search-enabled').value === 'true', base_url: $('search-base').value.trim(), timeout_seconds: Number($('search-timeout').value) || 8, cache_ttl_seconds: Number.isFinite(Number($('search-cache').value)) ? Number($('search-cache').value) : 900, allow_implicit_freshness_search: $('search-implicit').value === 'true', semantic_locator_enabled: $('search-semantic').value === 'true', fetch_pages: $('search-pages').value === 'true' },
     proactive: { enabled: $('pro-enabled').value === 'true', quiet_hours_enabled: $('pro-quiet').value === 'true', channels: { qq: { max_per_day: Number($('pro-qq-max').value) || 2, min_gap_minutes: Number($('pro-qq-gap').value) || 120 }, pet: { max_per_day: Number($('pro-pet-max').value) || 2, min_gap_minutes: Number($('pro-pet-gap').value) || 30 } } },
