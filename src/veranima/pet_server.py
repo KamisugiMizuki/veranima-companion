@@ -126,6 +126,7 @@ def _validate_sticker_dir(value, *, base_dir: str | Path | None = None) -> list[
 
 def _schedule_settings_payload(cfg: dict) -> dict:
     value = cfg.get("virtual_schedule", {}) or {}
+    calendar = value.get("calendar", {}) or {}
     return {
         "enabled": bool(value.get("enabled", True)),
         "timezone": str(value.get("timezone", "system")),
@@ -135,6 +136,13 @@ def _schedule_settings_payload(cfg: dict) -> dict:
         "max_extension_minutes": int(value.get("max_extension_minutes", 30)),
         "self_share": str(value.get("self_share", "low")),
         "curiosity": str(value.get("curiosity", "low")),
+        "calendar": {
+            "enabled": bool(calendar.get("enabled", False)),
+            "base_url": str(calendar.get("base_url") or "https://date.nager.at/api/v3/PublicHolidays"),
+            "country_code": str(calendar.get("country_code") or "CN"),
+            "timeout_seconds": int(calendar.get("timeout_seconds", 8)),
+            "cache_ttl_seconds": int(calendar.get("cache_ttl_seconds", 86400)),
+        },
     }
 
 
@@ -157,6 +165,11 @@ def _validate_schedule_settings(value: dict) -> list[str]:
                 errors.append(f"{key} 必须在 0-60 之间")
         except (TypeError, ValueError):
             errors.append(f"{key} 数值无效")
+    calendar = value.get("calendar", {}) or {}
+    if calendar.get("enabled") and str(calendar.get("base_url") or "") != "https://date.nager.at/api/v3/PublicHolidays":
+        errors.append("calendar.base_url 仅允许 Nager.Date HTTPS 接口")
+    if str(calendar.get("country_code") or "CN") not in {"CN", "JP", "US"}:
+        errors.append("calendar.country_code 无效")
     return errors
 
 
@@ -235,17 +248,11 @@ class PetServer:
             return
         runtime = getattr(self._agent, "schedule_runtime", None)
         if runtime is not None:
-            runtime.advance(__import__("datetime").datetime.now(__import__("datetime").timezone.utc))
-            notice = runtime.pop_notice() if hasattr(runtime, "pop_notice") else ""
-            if notice:
-                candidate = self._agent.schedule_notice_candidate(notice, "pet")
-                decision = self._agent.gate.decide(
-                    candidate, scene=self._agent.scene_lock.current(),
-                    character_sleeping=False,
-                ) if candidate else None
-                text = await asyncio.to_thread(self._agent.schedule_notice_text, notice) if decision and decision.allow else ""
-                if text and await self.speak(text):
-                    self._agent.gate.commit(candidate)
+            advance = getattr(self._agent, "advance_schedule_async", None)
+            if callable(advance):
+                await advance()
+            else:
+                runtime.advance(__import__("datetime").datetime.now(__import__("datetime").timezone.utc))
 
     async def tick_presence(self) -> bool:
         """R1 无缝衔接（R1_SPEC 4.召回）：L0 在场检测 → absent→present 转变 → 衔接语。
@@ -274,9 +281,17 @@ class PetServer:
     async def _call_agent(self, text: str, images: list[str] | None = None):
         """agent.handle 串行化调用（SQLite 游标非线程安全；桌宠/QQ 并发实测冲突）。"""
         async with self._agent_lock:
-            if images:
-                return await asyncio.to_thread(self._agent.handle, text, images, channel="tts")
-            return await asyncio.to_thread(self._agent.handle, text, channel="tts")
+            previous_scope = getattr(self._agent, "_current_user_scope", None)
+            self._agent._current_user_scope = "pet:default"
+            try:
+                if images:
+                    return await asyncio.to_thread(self._agent.handle, text, images, channel="tts")
+                return await asyncio.to_thread(self._agent.handle, text, channel="tts")
+            finally:
+                self._agent._current_user_scope = previous_scope
+                runtime = getattr(self._agent, "schedule_runtime", None)
+                if runtime is not None and not runtime.sleeping:
+                    runtime.resume_activity(__import__("datetime").datetime.now(__import__("datetime").timezone.utc))
 
     def _next_turn(self) -> int:
         """R2 递增 turn_id（R2_SPEC 5：低成本递增，不引入任务编排库）。"""

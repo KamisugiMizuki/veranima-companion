@@ -271,12 +271,20 @@ class QQAdapter:
                     self.agent.gate.note_responded(src, channel="qq")
             except Exception:
                 pass
-            result = await asyncio.to_thread(
-                self.agent.handle,
-                text,
-                [item[0] for item in images],
-                channel="im",
-            )
+            previous_scope = getattr(self.agent, "_current_user_scope", None)
+            self.agent._current_user_scope = f"qq:{uid}"
+            try:
+                result = await asyncio.to_thread(
+                    self.agent.handle,
+                    text,
+                    [item[0] for item in images],
+                    channel="im",
+                )
+            finally:
+                self.agent._current_user_scope = previous_scope
+                runtime = getattr(self.agent, "schedule_runtime", None)
+                if runtime is not None and not runtime.sleeping:
+                    runtime.resume_activity(__import__("datetime").datetime.now(__import__("datetime").timezone.utc))
         self._last_user_activity = time.time()
         if result.reply:
             # 统一 IM 出口：Reply 也必须经过 render_im，不能绕过波浪号/感叹号/
@@ -711,8 +719,12 @@ class QQAdapter:
         """同进程模式的主动循环；所有 Agent 调用共享 self._lock。"""
         while not stop.is_set():
             try:
-                if getattr(self.agent, "schedule_runtime", None) is not None:
+                advance = getattr(self.agent, "advance_schedule_async", None)
+                if callable(advance):
+                    await advance()
+                elif getattr(self.agent, "schedule_runtime", None) is not None:
                     self.agent.schedule_runtime.advance(__import__("datetime").datetime.now(__import__("datetime").timezone.utc))
+                if getattr(self.agent, "schedule_runtime", None) is not None:
                     notice = self.agent.schedule_runtime.pop_notice()
                     if notice:
                         candidate = self.agent.schedule_notice_candidate(notice, "qq")
@@ -837,6 +849,46 @@ class QQAdapter:
         if schedule.action != "generate":
             self._qq_evaluation_at = now + schedule.delay_minutes * 60
             return
+        schedule_candidate = self.agent.schedule_self_share_candidate("qq")
+        curiosity_candidates = [
+            self.agent.schedule_curiosity_candidate("qq", user_scope=f"qq:{uid}")
+            for uid in sorted(self.allowed)
+        ]
+        curiosity_candidate = next((item for item in curiosity_candidates if item is not None), None)
+        choices = [item for item in (schedule_candidate, curiosity_candidate) if item is not None]
+        special_candidate = choices[int(current.toordinal()) % len(choices)] if choices else None
+        if special_candidate is not None:
+            special_feedback_id = self._qq_feedback_id(special_candidate, current)
+            if any(row.get("candidate_id") == special_feedback_id
+                   for row in self.agent.memory.recent_proactive_feedback(channel="qq", limit=100)):
+                special_candidate = None
+        if special_candidate is not None:
+            special_decision = self.agent.gate.decide(
+                special_candidate, scene=self.agent.scene_lock.current(),
+            )
+            if special_decision.allow:
+                source_text = str((special_candidate.context or {}).get("summary") or special_candidate.reason)
+                async with self._lock:
+                    text = await asyncio.to_thread(
+                        self.agent._short_task,
+                        f"根据这个有来源的素材，自然发一条低负担消息：{source_text}。不要提内部标签。",
+                    )
+                owner_scope = str((special_candidate.context or {}).get("owner_scope") or "")
+                sent = (
+                    await self._send_to_uid_async(owner_scope.split(":", 1)[1], text)
+                    if owner_scope.startswith("qq:") else await self._send_to_all_async(text)
+                )
+                if text and sent:
+                    self.agent.gate.commit(special_candidate)
+                    self.agent.record_proactive_message(text, channel="qq")
+                    self.agent.memory.record_proactive_feedback(
+                        source=special_candidate.source, channel="qq",
+                        candidate_id=special_feedback_id,
+                    )
+                    gap_id = (special_candidate.context or {}).get("gap_id")
+                    if gap_id:
+                        self.agent.memory.mark_user_info_gap_asked(int(gap_id))
+                    return
         candidate = self._qq_candidate(material)
         feedback_id = self._qq_feedback_id(candidate, current)
         if any(row.get("candidate_id") == feedback_id
@@ -1065,6 +1117,19 @@ class QQAdapter:
         if msg:
             await self._send_to_all_async(msg)
 
+    async def _send_to_uid_async(self, uid: str, msg: str) -> bool:
+        try:
+            card = self.agent.card
+            emoji_freq = (card.veranima or {}).get("emoji_frequency", "low") if card else "low"
+            attachment = self.agent.state.attachment
+        except Exception:
+            emoji_freq, attachment = "low", 0.5
+        rendered = render_im(msg, attachment=attachment, emoji_frequency=emoji_freq)
+        if not rendered or str(uid) not in self.allowed:
+            return False
+        await self.bot.send_private_msg(user_id=int(uid), message=rendered)
+        return True
+
     async def _send_to_all_async(self, msg: str) -> bool:
         try:
             card = self.agent.card
@@ -1146,7 +1211,10 @@ class QQAdapter:
             try:
                 runtime = getattr(self.agent, "schedule_runtime", None)
                 if runtime is not None:
+                    before_schedule = runtime.to_snapshot()
                     runtime.advance(datetime.datetime.now(datetime.timezone.utc))
+                    if runtime.to_snapshot() != before_schedule:
+                        self.agent._persist_state()
                     notice = runtime.pop_notice()
                     if notice:
                         candidate = self.agent.schedule_notice_candidate(notice, "qq")
@@ -1172,11 +1240,23 @@ class QQAdapter:
 
     def _flush_pending_proactive(self, loop: asyncio.AbstractEventLoop) -> None:
         """standalone QQ 线程入口：复用 async pending 发送与通道 Gate。"""
-        asyncio.run_coroutine_threadsafe(self._flush_pending_proactive_async(), loop)
+        if loop.is_closed() or not loop.is_running():
+            return
+        coro = self._flush_pending_proactive_async()
+        try:
+            asyncio.run_coroutine_threadsafe(coro, loop)
+        except RuntimeError:
+            coro.close()
 
     def _evaluate_qq_opportunity(self, loop: asyncio.AbstractEventLoop) -> None:
         """Standalone QQ entry: schedule the same async QQ evaluator on its bot loop."""
-        asyncio.run_coroutine_threadsafe(self._evaluate_qq_opportunity_async(), loop)
+        if loop.is_closed() or not loop.is_running():
+            return
+        coro = self._evaluate_qq_opportunity_async()
+        try:
+            asyncio.run_coroutine_threadsafe(coro, loop)
+        except RuntimeError:
+            coro.close()
 
     def _in_quiet_hours(self, now: datetime.datetime | None = None) -> bool:
         """静默时段判定：(开始小时, 结束小时)，支持跨午夜（如 23:00-08:00）。"""

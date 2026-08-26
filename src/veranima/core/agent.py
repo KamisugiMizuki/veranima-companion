@@ -11,12 +11,14 @@ import logging
 import random
 import time
 from dataclasses import dataclass, field, replace
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Literal
 
 from ..llm.client import LLMClient, LLMTimeoutError, LLMUnavailableError
 from .prompts import build_system_prompt, is_clarification
 from .virtual_schedule import ScheduleContext, ScheduleOutline, ScheduleRuntime
+from .holiday_calendar import HolidayCalendar
 from .reply import is_failure_fallback_reply, is_internal_reply
 from .segments import extract_segments
 from .ambient import ChannelActivityTracker, ProactiveCandidate, ProactiveGate, SceneLock
@@ -136,7 +138,17 @@ class Agent:
         self._last_search_request: dict[str, str] | None = None
         self.schedule_outline = self._load_schedule_outline()
         schedule_cfg = self.config.get("virtual_schedule", {}) or {}
+        calendar_cfg = schedule_cfg.get("calendar", {}) or {}
+        self.holiday_calendar = HolidayCalendar(
+            base_url=str(calendar_cfg.get("base_url") or "https://date.nager.at/api/v3/PublicHolidays"),
+            country_code=str(calendar_cfg.get("country_code") or "CN"),
+            timeout=float(calendar_cfg.get("timeout_seconds", 8)),
+            cache_ttl=float(calendar_cfg.get("cache_ttl_seconds", 86400)),
+        ) if calendar_cfg.get("enabled", False) else None
         if self.schedule_outline is not None:
+            timezone_override = str(schedule_cfg.get("timezone") or "system")
+            if timezone_override != "system":
+                self.schedule_outline = replace(self.schedule_outline, timezone=timezone_override)
             sleep_overrides = dict(self.schedule_outline.sleep)
             for key in ("grace_period_minutes", "max_extension_minutes"):
                 if key in schedule_cfg:
@@ -147,6 +159,11 @@ class Agent:
             if self.schedule_outline is not None and self.schedule_outline.enabled
             and bool(schedule_cfg.get("enabled", True)) else None
         )
+        if self.schedule_runtime is not None:
+            self.schedule_runtime.calendar = self.holiday_calendar
+            profile_override = str(schedule_cfg.get("day_profile") or "auto")
+            if profile_override not in {"auto", "default"} and profile_override in self.schedule_outline.day_profiles:
+                self.schedule_runtime.profile_override = profile_override
 
         # R0 打断决策（R0_SPEC 5）：共享话题频率表 + 分级决策器
         self.topic_freq = TopicFrequency()
@@ -306,7 +323,7 @@ class Agent:
                 {"role": "system", "content": self.card.to_system_prompt()},
                 {"role": "user", "content": prompt},
             ],
-            max_tokens=int((self.config.get("llm") or {}).get("short_task_max_tokens", 1024)),
+            max_tokens=max(2048, int((self.config.get("llm") or {}).get("short_task_max_tokens", 1024))),
         )
         try:
             value = json.loads(str(raw).strip().strip("`").removeprefix("json").strip())
@@ -340,6 +357,51 @@ class Agent:
             channel=channel,
         )
 
+    def schedule_self_share_candidate(self, channel: str = "qq"):
+        schedule_cfg = self.config.get("virtual_schedule", {}) or {}
+        if self.schedule_runtime is None or schedule_cfg.get("self_share", "low") == "off":
+            return None
+        rows = self.memory.virtual_life_events(self.schedule_runtime.outline.role_id, limit=1)
+        if not rows:
+            return None
+        row = rows[0]
+        return ProactiveCandidate(
+            source="virtual_schedule", reason="角色虚拟生活日终摘要",
+            relevance=0.75, urgency=0.2, intent="share",
+            context={"event_id": str(row["id"]), "dedupe_key": f"virtual-life:{row['id']}", "summary": row["summary"]}, channel=channel,
+        )
+
+    def schedule_curiosity_candidate(self, channel: str = "qq", user_scope: str = "qq:default"):
+        schedule_cfg = self.config.get("virtual_schedule", {}) or {}
+        if self.schedule_runtime is None or schedule_cfg.get("curiosity", "low") == "off":
+            return None
+        rows = self.memory.open_user_info_gaps(self.schedule_runtime.outline.role_id, user_scope, limit=1)
+        if not rows:
+            return None
+        row = rows[0]
+        return ProactiveCandidate(
+            source="user_curiosity", reason=row["reason"], relevance=0.7, urgency=0.2,
+            intent="check_in",
+            context={"source_message_id": row["source_message_id"], "topic_key": row["topic_key"], "gap_id": row["id"], "dedupe_key": f"user-gap:{row['id']}", "owner_scope": user_scope},
+            channel=channel,
+        )
+
+    def _capture_user_info_gap(self, user_text: str, message_id: int, channel: str,
+                               user_scope: str = "qq:default") -> None:
+        if self.schedule_runtime is None or channel != "im":
+            return
+        markers = ("我喜欢", "我不喜欢", "我最喜欢", "以后想", "我最近想")
+        marker = next((value for value in markers if value in user_text), None)
+        if not marker:
+            return
+        topic = user_text.split(marker, 1)[1].strip(" ，。！？")[:80]
+        if topic:
+            self.memory.upsert_user_info_gap(
+                role_id=self.schedule_runtime.outline.role_id, user_scope=user_scope,
+                topic_key=topic, reason=f"用户提到“{topic}”，但尚未说明更具体的偏好或原因",
+                source_message_id=message_id,
+            )
+
     def _schedule_context(self, channel: str, now=None) -> ScheduleContext | None:
         schedule_runtime = getattr(self, "schedule_runtime", None)
         if schedule_runtime is not None:
@@ -349,6 +411,22 @@ class Agent:
         current = now or datetime.datetime.now(datetime.timezone.utc)
         plan = self.schedule_outline.build_day_plan(current)
         return plan.context_at(current) if plan else None
+
+    async def advance_schedule_async(self, when=None) -> None:
+        runtime = self.schedule_runtime
+        if runtime is None:
+            return
+        current = when or datetime.datetime.now(datetime.timezone.utc)
+        calendar = getattr(runtime, "calendar", None)
+        if calendar is not None:
+            local_year = current.astimezone(ZoneInfo(runtime.outline.timezone)).year
+            await asyncio.to_thread(calendar.prefetch, local_year)
+            await asyncio.to_thread(calendar.prefetch, local_year + 1)
+        snapshot = getattr(runtime, "to_snapshot", None)
+        before = snapshot() if callable(snapshot) else None
+        runtime.advance(current)
+        if callable(snapshot) and snapshot() != before:
+            self._persist_state()
 
     @staticmethod
     def _format_schedule_context(context: ScheduleContext | None) -> str:
@@ -510,6 +588,24 @@ class Agent:
             rel["tension"] = self.tension.snapshot()
             if self.schedule_runtime is not None:
                 rel["virtual_schedule_runtime"] = self.schedule_runtime.to_snapshot()
+                cycle = self.schedule_runtime.state.sleep_cycle_id
+                archived = rel.get("virtual_schedule_archived_cycle", "")
+                if self.schedule_runtime.sleeping and cycle and cycle != archived:
+                    summary = self.schedule_runtime.day_close_summary(
+                        datetime.datetime.now(datetime.timezone.utc)
+                    )
+                    self.memory.store_virtual_life_event(
+                        role_id=self.schedule_runtime.outline.role_id,
+                        event_kind="day_close_summary",
+                        summary=(
+                            f"本周期有效活动 {summary['effective_span_minutes']} 分钟，"
+                            f"中断 {summary['interruption_minutes']} 分钟，"
+                            f"作息偏移 {summary['schedule_offset_minutes']} 分钟，"
+                            f"睡眠债务 {summary['sleep_debt_minutes']} 分钟。"
+                        ),
+                        source={**summary, "sleep_cycle_id": cycle},
+                    )
+                    rel["virtual_schedule_archived_cycle"] = cycle
             self.state.relationship = rel
             self.memory.save_state(self.state.to_snapshot())
         except Exception as e:
@@ -639,15 +735,22 @@ class Agent:
             return TurnResult(reply="", energy=self.state.energy, mood=self.state.mood)
 
         schedule_runtime = getattr(self, "schedule_runtime", None)
+        resolved_scope = getattr(self, "_current_user_scope", None) or ("pet:default" if channel == "tts" else "qq:default")
+        interaction_now = datetime.datetime.now(datetime.timezone.utc)
         if schedule_runtime is not None:
-            schedule_runtime.advance(datetime.datetime.now(datetime.timezone.utc))
+            schedule_runtime.advance(interaction_now)
+            context = schedule_runtime.current_context(interaction_now)
+            if context.item_id and context.activity_category not in {"sleep_window", "gap"}:
+                if context.item_id not in schedule_runtime.activity_spans:
+                    schedule_runtime.start_activity(context.item_id, interaction_now)
+                schedule_runtime.interrupt_activity(interaction_now)
         if schedule_runtime is not None and schedule_runtime.sleeping:
             message_id = self.memory.store_message(
                 "user", user_text + (" [图片]" * len(images) if images else ""),
                 self.state.energy, self.state.mood,
                 channel="pet" if channel == "tts" else "qq",
             )
-            scope = f"{('pet' if channel == 'tts' else 'qq')}:default"
+            scope = resolved_scope
             self.memory.archive_sleep_message(
                 role_id=schedule_runtime.outline.role_id,
                 user_scope=scope,
@@ -718,6 +821,7 @@ class Agent:
             channel="pet" if channel == "tts" else "qq",
         )
         self._process_tension_user_message(store_text, channel=channel, message_id=user_msg_id)
+        self._capture_user_info_gap(user_text, user_msg_id, channel, resolved_scope)
 
         # ===== R0 阶段 2: build_turn_prompt（R0_SPEC 5）=====
         # 记忆检索（预算内注入）+ MVP2 附加块（风格/镜像/承诺）+ 打断指令
@@ -775,6 +879,22 @@ class Agent:
         proactive_context = self._adjacent_proactive_context(user_text, channel)
         if proactive_context:
             extra_blocks.append(proactive_context)
+        sleep_archive_ids_to_process: list[int] = []
+        if schedule_runtime is not None and schedule_runtime.state.sleep_reason == "woke":
+            archive = self.memory.sleep_messages(
+                schedule_runtime.outline.role_id, resolved_scope,
+                schedule_runtime.last_sleep_cycle_id, limit=20,
+            )
+            pending = [row for row in archive if not row.get("processed_at")]
+            excerpts = []
+            for row in pending[-3:]:
+                message = self.memory.message_by_id(row.get("message_id")) if row.get("message_id") else None
+                if message:
+                    excerpts.append(str(message.get("content") or "")[:120])
+            if pending:
+                detail = "；".join(excerpts) if excerpts else f"共收到 {len(pending)} 条消息"
+                extra_blocks.append(f"【醒后衔接】角色睡眠期间用户发过消息：{detail}。自然合并回应，不要说已读或编造内容。")
+                sleep_archive_ids_to_process = [row["id"] for row in pending]
         if scene == "busy":
             extra_blocks.append(
                 "【场景偏好·忙碌】用户正在学习或处理事情。回复尽量简短，优先直接回应当前输入；"
@@ -985,6 +1105,9 @@ class Agent:
         # ===== R0 阶段 5: persist_turn（R0_SPEC 5）=====
         self.memory.store_message("assistant", reply, self.state.energy, self.state.mood,
                                   channel="pet" if channel == "tts" else "qq")
+        if sleep_archive_ids_to_process:
+            self.memory.mark_sleep_messages_processed(sleep_archive_ids_to_process)
+            schedule_runtime.state = replace(schedule_runtime.state, sleep_reason="awake_reconciled")
         self._history.append(self._history_entry("user", store_text, self._message_time_for_id(user_msg_id)))
         self._history.append(self._history_entry("assistant", reply, self._local_message_time()))
         self.state.on_assistant_message()
@@ -1088,6 +1211,9 @@ class Agent:
             )["style_hint"]
         except Exception:
             pass
+
+        if schedule_runtime is not None and not schedule_runtime.sleeping:
+            schedule_runtime.resume_activity(datetime.datetime.now(datetime.timezone.utc))
 
         return TurnResult(
             reply=reply,

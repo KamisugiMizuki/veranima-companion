@@ -152,9 +152,10 @@ window.pet.getConfig().then((cfg) => {
   set('qq-image-roots', (qq.image_roots || []).join('; ')); bool('qq-trusted-image-proxy', qq.trusted_image_proxy);
   refreshStickers();
   bool('schedule-enabled', schedule.enabled ?? true); set('schedule-timezone', schedule.timezone || 'system');
-  set('schedule-profile', schedule.day_profile || 'auto'); set('schedule-variation', schedule.variation || 'moderate');
+  set('schedule-profile', schedule.day_profile || 'auto');
   set('schedule-grace', schedule.grace_period_minutes ?? 30); set('schedule-extension', schedule.max_extension_minutes ?? 30);
   set('schedule-share', schedule.self_share || 'low'); set('schedule-curiosity', schedule.curiosity || 'low');
+  bool('schedule-calendar-enabled', schedule.calendar && schedule.calendar.enabled); set('schedule-calendar-country', schedule.calendar && schedule.calendar.country_code || 'CN');
   $('schedule-status').textContent = `当前角色：${cfg.character_card || '未设置'} · 日程${schedule.enabled === false ? '已关闭' : '已开启'}`;
   $('schedule-template-path').textContent = cfg.character_card ? cfg.character_card.replace(/character\.json$/, 'virtual_schedule.json') : '未设置角色卡';
 }).catch(() => showMsg('读取配置失败', false));
@@ -248,9 +249,11 @@ $('save').addEventListener('click', async () => {
       stickers: stickerSettings(), image_roots: $('qq-image-roots').value.split(';').map((s) => s.trim()).filter(Boolean),
       trusted_image_proxy: $('qq-trusted-image-proxy').value === 'true' },
     virtual_schedule: { enabled: $('schedule-enabled').value === 'true', timezone: $('schedule-timezone').value,
-      day_profile: $('schedule-profile').value, variation: $('schedule-variation').value,
+      day_profile: $('schedule-profile').value,
       grace_period_minutes: Number($('schedule-grace').value), max_extension_minutes: Number($('schedule-extension').value),
-      self_share: $('schedule-share').value, curiosity: $('schedule-curiosity').value },
+      self_share: $('schedule-share').value, curiosity: $('schedule-curiosity').value,
+      calendar: { enabled: $('schedule-calendar-enabled').value === 'true', country_code: $('schedule-calendar-country').value,
+        base_url: 'https://date.nager.at/api/v3/PublicHolidays', timeout_seconds: 8, cache_ttl_seconds: 86400 } },
     tasks: {
       enabled: $('tasks-enabled').value === 'true',
       backend: $('tasks-backend').value,

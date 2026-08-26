@@ -27,3 +27,10 @@ def test_pet_background_presence_loop_advances_schedule_runtime(monkeypatch):
 
     asyncio.run(run_once())
     assert Agent.schedule_runtime.calls
+
+
+def test_pet_background_never_consumes_or_sends_schedule_notice():
+    source = __import__("pathlib").Path("src/veranima/pet_server.py").read_text(encoding="utf-8")
+    block = source[source.index("async def _schedule_tick_once"):source.index("async def tick_presence")]
+    assert "pop_notice" not in block
+    assert "schedule_notice_text" not in block

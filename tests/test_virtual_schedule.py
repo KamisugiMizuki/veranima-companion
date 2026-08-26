@@ -255,3 +255,22 @@ def test_empty_planner_output_is_labeled_deterministic_fallback(tmp_path):
     plan = runtime.generate_next_day(dt.datetime(2026, 8, 28, 22, tzinfo=dt.timezone.utc), None)
 
     assert plan.source == "deterministic_fallback"
+
+
+def test_effective_span_subtracts_multiple_interruptions(tmp_path):
+    role_dir = tmp_path / "characters" / "span"
+    role_dir.mkdir(parents=True)
+    (role_dir / "virtual_schedule.json").write_text(json.dumps(template()), encoding="utf-8")
+    runtime = ScheduleRuntime(ScheduleOutline.from_role_dir(role_dir))
+    start = dt.datetime(2026, 8, 28, 1, 0, tzinfo=dt.timezone.utc)
+    runtime.start_activity("focus-item", start)
+    runtime.interrupt_activity(start + dt.timedelta(minutes=20))
+    runtime.resume_activity(start + dt.timedelta(minutes=30))
+    runtime.interrupt_activity(start + dt.timedelta(minutes=50))
+    runtime.resume_activity(start + dt.timedelta(minutes=55))
+    summary = runtime.finish_activity(start + dt.timedelta(minutes=65))
+
+    assert summary["wall_minutes"] == 65
+    assert summary["interruption_minutes"] == 15
+    assert summary["effective_span_minutes"] == 50
+    assert summary["interruption_count"] == 2

@@ -386,6 +386,91 @@ class MemoryStore:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def message_by_id(self, message_id: int) -> dict | None:
+        row = self.con.execute(
+            "SELECT id, role, content, channel, created_at FROM messages WHERE id=?", (int(message_id),)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def mark_sleep_messages_processed(self, ids: list[int]) -> None:
+        if ids:
+            self.con.executemany(
+                "UPDATE sleep_message_archive SET processed_at=? WHERE id=?",
+                [(_now(), int(value)) for value in ids],
+            )
+            self.con.commit()
+
+    def store_virtual_life_event(self, *, role_id: str, event_kind: str,
+                                 summary: str, plan_id: str = "", item_id: str | None = None,
+                                 source: dict | None = None) -> int:
+        source_value = source or {}
+        cycle_key = str(source_value.get("sleep_cycle_id") or "")
+        self.con.execute(
+            """INSERT OR IGNORE INTO virtual_life_events
+               (role_id, plan_id, item_id, event_kind, truth_class, summary, source_json, cycle_key, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (str(role_id), str(plan_id), item_id, str(event_kind), "virtual_simulation",
+             str(summary)[:2000], json.dumps(source_value, ensure_ascii=False), cycle_key, _now()),
+        )
+        self.con.commit()
+        row = self.con.execute(
+            """SELECT id FROM virtual_life_events
+               WHERE role_id=? AND event_kind=? AND cycle_key=?
+               ORDER BY id DESC LIMIT 1""",
+            (str(role_id), str(event_kind), cycle_key),
+        ).fetchone() if cycle_key else self.con.execute("SELECT last_insert_rowid() AS id").fetchone()
+        return int(row["id"])
+
+    def virtual_life_events(self, role_id: str, limit: int = 20) -> list[dict]:
+        rows = self.con.execute(
+            "SELECT * FROM virtual_life_events WHERE role_id=? ORDER BY id DESC LIMIT ?",
+            (str(role_id), max(1, min(int(limit), 200))),
+        ).fetchall()
+        result = []
+        for row in rows:
+            value = dict(row)
+            try: value["source"] = json.loads(value.pop("source_json") or "{}")
+            except (TypeError, json.JSONDecodeError): value["source"] = {}
+            result.append(value)
+        return result
+
+    def upsert_user_info_gap(self, *, role_id: str, user_scope: str,
+                             topic_key: str, reason: str, source_message_id: int) -> int:
+        now = _now()
+        self.con.execute(
+            """INSERT INTO user_info_gaps
+               (role_id,user_scope,topic_key,reason,status,source_message_id,created_at,updated_at)
+               VALUES (?,?,?,?, 'open', ?,?,?)
+               ON CONFLICT(role_id,user_scope,topic_key) DO UPDATE SET
+                 reason=excluded.reason, source_message_id=excluded.source_message_id,
+                 status='open', updated_at=excluded.updated_at""",
+            (role_id, user_scope, topic_key, reason, int(source_message_id), now, now),
+        )
+        self.con.commit()
+        row = self.con.execute(
+            "SELECT id FROM user_info_gaps WHERE role_id=? AND user_scope=? AND topic_key=?",
+            (role_id, user_scope, topic_key),
+        ).fetchone()
+        return int(row["id"])
+
+    def open_user_info_gaps(self, role_id: str, user_scope: str, limit: int = 20) -> list[dict]:
+        rows = self.con.execute(
+            """SELECT * FROM user_info_gaps
+               WHERE role_id=? AND user_scope=? AND status='open'
+               ORDER BY updated_at DESC LIMIT ?""",
+            (role_id, user_scope, max(1, min(int(limit), 100))),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def mark_user_info_gap_asked(self, gap_id: int) -> None:
+        now = _now()
+        self.con.execute(
+            """UPDATE user_info_gaps SET ask_count=ask_count+1, last_asked_at=?,
+               status='asked', updated_at=? WHERE id=?""",
+            (now, now, int(gap_id)),
+        )
+        self.con.commit()
+
     def message_created_at(self, message_id: int) -> str | None:
         """返回原始消息的创建时间；不存在时返回 None。"""
         row = self.con.execute(

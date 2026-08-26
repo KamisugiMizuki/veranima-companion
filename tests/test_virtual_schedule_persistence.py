@@ -144,3 +144,25 @@ def test_schedule_snapshot_is_not_restored_into_another_role(tmp_path):
     yuki = Agent(CharacterCard(name="Yuki"), memory, LLM(), None, config={"root": str(tmp_path), "character_card": str(yuki_dir / "character.json")})
 
     assert yuki.schedule_runtime.state.state == "awake"
+
+
+def test_schedule_offset_history_persists_and_recovers_gradually(tmp_path):
+    role_dir = tmp_path / "characters" / "offset"
+    role_dir.mkdir(parents=True)
+    value = {
+        "enabled": True, "schema_version": 1, "timezone": "Asia/Shanghai",
+        "default_day_profile": "base", "day_profiles": {"base": {"allowed_block_ids": []}},
+        "blocks": [], "interaction_profiles": {}, "autonomy": {},
+        "circadian": {"wake_window": {"start": "08:00", "end": "09:00"}, "sleep_window": {"start": "22:00", "end": "23:00"}, "chronotype": "day_aligned", "target_sleep_minutes": 480, "recovery_rate_minutes_per_day": 20},
+        "sleep": {},
+    }
+    (role_dir / "virtual_schedule.json").write_text(json.dumps(value), encoding="utf-8")
+    runtime = ScheduleRuntime(ScheduleOutline.from_role_dir(role_dir))
+
+    runtime.apply_offset(90, "late_sleep", dt.datetime(2026, 8, 28, tzinfo=dt.timezone.utc))
+    runtime.recover_offset(dt.datetime(2026, 8, 29, tzinfo=dt.timezone.utc))
+    restored = ScheduleRuntime.from_snapshot(runtime.outline, runtime.to_snapshot())
+
+    assert restored.schedule_offset_minutes == 70
+    assert [item["offset_minutes"] for item in restored.offset_history] == [90, 70]
+    assert restored.offset_history[0]["reason"] == "late_sleep"

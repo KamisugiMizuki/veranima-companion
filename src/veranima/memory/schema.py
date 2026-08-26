@@ -82,6 +82,35 @@ CREATE TABLE IF NOT EXISTS sleep_message_archive (
 );
 CREATE INDEX IF NOT EXISTS idx_sleep_archive_cycle ON sleep_message_archive(role_id, user_scope, sleep_cycle_id);
 
+CREATE TABLE IF NOT EXISTS virtual_life_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    role_id TEXT NOT NULL,
+    plan_id TEXT NOT NULL DEFAULT '',
+    item_id TEXT,
+    event_kind TEXT NOT NULL,
+    truth_class TEXT NOT NULL DEFAULT 'virtual_simulation',
+    summary TEXT NOT NULL,
+    source_json TEXT NOT NULL DEFAULT '{{}}',
+    cycle_key TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_virtual_life_role ON virtual_life_events(role_id, id DESC);
+
+CREATE TABLE IF NOT EXISTS user_info_gaps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    role_id TEXT NOT NULL,
+    user_scope TEXT NOT NULL,
+    topic_key TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    source_message_id INTEGER NOT NULL,
+    last_asked_at TEXT,
+    ask_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(role_id, user_scope, topic_key)
+);
+
 -- SelfModel 人生章节（独立于原始消息和规范记忆；每章可审计、可更新）
 CREATE TABLE IF NOT EXISTS self_model_chapters (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -182,6 +211,17 @@ def init_db(db_path: str | Path, dim: int = EMBEDDING_DIM, provider=None) -> sql
         # 扩展不可用时向量检索降级（FTS5 仍可用）
         pass
     con.executescript(SCHEMA.format(dim=dim))
+    # 虚拟生活事件迁移：早期实现没有 cycle_key；先补列再创建唯一索引。
+    try:
+        life_cols = {r["name"] for r in con.execute("PRAGMA table_info(virtual_life_events)").fetchall()}
+        if "cycle_key" not in life_cols:
+            con.execute("ALTER TABLE virtual_life_events ADD COLUMN cycle_key TEXT NOT NULL DEFAULT ''")
+        con.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_virtual_life_cycle
+               ON virtual_life_events(role_id, event_kind, cycle_key) WHERE cycle_key != ''"""
+        )
+    except Exception as e:
+        logger.warning("virtual_life_events migration check failed: %s", e)
     # M-3 迁移：memories_fts 已建但旧记忆行未索引 → 全量重建（独立表，普通 DELETE/INSERT 安全）
     try:
         fts_count = con.execute("SELECT count(*) FROM memories_fts").fetchone()[0]

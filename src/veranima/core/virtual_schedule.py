@@ -109,8 +109,17 @@ class ScheduleRuntime:
         self.outline = outline
         self.state = ScheduleRuntimeState()
         self.planner = planner
+        self.calendar = None
         self._next_day_plan: DayPlan | None = None
+        self._next_day_adjustments: list[dict] = []
+        self._next_day_profile: str = ""
+        self.profile_override: str = ""
         self.pending_notice: str = ""
+        self.schedule_offset_minutes = 0
+        self.offset_history: list[dict] = []
+        self.activity_spans: dict[str, dict] = {}
+        self.current_item_id: str = ""
+        self.last_sleep_cycle_id: str = ""
 
     @property
     def sleeping(self) -> bool:
@@ -126,10 +135,17 @@ class ScheduleRuntime:
             "sleep_debt_minutes": self.state.sleep_debt_minutes,
             "sleep_extension_minutes": self.state.sleep_extension_minutes,
             "sleep_reason": self.state.sleep_reason,
+            "schedule_offset_minutes": self.schedule_offset_minutes,
+            "offset_history": list(self.offset_history),
+            "activity_spans": self.activity_spans,
+            "current_item_id": self.current_item_id,
+            "last_sleep_cycle_id": self.last_sleep_cycle_id,
         }
         if self._next_day_plan is not None:
             data["next_plan_date"] = self._next_day_plan.local_date.isoformat()
             data["next_plan_source"] = self._next_day_plan.source
+            data["next_plan_adjustments"] = list(self._next_day_adjustments)
+            data["next_plan_profile"] = self._next_day_profile
         return data
 
     @classmethod
@@ -147,17 +163,101 @@ class ScheduleRuntime:
             sleep_extension_minutes=max(0, int(snapshot.get("sleep_extension_minutes", 0))),
             sleep_reason=str(snapshot.get("sleep_reason") or ""),
         )
+        runtime.schedule_offset_minutes = int(snapshot.get("schedule_offset_minutes", 0))
+        runtime.offset_history = [dict(item) for item in snapshot.get("offset_history", []) if isinstance(item, dict)]
+        runtime.activity_spans = {
+            str(key): dict(value) for key, value in (snapshot.get("activity_spans") or {}).items()
+            if isinstance(value, dict)
+        }
+        runtime.current_item_id = str(snapshot.get("current_item_id") or "")
+        runtime.last_sleep_cycle_id = str(snapshot.get("last_sleep_cycle_id") or "")
         next_date = snapshot.get("next_plan_date")
         if next_date:
             try:
                 day = dt.date.fromisoformat(str(next_date))
                 runtime._next_day_plan = outline.build_day_plan(
                     dt.datetime.combine(day, dt.time(), tzinfo=ZoneInfo(outline.timezone)),
+                    day_profile=str(snapshot.get("next_plan_profile") or outline.default_day_profile),
+                    adjustments=[dict(item) for item in snapshot.get("next_plan_adjustments", []) if isinstance(item, dict)],
                     source=str(snapshot.get("next_plan_source") or "deterministic_fallback"),
                 )
+                runtime._next_day_adjustments = [dict(item) for item in snapshot.get("next_plan_adjustments", []) if isinstance(item, dict)]
+                runtime._next_day_profile = str(snapshot.get("next_plan_profile") or outline.default_day_profile)
             except (TypeError, ValueError, ScheduleTemplateError):
                 runtime._next_day_plan = None
         return runtime
+
+    def apply_offset(self, minutes: int, reason: str, when: dt.datetime) -> int:
+        value = max(-720, min(720, int(minutes)))
+        self.schedule_offset_minutes = value
+        self.offset_history.append({"at": when.isoformat(), "offset_minutes": value, "reason": str(reason)})
+        self.offset_history = self.offset_history[-90:]
+        return value
+
+    def recover_offset(self, when: dt.datetime) -> int:
+        rate = self.outline.circadian.recovery_rate_minutes_per_day if self.outline.circadian else 0
+        current = self.schedule_offset_minutes
+        recovered = max(0, current - rate) if current > 0 else min(0, current + rate)
+        self.schedule_offset_minutes = recovered
+        self.offset_history.append({"at": when.isoformat(), "offset_minutes": recovered, "reason": "recovery"})
+        self.offset_history = self.offset_history[-90:]
+        return recovered
+
+    def start_activity(self, item_id: str, when: dt.datetime) -> None:
+        self.activity_spans[str(item_id)] = {
+            "started_at": when.isoformat(), "interruptions": [], "interrupted_at": None,
+        }
+
+    def interrupt_activity(self, when: dt.datetime) -> None:
+        span = next(reversed(self.activity_spans.values()), None)
+        if span is not None and span.get("interrupted_at") is None:
+            span["interrupted_at"] = when.isoformat()
+
+    def resume_activity(self, when: dt.datetime) -> None:
+        span = next(reversed(self.activity_spans.values()), None)
+        if span is not None and span.get("interrupted_at"):
+            span["interruptions"].append([span["interrupted_at"], when.isoformat()])
+            span["interrupted_at"] = None
+
+    def finish_activity(self, when: dt.datetime) -> dict:
+        if not self.activity_spans:
+            return {}
+        item_id, span = next(reversed(self.activity_spans.items()))
+        if span.get("finished_at") and isinstance(span.get("summary"), dict):
+            return dict(span["summary"])
+        if span.get("interrupted_at"):
+            span["interruptions"].append([span["interrupted_at"], when.isoformat()])
+            span["interrupted_at"] = None
+        started = dt.datetime.fromisoformat(span["started_at"])
+        wall = max(0, int((when - started).total_seconds() // 60))
+        interrupted = sum(
+            max(0, int((dt.datetime.fromisoformat(end) - dt.datetime.fromisoformat(start)).total_seconds() // 60))
+            for start, end in span["interruptions"]
+        )
+        result = {
+            "item_id": item_id, "wall_minutes": wall,
+            "interruption_minutes": interrupted,
+            "effective_span_minutes": max(0, wall - interrupted),
+            "interruption_count": len(span["interruptions"]),
+        }
+        span["finished_at"] = when.isoformat()
+        span["summary"] = result
+        return result
+
+    def day_close_summary(self, when: dt.datetime) -> dict:
+        summaries = [
+            dict(span.get("summary")) for span in self.activity_spans.values()
+            if isinstance(span.get("summary"), dict)
+        ]
+        return {
+            "role_id": self.outline.role_id,
+            "closed_at": when.isoformat(),
+            "schedule_offset_minutes": self.schedule_offset_minutes,
+            "sleep_debt_minutes": self.state.sleep_debt_minutes,
+            "activities": summaries,
+            "effective_span_minutes": sum(item.get("effective_span_minutes", 0) for item in summaries),
+            "interruption_minutes": sum(item.get("interruption_minutes", 0) for item in summaries),
+        }
 
     def generate_next_day(self, when: dt.datetime, llm_output: dict | None = None) -> DayPlan:
         candidate = llm_output or {}
@@ -174,7 +274,15 @@ class ScheduleRuntime:
             for item in raw_items
         )
         # Invalid structured output never mutates the plan; deterministic fallback wins.
-        plan = self.outline.build_day_plan(when)
+        offset_adjustments = [
+            {"rule_id": block.id, "operation": "shift", "shift_minutes": self.schedule_offset_minutes,
+             "activity_key": block.activity_pool[0], "duration_minutes": block.duration_min}
+            for block in self.outline.blocks if self.schedule_offset_minutes
+        ]
+        active_profile = self.profile_override or self.outline.default_day_profile
+        plan = self.outline.build_day_plan(
+            when, day_profile=active_profile, adjustments=offset_adjustments or None,
+        )
         if plan is None:
             raise ScheduleTemplateError("cannot generate a plan from a disabled outline")
         if not valid:
@@ -184,7 +292,10 @@ class ScheduleRuntime:
             return self.outline.build_day_plan(
                 when,
                 day_profile=profile_id,
-                adjustments=candidate.get("items", []),
+                adjustments=[
+                    {**item, "shift_minutes": int(item.get("shift_minutes", 0)) + self.schedule_offset_minutes}
+                    for item in candidate.get("items", [])
+                ],
                 source="llm_structured_template",
             ) or plan
         except (TypeError, ValueError, ScheduleTemplateError):
@@ -247,7 +358,7 @@ class ScheduleRuntime:
             wake_at = self.state.sleep_started_at + dt.timedelta(minutes=self.outline.circadian.target_sleep_minutes)
             if when >= wake_at:
                 previous_debt = self.state.sleep_debt_minutes
-                self._next_day_plan = None
+                self.last_sleep_cycle_id = self.state.sleep_cycle_id
                 self.state = ScheduleRuntimeState(
                     state="awake",
                     sleep_cycle_id=f"{self.outline.role_id}:{when.date().isoformat()}:awake",
@@ -257,9 +368,16 @@ class ScheduleRuntime:
                     sleep_reason="woke",
                 )
                 self.pending_notice = "woke"
+                self.recover_offset(when)
         plan = self._next_day_plan or self.outline.build_day_plan(when)
         if plan:
             context = plan.context_at(when)
+            if context.item_id != self.current_item_id:
+                if self.current_item_id:
+                    self.finish_activity(when)
+                self.current_item_id = context.item_id or ""
+                if self.current_item_id and context.activity_category not in {"sleep_window", "gap"}:
+                    self.start_activity(self.current_item_id, when)
             if context.activity_category == "sleep_window" and self.state.state == "awake":
                 self.begin_sleep_preparation(when)
         if self.state.state == "sleep_preparing":
@@ -272,9 +390,11 @@ class ScheduleRuntime:
 
     def _force_sleep(self, when: dt.datetime) -> ScheduleRuntimeState:
         extension = max(0, self.state.sleep_extension_minutes)
+        if extension:
+            self.apply_offset(self.schedule_offset_minutes + extension, "late_sleep", when)
         self.state = ScheduleRuntimeState(
             state="sleeping", sleep_cycle_id=self.state.sleep_cycle_id,
-            sleep_started_at=self.state.sleep_started_at, grace_deadline=self.state.grace_deadline,
+            sleep_started_at=when, grace_deadline=self.state.grace_deadline,
             sleep_debt_minutes=max(1, self.state.sleep_debt_minutes + extension),
             sleep_extension_minutes=extension,
             sleep_reason="late_sleep" if extension else "scheduled_sleep",
@@ -299,7 +419,18 @@ class ScheduleRuntime:
         if self._next_day_plan is not None:
             return self._next_day_plan
         output = self.planner(when) if self.planner else None
+        if self.calendar is not None:
+            day = self.calendar.day((when + dt.timedelta(days=1)).astimezone(ZoneInfo(self.outline.timezone)).date())
+            if output is None:
+                output = {}
+            profile = day.day_type
+            if profile not in self.outline.day_profiles and profile == "holiday_like":
+                profile = "rest_like"
+            if profile in self.outline.day_profiles:
+                output["day_profile"] = profile
         self._next_day_plan = self.generate_next_day(when + dt.timedelta(days=1), output)
+        self._next_day_adjustments = [dict(item) for item in (output or {}).get("items", []) if isinstance(item, dict)]
+        self._next_day_profile = str((output or {}).get("day_profile") or self.outline.default_day_profile)
         return self._next_day_plan
 
 
