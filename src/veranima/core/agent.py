@@ -1157,6 +1157,15 @@ class Agent:
         if issues:
             logger.debug("candidate rejected: %s", issues)
             return
+        # MEMORY_BACKEND_EVAL M-D：收件箱开启时，低置信候选先入队待审（不写入 memories）
+        mem_cfg = ((getattr(self, "config", None) or {}).get("memory") or {})
+        if mem_cfg.get("review_inbox_enabled"):
+            threshold = float(mem_cfg.get("review_confidence_below", 0.6))
+            if float(cand.get("confidence", 0.75)) < threshold:
+                self.memory.queue_review(
+                    cand, reason=f"confidence {cand.get('confidence')} < {threshold}",
+                )
+                return
         kind = cand["kind"]
         layer = self.memory_store_layer(kind)
         content = cand["content"]
@@ -1368,6 +1377,118 @@ class Agent:
         n = self.memory.erase(content_contains=keyword)
         logger.info("forget '%s': %d memories erased", keyword, n)
         return n
+
+    def review_memory(self, review_id: int, approve: bool) -> bool:
+        """MEMORY_BACKEND_EVAL M-D：批准 → 走既有校验/去重写入；拒绝 → 丢弃。"""
+        items = {item["id"]: item for item in self.memory.list_review(include_decided=True)}
+        item = items.get(review_id)
+        if item is None or not self.memory.decide_review(review_id, approve):
+            return False
+        if not approve:
+            return True
+        cand = item["candidate"]
+        # 用户亲自确认：置信度视为最高；来源标记为 manual（人工批准）
+        cand["confidence"] = 1.0
+        cand["source"] = "manual"
+        try:
+            before = len(self.memory.list_layer("semantic", limit=1000, include_superseded=True))
+            self._store_candidate(cand)
+        except Exception as e:
+            logger.warning("review approve store failed: %s", e)
+            return False
+        logger.info("review approved and stored: id=%s kind=%s", review_id, cand.get("kind"))
+        return True
+
+    # ---------- MEMORY_BACKEND_EVAL M-C：夜间整理（kiwi-mem Dream 借鉴） ----------
+
+    def maybe_nightly_digest(self, *, min_episodes: int = 3) -> dict:
+        """把近期情节片段整理成上层摘要；当日已生成则跳过。
+
+        - 素材：近 3 天 episodic current 记忆（含来源消息 ID）
+        - 摘要走 ADD-only 候选校验入库（shared_meaning 层，带 digest_date + 来源）
+        - 被摘要原始片段降权（strength×0.5），不删除
+        - LLM 输出非 JSON/为空 → created=False，不写任何内容
+        """
+        import datetime
+        import json as _json
+
+        if self.llm is None or not getattr(self.llm, "base_url", ""):
+            return {"created": False, "reason": "no_llm"}
+        today = datetime.date.today().isoformat()
+        already = self.memory.con.execute(
+            "SELECT count(*) FROM memories WHERE json_valid(meta) AND json_extract(meta,'$.digest_date')=?",
+            (today,),
+        ).fetchone()[0]
+        if already:
+            return {"created": False, "reason": "already_digested_today"}
+        since = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=3)).isoformat(timespec="seconds")
+        episodes = [
+            e for e in self.memory.list_layer("episodic", limit=50)
+            if e.created_at >= since
+        ]
+        if len(episodes) < min_episodes:
+            return {"created": False, "reason": "not_enough_material", "episodes": len(episodes)}
+        lines = [f"- {e.content}（来源消息：{', '.join(map(str, (e.meta or {}).get('source_message_ids') or []))}）"
+                 for e in episodes[:10]]
+        task = (
+            f"以下是用户近几天的情节片段，请整理成一段客观概括（不超过 80 字），只输出 JSON："
+            f'{{"content":"概括"}}。\n{chr(10).join(lines)}'
+        )
+        try:
+            # 与 _short_task 相同的 system 锚定，但保留原始输出（JSON 协议，
+            # 不走 IM parse_reply——它会把结构化输出解析成空文本）
+            system = build_system_prompt(self.card, self.state, self.memory) + "\n" + self._time_context_instruction()
+            raw = self.llm.chat(
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": task},
+                ],
+                max_tokens=256,
+            )
+        except Exception as e:
+            logger.warning("nightly digest llm failed: %s", e)
+            return {"created": False, "reason": "llm_failed"}
+        content = ""
+        try:
+            data = _json.loads((raw or "").strip())
+            content = str(data.get("content") or "").strip()
+        except _json.JSONDecodeError:
+            content = ""
+        if not content:
+            return {"created": False, "reason": "bad_output"}
+        source_ids = sorted({sid for e in episodes for sid in ((e.meta or {}).get("source_message_ids") or [])})
+        if not source_ids:
+            return {"created": False, "reason": "no_source_messages"}
+        cand = {
+            "kind": "shared_meaning",
+            "content": f"[{today} 夜间整理] {content}",
+            "source_message_id": source_ids[0],
+            "confidence": 0.9,
+            "subject": "user",
+            "digest_date": today,
+            "source_message_ids": source_ids,
+            "source": "agent_confirmed",
+        }
+        from ..memory.store import validate_candidate
+        if validate_candidate(cand):
+            return {"created": False, "reason": "invalid_candidate"}
+        # 直接走 store（绕过收件箱阈值——digest 自身置信度固定且带完整来源）
+        layer = self.memory_store_layer(cand["kind"])
+        self.memory.store(layer, cand["content"], confidence=0.9, meta={
+            "kind": cand["kind"], "subject": "user", "digest_date": today,
+            "source_message_id": source_ids[0] if source_ids else None,
+            "source_message_ids": source_ids,
+        })
+        # 原始片段降权（不删除；M-A 强度信号使其自然下沉）
+        for e in episodes:
+            self.memory.con.execute(
+                "UPDATE memories SET strength=? WHERE id=? AND layer!='core_profile'",
+                (max(0.05, float(e.strength) * 0.5), e.id),
+            )
+        self.memory.con.commit()
+        logger.info("nightly digest stored (%d episodes -> summary)", len(episodes))
+        return {"created": True, "episodes": len(episodes)}
+
 
     def status(self) -> dict:
         return {

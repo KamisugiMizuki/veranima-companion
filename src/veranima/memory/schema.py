@@ -32,6 +32,16 @@ CREATE INDEX IF NOT EXISTS idx_memories_layer    ON memories(layer);
 CREATE INDEX IF NOT EXISTS idx_memories_strength ON memories(strength);
 CREATE INDEX IF NOT EXISTS idx_memories_created  ON memories(created_at);
 
+-- MEMORY_BACKEND_EVAL M-D 审核准入收件箱（默认关闭；批准后才写入规范记忆）
+CREATE TABLE IF NOT EXISTS memory_review_inbox (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    cand_json   TEXT NOT NULL,
+    reason      TEXT NOT NULL DEFAULT '',
+    status      TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected')),
+    created_at  TEXT NOT NULL,
+    decided_at  TEXT
+);
+
 -- 原始消息（零开销摄入：写入即存，不等待 LLM）
 CREATE TABLE IF NOT EXISTS messages (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,

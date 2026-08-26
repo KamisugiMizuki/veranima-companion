@@ -622,6 +622,8 @@ class QQAdapter:
                         await self._send_due_meal_reminder_async()
                         await self._evaluate_qq_opportunity_async()
                         await self._flush_pending_proactive_async()
+                    # MEMORY_BACKEND_EVAL M-C：每日一次夜间整理（内部有当日去重）
+                    await asyncio.to_thread(self.agent.maybe_nightly_digest)
             except asyncio.CancelledError:
                 raise
             except Exception:

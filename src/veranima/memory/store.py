@@ -168,6 +168,20 @@ class MemoryEntry:
     def status(self) -> str:
         return self.meta.get("status", "active")
 
+    def is_active(self, now: str | None = None) -> bool:
+        """MEMORY_BACKEND_EVAL M-B 双时间线：未到 valid_from 的记忆对「现在」不可见。"""
+        from datetime import datetime
+
+        val = self.meta.get("valid_from")
+        if not val:
+            return True
+        try:
+            val_dt = datetime.fromisoformat(val)
+            now_dt = datetime.fromisoformat(now or _now())
+        except (ValueError, TypeError):
+            return True  # 非法时间不拦截（宁多勿漏，is_expired 管另一头）
+        return now_dt >= val_dt
+
 
 class MemoryStore:
     def __init__(
@@ -195,6 +209,48 @@ class MemoryStore:
             return True
         except Exception:
             return False
+
+    # ---------- M-D 审核准入收件箱（MEMORY_BACKEND_EVAL） ----------
+
+    def queue_review(self, cand: dict, reason: str = "") -> int:
+        """低置信候选进待审队列（未批准不写入 memories）。"""
+        cur = self.con.execute(
+            "INSERT INTO memory_review_inbox (cand_json, reason, status, created_at) VALUES (?,?,'pending',?)",
+            (json.dumps(cand, ensure_ascii=False), reason, _now()),
+        )
+        self.con.commit()
+        return int(cur.lastrowid)
+
+    def list_review(self, *, include_decided: bool = False) -> list[dict]:
+        sql = "SELECT * FROM memory_review_inbox"
+        if not include_decided:
+            sql += " WHERE status='pending'"
+        rows = self.con.execute(sql + " ORDER BY id DESC").fetchall()
+        out = []
+        for r in rows:
+            try:
+                cand = json.loads(r["cand_json"])
+            except json.JSONDecodeError:
+                cand = {"content": r["cand_json"]}
+            out.append({
+                "id": r["id"], "candidate": cand, "reason": r["reason"],
+                "status": r["status"], "created_at": r["created_at"],
+            })
+        return out
+
+    def decide_review(self, review_id: int, approve: bool) -> bool:
+        """批准/拒绝一条待审候选；返回是否实际处理。"""
+        row = self.con.execute(
+            "SELECT cand_json, status FROM memory_review_inbox WHERE id=?", (review_id,)
+        ).fetchone()
+        if row is None or row["status"] != "pending":
+            return False
+        self.con.execute(
+            "UPDATE memory_review_inbox SET status=?, decided_at=? WHERE id=?",
+            ("approved" if approve else "rejected", _now(), review_id),
+        )
+        self.con.commit()
+        return True
 
     # ---------- 写入 ----------
 
@@ -703,34 +759,83 @@ class MemoryStore:
         pool = {
             mid: (e, sim)
             for mid, (e, sim) in pool.items()
-            if mid not in superseded and not e.is_expired()
+            # M-1 过期 + M-B 双时间线（valid_from 未到的记忆对「现在」不可见）
+            if mid not in superseded and not e.is_expired() and e.is_active()
         }
         if not pool:
             return []
         # M-3 entity/temporal 信号（MEMORY_SPEC 10.1/10.3 新权重）
         intent = self._temporal_intent(query)
-        scored: dict[int, float] = {}
-        for mid, (entry, sim) in pool.items():
-            parts: list[float] = []
-            weights: list[float] = []
-            if sim is not None:
-                parts.append(max(sim, 0.0)); weights.append(0.35)
-            if mid in fts_hits:
-                parts.append(1.0); weights.append(0.20)
-            parts.append(self._temporal_match(entry, intent)); weights.append(0.15)
-            parts.append(self._subject_match(query, entry)); weights.append(0.15)
-            parts.append(1.0 / (1.0 + self._age_days(entry.updated_at))); weights.append(0.05)
-            parts.append(max(0.0, min(1.0, entry.importance))); weights.append(0.05)
-            parts.append(max(0.0, min(1.0, entry.confidence))); weights.append(0.05)
-            wsum = sum(weights)
-            scored[mid] = sum(p * (w / wsum) for p, w in zip(parts, weights)) if wsum else 0.0
+        scored: dict[int, float] = {
+            mid: self._score_entry(entry, sim=sim, fts_hit=mid in fts_hits,
+                                   intent=intent, query=query)
+            for mid, (entry, sim) in pool.items()
+        }
         ranked = sorted(scored.items(), key=lambda kv: kv[1], reverse=True)[:top_k]
-        # 更新访问时间（触发唤醒的时间信号）
+        # 更新访问时间 + 召回命中强化（MEMORY_BACKEND_EVAL M-A：常用记忆保持强度）
         now = _now()
         for mid, _ in ranked:
             self.con.execute("UPDATE memories SET last_access_at=? WHERE id=?", (now, mid))
+            e = self.con.execute(
+                "SELECT layer, strength FROM memories WHERE id=?", (mid,)
+            ).fetchone()
+            if e and e["layer"] != "core_profile":
+                self.con.execute(
+                    "UPDATE memories SET strength=? WHERE id=?",
+                    (min(1.0, float(e["strength"]) + 0.05), mid),
+                )
         self.con.commit()
         return [self.get(mid) for mid, _ in ranked]
+
+    def _score_entry(self, entry: MemoryEntry, *, sim: float | None, fts_hit: bool,
+                     intent: str, query: str) -> float:
+        """单条记忆打分（R1_SPEC 4 公式 + M-A strength 信号）。"""
+        parts: list[float] = []
+        weights: list[float] = []
+        if sim is not None:
+            parts.append(max(sim, 0.0)); weights.append(0.35)
+        if fts_hit:
+            parts.append(1.0); weights.append(0.20)
+        parts.append(self._temporal_match(entry, intent)); weights.append(0.15)
+        parts.append(self._subject_match(query, entry)); weights.append(0.10)
+        parts.append(1.0 / (1.0 + self._age_days(entry.updated_at))); weights.append(0.05)
+        parts.append(max(0.0, min(1.0, entry.importance))); weights.append(0.05)
+        parts.append(max(0.0, min(1.0, entry.confidence))); weights.append(0.05)
+        # M-A：strength 作为独立信号参与排序（衰减后的低强度记忆自然下沉）
+        parts.append(max(0.0, min(1.0, float(entry.strength)))); weights.append(0.05)
+        wsum = sum(weights)
+        return sum(p * (w / wsum) for p, w in zip(parts, weights)) if wsum else 0.0
+
+    # ---------- M-B as-of 审计视图（MEMORY_BACKEND_EVAL） ----------
+
+    def recall_asof(self, asof: str, *, layer: str | None = None) -> list[MemoryEntry]:
+        """「当时知道什么」：只含 asof 之前已写入的记忆（审计/回溯用，不强化强度）。
+
+        与 recall 不同：不按现在时过滤 valid_from（当时尚未生效的事实，
+        只要当时已被记录就应出现在该时间点视图里）。
+        """
+        from datetime import datetime
+
+        try:
+            cutoff = datetime.fromisoformat(asof)
+        except (ValueError, TypeError):
+            return []
+        layer = LAYER_R1_MAP.get(layer, layer) if layer else None  # R1 类型名 → 旧 layer
+        superseded = self._superseded_ids()
+        out: list[MemoryEntry] = []
+        for row in self.con.execute("SELECT * FROM memories ORDER BY id").fetchall():
+            e = self._row_to_entry(row)
+            if layer and e.layer != layer:
+                continue
+            if e.id in superseded:
+                continue
+            try:
+                if datetime.fromisoformat(e.created_at) > cutoff:
+                    continue
+            except ValueError:
+                continue
+            out.append(e)
+        return out
 
     # ---------- M-3 查询意图与信号（MEMORY_SPEC 10.1） ----------
 
@@ -806,7 +911,10 @@ class MemoryStore:
             return {"updated": 0, "faded": 0}
         base_s = float(self.config.get("importance_base_s", 2592000))
         now = time.time()
-        rows = self.con.execute("SELECT id, importance, strength, updated_at FROM memories").fetchall()
+        # MEMORY_BACKEND_EVAL M-A：core_profile 是身份层，永不衰减
+        rows = self.con.execute(
+            "SELECT id, layer, importance, strength, updated_at FROM memories WHERE layer != 'core_profile'"
+        ).fetchall()
         updated = faded = 0
         for r in rows:
             try:
