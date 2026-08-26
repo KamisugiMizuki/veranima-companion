@@ -297,6 +297,13 @@ def _task_cmd(args) -> int:
         for i in issues:
             print(f"工单校验未通过: {i}")
         return 1
+    # ---- 阶段 3 门禁：代码仓库修改任务默认拒绝（SPEC：隔离探针未过不得开放） ----
+    if bridge_cfg := load_bridge_config(tasks_cfg):
+        gate = HermesExecutionBridge(bridge_cfg)
+        if gate.worktree_for_code is False and gate.classify_code_task(wo.goal):
+            print("代码修改任务当前被拒绝：/v1/runs 的 worktree 隔离能力尚未实测通过")
+            print("（SPEC 阶段 3 门禁）。只读/临时目录任务不受影响；探针通过后可开启 tasks.hermes.worktree_for_code。")
+            return 1
     if backend == "dsh":
         # 过渡期回滚路径：仅当配置显式选择 dsh 时使用（SPEC §10）
         from .tools.dsh_bridge import dsh_available, run_dsh_task

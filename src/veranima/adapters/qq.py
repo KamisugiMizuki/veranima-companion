@@ -194,6 +194,13 @@ class QQAdapter:
         self._sticker_tasks: set[asyncio.Task] = set()
         self._last_user_activity: float | None = None
         self._pending_proactive: str | None = None  # 延迟主动消息（对话静默后发送）
+        # HERMES_AGENT_INTEGRATION_SPEC 阶段 4：QQ 任务入口（tasks 未启用时 bridge=None，零开销）
+        from ..core.task_session import QQTaskSessionManager
+        from ..tools.hermes_bridge import HermesBridgeError, HermesExecutionBridge, load_bridge_config
+        tasks_cfg = (getattr(agent, "config", {}) or {}).get("tasks", {}) or {}
+        bridge_cfg = load_bridge_config(tasks_cfg)
+        self.task_bridge = HermesExecutionBridge(bridge_cfg) if bridge_cfg.get("enabled") else None
+        self.tasks = QQTaskSessionManager(agent, self.task_bridge)
         self.bot = CQHttp(access_token=access_token or None, message_class=Message)
         self._register()
 
@@ -212,6 +219,11 @@ class QQAdapter:
             return
         text = self._plain_text(event)
         self.qq_advisor.note_user_message(text)
+        # 阶段 4 任务分流：命中任务动作时不进陪伴对话链
+        task_action = self.tasks.route(uid, text)
+        if task_action is not None:
+            await self._handle_task_action(uid, task_action, event)
+            return
         # 8.6.2/8.6.3：图片段 → 下载 (data_url, raw_bytes)；下载失败降级，不阻塞对话
         images = await self._collect_images(event)
         if not text and not images:
@@ -971,6 +983,58 @@ class QQAdapter:
         for uid in self.allowed:
             await self.bot.send_private_msg(user_id=int(uid), message=msg)
         return True
+
+    # ---------- 阶段 4：任务动作处理 ----------
+
+    async def _handle_task_action(self, uid: str, action: dict, event) -> None:
+        """任务动作统一出口；发送走 bot.send（保留 QQ 上下文）与私聊推送。"""
+        kind = action.get("action")
+        send = lambda m: self._send_to_all_async(m)
+
+        if kind == "approve":
+            ctx = self.tasks.awaiting_approval.pop(uid, None)
+            choice = action["choice"]
+            try:
+                run = await asyncio.to_thread(
+                    self.task_bridge.approve, action["task_id"], action["run_id"], choice,
+                )
+                self.tasks.running[uid] = run
+                await send(f"已回复 {choice}。当前状态：{run.status}")
+            except (HermesBridgeError, ValueError) as e:
+                await send(f"审批没能提交：{e}")
+            return
+        if kind == "approval_reminder":
+            ctx = self.tasks.awaiting_approval.get(uid)
+            await send(f"还在等你审批任务 {ctx['task_id']}：回复 once / session / always / deny 之一。（其他消息我不当指令处理）")
+            return
+        if kind == "cancelled_pending":
+            await send("好，不做了。")
+            return
+        if kind == "status":
+            run = action.get("run")
+            if run is None:
+                await send("现在没有在跑的任务。")
+            else:
+                await send(f"任务 {run.task_id}：{run.status}。")
+            return
+        if kind == "new_task":
+            wo = self.tasks.build(action["text"])
+            reply = self.tasks.propose(uid, wo)
+            await send(reply or "这个任务我整理不了，换个说法试试？")
+            return
+        if kind == "rebuild":
+            old = None
+            # rebuild 时旧工单已从 pending_confirm 移除前的文本重建
+            wo = self.tasks.build(action["text"])
+            reply = self.tasks.propose(uid, wo)
+            await send(reply or "还是没整明白，直接说要做什么吧。")
+            return
+        if kind == "submit":
+            wo = action["workorder"]
+            task = asyncio.create_task(self.tasks.submit_and_watch(uid, wo, send))
+            self.tasks._tasks.add(task)
+            task.add_done_callback(self.tasks._tasks.discard)
+            return
 
     def _bg_loop(self, stop: threading.Event) -> None:
         """后台线程：等待事件循环就绪后，周期性执行问候/节庆/离线思考。"""

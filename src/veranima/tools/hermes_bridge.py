@@ -74,6 +74,75 @@ class HermesExecutionBridge:
         self.workspace_root = str(Path(cfg.get("workspace_root") or Path.cwd()).resolve())
         self.timeout = int(cfg.get("timeout_seconds", 600))
         self.output_max_chars = int(cfg.get("output_max_chars", 12000))
+        # SPEC 阶段 3：代码仓库修改任务默认拒绝，直到 worktree 隔离探针通过
+        self.worktree_for_code = bool(cfg.get("worktree_for_code", False))
+
+    # ---------- 阶段 3：worktree 能力探针 ----------
+
+    CODE_TASK_MARKERS = ("代码", "重构", "修复 bug", "修 bug", "实现功能", "跑测试",
+                         "改代码", "commit", "git ", "pytest", ".py", ".js", ".ts")
+
+    def probe_worktree_isolation(self) -> tuple[bool, str]:
+        """行为探针（SPEC 阶段 3 第 3 步）：提交一个只读探针 run，
+        要求执行器报告其文件工具根目录与 cwd；只有返回值能证明
+        「工具根 = 新建 worktree」才允许开放代码任务。
+
+        探针本身是只读的，不依赖 /v1/runs 未公开的 worktree 字段；
+        判定依据是执行器对 pwd/cwd 的真实回答，而非 prompt 承诺。
+        """
+        if not self.base_url:
+            return False, "not_configured"
+        marker = f"wt-probe-{uuid.uuid4().hex[:8]}"
+        prompt = (
+            f"只读探针任务 {marker}：不要创建/修改/删除任何文件。"
+            "请依次输出你当前的工作目录（pwd）、git 仓库根（若有）以及分支名。"
+            '只输出 JSON：{"cwd":"...","repo_root":"...","branch":"..."}'
+        )
+        try:
+            code, data = self._request(
+                "POST", "/runs", body={"input": prompt, "session_id": marker},
+                timeout=30.0,
+            )
+            if code != 202 or not isinstance(data, dict) or not data.get("run_id"):
+                return False, f"submit_http_{code}"
+            run_id = str(data["run_id"])
+        except Exception as e:
+            return False, f"offline: {e}"
+        deadline = time.monotonic() + 180.0
+        while time.monotonic() < deadline:
+            try:
+                st = self.status(marker, run_id)
+            except HermesBridgeError as e:
+                return False, f"status_failed: {e}"
+            if st.status in TERMINAL_STATUSES:
+                if st.status != "succeeded":
+                    return False, f"probe_{st.status}"
+                break
+            time.sleep(2.0)
+        else:
+            return False, "probe_timeout"
+        import json as _json
+        try:
+            payload = _json.loads(st.output[st.output.find("{"):st.output.rfind("}") + 1])
+        except (ValueError, AttributeError):
+            return False, "unparseable_output"
+        cwd = str(payload.get("cwd") or "")
+        branch = str(payload.get("branch") or "")
+        if not cwd:
+            return False, "no_cwd_reported"
+        # 判定：cwd 在 veranima 工作区内且不在主工作树根（即位于独立 worktree 目录），
+        # 或分支不是 main/master（说明确实在隔离分支上工作）。
+        from pathlib import Path as _P
+        in_ws = _P(cwd).resolve().is_relative_to(_P(self.workspace_root))
+        isolated_branch = branch.strip() not in ("main", "master", "")
+        if in_ws and isolated_branch:
+            return True, f"isolated: cwd={cwd} branch={branch}"
+        return False, f"not_isolated: cwd={cwd} branch={branch or 'unknown'}"
+
+    def classify_code_task(self, goal: str) -> bool:
+        """粗判是否为代码仓库修改任务（门禁用，宁严勿漏）。"""
+        g = (goal or "").lower()
+        return any(m.lower() in g for m in self.CODE_TASK_MARKERS)
 
     # ---------- HTTP 基础 ----------
 
