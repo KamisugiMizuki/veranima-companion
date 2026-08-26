@@ -253,6 +253,71 @@ def test_sticker_settings_reject_unknown_enum(tmp_path):
     assert "learning_mode" in result["error"]
 
 
+def test_sticker_settings_reject_invalid_directories(tmp_path):
+    from veranima.config import save_config
+
+    port = _free_port()
+    cfg_path = tmp_path / "config" / "config.yaml"
+    cfg_path.parent.mkdir()
+    save_config({"qq": {"allowed_qq": [10001]}}, cfg_path)
+    file_path = tmp_path / "file"
+    file_path.write_text("not a directory", encoding="utf-8")
+
+    async def scenario():
+        server = PetServer(host="127.0.0.1", port=port)
+        task = asyncio.create_task(server.run())
+        await asyncio.sleep(0.2)
+        import veranima.config as cfgmod
+        cfgmod.ROOT = tmp_path
+        try:
+            async with websockets.connect(f"ws://127.0.0.1:{port}") as ws:
+                await ws.send(json.dumps({"type": "save_config", "id": 13, "data": {
+                    "qq": {"stickers": {"learning_mode": "review", "send_rate": "normal", "dir": str(file_path)},
+                           "image_roots": [str(file_path)]},
+                }}))
+                return json.loads(await asyncio.wait_for(ws.recv(), timeout=3))
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    result = asyncio.run(scenario())
+    assert result["ok"] is False
+    assert "目录" in result["error"]
+
+
+def test_sticker_list_requires_one_valid_scope_for_multi_user(tmp_path):
+    from veranima.core.stickers import StickerLibrary
+
+    port = _free_port()
+    library = StickerLibrary(tmp_path / "stickers")
+
+    class QQStub:
+        allowed = {"10001", "20002"}
+        stickers = library
+
+        async def run_task(self):
+            await asyncio.Future()
+
+    async def scenario():
+        server = PetServer(host="127.0.0.1", port=port)
+        server.connect_qq(QQStub())
+        task = asyncio.create_task(server.run())
+        await asyncio.sleep(0.2)
+        try:
+            async with websockets.connect(f"ws://127.0.0.1:{port}") as ws:
+                await ws.send(json.dumps({"type": "sticker_list", "id": 14}))
+                return json.loads(await asyncio.wait_for(ws.recv(), timeout=3))
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    result = asyncio.run(scenario())
+    assert result["ok"] is False
+    assert "作用域" in result["error"]
+
+
 def test_protocol_roundtrip():
     """起真实 WS 服务：壳客户端连接 → 收 reply_*/bubble → 发 poke → 收回复（R3 协议）。"""
     port = _free_port()

@@ -53,6 +53,10 @@ def build_adapter(cfg: dict, agent, *, agent_lock=None) -> QQAdapter | None:
             pending_ttl_days=int(sticker_cfg.get("pending_ttl_days", 7)),
             max_items=int(sticker_cfg.get("max_items", 100)),
         )
+        expired = stickers.cleanup_pending()
+        if expired:
+            import logging
+            logging.getLogger(__name__).info("removed %d expired QQ sticker candidates", len(expired))
     return QQAdapter(
         agent,
         ws_host=qq_cfg.get("ws_host", "127.0.0.1"),

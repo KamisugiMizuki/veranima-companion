@@ -108,6 +108,15 @@ def _validate_image_roots(values) -> list[str]:
     return errors
 
 
+def _validate_sticker_dir(value) -> list[str]:
+    """表情库目录必须是已存在的本地目录。"""
+    raw = str(value or "").strip()
+    path = Path(raw)
+    if not raw or not path.is_absolute() or not path.exists() or not path.is_dir():
+        return [f"表情包目录无效: {value}"]
+    return []
+
+
 MAX_WS_MESSAGE_BYTES = 64 * 1024 * 1024
 
 
@@ -895,6 +904,7 @@ class PetServer:
                         current_stickers = cfg.get("qq", {}).get("stickers", {}) or {}
                         sticker_candidate = {**_sticker_settings_payload(cfg), **current_stickers, **sticker_in}
                         errors = _validate_sticker_settings(sticker_candidate)
+                        errors.extend(_validate_sticker_dir(sticker_candidate.get("dir")))
                         if errors:
                             await self._send({"type": "config_saved", "id": msg.get("id"),
                                               "ok": False, "error": "; ".join(errors)})
