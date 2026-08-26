@@ -1,14 +1,16 @@
 # 虚拟日程与生活主动性模块设计规范
 
-> 版本：v1.0
+> 版本：v1.1
 >
-> 状态：设计稿，尚未声称已实现。
+> 状态：设计稿 v1.1，尚未声称已实现。
 >
 > 范围：Veranima 角色的虚拟日程、日常活动状态、当前活动对回复表现的影响，以及由此产生的主动了解与主动分享候选。
 >
 > 关联规范：`DESIGN.md`、`PERSONA_LOOP_SPEC.md`、`MEMORY_SPEC.md`、`QQ_PROACTIVE_SPEC.md`、`VISION_SPEC.md`。
 >
 > 重要边界：本规范设计的是**角色世界中的持续模拟状态**，不是让程序声称在现实世界中真实上课、通勤、购物、见人或完成了外部行动。所有活动、事件和来源都必须携带虚拟模拟的证据类型；它们可以成为角色化表达的素材，但不能伪装成现实行动证据或用户与角色共同发生过的事实。
+
+> v1.1 变更重点：次日计划在前一日日程进入睡眠状态后生成；加入睡眠/起床交互生命周期、昼夜节律基线、作息偏移惯性与渐进回正、活动切换告知，以及独立的日程设置页和角色目录内模板文件。
 
 ---
 
@@ -189,9 +191,44 @@
 }
 ```
 
-实现时不要求用户填写原始 JSON。角色卡编辑器应将它拆成结构化表单；在当前没有角色编辑器前，设置页至少提供只读摘要和启用/停用控制，不能把配置错误伪装成 UI 已支持。
+### 4.2 角色目录内的模板文件
 
-### 4.2 活动块字段规则
+每个角色的日程模板必须与角色卡一起存放，不能使用项目级共享模板覆盖角色差异：
+
+```text
+characters/<role_id>/
+├── character.json
+├── card.md
+└── virtual_schedule.json
+```
+
+`character.json` 的 `extensions.veranima.virtual_schedule` 可以作为内嵌兼容格式；当角色目录存在 `virtual_schedule.json` 时，文件作为日程模板的权威来源。两者同时存在且内容不一致时，启动时拒绝日程消费并提示冲突，不静默选择其中一份。模板文件只允许被角色加载器按当前 `role_id` 读取，切换角色必须切换日程作用域。
+
+`virtual_schedule.json` 保存长期模板、昼夜节律、活动块、交互画像和偏离规则，不保存某一天的计划实例。日计划实例进入 SQLite 或独立运行数据目录，不能回写角色设计文件。
+
+### 4.3 昼夜节律是日程基线
+
+模板必须声明角色的作息基线，而不是把“昼伏夜出”当成普通日的临时偏移：
+
+```json
+{
+  "circadian": {
+    "wake_window": {"start": "07:00", "end": "09:00"},
+    "sleep_window": {"start": "22:00", "end": "00:00"},
+    "preferred_activity_periods": ["day", "evening"],
+    "chronotype": "day_aligned",
+    "recovery_rate_minutes_per_day": 20
+  }
+}
+```
+
+允许的 `chronotype` 由受控枚举决定：`day_aligned`、`evening_aligned`、`night_aligned`、`irregular`。具体时间仍由模板填写。`night_aligned` 的睡眠窗口可以跨越白天；计划生成器据此计算本地日期边界和活动阶段，不能简单假设睡眠一定发生在午夜前后。
+
+昼夜节律由角色模板定义，日程 LLM 不能在生成次日计划时擅自把白天角色改成夜行角色。短期熬夜、补觉或高强度活动只产生有限的 `schedule_offset`，不改变 `chronotype`。
+
+实现时不要求用户填写原始 JSON。角色卡编辑器应将它拆成结构化表单；在当前没有角色编辑器前，日程专属设置页提供模板状态、作息摘要和运行开关，模板原文只读，不把配置错误伪装成 UI 已支持。
+
+### 4.4 活动块字段规则
 
 - `id`：稳定标识，修改显示名称不能改变历史关联。
 - `category`：受控枚举，不允许 LLM 临时发明分类。建议保留 `obligation`、`self_care`、`transition`、`personal_interest`、`social`、`rest`、`sleep_window`、`role_defined` 等通用类别；具体内容由角色卡提供。
@@ -239,7 +276,68 @@ travel_like / recovery_like / custom
 
 这些是**条件分类**，不是具体日程内容。每个角色可为它们配置自己的活动块组合。
 
-### 5.2 生成顺序
+### 5.2 生成时机：前一日入睡后生成次日计划
+
+次日计划不是在每次启动、每次 tick 或次日第一次对话时随机生成，而是在前一日日程进入 `sleeping` 状态后生成：
+
+```text
+当日最后一个可交流活动结束
+  → 进入入睡准备/睡眠状态
+  → 固化当日收尾摘要与未完成项
+  → 以角色模板 + 当日上下文 + 收尾摘要调用日程 LLM
+  → 结构化校验与确定性修正
+  → 持久化次日 DayPlan(draft)
+  → 到达次日起床阶段后转 active
+```
+
+睡眠状态是生成触发条件，不是“时间到就默认睡着”。如果角色因熬夜继续保持清醒，次日计划生成推迟；如果进程在应生成时离线，启动恢复时只允许补做一次生成，不允许因为多个 tick 重复调用 LLM。
+
+计划生成输入包括：
+
+- 当前角色模板与模板版本；
+- 次日 `DayContext` 与允许的 day profile；
+- 当日计划的完成/跳过/中断/偏离摘要；
+- 当前虚拟精力、情绪惯性、社交消耗和未完成事项；
+- 当前作息偏移量及角色回正速率；
+- 角色允许的活动块与偏离操作。
+
+计划 LLM 输出只能从输入中选择和调整活动，不能新增活动类型、现实地点、现实人物或未经模板允许的时间段。输出无效、超时或不可用时，使用同一输入的确定性模板回退；回退仍必须持久化版本和来源。
+
+### 5.3 LLM 结构化输出契约
+
+计划生成使用单次低成本结构化调用，输出只表达“明天怎么安排”，不输出可见台词：
+
+```json
+{
+  "day_profile": "profile_id_from_template",
+  "wake_shift_minutes": 20,
+  "items": [
+    {
+      "rule_id": "template_block_id",
+      "activity_key": "template_activity_key",
+      "shift_minutes": 10,
+      "duration_minutes": 45,
+      "operation": "shift|resize|substitute|skip_optional|recovery_mode|none",
+      "reason_code": "late_sleep|high_load|day_profile|unfinished|character_preference|none"
+    }
+  ],
+  "expected_deviations": 1
+}
+```
+
+程序层强制校验：
+
+1. `day_profile` 必须属于模板；
+2. `rule_id`、`activity_key` 必须来自模板；
+3. 时间偏移、持续时间、偏离次数必须在模板上限内；
+4. `required` 活动不能被 `skip_optional` 删除；
+5. `reason_code` 必须属于受控枚举；
+6. 结构化结果不能包含现实活动声明或来源外的用户事实；
+7. 校验失败时整份输出拒绝，不能部分接受后留下半份计划。
+
+LLM 负责有限选择和表达“为什么这样调整”，代码负责时间、状态、作用域、上限、持久化和生命周期。
+
+### 5.4 基础生成顺序
 
 计划器必须按以下顺序执行，后面的层不能破坏前面的硬约束：
 
@@ -253,7 +351,7 @@ travel_like / recovery_like / custom
 8. 生成稳定的 `plan_id`、`seed` 和版本，原子持久化。
 9. 只有计划持久化成功后，才允许运行时消费它。
 
-### 5.3 稳定种子与幂等
+### 5.5 稳定种子、LLM 版本与幂等
 
 同一 `role_id + local_date + plan_revision + day_context_digest` 必须得到同一份基础计划。推荐：
 
@@ -263,7 +361,57 @@ seed = SHA256(role_id + local_date + plan_revision + day_context_digest)
 
 进程重启、设置页刷新和 QQ/pet 两端读取不能让计划重新抽样。用户主动修改当日条件时创建新的 `plan_revision`，旧计划保留审计但不再作为当前计划。
 
-### 5.4 允许的变体操作
+### 5.6 计划偏移、弹性压缩与渐进回正
+
+计划时间不能只做整日平移。先计算角色从模板基线产生的 `schedule_offset`，再按以下顺序调和：
+
+1. **偏移继承**：前一日入睡/起床相对模板的偏移进入次日输入；
+2. **弹性压缩**：可用时间不足时，按角色卡的活动价值排序优先缩短或跳过低优先级、非必需活动；高价值活动保持窗口和最短时长；
+3. **延迟传播**：起床推迟会向后传播到受影响活动，直到遇到不可移动窗口；
+4. **边界迁移**：跨越睡眠窗口的活动必须迁移到下一个允许窗口，不能与睡眠硬重叠；
+5. **渐进回正**：每日最多向模板基线移动 `recovery_rate_minutes_per_day`，由角色模板的自律/回正参数决定；
+6. **新偏移叠加**：当日再次熬夜、过早入睡或高负荷活动可增加偏移，但受最大偏移和最大连续天数限制。
+
+偏移状态至少包含：
+
+```text
+schedule_offset_minutes
+offset_reason: late_sleep | early_sleep | oversleep | high_load |
+               recovery | holiday_choice | character_deviation
+offset_started_at
+target_baseline_at
+recovery_rate_minutes_per_day
+```
+
+连续恢复日不应每次完全重生成不同作息；同一偏移链要有稳定的 `offset_id` 和前后引用。恢复过程只改变日程时间与交互资源，不永久改变角色的昼夜节律。
+
+### 5.7 生活主题、情绪残留与环境氛围
+
+在日计划之上增加三个轻量层，但都不能绕过模板和真实性边界：
+
+- `LifeTheme`：跨数日的角色生活主题，决定活动池的变体偏好和偏离解释；主题由角色模板、已完成虚拟活动和有限状态生成，不是每轮随机换题。
+- `EmotionalResidue`：活动结束后保留有限时长的成就感、疲惫、社交透支、无聊或专注残留，作为下一个活动的软滤镜；不能直接覆盖 `AgentState` 的核心情绪。
+- `AmbientContext`：由模板和计划事件定义的虚拟空间/感官氛围，如安静、嘈杂、光线、天气意象或声音类型；不是 GPS、截图或现实传感器事实。
+
+```text
+LifeTheme → activity variant / deviation reason
+EmotionalResidue → availability / reply tempo / expansion budget
+AmbientContext → 可选自我分享素材和联想提示
+```
+
+三个层都必须有过期时间。它们只进入 `ScheduleContext` 的最小摘要，不把完整内部标签发送给用户；没有合适素材时不分享。
+
+### 5.8 用户影响与互动期望窗口
+
+用户可以在不修改设置的情况下影响角色的次日日程，但影响必须是**隐性、有限、可解释**的：
+
+- 用户最近明确表达的作息、状态或共同项目时间约束，可以改变角色计划中的“留出交流窗口”或 follow-up 优先级；
+- 用户连续深夜来消息，可以提高角色对“是否留出短交流窗口”的考虑，但不能自动把角色改成昼伏夜出；
+- 角色卡的关系期许可以定义 `interaction_expectation_windows`，用户未出现只产生低强度情绪残留，不产生责备、惩罚或负面关系记忆；
+- 用户信息不足、来源过旧或敏感信息未获同意时，不影响日计划。
+
+用户影响必须记录 `source_message_ids`、影响类型、权重、起止时间和是否被用户纠正。它不能伪造“用户答应了会出现”，也不能作为主动发送许可。
+### 5.9 允许的变体操作
 
 计划器只执行角色卡明确允许的操作：
 
@@ -292,9 +440,141 @@ LLM 输出必须是单 JSON，经过 schema、枚举、长度、来源和敏感�
 
 ---
 
-## 6. 计划与活动生命周期
+## 6. 睡眠、起床与不可交流活动的交互生命周期
 
-### 6.1 `DayPlan` 状态
+### 6.1 活动交互影响分级
+
+不是每个活动都需要打断对话。模板中的 `interaction_impact` 受控为：
+
+```text
+none / mild / inconvenient / unavailable
+```
+
+- `none`：只影响内部氛围，不主动告知。
+- `mild`：回复资源轻微下降，用户问及时可简短说明。
+- `inconvenient`：进入前允许发送一次状态预告；活动中普通回复缩短或延迟；认真问题仍先给最小可用回答。
+- `unavailable`：进入睡眠或明确不可交流状态后，完全停止该角色的普通回复，直到恢复阶段；未发送消息不伪造已读或已回复。
+
+`unavailable` 只能由模板允许的睡眠/明确不可交流活动触发，不能由普通“忙碌”标签直接升级。
+
+### 6.2 睡前告知与延长清醒窗口
+
+当计划进入 `sleep_window` 的准备阶段，且角色尚未进入睡眠，系统可以生成一次用户可见告知：
+
+```text
+活动即将进入 unavailable
+  → 发送一次“准备休息/即将离开”的状态说明
+  → 开启 grace_period
+  → 期间最多处理有限轮消息
+  → 每轮使用 drowsy interaction profile
+  → grace_period 到期或角色无法继续
+  → 发送最后告知
+  → 强制进入 sleeping
+```
+
+`grace_period` 默认 30 分钟，由模板限制在 0～60 分钟；它不是用户无限挽留的许可。用户持续发消息可以在窗口内延长实际入睡时间，但每次延长必须消耗 `sleep_debt`，并受 `max_extension_minutes` 限制。达到上限后，角色必须进入睡眠，不再继续对话。
+
+睡前告知内容由角色和当前渠道生成，但必须明确表达：接下来到起床前不会继续回复。系统不要求固定某一句台词，禁止把示例文本硬编码为模板。
+
+### 6.3 困倦交互画像
+
+`drowsy` 是角色卡定义的交互画像，不是随机错误注入器：
+
+```json
+{
+  "reply_style": "drowsy",
+  "max_sentences": 2,
+  "question_budget": 0,
+  "expansion_budget": "minimal",
+  "latency_range_seconds": [2, 12],
+  "allow_typo": true,
+  "emotion_range": "muted",
+  "max_extension_minutes": 30
+}
+```
+
+实际表现可以包括回复变慢、句子变短、情感振幅降低、偶发轻微错字或自我修正。错字必须低频、有原因、可恢复，不能影响紧急信息理解；程序不能通过每轮随机插错字来制造“像人”。认真/紧急消息仍优先处理核心内容，不能用困倦状态掩盖安全或重要问题。
+
+### 6.4 sleeping 状态与消息处理
+
+进入 `sleeping` 后：
+
+- QQ 和桌宠的普通输入都不触发 LLM 回复；
+- 消息仍可按产品隐私策略记录“睡眠期间收到消息”的元数据，正文是否保存遵循既有消息保留策略；
+- 不发送“我看到了”“我正在睡”等自动回复；
+- 该状态不产生用户负面记忆、不惩罚关系、不调用主动 Gate。
+
+起床进入 `waking` 后，系统可在第一次处理用户消息时合并两类信息：
+
+1. 角色恢复后的自然回应；
+2. 对睡眠期间收到消息的轻量衔接，例如提及“刚醒，看到你睡前后发过几条消息”。
+
+只有消息实际在睡眠窗口内到达，才允许这样衔接；不把消息数量、内容或时间夸张成角色一定“读完了”。未处理内容过多时，按时间顺序截断并保留未处理标记。
+
+### 6.5 其他不便交流活动
+
+学习、专注工作、外出过渡或其他活动是否需要告知，由模板的 `interaction_impact` 决定。进入前预告和结束后说明各自每日最多一次、同一活动只发一次；活动中不重复播报。
+
+活动开始告知必须说明“接下来可能回复较短/较慢”，活动结束可以说明“恢复正常交流”。如果活动被跳过、提前结束或被用户消息打断，状态说明必须跟随实际模拟事件，不能坚持发送过期预告。
+
+---
+
+## 7. 日程结束、收尾摘要与次日生成
+
+### 7.1 入睡是日程边界，不是服务器日期边界
+
+日程日由角色的 `timezone` 和 `sleep_window` 定义。对于跨白天睡眠或跨午夜活动，`local_date` 仍以角色日程周期计算，不按服务器午夜强行切断。进入 `sleeping` 后才执行当日收尾和次日计划生成。
+
+### 7.2 日程收尾摘要
+
+进入睡眠后先固化 `DayCloseSummary`：
+
+```text
+completed_items
+skipped_items
+interrupted_items
+expired_unknown_items
+schedule_offset_minutes
+sleep_debt_minutes
+emotional_residue
+life_theme_progress
+unfinished_thoughts
+user_influence_summary
+```
+
+摘要只引用当日已生成的虚拟事件、角色状态变化和用户明确消息；不把程序离线期间的活动标成 completed。它作为下一次日程 LLM 的输入，但不直接写入 `shared_episode`。
+
+### 7.3 次日计划生成状态机
+
+```text
+awake/active
+  → sleep_preparing
+  → sleeping
+  → day_close_committed
+  → next_day_plan_generating
+  → next_day_plan_ready
+  → next_day_plan_active
+```
+
+`next_day_plan_generating` 使用稳定的 `generation_key = role_id + next_local_date + source_day_close_id + template_version` 做幂等锁。LLM 调用超时或失败不重复生成多个版本；转为确定性回退或保留待生成状态，并在恢复后重试一次。
+
+### 7.4 日程 LLM 的结构化输出边界
+
+日程 LLM 可以根据模板和收尾摘要选择活动变体、调整窗口、排序有限偏离，并生成每个调整的 `reason_code`。它不能：
+
+- 自由添加模板没有的活动；
+- 把角色卡的昼夜节律改成另一种基线；
+- 把模拟活动说成现实行动；
+- 把用户消息改写成用户承诺；
+- 宣称离线期间完成了未确认活动。
+
+结构校验、范围限制、活动冲突处理和最终持久化仍由程序完成。
+
+---
+
+## 8. 作息偏移、睡眠债务与回正
+
+### 8.1 `DayPlan` 状态
 
 ```text
 draft → active → closed
@@ -308,7 +588,7 @@ draft → active → closed
 - `closed`：当天正常结束。
 - `expired`：过期但未能确认完整执行；不能等同于“全部完成”。
 
-### 6.2 `ScheduleItem` 状态
+### 8.2 `ScheduleItem` 状态
 
 ```text
 planned → active → completed
@@ -329,7 +609,7 @@ active → interrupted → resumed → completed
 
 进程离线后重新启动，不应把所有跨越的活动批量标记为已完成。默认标记为 `expired_unknown`，由下一次计划修正或角色化表达处理。这是防止“后台没运行却声称做完了”的关键约束。
 
-### 6.3 事件类型
+### 8.3 事件类型
 
 建议事件集合：
 
@@ -361,9 +641,9 @@ share_policy
 
 ---
 
-## 7. 当前活动如何影响对话表现
+## 9. 当前活动如何影响对话表现
 
-### 7.1 核心原则
+### 9.1 核心原则
 
 活动状态首先影响**交互资源分配**，其次才影响内容。它不是一个每轮必说的状态前缀。
 
@@ -379,7 +659,7 @@ share_policy
 
 因此“当前正在忙”只能让普通闲聊更短、更碎片化，不能让角色逃避认真问题，也不能使用户觉得消息被系统机械拒绝。
 
-### 7.2 `ScheduleContext`
+### 9.2 `ScheduleContext`
 
 传给 Agent 的上下文只包含当前需要的最小字段：
 
@@ -401,7 +681,7 @@ class ScheduleContext:
 
 `source_anchor` 只供内部审计和 prompt 编排，不得出现在用户可见文本中。
 
-### 7.3 交互画像
+### 9.3 交互画像
 
 交互画像由角色卡定义，不由活动名称硬编码。建议提供以下通用画像：
 
@@ -416,7 +696,7 @@ class ScheduleContext:
 
 “略显急切”只能由 `reply_style`、句数预算、问题预算和扩展预算共同表达；不能通过强行添加“我在忙”“快被发现了”等固定台词实现。
 
-### 7.4 Prompt 接线
+### 9.4 Prompt 接线
 
 目标调用链：
 
@@ -439,9 +719,9 @@ ScheduleEngine.current_context(now)
 
 ---
 
-## 8. 主动了解用户：`UserInfoGap` 与 `CuriosityCandidate`
+## 10. 主动了解用户：`UserInfoGap` 与 `CuriosityCandidate`
 
-### 8.1 不是随机问题库
+### 10.1 不是随机问题库
 
 “想了解用户”必须表示为一个具体的信息缺口：
 
@@ -470,7 +750,7 @@ class UserInfoGap:
 
 不能从角色的猜测、assistant 自己的虚构内容或无来源标签生成缺口。
 
-### 8.2 询问规则
+### 10.2 询问规则
 
 生成 `CuriosityCandidate` 前按顺序检查：
 
@@ -484,7 +764,7 @@ class UserInfoGap:
 
 默认每个通道每日最多一个主动了解问题；同一主题至少经过一个可配置冷却周期才能再次询问。用户不回答、拒绝或转移话题时，状态改为 `paused` 或降低优先级，不施加关系惩罚、不追问、不把拒绝写成负面人格证据。
 
-### 8.3 用户回答后的更新
+### 10.3 用户回答后的更新
 
 用户回答后，按正常 `MEMORY_SPEC` 处理：
 
@@ -500,9 +780,9 @@ user message
 
 ---
 
-## 9. 主动分享自己：`ScheduleEvent` 到 `SelfShareCandidate`
+## 11. 主动分享自己：`ScheduleEvent` 到 `SelfShareCandidate`
 
-### 9.1 可分享素材来源
+### 11.1 可分享素材来源
 
 主动分享的优先级：
 
@@ -514,7 +794,7 @@ user message
 
 所有候选必须能回指 `virtual_life_event` 或角色卡稳定字段。没有来源时，不生成“我刚刚做了某事”的内容；可以不发，不能用模板填空。
 
-### 9.2 分享候选协议
+### 11.2 分享候选协议
 
 ```python
 @dataclass(frozen=True)
@@ -533,7 +813,7 @@ class SelfShareCandidate:
 
 候选只描述素材和意图，不直接携带最终用户可见文案。文案由当前角色和通道生成，并经过现有 Reply 解析和现实边界检查。
 
-### 9.3 防止“生活播报机器人”
+### 11.3 防止“生活播报机器人”
 
 - 同一天最多若干条自我分享，默认低于用户消息频率；
 - 同一事件在同一通道只分享一次；跨通道是否复用由各通道自己的冷却和重复检查决定；
@@ -541,7 +821,7 @@ class SelfShareCandidate:
 - 分享允许是一个短片段，不要求以问题结尾；
 - 不要把每个活动开始/结束都变成消息；活动多数只改变内部状态。
 
-### 9.4 用户追问时
+### 11.4 用户追问时
 
 如果用户主动问角色在做什么，当前 `ScheduleContext` 可以提供真实的虚拟状态和来源锚点。回答应：
 
@@ -552,9 +832,9 @@ class SelfShareCandidate:
 
 ---
 
-## 10. 主动候选与已有 QQ/pet Gate 的接线
+## 12. 主动候选与已有 QQ/pet Gate 的接线
 
-### 10.1 日程模块只做“内容来源层”
+### 12.1 日程模块只做“内容来源层”
 
 目标结构：
 
@@ -570,7 +850,7 @@ ScheduleEngine / CuriosityEngine
 
 日程模块不得直接调用 `bot.send_private_msg()`、`PetServer.speak()` 或绕过 `ProactiveGate`。
 
-### 10.2 QQ 与桌宠独立
+### 12.2 QQ 与桌宠独立
 
 共享：
 
@@ -587,7 +867,7 @@ ScheduleEngine / CuriosityEngine
 
 `QQ_PROACTIVE_SPEC` 中已有的 QQ 五维 readiness、睡眠/忙碌状态和延迟发送继续有效。虚拟日程只是新增 `virtual_schedule` 与 `user_curiosity` 来源，不替换 QQ Gate。
 
-### 10.3 普通用户回复与主动候选的优先级
+### 12.3 普通用户回复与主动候选的优先级
 
 用户新消息到达时：
 
@@ -600,11 +880,11 @@ ScheduleEngine / CuriosityEngine
 
 ---
 
-## 11. 持久化模型
+## 13. 持久化模型
 
 日程是长期连续的内在状态，不能只放在进程内存。建议扩展现有 SQLite `MemoryStore`，不把活动文本塞进普通记忆层。
 
-### 11.1 `virtual_day_plans`
+### 13.1 `virtual_day_plans`
 
 ```sql
 CREATE TABLE virtual_day_plans (
@@ -624,7 +904,7 @@ CREATE TABLE virtual_day_plans (
 );
 ```
 
-### 11.2 `virtual_schedule_items`
+### 13.2 `virtual_schedule_items`
 
 ```sql
 CREATE TABLE virtual_schedule_items (
@@ -651,7 +931,7 @@ CREATE TABLE virtual_schedule_items (
 );
 ```
 
-### 11.3 `virtual_life_events`
+### 13.3 `virtual_life_events`
 
 ```sql
 CREATE TABLE virtual_life_events (
@@ -671,7 +951,7 @@ CREATE TABLE virtual_life_events (
 );
 ```
 
-### 11.4 `user_info_gaps`
+### 13.4 `user_info_gaps`
 
 ```sql
 CREATE TABLE user_info_gaps (
@@ -691,7 +971,7 @@ CREATE TABLE user_info_gaps (
 );
 ```
 
-### 11.5 发送审计
+### 13.5 发送审计
 
 已有 `proactive_feedback` 继续作为交付结果记录；需要确保它能区分：
 
@@ -707,7 +987,7 @@ responded / dismissed / interrupted
 
 `source_event_id` 不能填入 `source_message_id`，`source_memory_id` 不能冒充原始消息 ID。来源链必须能从主动消息回到活动事件或用户消息。
 
-### 11.6 角色与用户隔离
+### 13.6 角色与用户隔离
 
 - `role_id + local_date` 是计划唯一作用域；切换角色不能复用另一角色的日计划。
 - 用户信息缺口按当前用户/关系 profile 作用域保存。
@@ -716,16 +996,16 @@ responded / dismissed / interrupted
 
 ---
 
-## 12. 时间、重启和异常
+## 14. 时间、重启和异常
 
-### 12.1 时间处理
+### 14.1 时间处理
 
 - 所有计划使用 `zoneinfo.ZoneInfo(timezone)`；禁止用无时区 `datetime` 作为持久化真值。
 - `local_date` 由角色日程时区计算，不直接使用服务器 UTC 日期。
 - 夏令时/跨午夜由时区库处理；活动比较使用带时区的时间戳。
 - 测试必须注入 `Clock`，不依赖运行机器当前时间。
 
-### 12.2 重启恢复
+### 14.2 重启恢复
 
 启动时：
 
@@ -736,7 +1016,7 @@ responded / dismissed / interrupted
 5. 不能确认执行的活动写 `expired_unknown`，生成内部事件但不自动发送；
 6. 计划损坏时创建新 revision，并保留旧计划供审计。
 
-### 12.3 LLM、数据库和时间异常
+### 14.3 LLM、数据库和时间异常
 
 | 故障 | 回退 |
 |---|---|
@@ -750,43 +1030,43 @@ responded / dismissed / interrupted
 
 ---
 
-## 13. 设置页设计
+## 15. 日程专属设置页
 
-所有用户可调整的运行配置都必须进入桌宠设置页；角色卡结构化内容和运行开关分开。
+日程设置必须是独立页面，不依附“在场与主动”或“记忆与人格”。前者控制消息交付，后者控制信息存储，日程页控制角色模板、作息和当前计划；三者混在一起会产生错误的用户预期。
 
-### 13.1 可调整项
+### 15.1 页面与作用域
 
-| 设置 | 控件 | 说明 |
+导航项固定为 `日程与生活`，独立于 `在场与主动`、`记忆与人格`。页面显示当前角色、角色目录内 `virtual_schedule.json` 的版本/读取状态、当前睡眠周期、当前活动、下一活动、计划偏移和未确认活动。
+
+模板文件属于 `characters/<role_id>/virtual_schedule.json`，与 `character.json` 同目录。模板是角色资产，页面只读展示；普通运行设置写入本地配置覆盖，不回写角色模板。角色切换时按 `role_id` 切换计划作用域。
+
+### 15.2 可调整项
+
+| 设置 | 控件 | 作用域 |
 |---|---|---|
-| 虚拟日程 | 下拉：开启/关闭 | 关闭后不生成计划，但普通对话不受影响 |
-| 日程时区 | 受控时区下拉 | 默认跟随系统；不允许自由拼写时区 |
-| 当日 profile 覆盖 | 下拉：自动/角色默认/休息类/恢复类/自定义 | 只影响当天或明确的覆盖周期 |
-| 计划变体强度 | 下拉：稳定/适中/自由 | 映射到角色允许的偏离预算 |
-| 虚拟生活主动分享 | 下拉：关闭/低频/标准 | 独立于 QQ/pet 主动开关 |
-| 主动了解用户 | 下拉：关闭/低频/标准 | 独立的问题预算与敏感性 Gate |
-| 每日自我分享上限 | 下拉 | 只修改日程来源分享额度 |
-| 当日计划状态 | 只读列表 | 显示计划、活动状态、偏离原因和虚拟证据类型 |
-| 候选来源 | 只读审计 | 显示主动消息回指的活动事件或用户消息 |
+| 虚拟日程 | 下拉：开启/关闭 | 全局运行 |
+| 日程时区 | 受控时区下拉 | 当前角色 |
+| 今日 profile | 下拉：自动/模板默认/休息/恢复/自定义 | 当前日 |
+| 计划变体强度 | 下拉：稳定/适中/自由 | 当前日 |
+| 睡前 grace period | 下拉：0/15/30/45/60 分钟 | 当前角色 |
+| 最大挽留延长 | 下拉：0/15/30 分钟 | 当前睡眠周期 |
+| 自我分享 | 下拉：关闭/低频/标准 | 日程来源 |
+| 主动了解用户 | 下拉：关闭/低频/标准 | 用户信息缺口来源 |
+| 每日状态告知上限 | 下拉 | 当前日 |
+| 今日计划、偏移和来源 | 只读 | 当前角色和日期 |
 
-### 13.2 设置链验收
+不得要求用户手填活动枚举或时区字符串。以后增加模板编辑器时，角色目录必须使用原生目录浏览器并校验角色包路径。
 
-每个字段必须完成：
+### 15.3 设置链与语义
 
 ```text
-设置页控件
-  → renderer payload
-  → preload IPC
-  → PetServer save_config 白名单
-  → 本地 YAML
-  → 重启后 get_config
-  → ScheduleEngine 消费
+日程专属页面 → renderer → preload/main IPC
+→ PetServer 白名单 → 本地运行配置 → ScheduleEngine 重启恢复
 ```
 
-只有 UI 显示而后端不保存/不消费，不能判为完成。路径类设置若以后增加角色卡目录，必须使用原生文件夹浏览框；枚举值不能让用户手填。
+关闭日程只停止计划生成、活动推进和日程来源候选，不关闭普通聊天、记忆或已有 QQ/pet 主动来源。关闭自我分享不停止内部日程，也不影响用户主动询问。提前入睡、强制结束 grace period 和删除当日覆盖必须确认并记录原因。
 
----
-
-## 14. 实现分期
+## 16. 实现分期
 
 ### Phase S0：契约和只读状态
 
@@ -795,81 +1075,45 @@ responded / dismissed / interrupted
 - 仅提供只读的当前活动计算，不影响发送。
 - 用合成角色卡测试，不读取生产日程或用户图片。
 
-### Phase S1：确定性日计划
+### Phase S1：角色目录模板与确定性状态
 
-建议目标文件：
+- 为每个角色加载 `virtual_schedule.json`；内嵌字段仅作兼容。
+- 校验模板版本、昼夜节律、活动块、交互画像和偏离规则。
+- 实现 `schedule_state`：awake/sleep_preparing/sleeping/waking/unavailable。
+- 以角色时区计算日程周期，支持跨午夜和白天睡眠。
+- 对进入/离开睡眠及不便交流活动产生一次性状态告知候选。
 
-- `src/veranima/core/virtual_schedule.py`
-- `src/veranima/memory/schema.py`
-- `src/veranima/memory/store.py`
-- `src/veranima/core/character.py`
-- `tests/test_virtual_schedule.py`
+### Phase S2：睡眠交互与次日计划
 
-实现：
+- 睡前 grace period、困倦回复画像、最大挽留延长和 sleep debt。
+- 睡眠期间不调用 LLM 回复；记录睡眠期间消息的受控元数据。
+- 起床后的首条用户消息接入睡眠期间消息回顾。
+- 在日程进入睡眠后固化 DayCloseSummary，并通过一次结构化 LLM 调用生成次日计划。
+- generation_key 幂等；LLM 失败使用确定性回退，不生成重复计划。
 
-- 角色卡结构化读取与校验；
-- day profile；
-- 稳定 seed；
-- 计划生成、版本、重启恢复；
-- 活动生命周期和 `expired_unknown`；
-- SQLite 迁移。
+### Phase S3：偏移、调和与内化
 
-### Phase S2：当前活动到回复节奏
+- 继承前一日入睡/起床偏移。
+- 弹性压缩、不可移动窗口迁移和高价值活动保留。
+- 按角色回正速率逐日恢复，不改变 chronotype 基线。
+- 引入 LifeTheme、EmotionalResidue、AmbientContext 的最小过期状态。
+- 允许有来源的用户影响和互动期望窗口，不产生责备或伪造用户承诺。
 
-建议目标文件：
+### Phase S4：回复与主动性接线
 
-- `src/veranima/core/prompts.py`
-- `src/veranima/core/agent.py`
-- `src/veranima/core/reply.py`（仅在协议需要时）
-- `tests/test_schedule_prompt_wiring.py`
+- 将当前 `ScheduleContext` 注入 Agent 回复 prompt。
+- 忙碌时减少普通闲聊资源，但保留认真问题的核心回答。
+- 由虚拟活动事件产生 `SelfShareCandidate`；由 `UserInfoGap` 产生 `CuriosityCandidate`。
+- 两类候选均进入既有 QQ/pet 独立 Gate，发送成功后才记账。
 
-实现：
+### Phase S5：独立日程设置页
 
-- `ScheduleContext` 注入；
-- 交互画像约束；
-- 认真问题覆盖忙碌短回；
-- prompt 元数据不泄漏；
-- QQ/TTS 使用同一语义上下文、不同通道渲染。
+- 新建独立的“日程与生活”设置页，不并入“在场与主动”或“记忆与人格”。
+- 展示当前角色目录模板、昼夜节律、当前周期、今日计划、偏移链和未确认活动。
+- 运行项全部使用受控下拉；模板文件和目录使用安全的原生浏览流程。
+- 完成 DOM → renderer → preload/main → PetServer → 本地配置 → 重启消费的行为测试。
 
-### Phase S3：主动分享与主动了解
-
-建议目标文件：
-
-- `src/veranima/core/virtual_schedule.py`
-- `src/veranima/core/qq_advisor.py`
-- `src/veranima/core/qq_proactive.py`
-- `src/veranima/core/ambient.py`
-- `src/veranima/core/agent.py`
-- `tests/test_proactive_schedule_source.py`
-
-实现：
-
-- `UserInfoGap` 生命周期；
-- `SelfShareCandidate` / `CuriosityCandidate`；
-- source anchor；
-- 与现有 QQ/pet Gate 接线；
-- 忽略、不回答和发送失败的降级；
-- 不同通道独立 cooldown/feedback。
-
-### Phase S4：设置页与可见审计
-
-建议目标文件：
-
-- `src/veranima/pet_server.py`
-- `pet/preload.js`
-- `pet/main.js`
-- `pet/settings.html`
-- `pet/settings-renderer.js`
-- `tests/test_pet_schedule_settings.py`
-
-实现：
-
-- 运行开关、day profile、变体强度、时区、分享/好奇预算；
-- 今日计划只读查看；
-- 活动状态和来源审计；
-- 保存后重启恢复验证。
-
-### Phase S5：真实链路验收
+### Phase S6：真实链路验收
 
 - CLI 先用固定时钟验证：计划 → 当前活动 → prompt → Reply。
 - 再用临时 SQLite、真实远程 API 做连续对话验收；测试日志不得写 API key、用户图片或内部协议。
@@ -878,19 +1122,27 @@ responded / dismissed / interrupted
 
 ---
 
-## 15. 行为级测试契约
+## 17. 行为级测试契约
 
-### 15.1 计划生成
+### 17.1 日程生成与睡眠生命周期
 
-1. 角色卡没有结构化日程时，模块关闭，不出现默认具体活动。
-2. 同一角色、同一天、同一条件、同一 revision 重启后计划完全一致。
-3. 不同 day profile 只使用各自允许的活动块。
-4. 计划不会产生重叠、越界时长或非法类别。
-5. 角色允许偏离时，偏离操作仍受活动块白名单和每日上限约束。
-6. 角色不允许偏离时，随机种子变化不能改变计划结构。
-7. 进程跨时间恢复时，无法证明完成的活动进入 `expired_unknown`，不能伪造 `completed`。
+1. 次日计划只在前一日进入 `sleeping` 后生成；重复 tick 不重复调用 LLM。
+2. 生成调用只允许输出模板中的 `rule_id/activity_key`，越界结构整体拒绝并使用可验证回退。
+3. 正常日、休息日和长假使用角色模板自己的 profile，不复用别的角色活动。
+4. 昼夜节律为 `night_aligned` 的角色可以拥有白天睡眠窗口；服务器午夜不能强行切断周期。
+5. 熬夜、早睡和高强度活动会继承为有原因的 `schedule_offset`，并按角色回正速率逐日恢复。
+6. 时间不足时低优先级非必需活动先压缩/跳过，高价值活动按模板保留。
+7. 进程离线跨过活动时，无法证明完成的项目为 `expired_unknown`，不能自动变成 `completed`。
 
-### 15.2 回复表现
+### 17.2 睡眠与活动交互表现
+
+1. 睡前只发送一次状态预告；预告明确睡眠期间不再回复。
+2. grace period 内用户持续聊天会延迟入睡但不超过模板 `max_extension_minutes`，并累计 `sleep_debt`。
+3. 困倦阶段回复具有延迟、短文本和低情感振幅；错字不是每轮必现，也不影响认真/紧急消息。
+4. 进入 `sleeping` 后普通输入不调用 LLM、不自动回执；起床后的首条用户消息可以基于实际睡眠期间消息生成衔接。
+5. 学习/专注等 `inconvenient` 活动按模板告知可能短回/慢回；普通活动不强行播报。
+
+### 17.3 回复接线
 
 1. 当前活动为 `occupied_brief` 时，普通闲聊的 prompt 出现短回资源约束，最终用户可见文本没有协议标记。
 2. 同一活动期间，认真问题仍得到核心回答，不能只返回“现在忙”。
@@ -898,7 +1150,7 @@ responded / dismissed / interrupted
 4. `sleep_like` 禁止主动候选，但用户主动发消息仍能正常处理。
 5. 日程活动不被每轮自动播报；没有可分享事件时不出现无来源自我叙述。
 
-### 15.3 主动了解
+### 17.4 主动了解
 
 1. 已有明确答案的主题不再生成同一信息缺口。
 2. 同一主题在冷却期内不重复提问。
@@ -906,7 +1158,7 @@ responded / dismissed / interrupted
 4. 当前活动或用户状态禁止提问时，候选被抑制。
 5. 候选缺少 `source_message_id` 或合法 `reason` 时 fail-closed。
 
-### 15.4 主动分享
+### 17.5 主动分享
 
 1. 没有 `virtual_life_event` 或角色卡稳定锚点时，不生成“我刚刚做了某事”。
 2. 分享候选能回指 `event_id → item_id → plan_id → rule_id`。
@@ -915,16 +1167,17 @@ responded / dismissed / interrupted
 5. 用户新消息到达时，未发送的同通道候选作废，不与普通回复双连发。
 6. 角色分享不写入 `shared_episode`，除非用户后来明确与之形成真实共同对话事件。
 
-### 15.5 真实性与泄漏
+### 17.6 真实性与设置页
 
 1. 生产 prompt 可以包含内部日程上下文，但用户可见回复不能包含 `plan_id`、`item_id`、`truth_class`、`source_anchor`、`candidate_id`。
 2. 用户追问“你刚刚做的事是否真实发生”时，回复遵守角色身份与现实行动边界，不继续编造证据。
 3. 角色切换后不读取旧角色的虚拟日程和虚拟事件。
 4. 计划、活动、用户信息缺口和主动反馈重启后仍能正确关联。
+5. 日程设置位于独立的“日程与生活”页面，不与其他设置页混淆；保存运行覆盖不修改角色目录模板。
 
 ---
 
-## 16. 用户体验验收标准
+## 18. 用户体验验收标准
 
 实现完成后，不能只看“出现了一个 scheduler 类”。至少应通过以下体验级验收：
 
@@ -940,7 +1193,7 @@ responded / dismissed / interrupted
 
 ---
 
-## 17. 与现有设计的关系和状态矩阵
+## 19. 与现有设计的关系和状态矩阵
 
 | 设计项 | 处理方式 |
 |---|---|
@@ -956,13 +1209,16 @@ responded / dismissed / interrupted
 当前实现状态：
 
 - 结构化角色日程：未实现；
-- 当日计划生成：未实现；
+- 每晚睡眠后 LLM 生成次日计划：未实现；
+- 睡眠/起床/grace period/困倦回复/睡眠债务：未实现；
+- 昼夜节律与偏移渐进回正：未实现；
 - 当前活动影响回复：未实现；
 - 来源可追溯的虚拟活动事件：未实现；
 - 主动了解信息缺口：现有 QQ 时机/记忆素材不等于完整实现；
 - 主动分享自身：现有问候、心跳、离线思考不等于完整实现；
 - QQ/pet 独立 Gate：已有基础，接入日程来源后需补行为测试；
-- 设置页日程控制：未实现；
-- 本规范本身：已形成设计契约，后续按 S0→S5 实施。
+- 独立“日程与生活”设置页：未实现；
+- 每个角色目录内的 `virtual_schedule.json`：未实现；
+- 本规范本身：v1.1 设计契约，后续按 S0→S6 实施。
 
 结论：本模块的成功标准不是“定时发送更多消息”，而是让角色拥有一个可持续、可解释、可中断、可恢复、不会冒充现实经历的虚拟生活状态，并让这套状态真正影响回复资源分配、主动了解和主动分享的来源链。
