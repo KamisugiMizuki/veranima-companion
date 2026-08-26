@@ -681,25 +681,13 @@ ipcMain.handle('creation-list', async () => {
   const resp = await wsRequest('creation_list');
   return resp && resp.type === 'creation_projects' ? resp.data : { projects: [] };
 });
+// 设置页「测试连接」：走核心 WS（核心能拿到本地已保存的 key：
+// 框内有 key 用框内的，没有用本地保存的——用户要求的行为）。
 ipcMain.handle('settings-test-llm', async (e, payload) => {
-  const base = String((payload && payload.base_url) || '').replace(/\/+$/, '');
-  if (!base) return { ok: false, error: '未填写 base_url' };
-  const headers = { 'Content-Type': 'application/json' };
-  const key = String((payload && payload.api_key) || '').trim();
-  if (key && !key.includes('****')) headers['Authorization'] = `Bearer ${key}`;
-  try {
-    const resp = await fetch(`${base}/models`, { headers, signal: AbortSignal.timeout(8000) });
-    if (!resp.ok) return { ok: false, error: `HTTP ${resp.status}` };
-    const data = await resp.json();
-    const ids = (Array.isArray(data.data) ? data.data : [])
-      .map((m) => m && m.id).filter((x) => typeof x === 'string' && x.length > 0);
-    return { ok: true, models: ids };
-  } catch (err) {
-    return { ok: false, error: String(err && err.message || err) };
-  }
+  const resp = await wsRequest('test_llm', payload || {}, 15000);
+  if (!resp || resp.type !== 'test_llm_result') return { ok: false, error: '核心未连接' };
+  return resp;
 });
-// 设置页路径选择：原生文件/目录浏览框（用户要求：本地路径用交互选择，不让手打）。
-// type: 'file' | 'dir'；返回所选绝对路径或 null。
 ipcMain.handle('settings-pick-path', async (e, payload) => {
   const type = (payload && payload.type) === 'dir' ? 'openDirectory' : 'openFile';
   const opts = {

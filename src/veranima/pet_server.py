@@ -32,6 +32,30 @@ from veranima.core.render import render_tts
 logger = logging.getLogger("veranima.pet_server")
 
 PORT = 8765
+
+
+def _tasks_payload(cfg: dict) -> dict:
+    """tasks 段回传设置页；hermes api_key 打码。"""
+    t = cfg.get("tasks", {}) or {}
+    h = t.get("hermes", {}) or {}
+    key = str(h.get("api_key") or "")
+    masked = (key[:4] + "****" + key[-4:]) if len(key) > 8 else ("****" if key else "")
+    return {
+        "enabled": bool(t.get("enabled", False)),
+        "backend": str(t.get("backend", "hermes")),
+        "timeout_seconds": int(t.get("timeout_seconds", 600)),
+        "output_max_chars": int(t.get("output_max_chars", 12000)),
+        "hermes": {
+            "base_url": str(h.get("base_url", "http://127.0.0.1:8642")),
+            "profile": str(h.get("profile", "")),
+            "multiplex_profiles": bool(h.get("multiplex_profiles", False)),
+            "workspace_root": str(h.get("workspace_root", "")),
+            "worktree_for_code": bool(h.get("worktree_for_code", False)),
+            "approval_timeout_seconds": int(h.get("approval_timeout_seconds", 600)),
+            "has_api_key": bool(key),
+            "api_key": masked,
+        },
+    }
 MAX_WS_MESSAGE_BYTES = 64 * 1024 * 1024
 
 
@@ -603,7 +627,42 @@ class PetServer:
                         "proactive": {**{k: proactive.get(k) for k in ("enabled", "quiet_hours_enabled")},
                                       "channels": proactive.get("channels", {})},
                         "relationship_tension": {k: relationship_tension.get(k) for k in ("enabled", "high_tension_proactive")},
+                        "tasks": _tasks_payload(cfg),
                     }})
+                elif mtype == "test_llm":
+                    # 设置页「测试连接」：框内有 key 用框内的，没有用本地已保存的
+                    import httpx as _httpx
+                    d = msg.get("data") or {}
+                    cfg_now = load_config()
+                    normalize_llm_profiles(cfg_now)
+                    profiles = cfg_now["llm"].get("profiles") or {}
+                    active = cfg_now["llm"].get("active_profile") or "default"
+                    prof = profiles.get(active) if isinstance(profiles, dict) else {}
+                    if prof is None and isinstance(profiles, list):
+                        prof = next((p for p in profiles if p.get("id") == active), {})
+                    base = str(d.get("base_url") or prof.get("base_url") or "").rstrip("/")
+                    key = str(d.get("api_key") or "").strip()
+                    if not key or "****" in key:
+                        key = str(prof.get("api_key") or "")
+                    if not base:
+                        await self._send({"type": "test_llm_result", "id": msg.get("id"),
+                                          "ok": False, "error": "未填写 Base URL 且本地无保存值"})
+                        continue
+                    headers = {"Authorization": f"Bearer {key}"} if key else {}
+                    try:
+                        resp = _httpx.get(f"{base}/models", headers=headers, timeout=8.0)
+                        if resp.status_code != 200:
+                            await self._send({"type": "test_llm_result", "id": msg.get("id"),
+                                              "ok": False, "error": f"HTTP {resp.status_code}"})
+                            continue
+                        models = [m.get("id") for m in resp.json().get("data", [])
+                                  if isinstance(m, dict) and m.get("id")]
+                        await self._send({"type": "test_llm_result", "id": msg.get("id"),
+                                          "ok": True, "models": models,
+                                          "used_saved_key": not bool(str(d.get("api_key") or "").strip())})
+                    except Exception as exc:
+                        await self._send({"type": "test_llm_result", "id": msg.get("id"),
+                                          "ok": False, "error": str(exc)})
                 elif mtype == "creation_list":
                     # C-5：共同项目面板数据（项目+未决关系候选摘要）
                     try:
@@ -669,8 +728,28 @@ class PetServer:
                         if k in stt:
                             cfg.setdefault("stt", {})[k] = stt[k]
                     mem = d.get("memory", {})
-                    if "db_path" in mem and str(mem["db_path"]).strip():
-                        cfg.setdefault("memory", {})["db_path"] = str(mem["db_path"]).strip()
+                    for k in ("db_path",):
+                        if k in mem and str(mem[k]).strip():
+                            cfg.setdefault("memory", {})[k] = str(mem[k]).strip()
+                    # HERMES 集成：任务执行开关与 bridge 配置（SPEC §4.5；key 存本地 config 不入 git）
+                    tasks_in = d.get("tasks", {})
+                    if tasks_in:
+                        cfg_tasks = cfg.setdefault("tasks", {})
+                        for k in ("enabled", "backend", "require_confirmation",
+                                  "timeout_seconds", "output_max_chars"):
+                            if k in tasks_in:
+                                cfg_tasks[k] = tasks_in[k]
+                        hermes_in = tasks_in.get("hermes", {})
+                        if hermes_in:
+                            cfg_hermes = cfg_tasks.setdefault("hermes", {})
+                            for k in ("base_url", "profile", "multiplex_profiles",
+                                      "workspace_root", "worktree_for_code",
+                                      "approval_timeout_seconds"):
+                                if k in hermes_in:
+                                    cfg_hermes[k] = hermes_in[k]
+                            key_in = str(hermes_in.get("api_key") or "").strip()
+                            if key_in and "****" not in key_in:
+                                cfg_hermes["api_key"] = key_in
                     qq = d.get("qq", {})
                     if "allowed" in qq:
                         cfg.setdefault("qq", {})["allowed_qq"] = qq["allowed"]

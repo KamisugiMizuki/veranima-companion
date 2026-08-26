@@ -103,6 +103,14 @@ window.pet.getConfig().then((cfg) => {
   bool('pro-enabled', pro.enabled ?? true); bool('pro-quiet', pro.quiet_hours_enabled ?? true); num('pro-qq-max', qqPro.max_per_day, 2); num('pro-qq-gap', qqPro.min_gap_minutes, 120); num('pro-pet-max', petPro.max_per_day, 2); num('pro-pet-gap', petPro.min_gap_minutes, 30);
   bool('search-enabled', search.enabled ?? false); set('search-base', search.base_url || 'http://127.0.0.1:8080'); num('search-timeout', search.timeout_seconds, 8); num('search-cache', search.cache_ttl_seconds, 900); bool('search-implicit', search.allow_implicit_freshness_search ?? false); bool('search-semantic', search.semantic_locator_enabled ?? false); bool('search-pages', search.fetch_pages ?? false);
   bool('tension-enabled', tension.enabled ?? true); bool('tension-high-proactive', tension.high_tension_proactive ?? false);
+  const tasks = cfg.tasks || {}, tk = tasks.hermes || {};
+  bool('tasks-enabled', tasks.enabled ?? false); set('tasks-backend', tasks.backend || 'hermes');
+  set('tasks-base', tk.base_url || 'http://127.0.0.1:8642'); set('tasks-profile', tk.profile || '');
+  bool('tasks-multiplex', tk.multiplex_profiles ?? false);
+  set('tasks-workspace', tk.workspace_root || ''); bool('tasks-worktree', tk.worktree_for_code ?? false);
+  num('tasks-timeout', tasks.timeout_seconds, 600); num('tasks-approval-timeout', tk.approval_timeout_seconds, 600);
+  $('tasks-key').value = '';
+  $('tasks-key-status').textContent = tk.has_api_key ? `已配置：${tk.api_key}` : '未配置；填写后保存会写入该配置';
   set('qq-allowed', (qq.allowed || []).join(',')); bool('qq-proactive', qq.proactive); bool('qq-offline', qq.offline_think && qq.offline_think.enabled);
 }).catch(() => showMsg('读取配置失败', false));
 
@@ -122,10 +130,7 @@ $('llm-test').addEventListener('click', async () => {
   try {
     const payload = { base_url: $('llm-base').value.trim(), api_key: $('llm-key').value.trim() };
     if (!payload.base_url) throw new Error('请先填写 Base URL');
-    // key 留空且已有配置密钥时无法在 renderer 拿明文 → 提示用户输入一次
-    if (!payload.api_key && !$('llm-key-status').textContent.includes('已配置')) {
-      throw new Error('请填写 API Key 后再测试');
-    }
+    // key 留空 → 核心自动用本地已保存的密钥测试；框内有则用框内的
     const result = await window.pet.testLlm(payload);
     if (!result || !result.ok) throw new Error((result && result.error) || '连接失败');
     const sel = $('llm-model-select');
@@ -140,7 +145,7 @@ $('llm-test').addEventListener('click', async () => {
     const current = $('llm-model').value.trim();
     sel.value = result.models.includes(current) ? current : result.models[0];
     $('llm-model').value = sel.value;
-    setTestStatus(`连接成功，返回 ${result.models.length} 个模型；已从下拉选定`, true);
+    setTestStatus(`连接成功，返回 ${result.models.length} 个模型${result.used_saved_key ? '（使用已保存的 Key）' : ''}；已从下拉选定`, true);
   } catch (e) { setTestStatus(`测试失败：${e.message || e}`, false); }
   finally { btn.disabled = false; }
 });
@@ -149,6 +154,10 @@ $('llm-model-select').addEventListener('change', () => {
   if (v) $('llm-model').value = v;
 });
 // 记忆数据库位置：原生浏览框
+$('tasks-workspace-browse').addEventListener('click', async () => {
+  const picked = await window.pet.pickPath({ type: 'dir', title: '选择任务工作区根目录' });
+  if (picked) { $('tasks-workspace').value = picked; showMsg('工作区已选择，保存后生效', true); }
+});
 $('mem-db-browse').addEventListener('click', async () => {
   const picked = await window.pet.pickPath({ type: 'file', title: '选择记忆数据库文件',
     filters: [{ name: 'SQLite', extensions: ['db', 'sqlite'] }] });
@@ -182,6 +191,19 @@ $('save').addEventListener('click', async () => {
     proactive: { enabled: $('pro-enabled').value === 'true', quiet_hours_enabled: $('pro-quiet').value === 'true', channels: { qq: { max_per_day: Number($('pro-qq-max').value) || 2, min_gap_minutes: Number($('pro-qq-gap').value) || 120 }, pet: { max_per_day: Number($('pro-pet-max').value) || 2, min_gap_minutes: Number($('pro-pet-gap').value) || 30 } } },
     relationship_tension: { enabled: $('tension-enabled').value === 'true', high_tension_proactive: $('tension-high-proactive').value === 'true' },
     qq: { allowed, proactive: $('qq-proactive').value === 'true', offline_think: { enabled: $('qq-offline').value === 'true' } },
+    tasks: {
+      enabled: $('tasks-enabled').value === 'true',
+      backend: $('tasks-backend').value,
+      timeout_seconds: Number($('tasks-timeout').value) || 600,
+      hermes: {
+        base_url: $('tasks-base').value.trim(), profile: $('tasks-profile').value.trim(),
+        multiplex_profiles: $('tasks-multiplex').value === 'true',
+        workspace_root: $('tasks-workspace').value.trim(),
+        worktree_for_code: $('tasks-worktree').value === 'true',
+        approval_timeout_seconds: Number($('tasks-approval-timeout').value) || 600,
+        api_key: $('tasks-key').value.trim(),
+      },
+    },
     pet: { avatar_height: Number($('avatar-height').value) || 200 },
   };
   const role = $('role-select').value; if (role) data.character_card = `characters/${role}/character.json`;

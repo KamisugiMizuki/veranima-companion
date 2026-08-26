@@ -68,9 +68,12 @@ class HermesExecutionBridge:
         self.multiplex = bool(cfg.get("multiplex_profiles", False)) and bool(self.profile)
         prefix = f"/p/{self.profile}" if self.multiplex else ""
         self.api_prefix = f"{self.base_url}{prefix}/v1"
-        # key 从环境变量读取，绝不写入 config/git（SPEC §4.5）
+        # key 来源：config.yaml tasks.hermes.api_key（用户经设置页写入；config 不入 git）
+        # 环境变量 VERANIMA_HERMES_KEY* 作为覆盖/兜底
+        self.api_key = str(cfg.get("api_key") or "")
         env_key = f"VERANIMA_HERMES_KEY_{self.profile.upper().replace('-', '_')}" if self.profile else "VERANIMA_HERMES_KEY"
-        self.api_key = os.environ.get(env_key) or os.environ.get("VERANIMA_HERMES_KEY") or ""
+        if not self.api_key:
+            self.api_key = os.environ.get(env_key) or os.environ.get("VERANIMA_HERMES_KEY") or ""
         self.workspace_root = str(Path(cfg.get("workspace_root") or Path.cwd()).resolve())
         self.timeout = int(cfg.get("timeout_seconds", 600))
         self.output_max_chars = int(cfg.get("output_max_chars", 12000))
