@@ -111,3 +111,40 @@ def test_curiosity_candidate_carries_owner_scope(tmp_path):
     memory.upsert_user_info_gap(role_id="audit", user_scope="qq:42", topic_key="推理", reason="why", source_message_id=mid)
     candidate = agent.schedule_curiosity_candidate("qq", user_scope="qq:42")
     assert candidate.context["owner_scope"] == "qq:42"
+
+
+def test_expired_next_plan_is_cleared(tmp_path):
+    runtime = ScheduleRuntime(ScheduleOutline.from_role_dir(make_role(tmp_path)))
+    first = dt.datetime(2026, 8, 28, tzinfo=dt.timezone.utc)
+    runtime._next_day_plan = runtime.outline.build_day_plan(first)
+    runtime.advance(first + dt.timedelta(days=2))
+    assert runtime._next_day_plan is None
+
+
+def test_activity_spans_reset_after_day_close_archive(tmp_path):
+    role = make_role(tmp_path)
+    memory = MemoryStore(str(tmp_path / "db.sqlite"), config={}, provider=Embed())
+    agent = Agent(CharacterCard(name="Audit"), memory, LLM(), AgentState(), config={
+        "root": str(tmp_path), "character_card": str(role / "character.json")
+    })
+    now = dt.datetime.now(dt.timezone.utc)
+    agent.schedule_runtime.start_activity("item", now - dt.timedelta(minutes=30))
+    agent.schedule_runtime.finish_activity(now)
+    agent.schedule_runtime.state = agent.schedule_runtime.state.__class__(
+        state="sleeping", sleep_cycle_id="audit:cycle", sleep_started_at=now,
+    )
+    agent._persist_state()
+    assert agent.schedule_runtime.activity_spans == {}
+
+
+def test_direct_handle_failure_restores_interrupted_activity(tmp_path):
+    role = make_role(tmp_path)
+    memory = MemoryStore(str(tmp_path / "db.sqlite"), config={}, provider=Embed())
+    agent = Agent(CharacterCard(name="Audit"), memory, LLM(fail=True), AgentState(), config={
+        "root": str(tmp_path), "character_card": str(role / "character.json")
+    })
+    now = dt.datetime.now(dt.timezone.utc)
+    agent.schedule_runtime.start_activity("item", now)
+    agent.handle("会失败的消息", channel="im")
+    span = agent.schedule_runtime.activity_spans["item"]
+    assert span["interrupted_at"] is None

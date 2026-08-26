@@ -226,7 +226,7 @@ unset PYTHONPATH
 当前实测：
 
 ```text
-930 passed, 1 warning
+934 passed, 1 warning
 ```
 
 Node 语法检查：

@@ -354,6 +354,11 @@ class ScheduleRuntime:
         return self.state
 
     def advance(self, when: dt.datetime) -> ScheduleRuntimeState:
+        local_date = when.astimezone(ZoneInfo(self.outline.timezone)).date()
+        if self._next_day_plan is not None and local_date > self._next_day_plan.local_date:
+            self._next_day_plan = None
+            self._next_day_adjustments = []
+            self._next_day_profile = ""
         if self.state.state == "sleeping" and self.state.sleep_started_at and self.outline.circadian:
             wake_at = self.state.sleep_started_at + dt.timedelta(minutes=self.outline.circadian.target_sleep_minutes)
             if when >= wake_at:
@@ -429,7 +434,10 @@ class ScheduleRuntime:
             if profile in self.outline.day_profiles:
                 output["day_profile"] = profile
         self._next_day_plan = self.generate_next_day(when + dt.timedelta(days=1), output)
-        self._next_day_adjustments = [dict(item) for item in (output or {}).get("items", []) if isinstance(item, dict)]
+        self._next_day_adjustments = [
+            {**item, "shift_minutes": int(item.get("shift_minutes", 0)) + self.schedule_offset_minutes}
+            for item in (output or {}).get("items", []) if isinstance(item, dict)
+        ]
         self._next_day_profile = str((output or {}).get("day_profile") or self.outline.default_day_profile)
         return self._next_day_plan
 

@@ -606,6 +606,8 @@ class Agent:
                         source={**summary, "sleep_cycle_id": cycle},
                     )
                     rel["virtual_schedule_archived_cycle"] = cycle
+                    self.schedule_runtime.activity_spans.clear()
+                    self.schedule_runtime.current_item_id = ""
             self.state.relationship = rel
             self.memory.save_state(self.state.to_snapshot())
         except Exception as e:
