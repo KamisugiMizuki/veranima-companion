@@ -604,6 +604,22 @@ class PetServer:
                                       "channels": proactive.get("channels", {})},
                         "relationship_tension": {k: relationship_tension.get(k) for k in ("enabled", "high_tension_proactive")},
                     }})
+                elif mtype == "creation_list":
+                    # C-5：共同项目面板数据（项目+未决关系候选摘要）
+                    try:
+                        from .core.shared_creation import SharedCreationStore
+                        store = SharedCreationStore(self._agent.memory)
+                        projects = [
+                            {"project_id": pr.project_id, "kind": pr.kind, "title": pr.title,
+                             "purpose": pr.purpose, "status": pr.status}
+                            for pr in store.list_projects()
+                        ]
+                        await self._send({"type": "creation_projects", "id": msg.get("id"),
+                                          "data": {"projects": projects}})
+                    except Exception as exc:
+                        logger.warning("creation_list failed: %s", exc)
+                        await self._send({"type": "creation_projects", "id": msg.get("id"),
+                                          "data": {"projects": []}, "error": str(exc)})
                 elif mtype == "search_history":
                     data = msg.get("data") or {}
                     query = str(data.get("query") or msg.get("query") or "")

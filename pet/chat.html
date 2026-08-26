@@ -20,6 +20,7 @@
       <div class="header-actions">
         <button id="historyToggle" class="icon-button" type="button" title="搜索聊天记录" aria-label="搜索聊天记录" aria-pressed="false">⌕</button>
         <button id="archiveToggle" class="icon-button" type="button" title="人物档案" aria-label="人物档案" aria-pressed="false">▤</button>
+        <button id="projectsToggle" class="icon-button" type="button" title="共同项目" aria-label="共同项目" aria-pressed="false">✦</button>
         <button id="muteToggle" class="icon-button" type="button" title="静音语音" aria-label="静音语音" aria-pressed="false">♫</button>
         <button id="clearChat" class="icon-button danger" type="button" title="清空聊天记录" aria-label="清空聊天记录">×</button>
       </div>
@@ -38,6 +39,11 @@
     <aside id="archivePanel" class="utility-panel archive-panel" hidden aria-label="人物档案">
       <div class="panel-heading"><strong>人物档案</strong><button id="archiveClose" class="plain-button" type="button" aria-label="关闭人物档案">收起</button></div>
       <div id="chapters" class="chapters"><span class="muted">正在读取章节…</span></div>
+    </aside>
+
+    <aside id="projectsPanel" class="utility-panel archive-panel" hidden aria-label="共同项目">
+      <div class="panel-heading"><strong>共同项目</strong><button id="projectsClose" class="plain-button" type="button" aria-label="关闭共同项目">收起</button></div>
+      <div id="projectsList" class="chapters"><span class="muted">正在读取项目…</span></div>
     </aside>
 
     <main id="messages" class="messages" role="log" aria-live="polite" aria-label="聊天消息">

@@ -311,6 +311,29 @@ class SharedCreationStore:
             title=data["title"], content=data["content"], sha256=data["sha256"], version=data["version"],
         )
 
+    def list_artifacts(self, scene_id: str) -> list[Artifact]:
+        rows = self.con.execute(
+            "SELECT artifact_id FROM shared_artifacts WHERE scene_id=? ORDER BY version", (scene_id,),
+        ).fetchall()
+        return [self.get_artifact(r["artifact_id"]) for r in rows]
+
+    def delete_project(self, project_id: str) -> bool:
+        """删除项目及全部派生对象（级联）；原始 messages 不动（SPEC §6 用户删除）。"""
+        if not self.get_project(project_id):
+            return False
+        # 派生记忆：shared_episodes / shared_meaning 里带 project_id 的条目删除，
+        # 版本链与原始消息保留
+        rows = self.memory.con.execute(
+            "SELECT id FROM memories WHERE json_valid(meta) AND json_extract(meta,'$.project_id')=?",
+            (project_id,),
+        ).fetchall()
+        for r in rows:
+            self.memory.erase(memory_id=r["id"])
+        self.con.execute("PRAGMA foreign_keys=ON")
+        self.con.execute("DELETE FROM shared_projects WHERE project_id=?", (project_id,))
+        self.con.commit()
+        return True
+
     def open_thread(self, project_id: str, *, summary: str, next_action: str) -> OpenThread:
         if not self.get_project(project_id):
             raise KeyError(project_id)

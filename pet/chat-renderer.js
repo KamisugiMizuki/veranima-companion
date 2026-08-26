@@ -389,6 +389,30 @@ loadChapters();
 $('historyToggle').addEventListener('click', () => togglePanel(historyPanel, $('historyToggle')));
 $('archiveToggle').addEventListener('click', () => { togglePanel(archivePanel, $('archiveToggle')); if (!archivePanel.hidden) loadChapters(); });
 $('archiveClose').addEventListener('click', () => { archivePanel.hidden = true; $('archiveToggle').setAttribute('aria-pressed', 'false'); });
+// C-5：共同项目面板（只读列表；创建/确认仍走对话确认流，不绕过闸门）
+const projectsPanel = $('projectsPanel');
+async function loadProjects() {
+  const listEl = $('projectsList');
+  try {
+    const data = await window.pet.listProjects();
+    const projects = (data && data.projects) || [];
+    if (!projects.length) {
+      listEl.innerHTML = '<span class="muted">还没有共同项目。想一起做点什么的话，直接跟我说。</span>';
+      return;
+    }
+    listEl.innerHTML = projects.map((prj) => `
+      <div class="chapter">
+        <strong>${escapeHtml(prj.title || prj.project_id)}</strong>
+        <div class="muted">${escapeHtml(prj.kind || '')} · ${escapeHtml(prj.status || '')}</div>
+        <div>${escapeHtml(prj.purpose || '')}</div>
+      </div>`).join('');
+  } catch (e) {
+    listEl.innerHTML = '<span class="muted">读取失败，稍后再试。</span>';
+  }
+}
+function escapeHtml(s) { return String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+$('projectsToggle').addEventListener('click', () => { togglePanel(projectsPanel, $('projectsToggle')); if (!projectsPanel.hidden) loadProjects(); });
+$('projectsClose').addEventListener('click', () => { projectsPanel.hidden = true; $('projectsToggle').setAttribute('aria-pressed', 'false'); });
 $('searchForm').addEventListener('submit', (e) => { e.preventDefault(); search(); });
 $('historyBack').addEventListener('click', backToConversation);
 $('clearChat').addEventListener('click', async () => {

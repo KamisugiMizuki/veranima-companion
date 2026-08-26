@@ -677,6 +677,10 @@ ipcMain.handle('settings-profile-config', async (e, action, profile) => {
 });
 // 设置页「测试连接」：main 进程直连 OpenAI 兼容 /v1/models（不经核心、不落配置）。
 // 返回模型 id 列表供下拉选择（用户要求：模型不允许自由填写，从 API 返回中选定）。
+ipcMain.handle('creation-list', async () => {
+  const resp = await wsRequest('creation_list');
+  return resp && resp.type === 'creation_projects' ? resp.data : { projects: [] };
+});
 ipcMain.handle('settings-test-llm', async (e, payload) => {
   const base = String((payload && payload.base_url) || '').replace(/\/+$/, '');
   if (!base) return { ok: false, error: '未填写 base_url' };
