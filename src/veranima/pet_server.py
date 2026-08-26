@@ -16,6 +16,7 @@ import json
 import logging
 import time
 import uuid
+from pathlib import Path
 
 import websockets
 
@@ -56,6 +57,57 @@ def _tasks_payload(cfg: dict) -> dict:
             "api_key": masked,
         },
     }
+
+
+def _sticker_settings_payload(cfg: dict) -> dict:
+    qq = cfg.get("qq", {}) or {}
+    stickers = qq.get("stickers", {}) or {}
+    enabled = bool(stickers.get("enabled", False))
+    return {
+        "enabled": enabled,
+        "dir": str(stickers.get("dir", "data/stickers")),
+        "learning_mode": str(stickers.get("learning_mode") or ("review" if enabled else "off")),
+        "send_rate": str(stickers.get("send_rate") or ("normal" if enabled else "off")),
+        "min_reply_gap": int(stickers.get("min_reply_gap", 3)),
+        "pending_ttl_days": int(stickers.get("pending_ttl_days", 7)),
+        "max_items": int(stickers.get("max_items", 100)),
+        "image_roots": [str(value) for value in (qq.get("image_roots") or [])],
+        "trusted_image_proxy": bool(qq.get("trusted_image_proxy", False)),
+        "image_proxy_hosts": ["multimedia.nt.qq.com", "multimedia.nt.qq.com.cn"],
+    }
+
+
+def _validate_sticker_settings(data: dict) -> list[str]:
+    data = data or {}
+    errors = []
+    if str(data.get("learning_mode") or "") not in {"off", "review", "auto"}:
+        errors.append("learning_mode 枚举值无效")
+    if str(data.get("send_rate") or "") not in {"off", "low", "normal", "frequent", "always"}:
+        errors.append("send_rate 枚举值无效")
+    try:
+        if int(data.get("min_reply_gap", 3)) not in {1, 3, 5, 10}:
+            errors.append("min_reply_gap 必须为 1/3/5/10")
+        if int(data.get("pending_ttl_days", 7)) not in {1, 7, 30}:
+            errors.append("pending_ttl_days 必须为 1/7/30")
+        if int(data.get("max_items", 100)) not in {0, 50, 100, 300}:
+            errors.append("max_items 必须为 0/50/100/300")
+    except (TypeError, ValueError):
+        errors.append("表情包数值设置无效")
+    return errors
+
+
+def _validate_image_roots(values) -> list[str]:
+    """Validate user-selected image roots before persisting them."""
+    if not isinstance(values, list):
+        return ["image_roots 必须为列表"]
+    errors = []
+    for value in values:
+        path = Path(str(value).strip())
+        if not str(value).strip() or not path.is_absolute() or not path.exists() or not path.is_dir():
+            errors.append(f"图片根目录无效: {value}")
+    return errors
+
+
 MAX_WS_MESSAGE_BYTES = 64 * 1024 * 1024
 
 
@@ -106,6 +158,25 @@ class PetServer:
     def connect_qq(self, adapter) -> None:
         """接入 QQ 适配器；adapter 必须复用本实例的 Agent/agent_lock。"""
         self._qq_adapter = adapter
+
+    @staticmethod
+    def _sticker_payload(entry) -> dict:
+        """设置页只拿元数据；图片仍由可信进程按条目 ID 读取。"""
+        return {
+            "id": entry.id,
+            "status": entry.status,
+            "owner_scope": entry.owner_scope,
+            "consent": entry.consent,
+            "meaning": entry.meaning,
+            "moods": list(entry.moods),
+            "scenario_tags": list(entry.scenario_tags),
+            "scenarios": list(entry.scenarios),
+            "confidence": entry.confidence,
+            "uses": entry.uses,
+            "last_used_at": entry.last_used_at,
+            "created_at": entry.created_at,
+            "approved_at": entry.approved_at,
+        }
 
     async def tick_presence(self) -> bool:
         """R1 无缝衔接（R1_SPEC 4.召回）：L0 在场检测 → absent→present 转变 → 衔接语。
@@ -609,7 +680,10 @@ class PetServer:
                                 "input_device_id": cfg.get("stt", {}).get("input_device_id", "")},
                         "qq": {"allowed": qq.get("allowed", qq.get("allowed_qq", [])),
                                "proactive": qq.get("proactive", False),
-                               "offline_think": {"enabled": (qq.get("offline_think") or {}).get("enabled", False)}},
+                               "offline_think": {"enabled": (qq.get("offline_think") or {}).get("enabled", False)},
+                               "stickers": _sticker_settings_payload(cfg),
+                               "image_roots": [str(value) for value in (qq.get("image_roots") or [])],
+                               "trusted_image_proxy": bool(qq.get("trusted_image_proxy", False))},
                         "character_card": cfg.get("character_card", ""),
                         "pet": {"avatar_height": (cfg.get("pet") or {}).get("avatar_height", 200)},
                         "memory": {k: memory.get(k) for k in (
@@ -692,6 +766,65 @@ class PetServer:
                     chapter_id = (msg.get("data") or {}).get("id")
                     chapter = self._agent.memory.get_self_model_chapter(chapter_id) if self._agent and chapter_id else None
                     await self._send({"type": "self_model_chapter", "id": msg.get("id"), "data": chapter})
+                elif mtype == "sticker_list":
+                    adapter = self._qq_adapter
+                    library = getattr(adapter, "stickers", None)
+                    if library is None:
+                        await self._send({"type": "sticker_list", "id": msg.get("id"),
+                                          "ok": False, "error": "表情包功能未启用"})
+                        continue
+                    owner = str((msg.get("data") or {}).get("owner_scope") or "")
+                    allowed = getattr(adapter, "allowed", set())
+                    if not owner and len(allowed) == 1:
+                        owner = f"qq:{next(iter(allowed))}"
+                    if len(allowed) != 1 and owner not in {f"qq:{value}" for value in allowed}:
+                        await self._send({"type": "sticker_list", "id": msg.get("id"),
+                                          "ok": False, "error": "多用户配置必须指定有效 QQ 作用域"})
+                        continue
+                    entries = library.list_entries(owner_scope=owner or None)
+                    entries = [entry for entry in entries if entry.owner_scope != "legacy_global"]
+                    await self._send({
+                        "type": "sticker_list", "id": msg.get("id"), "ok": True,
+                        "data": {"entries": [self._sticker_payload(entry) for entry in entries]},
+                    })
+                elif mtype == "sticker_action":
+                    adapter = self._qq_adapter
+                    library = getattr(adapter, "stickers", None)
+                    data = msg.get("data") or {}
+                    entry_id = str(data.get("entry_id") or "")
+                    action = str(data.get("action") or "")
+                    if library is None or not entry_id or action not in {
+                        "approve", "reject", "disable", "enable", "delete",
+                    }:
+                        await self._send({"type": "sticker_action_result", "id": msg.get("id"),
+                                          "ok": False, "error": "无效的表情操作"})
+                        continue
+                    entry = next((item for item in library.list_entries() if item.id == entry_id), None)
+                    allowed = getattr(adapter, "allowed", set())
+                    # 单用户设置页不接受 renderer 自报 scope；多用户时必须显式选择已配置的 QQ scope。
+                    requested_owner = str((data.get("owner_scope") or ""))
+                    owner = f"qq:{next(iter(allowed))}" if len(allowed) == 1 else requested_owner
+                    if len(allowed) != 1 and owner not in {f"qq:{value}" for value in allowed}:
+                        await self._send({"type": "sticker_action_result", "id": msg.get("id"),
+                                          "ok": False, "error": "多用户配置必须指定有效 QQ 作用域"})
+                        continue
+                    if entry is None or entry.owner_scope == "legacy_global" or (owner and entry.owner_scope != owner) or (
+                        not owner
+                    ):
+                        await self._send({"type": "sticker_action_result", "id": msg.get("id"),
+                                          "ok": False, "error": "表情不存在或作用域不匹配"})
+                        continue
+                    if action == "approve":
+                        ok = library.approve(entry_id) is not None
+                    elif action == "reject":
+                        ok = library.reject(entry_id)
+                    elif action == "disable":
+                        ok = library.set_enabled(entry_id, False)
+                    elif action == "enable":
+                        ok = library.set_enabled(entry_id, True)
+                    else:
+                        ok = library.delete(entry_id)
+                    await self._send({"type": "sticker_action_result", "id": msg.get("id"), "ok": ok})
                 elif mtype == "save_config":
                     # 设置窗口保存：白名单字段更新（全字段——之前只处理 llm/qq.allowed，
                     # character_card/tts/stt 等被静默丢弃，设置页形同虚设）
@@ -757,6 +890,33 @@ class PetServer:
                         cfg.setdefault("qq", {})["proactive"] = qq["proactive"]
                     if "offline_think" in qq:
                         cfg.setdefault("qq", {})["offline_think"] = qq["offline_think"]
+                    sticker_in = qq.get("stickers")
+                    if sticker_in is not None:
+                        current_stickers = cfg.get("qq", {}).get("stickers", {}) or {}
+                        sticker_candidate = {**_sticker_settings_payload(cfg), **current_stickers, **sticker_in}
+                        errors = _validate_sticker_settings(sticker_candidate)
+                        if errors:
+                            await self._send({"type": "config_saved", "id": msg.get("id"),
+                                              "ok": False, "error": "; ".join(errors)})
+                            continue
+                        cfg_qq = cfg.setdefault("qq", {})
+                        cfg_stickers = cfg_qq.setdefault("stickers", {})
+                        for key in ("enabled", "dir", "learning_mode", "send_rate",
+                                    "min_reply_gap", "pending_ttl_days", "max_items"):
+                            if key in sticker_candidate:
+                                value = sticker_candidate[key]
+                                if key == "dir" and not str(value).strip():
+                                    continue
+                                cfg_stickers[key] = value
+                    if "image_roots" in qq:
+                        roots = qq.get("image_roots") or []
+                        if _validate_image_roots(roots):
+                            await self._send({"type": "config_saved", "id": msg.get("id"),
+                                              "ok": False, "error": "; ".join(_validate_image_roots(roots))})
+                            continue
+                        cfg.setdefault("qq", {})["image_roots"] = [str(value).strip() for value in roots]
+                    if "trusted_image_proxy" in qq:
+                        cfg.setdefault("qq", {})["trusted_image_proxy"] = bool(qq["trusted_image_proxy"])
                     if "character_card" in d and d["character_card"]:
                         cfg["character_card"] = d["character_card"]
                     pet = d.get("pet", {})

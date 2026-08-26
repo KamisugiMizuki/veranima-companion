@@ -39,10 +39,20 @@ def build_adapter(cfg: dict, agent, *, agent_lock=None) -> QQAdapter | None:
     proactive_cfg = cfg.get("proactive", {}) or {}
     qh = qq_cfg.get("quiet_hours", [23, 8]) if proactive_cfg.get("quiet_hours_enabled", True) else None
     quiet_hours = (int(qh[0]), int(qh[1])) if qh else None
+    sticker_cfg = qq_cfg.get("stickers", {}) or {}
+    legacy_enabled = bool(sticker_cfg.get("enabled", False))
+    learning_mode = str(sticker_cfg.get("learning_mode") or ("review" if legacy_enabled else "off"))
+    send_rate = str(sticker_cfg.get("send_rate") or ("normal" if legacy_enabled else "off"))
     stickers = None
-    if qq_cfg.get("stickers", {}).get("enabled", False):
+    if learning_mode != "off" or send_rate != "off":
         from .core.stickers import StickerLibrary
-        stickers = StickerLibrary(root=qq_cfg["stickers"].get("dir", "data/stickers"))
+        legacy_scope = f"qq:{allowed[0]}" if len(allowed) == 1 else ""
+        stickers = StickerLibrary(
+            root=sticker_cfg.get("dir", "data/stickers"),
+            legacy_owner_scope=legacy_scope,
+            pending_ttl_days=int(sticker_cfg.get("pending_ttl_days", 7)),
+            max_items=int(sticker_cfg.get("max_items", 100)),
+        )
     return QQAdapter(
         agent,
         ws_host=qq_cfg.get("ws_host", "127.0.0.1"),
@@ -54,6 +64,9 @@ def build_adapter(cfg: dict, agent, *, agent_lock=None) -> QQAdapter | None:
         quiet_hours=quiet_hours,
         proactive_delay_minutes=int(qq_cfg.get("proactive_delay_minutes", 5)),
         sticker_library=stickers,
+        sticker_learning_mode=learning_mode,
+        sticker_send_rate=send_rate,
+        sticker_min_reply_gap=int(sticker_cfg.get("min_reply_gap", 3)),
         agent_lock=agent_lock,
         image_roots=qq_cfg.get("image_roots") or None,
         trusted_image_proxy=bool(qq_cfg.get("trusted_image_proxy", False)),

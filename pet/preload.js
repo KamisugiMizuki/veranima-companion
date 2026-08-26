@@ -43,6 +43,9 @@ contextBridge.exposeInMainWorld('pet', {
   profileConfig: (action, profile = {}) => ipcRenderer.invoke('settings-profile-config', action, profile),
   // 设置页扩展：LLM 连接测试（返回模型列表）+ 本地路径浏览框
   testLlm: (payload) => ipcRenderer.invoke('settings-test-llm', payload),
+  listStickers: (payload = {}) => ipcRenderer.invoke('settings-sticker-list', payload),
+  stickerAction: (action, entryId, ownerScope = '') => ipcRenderer.invoke(
+    'settings-sticker-action', { action, entry_id: entryId, owner_scope: ownerScope }),
   listProjects: () => ipcRenderer.invoke('creation-list'),
   pickPath: (payload) => ipcRenderer.invoke('settings-pick-path', payload),
   restartCore: () => ipcRenderer.send('core-restart'),

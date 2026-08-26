@@ -214,6 +214,46 @@ def test_build_adapter_wires_trusted_image_proxy(agent):
     assert built.image_proxy_hosts == ("multimedia.nt.qq.com",)
 
 
+def test_build_adapter_consumes_sticker_lifecycle_config(agent, tmp_path):
+    from veranima.qq import build_adapter
+
+    built = build_adapter({"qq": {
+        "enabled": True,
+        "allowed_qq": [10001],
+        "stickers": {
+            "enabled": True,
+            "dir": str(tmp_path / "stickers"),
+            "learning_mode": "review",
+            "send_rate": "frequent",
+            "min_reply_gap": 5,
+            "pending_ttl_days": 30,
+            "max_items": 25,
+        },
+    }}, agent)
+
+    assert built.sticker_learning_mode == "review"
+    assert built.sticker_send_rate == "frequent"
+    assert built.sticker_min_reply_gap == 5
+    assert built.stickers.pending_ttl_days == 30
+    assert built.stickers.max_items == 25
+
+
+def test_sticker_legacy_global_entries_are_not_sent(adapter, agent, tmp_path):
+    from veranima.core.stickers import StickerLibrary
+
+    library = StickerLibrary(root=tmp_path / "stickers")
+    library.add(_png_bytes(), meaning="开心", moods=["开心"])
+    adapter.stickers = library
+    adapter.sticker_send_rate = "always"
+    agent.handle = lambda text, images=None, channel="im": TurnResult(
+        reply="哈哈太好了", energy=80, mood="平静",
+    )
+
+    run(adapter._handle_private({"user_id": 10001, "message_type": "private", "message": "耶"}))
+
+    assert [m for _, m in adapter.bot.sent if str(m).startswith("[CQ:image")] == []
+
+
 # ---------- 文本提取 ----------
 
 def test_plain_text_from_message_object():
@@ -300,12 +340,16 @@ def test_image_collection_falls_back_to_raw_message(adapter, monkeypatch):
     monkeypatch.setattr(QQAdapter, "_payload_from_segment", resolved)
     async def collect():
         return await adapter._collect_images({
+            "message_id": 42,
             "message": "[图片]",
             "raw_message": "[CQ:image,file=sticker.png]",
         })
 
     images = run(collect())
-    assert images == [(payload.data_url, payload.raw)]
+    assert images[0][0:2] == (payload.data_url, payload.raw)
+    assert images[0][2]["channel"] == "qq"
+    assert images[0][2]["platform_message_id"] == "42"
+    assert images[0][2]["received_at"]
 
 
 def test_cq_image_only_message_reaches_agent_when_image_resolves(adapter, agent, monkeypatch):
@@ -526,6 +570,34 @@ def test_sticker_ingest_new_image(adapter, agent, tmp_path, monkeypatch):
     assert lib._entries[0].meaning == "红色"
 
 
+def test_sticker_review_ingest_is_pending_and_scoped_to_sender(adapter, agent, tmp_path):
+    from veranima.core.stickers import StickerLibrary
+
+    adapter.stickers = StickerLibrary(root=tmp_path / "stickers")
+    adapter.sticker_learning_mode = "review"
+    data_url, raw = _image_tuple()
+    agent.annotate_sticker = lambda _data_url: {
+        "is_sticker": True,
+        "kind": "sticker",
+        "confidence": 0.93,
+        "meaning": "惊讶",
+        "moods": ["惊讶"],
+        "scenario_tags": ["surprise"],
+        "scenarios": ["突然得知消息"],
+    }
+
+    adapter._ingest_stickers(
+        [(data_url, raw, {"channel": "qq", "platform_message_id": "m1"})],
+        owner_scope="qq:10001",
+    )
+
+    entries = adapter.stickers.list_entries()
+    assert len(entries) == 1
+    assert entries[0].status == "pending"
+    assert entries[0].owner_scope == "qq:10001"
+    assert entries[0].source["platform_message_id"] == "m1"
+
+
 def test_sticker_ingest_duplicate_skipped(adapter, agent, tmp_path, monkeypatch):
     """见过的图：不重复标注入库。"""
     from veranima.core.stickers import StickerLibrary
@@ -612,12 +684,20 @@ def test_sticker_sent_on_happy_reply(adapter, agent, tmp_path):
     from veranima.core.stickers import StickerLibrary
     lib = StickerLibrary(root=tmp_path / "stickers")
     adapter.stickers = lib
-    lib.add(_png_bytes(), meaning="开心", moods=["开心"])
+    adapter.sticker_send_rate = "always"
+    entry = lib.add(
+        _png_bytes(),
+        meaning="开心",
+        moods=["开心"],
+        owner_scope="qq:10001",
+    )
     agent.handle = lambda text, images=None, channel="im": TurnResult(reply="哈哈太好了！", energy=80, mood="平静")
     run(adapter._handle_private({"user_id": 10001, "message_type": "private", "message": "耶"}))
     cq = [m for m in adapter.bot.sent if isinstance(m[1], str) and m[1].startswith("[CQ:image")]
     assert len(cq) == 1
     assert ".png" in cq[0][1]
+    assert entry.uses == 1
+    assert entry.last_used_at
 
 
 def test_sticker_not_sent_without_mood(adapter, agent, tmp_path):
@@ -629,6 +709,76 @@ def test_sticker_not_sent_without_mood(adapter, agent, tmp_path):
     agent.handle = lambda text, images=None, channel="im": TurnResult(reply="收到，好的", energy=80, mood="平静")
     run(adapter._handle_private({"user_id": 10001, "message_type": "private", "message": "嗯"}))
     assert adapter.bot.sent == [("send", "收到，好的")]
+
+
+def test_failed_sticker_send_keeps_usage_unchanged(adapter, agent, tmp_path):
+    from veranima.core.stickers import StickerLibrary
+
+    class FailingStickerBot(FakeBot):
+        def __init__(self):
+            super().__init__()
+            self.sticker_attempts = 0
+
+        async def send(self, event, message, **kw):
+            if str(message).startswith("[CQ:image"):
+                self.sticker_attempts += 1
+                raise RuntimeError("onebot image failed")
+            await super().send(event, message, **kw)
+
+    library = StickerLibrary(root=tmp_path / "stickers")
+    entry = library.add(
+        _png_bytes(),
+        meaning="惊讶",
+        moods=["惊讶"],
+        owner_scope="qq:10001",
+    )
+    adapter.stickers = library
+    adapter.sticker_send_rate = "always"
+    adapter.sticker_min_reply_gap = 1
+    adapter.bot = FailingStickerBot()
+    agent.handle = lambda text, images=None, channel="im": TurnResult(
+        reply="居然会这样？", energy=80, mood="平静",
+    )
+
+    run(adapter._handle_private({
+        "user_id": 10001,
+        "message_type": "private",
+        "message": "我也没想到",
+    }))
+
+    assert adapter.bot.sent == [("send", "居然会这样？")]
+    assert adapter.bot.sticker_attempts == 1
+    assert entry.uses == 0
+    assert entry.last_used_at is None
+
+
+def test_low_sticker_rate_uses_fifteen_percent_boundary(adapter, agent, tmp_path):
+    from veranima.core.stickers import StickerLibrary
+
+    class FixedRandom:
+        def __init__(self, value):
+            self.value = value
+
+        def random(self):
+            return self.value
+
+    library = StickerLibrary(root=tmp_path / "stickers")
+    library.add(_png_bytes(), moods=["开心"], owner_scope="qq:10001")
+    adapter.stickers = library
+    adapter.sticker_send_rate = "low"
+    adapter.sticker_min_reply_gap = 1
+    agent.handle = lambda text, images=None, channel="im": TurnResult(
+        reply="哈哈，太好了", energy=80, mood="平静",
+    )
+
+    adapter._sticker_rand = FixedRandom(0.149)
+    run(adapter._handle_private({"user_id": 10001, "message_type": "private", "message": "一"}))
+    adapter._last_sticker_reply_count = None
+    adapter._sticker_rand = FixedRandom(0.15)
+    run(adapter._handle_private({"user_id": 10001, "message_type": "private", "message": "二"}))
+
+    stickers = [message for _, message in adapter.bot.sent if str(message).startswith("[CQ:image")]
+    assert len(stickers) == 1
 
 
 # ---------- 消息管线 ----------

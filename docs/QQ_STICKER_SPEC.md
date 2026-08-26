@@ -2,7 +2,7 @@
 
 > 状态：实现版 v1.0（2026-08-21）。
 > 复用：`core/stickers.py`、`Agent.annotate_sticker()`、QQAdapter，不新建数据库。
-> 后续设计：授权审核、用户隔离、删除入口、完整匹配与迁移见 `IMAGE_STICKER_LIFECYCLE_SPEC.md`；该设计尚未实现。
+> 后续设计与实现：授权审核、用户隔离、删除入口、完整匹配与迁移见 `IMAGE_STICKER_LIFECYCLE_SPEC.md`；核心链路与设置/审核入口已落地，真实 NapCat 验收仍待执行。
 
 ## 分类
 

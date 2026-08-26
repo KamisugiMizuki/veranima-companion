@@ -131,21 +131,21 @@ def test_record_use_persisted(tmp_path):
 # ---------- 标注 JSON 解析 ----------
 
 def test_parse_sticker_json_plain():
-    d = _parse_sticker_json('{"is_sticker": true, "meaning": "没问题", "moods": ["开心"], "scenarios": ["用户答应请求"]}')
+    d = _parse_sticker_json('{"is_sticker": true, "kind": "sticker", "confidence": 0.9, "meaning": "没问题", "moods": ["开心"], "scenario_tags": ["agreement"], "scenarios": ["用户答应请求"]}')
     assert d["meaning"] == "没问题"
     assert d["moods"] == ["开心"]
 
 
 def test_parse_sticker_json_fenced():
     """thinking 模型常输出 ```json 围栏，需剥离。"""
-    d = _parse_sticker_json('```json\n{"is_sticker": true, "meaning": "哈哈", "moods": ["调侃"], "scenarios": ["开玩笑"]}\n```')
+    d = _parse_sticker_json('```json\n{"is_sticker": true, "kind": "sticker", "confidence": 0.9, "meaning": "哈哈", "moods": ["调侃"], "scenario_tags": ["teasing"], "scenarios": ["开玩笑"]}\n```')
     assert d["meaning"] == "哈哈"
     assert d["moods"] == ["调侃"]
 
 
 def test_parse_sticker_json_noise():
     """围栏外有杂文本也能提取。"""
-    d = _parse_sticker_json('好的，这是标注：{"is_sticker": true, "meaning": "加油", "moods": ["鼓励"]} 完毕')
+    d = _parse_sticker_json('好的，这是标注：{"is_sticker": true, "kind": "sticker", "confidence": 0.9, "meaning": "加油", "moods": ["鼓励"], "scenario_tags": ["comfort"], "scenarios": []} 完毕')
     assert d["meaning"] == "加油"
 
 

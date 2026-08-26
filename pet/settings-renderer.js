@@ -10,6 +10,37 @@ function showMsg(text, ok) { const el = $('msg'); el.textContent = text; el.clas
 function set(id, value) { const el = $(id); if (el) el.value = value ?? ''; }
 function bool(id, value) { set(id, String(Boolean(value))); }
 function num(id, value, fallback = '') { set(id, value === undefined || value === null ? fallback : value); }
+function stickerSettings() {
+  return {
+    enabled: $('sticker-learning-mode').value !== 'off' || $('sticker-send-rate').value !== 'off',
+    dir: $('sticker-dir').value.trim(), learning_mode: $('sticker-learning-mode').value,
+    send_rate: $('sticker-send-rate').value, min_reply_gap: Number($('sticker-min-gap').value),
+    pending_ttl_days: Number($('sticker-ttl').value), max_items: Number($('sticker-max-items').value),
+  };
+}
+async function refreshStickers() {
+  const list = $('sticker-list'); if (!list) return;
+  const payload = await window.pet.listStickers(); list.textContent = '';
+  if (!payload?.ok) { list.textContent = payload?.error || '核心未连接'; return; }
+  const entries = payload.data?.entries || [];
+  if (!entries.length) { list.textContent = '暂无待审核或已授权表情'; return; }
+  entries.forEach((entry) => {
+    const row = document.createElement('div'); row.className = 'sticker-row';
+    const info = document.createElement('span');
+    info.textContent = `${entry.status === 'pending' ? '待审核' : entry.status === 'disabled' ? '已停用' : '已启用'} · ${entry.meaning || '未标注'} · ${(entry.moods || []).join('、')}`;
+    row.appendChild(info);
+    const actions = document.createElement('span'); actions.className = 'inline-actions';
+    const addAction = (action, label) => { const button = document.createElement('button'); button.type = 'button'; button.className = 'subtle-button'; button.textContent = label; button.onclick = async () => {
+      button.disabled = true; const result = await window.pet.stickerAction(action, entry.id, entry.owner_scope);
+      if (!result?.ok) showMsg(result?.error || '操作失败', false); await refreshStickers();
+    }; actions.appendChild(button); };
+    if (entry.status === 'pending') { addAction('approve', '批准'); addAction('reject', '拒绝'); }
+    if (entry.status === 'active') { addAction('disable', '停用'); addAction('delete', '删除'); }
+    if (entry.status === 'disabled') { addAction('enable', '启用'); addAction('delete', '删除'); }
+    row.appendChild(actions); list.appendChild(row);
+  });
+}
+
 async function loadAudioDevices(selected = '') {
   const select = $('stt-device');
   if (!select || !navigator.mediaDevices?.enumerateDevices) return;
@@ -100,6 +131,7 @@ window.pet.getConfig().then((cfg) => {
   bool('att-enabled', att.enabled ?? true); bool('att-paused', att.paused); num('att-scan', att.global_scan_sec, 5); num('att-budget', att.observe_daily_budget, 120);
   const channels = pro.channels || {}; const qqPro = channels.qq || pro; const petPro = channels.pet || pro;
   const tension = cfg.relationship_tension || {};
+  const stickers = qq.stickers || {};
   bool('pro-enabled', pro.enabled ?? true); bool('pro-quiet', pro.quiet_hours_enabled ?? true); num('pro-qq-max', qqPro.max_per_day, 2); num('pro-qq-gap', qqPro.min_gap_minutes, 120); num('pro-pet-max', petPro.max_per_day, 2); num('pro-pet-gap', petPro.min_gap_minutes, 30);
   bool('search-enabled', search.enabled ?? false); set('search-base', search.base_url || 'http://127.0.0.1:8080'); num('search-timeout', search.timeout_seconds, 8); num('search-cache', search.cache_ttl_seconds, 900); bool('search-implicit', search.allow_implicit_freshness_search ?? false); bool('search-semantic', search.semantic_locator_enabled ?? false); bool('search-pages', search.fetch_pages ?? false);
   bool('tension-enabled', tension.enabled ?? true); bool('tension-high-proactive', tension.high_tension_proactive ?? false);
@@ -112,6 +144,12 @@ window.pet.getConfig().then((cfg) => {
   $('tasks-key').value = '';
   $('tasks-key-status').textContent = tk.has_api_key ? `已配置：${tk.api_key}` : '未配置；填写后保存会写入该配置';
   set('qq-allowed', (qq.allowed || []).join(',')); bool('qq-proactive', qq.proactive); bool('qq-offline', qq.offline_think && qq.offline_think.enabled);
+  set('sticker-learning-mode', stickers.learning_mode || (stickers.enabled ? 'review' : 'off'));
+  set('sticker-send-rate', stickers.send_rate || (stickers.enabled ? 'normal' : 'off'));
+  set('sticker-min-gap', stickers.min_reply_gap ?? 3); set('sticker-ttl', stickers.pending_ttl_days ?? 7);
+  set('sticker-max-items', stickers.max_items ?? 100); set('sticker-dir', stickers.dir || 'data/stickers');
+  set('qq-image-roots', (qq.image_roots || []).join('; ')); bool('qq-trusted-image-proxy', qq.trusted_image_proxy);
+  refreshStickers();
 }).catch(() => showMsg('读取配置失败', false));
 
 $('llm-profile-select').addEventListener('change', () => {
@@ -179,6 +217,15 @@ $('llm-delete').addEventListener('click', async () => {
   try { await profileAction('delete', { profile_id: $('llm-profile-select').value }, '已删除配置，核心正在重启'); }
   catch (e) { showMsg(e.message || '删除失败；当前配置不能删除', false); }
 });
+$('sticker-refresh').addEventListener('click', refreshStickers);
+$('sticker-dir-browse').addEventListener('click', async () => {
+  const picked = await window.pet.pickPath({ type: 'dir', title: '选择表情包目录' });
+  if (picked) $('sticker-dir').value = picked;
+});
+$('qq-image-root-browse').addEventListener('click', async () => {
+  const picked = await window.pet.pickPath({ type: 'dir', title: '选择 NapCat 图片缓存根目录' });
+  if (picked) $('qq-image-roots').value = picked;
+});
 
 $('save').addEventListener('click', async () => {
   const allowed = $('qq-allowed').value.split(',').map((s) => s.trim()).filter(Boolean);
@@ -190,7 +237,9 @@ $('save').addEventListener('click', async () => {
     search: { enabled: $('search-enabled').value === 'true', base_url: $('search-base').value.trim(), timeout_seconds: Number($('search-timeout').value) || 8, cache_ttl_seconds: Number.isFinite(Number($('search-cache').value)) ? Number($('search-cache').value) : 900, allow_implicit_freshness_search: $('search-implicit').value === 'true', semantic_locator_enabled: $('search-semantic').value === 'true', fetch_pages: $('search-pages').value === 'true' },
     proactive: { enabled: $('pro-enabled').value === 'true', quiet_hours_enabled: $('pro-quiet').value === 'true', channels: { qq: { max_per_day: Number($('pro-qq-max').value) || 2, min_gap_minutes: Number($('pro-qq-gap').value) || 120 }, pet: { max_per_day: Number($('pro-pet-max').value) || 2, min_gap_minutes: Number($('pro-pet-gap').value) || 30 } } },
     relationship_tension: { enabled: $('tension-enabled').value === 'true', high_tension_proactive: $('tension-high-proactive').value === 'true' },
-    qq: { allowed, proactive: $('qq-proactive').value === 'true', offline_think: { enabled: $('qq-offline').value === 'true' } },
+    qq: { allowed, proactive: $('qq-proactive').value === 'true', offline_think: { enabled: $('qq-offline').value === 'true' },
+      stickers: stickerSettings(), image_roots: $('qq-image-roots').value.split(';').map((s) => s.trim()).filter(Boolean),
+      trusted_image_proxy: $('qq-trusted-image-proxy').value === 'true' },
     tasks: {
       enabled: $('tasks-enabled').value === 'true',
       backend: $('tasks-backend').value,

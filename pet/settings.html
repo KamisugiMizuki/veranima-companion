@@ -16,6 +16,7 @@
         <button class="nav-item" data-page="voice">语音</button>
         <button class="nav-item" data-page="memory">记忆与人格</button>
         <button class="nav-item" data-page="presence">在场与主动</button>
+        <button class="nav-item" data-page="stickers">图片与表情</button>
         <button class="nav-item" data-page="advanced">高级</button>
       </nav>
       <div class="nav-foot">改动保存到本地配置<br>重启核心后生效</div>
@@ -73,6 +74,26 @@
         <div class="field"><label for="tasks-workspace">工作区根目录（写操作边界）</label><div class="inline-actions"><input id="tasks-workspace" readonly placeholder="项目根目录"><button id="tasks-workspace-browse" type="button" class="subtle-button">浏览…</button></div><div class="hint">任务只能写该目录内的文件；目录外只读。</div></div>
         <div class="split-fields"><div class="field"><label for="tasks-timeout">任务超时（秒）</label><input id="tasks-timeout" type="number" min="60" max="3600"></div><div class="field"><label for="tasks-approval-timeout">审批等待超时（秒）</label><input id="tasks-approval-timeout" type="number" min="30" max="3600"></div></div>
         <div class="field"><label for="tasks-worktree">代码仓库修改</label><select id="tasks-worktree"><option value="false">拒绝（隔离未实测，推荐）</option><option value="true">允许（需先通过 worktree 探针）</option></select><div class="hint">默认拒绝所有改代码的任务；探针实测通过后才建议开启。</div></div><h2>QQ</h2><div class="field"><label for="qq-allowed">白名单（逗号分隔）</label><input id="qq-allowed" placeholder="QQ 号"></div><div class="split-fields"><div class="field"><label for="qq-proactive">QQ 主动消息</label><select id="qq-proactive"><option value="true">开启</option><option value="false">关闭</option></select></div><div class="field"><label for="qq-offline">离线思考</label><select id="qq-offline"><option value="true">开启</option><option value="false">关闭</option></select></div></div>
+      </div>
+
+      <div class="page" data-page="stickers">
+        <div class="eyebrow">MEDIA / STICKERS</div><h1>图片与表情</h1>
+        <p class="page-intro">图片理解只作用于当前对话；只有批准后的静态图片才会作为 QQ 表情包发送。聊天历史图片与表情库互不影响。</p>
+        <h2>收藏与发送</h2>
+        <div class="split-fields">
+          <div class="field"><label for="sticker-learning-mode">图片收藏模式</label><select id="sticker-learning-mode"><option value="off">关闭后台分类</option><option value="review">分类后待审核（推荐）</option><option value="auto">自动收藏（有误收藏风险）</option></select></div>
+          <div class="field"><label for="sticker-send-rate">QQ 表情发送频率</label><select id="sticker-send-rate"><option value="off">关闭</option><option value="low">低频（15%）</option><option value="normal">标准（30%）</option><option value="frequent">较频繁（60%）</option><option value="always">总是匹配时发送</option></select></div>
+        </div>
+        <div class="split-fields">
+          <div class="field"><label for="sticker-min-gap">最少间隔回复数</label><select id="sticker-min-gap"><option value="1">1 条</option><option value="3">3 条（推荐）</option><option value="5">5 条</option><option value="10">10 条</option></select></div>
+          <div class="field"><label for="sticker-ttl">待审核保留时间</label><select id="sticker-ttl"><option value="1">1 天</option><option value="7">7 天（推荐）</option><option value="30">30 天</option></select></div>
+        </div>
+        <div class="field"><label for="sticker-max-items">表情库上限</label><select id="sticker-max-items"><option value="50">50 张</option><option value="100">100 张（推荐）</option><option value="300">300 张</option><option value="0">不限制</option></select></div>
+        <div class="field"><label for="sticker-dir">表情库目录</label><div class="inline-actions"><input id="sticker-dir" readonly placeholder="data/stickers"><button id="sticker-dir-browse" type="button" class="subtle-button">浏览…</button></div><div class="hint">只保存表情包文件和索引；不要选择桌宠 chat-images 目录。</div></div>
+        <div class="field"><label for="qq-image-roots">NapCat 图片缓存根目录</label><div class="inline-actions"><input id="qq-image-roots" readonly placeholder="可选；当前默认使用项目目录"><button id="qq-image-root-browse" type="button" class="subtle-button">选择目录…</button></div><div class="hint">当前版本支持一个目录入口；留空仍使用既有项目安全根目录。</div></div>
+        <div class="field"><label for="qq-trusted-image-proxy">QQ CDN fake-IP 兼容</label><select id="qq-trusted-image-proxy"><option value="false">关闭（推荐）</option><option value="true">开启（仅内建 QQ CDN）</option></select><div class="hint">不会开放任意主机；allowlist 固定为内建 QQ CDN。</div></div>
+        <div class="inline-actions"><button id="sticker-refresh" type="button" class="subtle-button">刷新审核列表</button><span id="sticker-status" class="hint"></span></div>
+        <div id="sticker-list" class="sticker-list" aria-live="polite"></div>
       </div>
 
       <div class="page" data-page="advanced">

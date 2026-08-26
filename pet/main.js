@@ -688,6 +688,23 @@ ipcMain.handle('settings-test-llm', async (e, payload) => {
   if (!resp || resp.type !== 'test_llm_result') return { ok: false, error: '核心未连接' };
   return resp;
 });
+ipcMain.handle('settings-sticker-list', async (e, payload) => {
+  const resp = await wsRequest('sticker_list', payload || {});
+  return resp && resp.type === 'sticker_list' ? resp : { ok: false, error: '核心未连接' };
+});
+ipcMain.handle('settings-sticker-action', async (e, payload) => {
+  const action = String(payload && payload.action || '');
+  if (action === 'delete' || action === 'reject') {
+    const result = await dialog.showMessageBox(settingsWin || win, {
+      type: 'warning', title: action === 'reject' ? '拒绝表情' : '删除表情',
+      message: action === 'reject' ? '拒绝后会删除待审核图片。继续吗？' : '删除后会同时移除表情文件和索引记录。继续吗？',
+      buttons: ['取消', '继续'], defaultId: 0, cancelId: 0,
+    });
+    if (result.response !== 1) return { ok: false, cancelled: true };
+  }
+  const resp = await wsRequest('sticker_action', payload || {});
+  return resp && resp.type === 'sticker_action_result' ? resp : { ok: false, error: '核心未连接' };
+});
 ipcMain.handle('settings-pick-path', async (e, payload) => {
   const type = (payload && payload.type) === 'dir' ? 'openDirectory' : 'openFile';
   const opts = {

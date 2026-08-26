@@ -1,7 +1,7 @@
 # IMAGE_STICKER_LIFECYCLE_SPEC：用户图片理解、收藏治理与表情回发
 
-> 状态：设计版 v1.0（2026-08-26），尚未按本文改造生产代码。
-> 审计基线：`41522d8`；图片/表情专项测试 88 passed。
+> 状态：实现版 v1.0（2026-08-27）；IMG-STK-1～3 已落地并通过项目测试，IMG-STK-4 的真实 NapCat/远程多模态验收仍未完成。
+> 审计基线：`41522d8`；当前专项测试与 UI/WS 契约测试以实际 pytest 输出为准。
 > 关系：补充 `IMAGE_MESSAGE_SPEC.md` 的持久化边界，并在实现后取代 `QQ_STICKER_SPEC.md` 中较早的自动收藏、发送匹配与生命周期约定。
 > 范围：QQ OneBot 私聊、Electron 桌宠聊天图片、`ImagePayload`、`StickerLibrary`、设置页与用户删除权。
 

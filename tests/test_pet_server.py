@@ -1,9 +1,11 @@
 """PetServer 协议测试（R3_SPEC 3 通信协议）：连接 / speak / bubble / poke / ping。"""
 import asyncio
+import io
 import json
 
 import pytest
 import websockets
+from PIL import Image
 
 from veranima.pet_server import PetServer
 
@@ -23,6 +25,232 @@ def _free_port():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+def _sticker_png() -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (24, 24), "red").save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def test_sticker_review_ws_lists_approves_and_deletes_live_qq_library(tmp_path):
+    from veranima.core.image_payload import make_image_payload
+    from veranima.core.stickers import StickerLibrary
+
+    port = _free_port()
+    library = StickerLibrary(tmp_path / "stickers")
+    pending = library.add_candidate(
+        make_image_payload(_sticker_png()),
+        owner_scope="qq:10001",
+        meaning="待审核",
+        moods=["开心"],
+    )
+
+    class QQStub:
+        allowed = {"10001"}
+        stickers = library
+
+        async def run_task(self):
+            await asyncio.Future()
+
+    async def scenario():
+        server = PetServer(host="127.0.0.1", port=port)
+        server.connect_qq(QQStub())
+        task = asyncio.create_task(server.run())
+        await asyncio.sleep(0.2)
+        try:
+            async with websockets.connect(f"ws://127.0.0.1:{port}") as ws:
+                await ws.send(json.dumps({"type": "sticker_list", "id": 1}))
+                listed = json.loads(await asyncio.wait_for(ws.recv(), timeout=3))
+                await ws.send(json.dumps({
+                    "type": "sticker_action",
+                    "id": 2,
+                    "data": {"action": "approve", "entry_id": pending.id},
+                }))
+                approved = json.loads(await asyncio.wait_for(ws.recv(), timeout=3))
+                await ws.send(json.dumps({
+                    "type": "sticker_action",
+                    "id": 3,
+                    "data": {"action": "delete", "entry_id": pending.id},
+                }))
+                deleted = json.loads(await asyncio.wait_for(ws.recv(), timeout=3))
+                return listed, approved, deleted
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    listed, approved, deleted = asyncio.run(scenario())
+    assert listed["type"] == "sticker_list"
+    assert listed["data"]["entries"][0]["status"] == "pending"
+    assert approved["type"] == "sticker_action_result"
+    assert approved["id"] == 2 and approved["ok"] is True
+    assert deleted["type"] == "sticker_action_result"
+    assert deleted["id"] == 3 and deleted["ok"] is True
+    assert library.list_entries() == []
+
+
+def test_sticker_action_rejects_other_owner(tmp_path):
+    from veranima.core.image_payload import make_image_payload
+    from veranima.core.stickers import StickerLibrary
+
+    port = _free_port()
+    library = StickerLibrary(tmp_path / "stickers")
+    entry = library.add_candidate(
+        make_image_payload(_sticker_png()),
+        owner_scope="qq:10001",
+        meaning="私有",
+    )
+
+    class QQStub:
+        allowed = {"10001", "20002"}
+        stickers = library
+
+        async def run_task(self):
+            await asyncio.Future()
+
+    async def scenario():
+        server = PetServer(host="127.0.0.1", port=port)
+        server.connect_qq(QQStub())
+        task = asyncio.create_task(server.run())
+        await asyncio.sleep(0.2)
+        try:
+            async with websockets.connect(f"ws://127.0.0.1:{port}") as ws:
+                await ws.send(json.dumps({
+                    "type": "sticker_action", "id": 4,
+                    "data": {"action": "delete", "entry_id": entry.id, "owner_scope": "qq:20002"},
+                }))
+                return json.loads(await asyncio.wait_for(ws.recv(), timeout=3))
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    result = asyncio.run(scenario())
+    assert result["ok"] is False
+    assert library.list_entries()[0].id == entry.id
+
+
+def test_sticker_action_rejects_legacy_global_entry(tmp_path):
+    from veranima.core.image_payload import make_image_payload
+    from veranima.core.stickers import StickerLibrary
+
+    port = _free_port()
+    library = StickerLibrary(tmp_path / "stickers")
+    entry = library.add_candidate(make_image_payload(_sticker_png()), owner_scope="legacy_global")
+
+    class QQStub:
+        allowed = {"10001"}
+        stickers = library
+
+        async def run_task(self):
+            await asyncio.Future()
+
+    async def scenario():
+        server = PetServer(host="127.0.0.1", port=port)
+        server.connect_qq(QQStub())
+        task = asyncio.create_task(server.run())
+        await asyncio.sleep(0.2)
+        try:
+            async with websockets.connect(f"ws://127.0.0.1:{port}") as ws:
+                await ws.send(json.dumps({"type": "sticker_action", "id": 5, "data": {
+                    "action": "approve", "entry_id": entry.id,
+                }}))
+                return json.loads(await asyncio.wait_for(ws.recv(), timeout=3))
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    result = asyncio.run(scenario())
+    assert result["ok"] is False
+    assert library.list_entries()[0].status == "pending"
+
+
+def test_sticker_settings_roundtrip_and_runtime_payload(tmp_path):
+    from veranima.config import save_config
+
+    port = _free_port()
+    cfg_path = tmp_path / "config" / "config.yaml"
+    sticker_dir = tmp_path / "stickers"
+    image_root = tmp_path / "napcat"
+    sticker_dir.mkdir()
+    image_root.mkdir()
+    save_config({"qq": {"enabled": True, "allowed_qq": [10001], "stickers": {
+        "enabled": True, "dir": str(sticker_dir), "learning_mode": "review",
+        "send_rate": "normal", "min_reply_gap": 3, "pending_ttl_days": 7,
+        "max_items": 100,
+    }}}, cfg_path)
+
+    async def scenario():
+        server = PetServer(host="127.0.0.1", port=port)
+        task = asyncio.create_task(server.run())
+        await asyncio.sleep(0.2)
+        import veranima.config as cfgmod
+        cfgmod.ROOT = tmp_path
+        try:
+            async with websockets.connect(f"ws://127.0.0.1:{port}") as ws:
+                await ws.send(json.dumps({"type": "save_config", "id": 10, "data": {
+                    "qq": {
+                        "allowed": [10001],
+                        "stickers": {
+                            "enabled": True, "dir": str(sticker_dir),
+                            "learning_mode": "auto", "send_rate": "frequent",
+                            "min_reply_gap": 5, "pending_ttl_days": 30, "max_items": 300,
+                        },
+                        "image_roots": [str(image_root)],
+                        "trusted_image_proxy": True,
+                    },
+                }}))
+                saved = json.loads(await asyncio.wait_for(ws.recv(), timeout=3))
+                await ws.send(json.dumps({"type": "get_config", "id": 11}))
+                loaded = json.loads(await asyncio.wait_for(ws.recv(), timeout=3))
+                return saved, loaded
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    saved, loaded = asyncio.run(scenario())
+    assert saved["ok"] is True
+    stickers = loaded["data"]["qq"]["stickers"]
+    assert stickers["learning_mode"] == "auto"
+    assert stickers["send_rate"] == "frequent"
+    assert stickers["min_reply_gap"] == 5
+    assert stickers["pending_ttl_days"] == 30
+    assert stickers["max_items"] == 300
+    assert loaded["data"]["qq"]["image_roots"] == [str(image_root)]
+    assert loaded["data"]["qq"]["trusted_image_proxy"] is True
+
+
+def test_sticker_settings_reject_unknown_enum(tmp_path):
+    from veranima.config import save_config
+
+    port = _free_port()
+    cfg_path = tmp_path / "config" / "config.yaml"
+    cfg_path.parent.mkdir()
+    save_config({"qq": {"allowed_qq": [10001]}}, cfg_path)
+
+    async def scenario():
+        server = PetServer(host="127.0.0.1", port=port)
+        task = asyncio.create_task(server.run())
+        await asyncio.sleep(0.2)
+        import veranima.config as cfgmod
+        cfgmod.ROOT = tmp_path
+        try:
+            async with websockets.connect(f"ws://127.0.0.1:{port}") as ws:
+                await ws.send(json.dumps({"type": "save_config", "id": 12, "data": {
+                    "qq": {"stickers": {"learning_mode": "invented"}},
+                }}))
+                return json.loads(await asyncio.wait_for(ws.recv(), timeout=3))
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    result = asyncio.run(scenario())
+    assert result["ok"] is False
+    assert "learning_mode" in result["error"]
 
 
 def test_protocol_roundtrip():

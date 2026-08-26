@@ -1874,10 +1874,14 @@ class Agent:
         try:
             task = (
                 "这是一张表情包图片。用 JSON 输出它的标注，格式：\n"
-                '{"is_sticker": true, "meaning": "一句话含义", "moods": ["情绪标签1", "情绪标签2"], '
-                '"scenarios": ["适用情景1", "适用情景2"]}\n'
+                '{"is_sticker": true, "kind": "sticker", "confidence": 0.9, '
+                '"meaning": "一句话含义", "moods": ["情绪标签1", "情绪标签2"], '
+                '"scenario_tags": ["固定情境标签"], "scenarios": ["适用情景1", "适用情景2"]}\n'
                 "情绪标签从 [开心, 难过, 生气, 无语, 惊讶, 鼓励, 调侃, 无奈, 敷衍, 卖萌] 中选；"
-                "适用情景用简短短语描述（如'用户答应请求'）。普通照片/截图的 is_sticker 必须为 false。只输出 JSON，不要其他文字。"
+                "固定情境标签从 [agreement, praise, affection, teasing, comfort, failure, surprise, "
+                "refusal, request_help, fatigue, embarrassment, celebration] 中选；"
+                "kind 只能是 sticker/photo/screenshot/unknown。普通照片/截图的 is_sticker 必须为 false。"
+                "只输出 JSON，不要其他文字。"
             )
             messages = [
                 {"role": "system", "content": "你是表情包标注助手，输出严格 JSON。"},
@@ -1913,9 +1917,51 @@ def _parse_sticker_json(text: str) -> dict | None:
         return None
     if not isinstance(d, dict):
         return None
+    is_sticker = d.get("is_sticker") is True
+    if not is_sticker:
+        return {
+            "is_sticker": False,
+            "kind": str(d.get("kind") or "unknown"),
+            "confidence": 0.0,
+            "meaning": "",
+            "moods": [],
+            "scenario_tags": [],
+            "scenarios": [],
+        }
+    moods_allowed = {
+        "开心", "难过", "生气", "无语", "惊讶", "鼓励", "调侃", "无奈", "敷衍", "卖萌",
+    }
+    tags_allowed = {
+        "agreement", "praise", "affection", "teasing", "comfort", "failure",
+        "surprise", "refusal", "request_help", "fatigue", "embarrassment", "celebration",
+    }
+    if d.get("kind") != "sticker":
+        return None
+    try:
+        confidence = float(d["confidence"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    moods_raw = d.get("moods")
+    tags_raw = d.get("scenario_tags")
+    scenarios_raw = d.get("scenarios")
+    meaning = str(d.get("meaning") or "").strip()
+    if not 0.0 <= confidence <= 1.0 or not meaning:
+        return None
+    if not isinstance(moods_raw, list) or not isinstance(tags_raw, list) or not isinstance(scenarios_raw, list):
+        return None
+    moods = [str(value).strip() for value in moods_raw if str(value).strip()]
+    tags = [str(value).strip() for value in tags_raw if str(value).strip()]
+    scenarios = [str(value).strip() for value in scenarios_raw if str(value).strip()]
+    if not moods or any(value not in moods_allowed for value in moods):
+        return None
+    if any(value not in tags_allowed for value in tags):
+        return None
     return {
-        "is_sticker": d.get("is_sticker") is True,
-        "meaning": str(d.get("meaning", "")).strip(),
-        "moods": [str(x).strip() for x in d.get("moods", []) if str(x).strip()],
-        "scenarios": [str(x).strip() for x in d.get("scenarios", []) if str(x).strip()],
+        "is_sticker": True,
+        "kind": "sticker",
+        "confidence": confidence,
+        "meaning": meaning,
+        "moods": moods,
+        "scenario_tags": tags,
+        "scenarios": scenarios,
     }

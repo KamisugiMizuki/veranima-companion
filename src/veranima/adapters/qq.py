@@ -20,6 +20,8 @@ import re
 import socket
 import threading
 import time
+from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import unquote, unquote_plus, urlparse
 
@@ -30,6 +32,7 @@ from aiocqhttp import CQHttp, Event, Message
 from ..core.agent import Agent
 from ..core.image_payload import ImagePayloadError, make_image_payload, payload_from_data_url
 from ..core.render import render_im
+from ..core.stickers import build_sticker_query
 from ..core.qq_advisor import QQProactiveAdvisor
 from ..core.qq_proactive import QQProactiveState
 from ..core.proactive import MealReminderScheduler
@@ -158,6 +161,10 @@ class QQAdapter:
         quiet_hours: tuple[int, int] | None = (23, 8),
         proactive_delay_minutes: int = 5,
         sticker_library=None,  # StickerLibrary | None；None = 表情包功能关闭
+        sticker_learning_mode: str = "review",
+        sticker_send_rate: str = "normal",
+        sticker_min_reply_gap: int = 3,
+        sticker_rand: random.Random | None = None,
         agent_lock: asyncio.Lock | None = None,
         image_roots: list[str | Path] | None = None,
         max_image_bytes: int = 10 * 1024 * 1024,
@@ -181,6 +188,19 @@ class QQAdapter:
         self._qq_evaluation_at: float = 0.0
         self._qq_opportunity: dict | None = None
         self.stickers = sticker_library  # 8.6.3 表情包库（None = 关闭）
+        self.sticker_learning_mode = (
+            sticker_learning_mode if sticker_learning_mode in {"off", "review", "auto"} else "review"
+        )
+        self.sticker_send_rate = (
+            sticker_send_rate
+            if sticker_send_rate in {"off", "low", "normal", "frequent", "always"}
+            else "normal"
+        )
+        self.sticker_min_reply_gap = max(1, int(sticker_min_reply_gap))
+        self._sticker_rand = sticker_rand or random.Random()
+        self._sticker_reply_count = 0
+        self._last_sticker_reply_count: int | None = None
+        self._recent_sticker_ids: deque[str] = deque(maxlen=5)
         self._lock = agent_lock or asyncio.Lock()
         from ..config import ROOT
         roots = image_roots or [ROOT / "data", ROOT]
@@ -251,7 +271,12 @@ class QQAdapter:
                     self.agent.gate.note_responded(src, channel="qq")
             except Exception:
                 pass
-            result = await asyncio.to_thread(self.agent.handle, text, [d for d, _ in images], channel="im")
+            result = await asyncio.to_thread(
+                self.agent.handle,
+                text,
+                [item[0] for item in images],
+                channel="im",
+            )
         self._last_user_activity = time.time()
         if result.reply:
             # 统一 IM 出口：Reply 也必须经过 render_im，不能绕过波浪号/感叹号/
@@ -259,12 +284,20 @@ class QQAdapter:
             rendered = render_im(result.reply_obj or result.reply, self.agent.state)
             if rendered:
                 await self.bot.send(event, rendered)
+                self._sticker_reply_count += 1
+                entry = self._pick_sticker_for_reply(result, rendered, text, uid)
+                if entry is not None:
+                    try:
+                        sticker_path = self.stickers.path_for(entry)
+                        await self.bot.send(event, f"[CQ:image,file={sticker_path}]")
+                    except Exception as exc:
+                        logger.warning("qq sticker send failed: %s", exc)
+                    else:
+                        self.stickers.record_use(entry)
+                        self._recent_sticker_ids.append(entry.id)
+                        self._last_sticker_reply_count = self._sticker_reply_count
+                        logger.info("qq=%s << sticker=%s", uid, entry.id[:12])
             logger.info("qq=%s << %s", uid, result.reply[:80])
-            # 8.6.3 表情包输出：回复后按情绪宽松匹配，附加一张（不刷屏）
-            sticker = self._pick_sticker_for_reply(result.reply)
-            if sticker:
-                await self.bot.send(event, f"[CQ:image,file={sticker}]")
-                logger.info("qq=%s << (表情包) %s", uid, sticker)
         if result.proactive_msg:
             # 不立即发送：等对话静默满 proactive_delay_minutes 后由后台 tick 发送，
             # 避免"回复 + 主动"双连发（2026-08-04 修复：真人不会秒补一句无关话题）
@@ -274,16 +307,25 @@ class QQAdapter:
                 uid, self.proactive_delay_minutes, result.proactive_msg[:60],
             )
         if images:
-            self._schedule_sticker_ingest(images)
+            self._schedule_sticker_ingest(images, owner_scope=f"qq:{uid}")
 
-    def _schedule_sticker_ingest(self, images: list[tuple[str, bytes]]) -> None:
+    def _schedule_sticker_ingest(
+        self,
+        images: list[tuple],
+        *,
+        owner_scope: str,
+    ) -> None:
         """回复发送后再标注；复用 Agent 锁，避免与对话 LLM 并发。"""
-        if self.stickers is None:
+        if self.stickers is None or self.sticker_learning_mode == "off":
             return
 
         async def run() -> None:
             async with self._lock:
-                await asyncio.to_thread(self._ingest_stickers, images)
+                await asyncio.to_thread(
+                    self._ingest_stickers,
+                    images,
+                    owner_scope=owner_scope,
+                )
 
         task = asyncio.create_task(run())
         self._sticker_tasks.add(task)
@@ -295,7 +337,12 @@ class QQAdapter:
 
         task.add_done_callback(done)
 
-    def _ingest_stickers(self, images: list[tuple[str, bytes]] | list[bytes]) -> None:
+    def _ingest_stickers(
+        self,
+        images: list[tuple] | list[bytes],
+        *,
+        owner_scope: str = "legacy_global",
+    ) -> None:
         """8.6.3 表情包入库：没见过的 → LLM 标注 → 存库。
 
         判重用 dHash（同图不同尺寸/压缩也识别）；标注失败不强行入库。
@@ -305,10 +352,11 @@ class QQAdapter:
         for item in images:
             try:
                 raw = item[1] if isinstance(item, tuple) else item
-                if self.stickers.find_similar(raw):
+                source = item[2] if isinstance(item, tuple) and len(item) >= 3 else {}
+                if self.stickers.find_similar(raw, owner_scope=owner_scope):
                     continue  # 见过，不重复入库
                 if isinstance(item, tuple):
-                    data_url, raw = item
+                    data_url, raw = item[0], item[1]
                     payload = self._payload_from_download_result(data_url, raw)
                 else:
                     raw = item
@@ -318,8 +366,18 @@ class QQAdapter:
                     continue  # 动图只给当前轮 LLM，不进入长期表情库
                 meta = self.agent.annotate_sticker(payload.data_url)
                 if meta and meta.get("is_sticker") is True:
-                    meta = {k: v for k, v in meta.items() if k in ("meaning", "moods", "scenarios")}
-                    self.stickers.add_payload(payload, **meta)
+                    meta = {
+                        key: value for key, value in meta.items()
+                        if key in ("meaning", "moods", "scenario_tags", "scenarios", "confidence")
+                    }
+                    common = {**meta, "owner_scope": owner_scope, "source": source}
+                    if self.sticker_learning_mode == "review":
+                        self.stickers.add_candidate(payload, **common)
+                    elif (
+                        self.sticker_learning_mode == "auto"
+                        and float(meta.get("confidence") or 0.0) >= 0.85
+                    ):
+                        self.stickers.add_payload(payload, consent="auto", **common)
             except Exception as e:
                 logger.debug("sticker ingest failed: %s", e)
 
@@ -329,36 +387,55 @@ class QQAdapter:
         ctype = str(data_url).split(";", 1)[0].removeprefix("data:")
         return make_image_payload(raw, content_type=ctype, source="qq:http")
 
-    def _pick_sticker_for_reply(self, reply: str) -> str | None:
-        """8.6.3 表情包输出：按回复情绪宽松匹配，返回本地文件路径或 None。
-
-        约束：情绪命中才发（宽松：相近即可）；低使用次数优先。
-        """
+    def _pick_sticker_for_reply(self, result, reply: str, user_text: str, uid: str):
+        """按正常 QQ 回复选择同作用域表情；找不到就不发。"""
         if self.stickers is None or len(self.stickers) == 0:
             return None
-        mood = self._reply_mood(reply)
-        scenario = reply[:120]
-        if not mood and not scenario:
+        reply_obj = getattr(result, "reply_obj", None)
+        query = build_sticker_query(reply_obj, reply, user_text)
+        if query["suppress"]:
             return None
-        finder = getattr(self.stickers, "find_for_context", None)
-        cands = finder(mood or "", scenario, limit=3) if finder else self.stickers.find_for_mood(mood, limit=3)
-        if not cands:
+        explicit = bool(query["explicit_request"])
+        if not explicit and not (query["moods"] or query["scenario_tags"]):
             return None
-        entry = cands[0]
-        self.stickers.record_use(entry)
-        path_for = getattr(self.stickers, "path_for", None)
-        return str(path_for(entry) if path_for else self.stickers.root / entry.file)
-
-    @staticmethod
-    def _reply_mood(reply: str) -> str | None:
-        """回复文本 → 情绪标签（宽松匹配用）。无情绪 → None（不发）。"""
-        from ..core.agent import Agent
-        emo = Agent._detect_emotion(reply)
-        mapping = {
-            "很开心": "开心",
-            "有点低落": "难过",
-        }
-        return mapping.get(emo)
+        if not explicit and self.sticker_send_rate == "off":
+            return None
+        if (
+            not explicit
+            and self._last_sticker_reply_count is not None
+            and self._sticker_reply_count - self._last_sticker_reply_count < self.sticker_min_reply_gap
+        ):
+            return None
+        probability = {
+            "low": 0.15,
+            "normal": 0.30,
+            "frequent": 0.60,
+            "always": 1.0,
+        }.get(self.sticker_send_rate, 0.0)
+        if not explicit and self._sticker_rand.random() >= probability:
+            return None
+        owner_scope = f"qq:{uid}"
+        candidates = self.stickers.find_for_query(
+            query,
+            owner_scope=owner_scope,
+            limit=3,
+            recent_ids=self._recent_sticker_ids,
+        )
+        if not candidates:
+            candidates = self.stickers.find_for_query(
+                query,
+                owner_scope=owner_scope,
+                limit=3,
+            )
+        if not candidates and explicit:
+            candidates = sorted(
+                (
+                    entry for entry in self.stickers.list_entries(owner_scope=owner_scope)
+                    if entry.status == "active"
+                ),
+                key=lambda entry: (entry.uses, entry.last_used_at or "", entry.created_at),
+            )[:3]
+        return candidates[0] if candidates else None
 
     @staticmethod
     def _plain_text(event: Event) -> str:
@@ -414,7 +491,7 @@ class QQAdapter:
             return ""
         return text
 
-    async def _collect_images(self, event: Event) -> list[tuple[str, bytes]]:
+    async def _collect_images(self, event: Event) -> list[tuple[str, bytes, dict]]:
         """8.6.2 图像输入：提取消息中的图片段并下载。
 
         返回 [(data_url, raw_bytes), ...]；下载失败/无图片段返回 []。
@@ -434,7 +511,12 @@ class QQAdapter:
         ok = [r for r in results if r]
         if len(ok) < len(segments):
             logger.warning("image resolve failed: %d/%d images dropped", len(segments) - len(ok), len(segments))
-        return [(payload.data_url, payload.raw) for payload in ok]
+        source = {
+            "channel": "qq",
+            "platform_message_id": str(event.get("message_id") or ""),
+            "received_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+        return [(payload.data_url, payload.raw, dict(source)) for payload in ok]
 
     @staticmethod
     def _image_segments(msg) -> list[dict]:
