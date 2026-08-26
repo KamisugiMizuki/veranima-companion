@@ -16,6 +16,7 @@ from typing import Literal
 
 from ..llm.client import LLMClient, LLMTimeoutError, LLMUnavailableError
 from .prompts import build_system_prompt, is_clarification
+from .virtual_schedule import ScheduleContext, ScheduleOutline, ScheduleRuntime
 from .reply import is_failure_fallback_reply, is_internal_reply
 from .segments import extract_segments
 from .ambient import ChannelActivityTracker, ProactiveCandidate, ProactiveGate, SceneLock
@@ -133,6 +134,19 @@ class Agent:
         self._history: list[dict] = []
         self._last_reply_ts: float | None = None  # 上一条回复时间（延迟信号用）
         self._last_search_request: dict[str, str] | None = None
+        self.schedule_outline = self._load_schedule_outline()
+        schedule_cfg = self.config.get("virtual_schedule", {}) or {}
+        if self.schedule_outline is not None:
+            sleep_overrides = dict(self.schedule_outline.sleep)
+            for key in ("grace_period_minutes", "max_extension_minutes"):
+                if key in schedule_cfg:
+                    sleep_overrides[key] = int(schedule_cfg[key])
+            self.schedule_outline = replace(self.schedule_outline, sleep=sleep_overrides)
+        self.schedule_runtime = (
+            ScheduleRuntime(self.schedule_outline, planner=self._plan_schedule_with_llm)
+            if self.schedule_outline is not None and self.schedule_outline.enabled
+            and bool(schedule_cfg.get("enabled", True)) else None
+        )
 
         # R0 打断决策（R0_SPEC 5）：共享话题频率表 + 分级决策器
         self.topic_freq = TopicFrequency()
@@ -167,6 +181,12 @@ class Agent:
         else:
             ia = float(((self.card.veranima or {}).get("initial_affection") or 0.5))
             self.relationship = RelationshipModel.from_initial(initial_affection=ia)
+        if self.schedule_runtime is not None and self.state.relationship:
+            saved_schedule = self.state.relationship.get("virtual_schedule_runtime")
+            if isinstance(saved_schedule, dict):
+                self.schedule_runtime = ScheduleRuntime.from_snapshot(
+                    self.schedule_outline, saved_schedule, planner=self._plan_schedule_with_llm,
+                )
 
         # P-5 反思计数器（每 20 个有效人格候选触发一次整合）
         self._reflection_counters = {"persona_candidates": 0, "high_emotion_events": 0, "user_corrections": 0}
@@ -206,6 +226,9 @@ class Agent:
         self.activity = ChannelActivityTracker()
         # R4 统一主动入口（R4_SPEC 1/2）：ProactiveCandidate → ProactiveGate 9 闸门
         self.gate = ProactiveGate(self.config.get("proactive", {}))
+        self.gate.character_sleeping_check = lambda: bool(
+            self.schedule_runtime is not None and self.schedule_runtime.sleeping
+        )
         try:
             self.gate.restore_feedback(self.memory.recent_proactive_feedback(limit=200))
         except Exception as e:
@@ -233,6 +256,112 @@ class Agent:
         )
 
     # ---------- MVP2 状态 ----------
+
+    def _load_schedule_outline(self):
+        card_path = self.config.get("character_card", "")
+        if not card_path:
+            card_path = getattr(self.card, "source_path", "") or ""
+        if not card_path:
+            return None
+        path = Path(card_path)
+        if not path.is_absolute():
+            path = Path(self.config.get("root", ".")) / path
+        try:
+            return ScheduleOutline.from_role_dir(path.parent)
+        except Exception as exc:
+            logger.warning("virtual schedule disabled: %s", exc)
+            return None
+
+    def _schedule_role_id(self) -> str:
+        return self.schedule_outline.role_id if self.schedule_outline else ""
+
+    def _plan_schedule_with_llm(self, when):
+        """Ask the configured model for bounded adjustments; parser stays deterministic."""
+        if not getattr(self.llm, "is_model_loaded", lambda: False)():
+            return None
+        import json
+        template = {
+            "day_profiles": {
+                key: list((value or {}).get("allowed_block_ids") or [])
+                for key, value in self.schedule_outline.day_profiles.items()
+            } if self.schedule_outline else {},
+            "blocks": [
+                {"rule_id": block.id, "activity_pool": list(block.activity_pool),
+                 "duration_min": block.duration_min, "duration_max": block.duration_max,
+                 "required": block.required}
+                for block in (self.schedule_outline.blocks if self.schedule_outline else ())
+            ],
+        }
+        prompt = (
+            "只根据角色日程模板，为下一周期选择已有活动的有限调整。"
+            f"可用模板：{json.dumps(template, ensure_ascii=False)}。"
+            "输出 JSON：{\"day_profile\":\"模板已有 profile\",\"items\":["
+            "{\"rule_id\":\"模板已有 id\",\"activity_key\":\"模板已有 activity\","
+            "\"operation\":\"none|shift|resize|substitute|skip_optional|recovery_mode\","
+            "\"shift_minutes\":0,\"duration_minutes\":0}]}。"
+            "禁止新增活动、现实地点、人物和用户事实，只输出 JSON。"
+        )
+        raw = self.llm.chat(
+            [
+                {"role": "system", "content": self.card.to_system_prompt()},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=int((self.config.get("llm") or {}).get("short_task_max_tokens", 1024)),
+        )
+        try:
+            value = json.loads(str(raw).strip().strip("`").removeprefix("json").strip())
+            return value if isinstance(value, dict) else None
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+
+    def schedule_notice_text(self, notice: str) -> str:
+        tasks = {
+            "sleep_preparing": "自然告诉用户你有点困，准备睡了，接下来起床前不会回复。只说一句，不要提系统或日程。",
+            "woke": "自然告诉用户你刚恢复清醒。如果睡眠期间有消息，只表达刚看到，不编造消息内容。只说一句。",
+        }
+        task = tasks.get(str(notice))
+        if not task or not getattr(self.llm, "is_model_loaded", lambda: False)():
+            return ""
+        return self._short_task(task)
+
+    def schedule_notice_candidate(self, notice: str, channel: str):
+        if self.schedule_runtime is None or notice not in {"sleep_preparing", "woke"}:
+            return None
+        return ProactiveCandidate(
+            source="virtual_schedule",
+            reason=f"schedule state changed: {notice}",
+            relevance=1.0,
+            urgency=0.7 if notice == "sleep_preparing" else 0.4,
+            intent="share",
+            context={
+                "event_id": f"{self.schedule_runtime.state.sleep_cycle_id}:{notice}",
+                "schedule_notice": notice,
+            },
+            channel=channel,
+        )
+
+    def _schedule_context(self, channel: str, now=None) -> ScheduleContext | None:
+        schedule_runtime = getattr(self, "schedule_runtime", None)
+        if schedule_runtime is not None:
+            return schedule_runtime.current_context(now or datetime.datetime.now(datetime.timezone.utc))
+        if self.schedule_outline is None or not self.schedule_outline.enabled:
+            return None
+        current = now or datetime.datetime.now(datetime.timezone.utc)
+        plan = self.schedule_outline.build_day_plan(current)
+        return plan.context_at(current) if plan else None
+
+    @staticmethod
+    def _format_schedule_context(context: ScheduleContext | None) -> str:
+        if context is None:
+            return ""
+        budget = ", ".join(f"{key}={value}" for key, value in context.reply_budget.items())
+        return (
+            "【当前虚拟活动交互资源】这是角色虚拟日程的内部模拟状态，不是现实行动证据。"
+            f"当前阶段={context.phase}，活动类别={context.activity_category}，活动={context.activity_key or '未指定'}，"
+            f"交互画像={context.interaction_profile}，可用度={context.availability:.2f}。"
+            f"回复约束：{budget or '按正常通道自然交流'}。"
+            "普通回复无需播报当前活动；认真问题仍须回答核心内容。"
+        )
 
     @staticmethod
     def _format_history_content(content: str, created_at: str | None = None) -> str:
@@ -379,6 +508,8 @@ class Agent:
             rel["conflicts"] = self._conflicts.to_dict()
             rel["imprints"] = self._imprints.to_dict()
             rel["tension"] = self.tension.snapshot()
+            if self.schedule_runtime is not None:
+                rel["virtual_schedule_runtime"] = self.schedule_runtime.to_snapshot()
             self.state.relationship = rel
             self.memory.save_state(self.state.to_snapshot())
         except Exception as e:
@@ -505,6 +636,26 @@ class Agent:
                     logger.warning("drop invalid image payload: %s", exc)
             images = validated
         if not user_text and not images:
+            return TurnResult(reply="", energy=self.state.energy, mood=self.state.mood)
+
+        schedule_runtime = getattr(self, "schedule_runtime", None)
+        if schedule_runtime is not None:
+            schedule_runtime.advance(datetime.datetime.now(datetime.timezone.utc))
+        if schedule_runtime is not None and schedule_runtime.sleeping:
+            message_id = self.memory.store_message(
+                "user", user_text + (" [图片]" * len(images) if images else ""),
+                self.state.energy, self.state.mood,
+                channel="pet" if channel == "tts" else "qq",
+            )
+            scope = f"{('pet' if channel == 'tts' else 'qq')}:default"
+            self.memory.archive_sleep_message(
+                role_id=schedule_runtime.outline.role_id,
+                user_scope=scope,
+                sleep_cycle_id=schedule_runtime.state.sleep_cycle_id,
+                message_id=message_id,
+                sender_scope=scope,
+            )
+            self._persist_state()
             return TurnResult(reply="", energy=self.state.energy, mood=self.state.mood)
 
         # ===== R0 阶段 1: prepare_turn（R0_SPEC 5）=====
@@ -704,6 +855,10 @@ class Agent:
                 extra_blocks.append(evidence.to_prompt(channel=channel))
         if interrupt_level > 0:
             extra_blocks.append(_interrupt_prompt(interrupt_level))
+        schedule_context = self._schedule_context(channel, now=datetime.datetime.now(datetime.timezone.utc))
+        schedule_block = self._format_schedule_context(schedule_context)
+        if schedule_block:
+            extra_blocks.append(schedule_block)
         system = build_system_prompt(
             self.card, self.state, self.memory,
             core_profile_budget=self.config.get("memory", {}).get("core_profile_budget", 1200),

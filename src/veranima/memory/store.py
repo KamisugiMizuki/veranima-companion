@@ -357,6 +357,35 @@ class MemoryStore:
         self.con.commit()
         return int(cur.lastrowid)
 
+    def archive_sleep_message(self, *, role_id: str, user_scope: str,
+                              sleep_cycle_id: str, message_id: int | None,
+                              sender_scope: str, content_retained: bool = False,
+                              received_at: str | None = None) -> int:
+        """保存睡眠窗口消息的受控元数据，不复制正文。"""
+        cur = self.con.execute(
+            """INSERT OR IGNORE INTO sleep_message_archive
+               (role_id, user_scope, sleep_cycle_id, message_id, received_at,
+                sender_scope, content_retained)
+               VALUES (?,?,?,?,?,?,?)""",
+            (str(role_id), str(user_scope), str(sleep_cycle_id),
+             int(message_id) if message_id is not None else None,
+             received_at or _now(), str(sender_scope), int(bool(content_retained))),
+        )
+        self.con.commit()
+        return int(cur.lastrowid or 0)
+
+    def sleep_messages(self, role_id: str, user_scope: str,
+                       sleep_cycle_id: str, *, limit: int = 50) -> list[dict]:
+        rows = self.con.execute(
+            """SELECT id, role_id, user_scope, sleep_cycle_id, message_id,
+                      received_at, sender_scope, content_retained, processed_at
+               FROM sleep_message_archive
+               WHERE role_id=? AND user_scope=? AND sleep_cycle_id=?
+               ORDER BY id LIMIT ?""",
+            (str(role_id), str(user_scope), str(sleep_cycle_id), max(1, min(int(limit), 200))),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def message_created_at(self, message_id: int) -> str | None:
         """返回原始消息的创建时间；不存在时返回 None。"""
         row = self.con.execute(

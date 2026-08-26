@@ -132,6 +132,7 @@ window.pet.getConfig().then((cfg) => {
   const channels = pro.channels || {}; const qqPro = channels.qq || pro; const petPro = channels.pet || pro;
   const tension = cfg.relationship_tension || {};
   const stickers = qq.stickers || {};
+  const schedule = cfg.virtual_schedule || {};
   bool('pro-enabled', pro.enabled ?? true); bool('pro-quiet', pro.quiet_hours_enabled ?? true); num('pro-qq-max', qqPro.max_per_day, 2); num('pro-qq-gap', qqPro.min_gap_minutes, 120); num('pro-pet-max', petPro.max_per_day, 2); num('pro-pet-gap', petPro.min_gap_minutes, 30);
   bool('search-enabled', search.enabled ?? false); set('search-base', search.base_url || 'http://127.0.0.1:8080'); num('search-timeout', search.timeout_seconds, 8); num('search-cache', search.cache_ttl_seconds, 900); bool('search-implicit', search.allow_implicit_freshness_search ?? false); bool('search-semantic', search.semantic_locator_enabled ?? false); bool('search-pages', search.fetch_pages ?? false);
   bool('tension-enabled', tension.enabled ?? true); bool('tension-high-proactive', tension.high_tension_proactive ?? false);
@@ -150,6 +151,12 @@ window.pet.getConfig().then((cfg) => {
   set('sticker-max-items', stickers.max_items ?? 100); set('sticker-dir', stickers.dir || 'data/stickers');
   set('qq-image-roots', (qq.image_roots || []).join('; ')); bool('qq-trusted-image-proxy', qq.trusted_image_proxy);
   refreshStickers();
+  bool('schedule-enabled', schedule.enabled ?? true); set('schedule-timezone', schedule.timezone || 'system');
+  set('schedule-profile', schedule.day_profile || 'auto'); set('schedule-variation', schedule.variation || 'moderate');
+  set('schedule-grace', schedule.grace_period_minutes ?? 30); set('schedule-extension', schedule.max_extension_minutes ?? 30);
+  set('schedule-share', schedule.self_share || 'low'); set('schedule-curiosity', schedule.curiosity || 'low');
+  $('schedule-status').textContent = `当前角色：${cfg.character_card || '未设置'} · 日程${schedule.enabled === false ? '已关闭' : '已开启'}`;
+  $('schedule-template-path').textContent = cfg.character_card ? cfg.character_card.replace(/character\.json$/, 'virtual_schedule.json') : '未设置角色卡';
 }).catch(() => showMsg('读取配置失败', false));
 
 $('llm-profile-select').addEventListener('change', () => {
@@ -240,6 +247,10 @@ $('save').addEventListener('click', async () => {
     qq: { allowed, proactive: $('qq-proactive').value === 'true', offline_think: { enabled: $('qq-offline').value === 'true' },
       stickers: stickerSettings(), image_roots: $('qq-image-roots').value.split(';').map((s) => s.trim()).filter(Boolean),
       trusted_image_proxy: $('qq-trusted-image-proxy').value === 'true' },
+    virtual_schedule: { enabled: $('schedule-enabled').value === 'true', timezone: $('schedule-timezone').value,
+      day_profile: $('schedule-profile').value, variation: $('schedule-variation').value,
+      grace_period_minutes: Number($('schedule-grace').value), max_extension_minutes: Number($('schedule-extension').value),
+      self_share: $('schedule-share').value, curiosity: $('schedule-curiosity').value },
     tasks: {
       enabled: $('tasks-enabled').value === 'true',
       backend: $('tasks-backend').value,

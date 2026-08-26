@@ -187,6 +187,7 @@ class ProactiveGate:
         self._today_key = ""
         self._paused = False  # 用户明确"不想被打扰" → 暂停直到用户主动恢复
         self._paused_channels: set[str] = set()
+        self.character_sleeping_check = None
 
     def channel_config(self, channel: str) -> dict:
         return {**self._legacy_channel_config, **(self._channels.get(channel, {}) or {})}
@@ -244,11 +245,16 @@ class ProactiveGate:
     # ---------- 主入口 ----------
 
     def decide(self, candidate: ProactiveCandidate, *, scene: str = "normal",
-               other_channel_active: bool = False, now=None) -> ProactiveDecision:
+               other_channel_active: bool = False, now=None,
+               character_sleeping: bool = False) -> ProactiveDecision:
         """按候选自身通道执行闸门；保留旧参数但不参与决策。"""
         now = self._t() if now is None else now
         channel = candidate.channel or "qq"
         channel_cfg = self.channel_config(channel)
+        if character_sleeping or (
+            callable(self.character_sleeping_check) and self.character_sleeping_check()
+        ):
+            return ProactiveDecision(False, "character sleeping", candidate=candidate)
         # 1. enabled 与用户暂停开关
         if not self.enabled or not bool(channel_cfg.get("enabled", True)):
             return ProactiveDecision(False, "proactive disabled", candidate=candidate)
@@ -277,6 +283,12 @@ class ProactiveGate:
             return ProactiveDecision(False, "attention without shared memory", candidate=candidate)
         if candidate.source == "ritual" and not candidate.context.get("calendar_source"):
             return ProactiveDecision(False, "ritual without real memory source", candidate=candidate)
+        if candidate.source == "virtual_schedule" and not (
+            candidate.context.get("event_id") or candidate.context.get("plan_id")
+        ):
+            return ProactiveDecision(False, "virtual schedule without source anchor", candidate=candidate)
+        if candidate.source == "user_curiosity" and not candidate.context.get("source_message_id"):
+            return ProactiveDecision(False, "curiosity without source message", candidate=candidate)
         # 9. LLM 可用性在生成前检查（R4_SPEC 2 第 9 条；由调用方执行，见 note_failure）
         return ProactiveDecision(True, "allowed", cooldown_until=0.0, candidate=candidate)
 

@@ -68,6 +68,20 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
 
+CREATE TABLE IF NOT EXISTS sleep_message_archive (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    role_id TEXT NOT NULL,
+    user_scope TEXT NOT NULL,
+    sleep_cycle_id TEXT NOT NULL,
+    message_id INTEGER,
+    received_at TEXT NOT NULL,
+    sender_scope TEXT NOT NULL,
+    content_retained INTEGER NOT NULL DEFAULT 0,
+    processed_at TEXT,
+    UNIQUE(role_id, sleep_cycle_id, message_id)
+);
+CREATE INDEX IF NOT EXISTS idx_sleep_archive_cycle ON sleep_message_archive(role_id, user_scope, sleep_cycle_id);
+
 -- SelfModel 人生章节（独立于原始消息和规范记忆；每章可审计、可更新）
 CREATE TABLE IF NOT EXISTS self_model_chapters (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,

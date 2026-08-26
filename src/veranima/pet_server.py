@@ -17,6 +17,7 @@ import logging
 import time
 import uuid
 from pathlib import Path
+from zoneinfo import available_timezones
 
 import websockets
 
@@ -123,6 +124,42 @@ def _validate_sticker_dir(value, *, base_dir: str | Path | None = None) -> list[
     return []
 
 
+def _schedule_settings_payload(cfg: dict) -> dict:
+    value = cfg.get("virtual_schedule", {}) or {}
+    return {
+        "enabled": bool(value.get("enabled", True)),
+        "timezone": str(value.get("timezone", "system")),
+        "day_profile": str(value.get("day_profile", "auto")),
+        "variation": str(value.get("variation", "moderate")),
+        "grace_period_minutes": int(value.get("grace_period_minutes", 30)),
+        "max_extension_minutes": int(value.get("max_extension_minutes", 30)),
+        "self_share": str(value.get("self_share", "low")),
+        "curiosity": str(value.get("curiosity", "low")),
+    }
+
+
+def _validate_schedule_settings(value: dict) -> list[str]:
+    value = value or {}
+    errors = []
+    enums = {
+        "timezone": {"system", "Asia/Shanghai", "Asia/Tokyo", "UTC"},
+        "day_profile": {"auto", "default", "rest_like", "recovery_like"},
+        "variation": {"stable", "moderate", "free"},
+        "self_share": {"off", "low", "standard"},
+        "curiosity": {"off", "low", "standard"},
+    }
+    for key, choices in enums.items():
+        if str(value.get(key) or "") not in choices:
+            errors.append(f"{key} 枚举值无效")
+    for key in ("grace_period_minutes", "max_extension_minutes"):
+        try:
+            if not 0 <= int(value.get(key, 30)) <= 60:
+                errors.append(f"{key} 必须在 0-60 之间")
+        except (TypeError, ValueError):
+            errors.append(f"{key} 数值无效")
+    return errors
+
+
 MAX_WS_MESSAGE_BYTES = 64 * 1024 * 1024
 
 
@@ -192,6 +229,23 @@ class PetServer:
             "created_at": entry.created_at,
             "approved_at": entry.approved_at,
         }
+
+    async def _schedule_tick_once(self):
+        if self._agent is None:
+            return
+        runtime = getattr(self._agent, "schedule_runtime", None)
+        if runtime is not None:
+            runtime.advance(__import__("datetime").datetime.now(__import__("datetime").timezone.utc))
+            notice = runtime.pop_notice() if hasattr(runtime, "pop_notice") else ""
+            if notice:
+                candidate = self._agent.schedule_notice_candidate(notice, "pet")
+                decision = self._agent.gate.decide(
+                    candidate, scene=self._agent.scene_lock.current(),
+                    character_sleeping=False,
+                ) if candidate else None
+                text = await asyncio.to_thread(self._agent.schedule_notice_text, notice) if decision and decision.allow else ""
+                if text and await self.speak(text):
+                    self._agent.gate.commit(candidate)
 
     async def tick_presence(self) -> bool:
         """R1 无缝衔接（R1_SPEC 4.召回）：L0 在场检测 → absent→present 转变 → 衔接语。
@@ -700,6 +754,7 @@ class PetServer:
                                "image_roots": [str(value) for value in (qq.get("image_roots") or [])],
                                "trusted_image_proxy": bool(qq.get("trusted_image_proxy", False))},
                         "character_card": cfg.get("character_card", ""),
+                        "virtual_schedule": _schedule_settings_payload(cfg),
                         "pet": {"avatar_height": (cfg.get("pet") or {}).get("avatar_height", 200)},
                         "memory": {k: memory.get(k) for k in (
                             "embedding_model", "recall_top_k", "recall_threshold", "max_injected_chars",
@@ -936,6 +991,16 @@ class PetServer:
                         cfg.setdefault("qq", {})["image_roots"] = [str(value).strip() for value in roots]
                     if "trusted_image_proxy" in qq:
                         cfg.setdefault("qq", {})["trusted_image_proxy"] = bool(qq["trusted_image_proxy"])
+                    schedule_in = d.get("virtual_schedule")
+                    if schedule_in is not None:
+                        current_schedule = _schedule_settings_payload(cfg)
+                        schedule_candidate = {**current_schedule, **schedule_in}
+                        errors = _validate_schedule_settings(schedule_candidate)
+                        if errors:
+                            await self._send({"type": "config_saved", "id": msg.get("id"),
+                                              "ok": False, "error": "; ".join(errors)})
+                            continue
+                        cfg["virtual_schedule"] = schedule_candidate
                     if "character_card" in d and d["character_card"]:
                         cfg["character_card"] = d["character_card"]
                     pet = d.get("pet", {})
@@ -1001,6 +1066,7 @@ class PetServer:
             async def _presence_loop():
                 while True:
                     try:
+                        await self._schedule_tick_once()
                         await self.tick_presence()
                     except Exception as e:
                         logger.warning("presence tick failed: %s", e)

@@ -711,6 +711,19 @@ class QQAdapter:
         """同进程模式的主动循环；所有 Agent 调用共享 self._lock。"""
         while not stop.is_set():
             try:
+                if getattr(self.agent, "schedule_runtime", None) is not None:
+                    self.agent.schedule_runtime.advance(__import__("datetime").datetime.now(__import__("datetime").timezone.utc))
+                    notice = self.agent.schedule_runtime.pop_notice()
+                    if notice:
+                        candidate = self.agent.schedule_notice_candidate(notice, "qq")
+                        decision = self.agent.gate.decide(
+                            candidate, scene=self.agent.scene_lock.current(),
+                            character_sleeping=False,
+                        ) if candidate else None
+                        text = await asyncio.to_thread(self.agent.schedule_notice_text, notice) if decision and decision.allow else ""
+                        if text and await self._send_to_all_async(text):
+                            self.agent.gate.commit(candidate)
+                            self.agent.record_proactive_message(text, channel="qq")
                 if not self._in_quiet_hours():
                     if self.proactive:
                         await self._send_due_meal_reminder_async()
@@ -1131,6 +1144,20 @@ class QQAdapter:
             return
         while not stop.is_set():
             try:
+                runtime = getattr(self.agent, "schedule_runtime", None)
+                if runtime is not None:
+                    runtime.advance(datetime.datetime.now(datetime.timezone.utc))
+                    notice = runtime.pop_notice()
+                    if notice:
+                        candidate = self.agent.schedule_notice_candidate(notice, "qq")
+                        decision = self.agent.gate.decide(
+                            candidate, scene=self.agent.scene_lock.current(),
+                            character_sleeping=False,
+                        ) if candidate else None
+                        text = self.agent.schedule_notice_text(notice) if decision and decision.allow else ""
+                        if text:
+                            asyncio.run_coroutine_threadsafe(self._send_to_all_async(text), loop)
+                            self.agent.gate.commit(candidate)
                 if self._in_quiet_hours():
                     # 静默时段（如 23:00-08:00）：问候/节庆/离线思考一律不主动发
                     logger.debug("in quiet hours, proactive tick skipped")

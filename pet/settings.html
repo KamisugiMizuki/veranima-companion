@@ -16,6 +16,7 @@
         <button class="nav-item" data-page="voice">语音</button>
         <button class="nav-item" data-page="memory">记忆与人格</button>
         <button class="nav-item" data-page="presence">在场与主动</button>
+        <button class="nav-item" data-page="schedule">日程与生活</button>
         <button class="nav-item" data-page="stickers">图片与表情</button>
         <button class="nav-item" data-page="advanced">高级</button>
       </nav>
@@ -94,6 +95,18 @@
         <div class="field"><label for="qq-trusted-image-proxy">QQ CDN fake-IP 兼容</label><select id="qq-trusted-image-proxy"><option value="false">关闭（推荐）</option><option value="true">开启（仅内建 QQ CDN）</option></select><div class="hint">不会开放任意主机；allowlist 固定为内建 QQ CDN。</div></div>
         <div class="inline-actions"><button id="sticker-refresh" type="button" class="subtle-button">刷新审核列表</button><span id="sticker-status" class="hint"></span></div>
         <div id="sticker-list" class="sticker-list" aria-live="polite"></div>
+      </div>
+
+      <div class="page" data-page="schedule">
+        <div class="eyebrow">SCHEDULE / LIFE</div><h1>日程与生活</h1>
+        <p class="page-intro">独立控制角色的虚拟作息、睡眠边界和日程来源。这里的活动属于角色设定，不代表现实行动。</p>
+        <div class="field"><label for="schedule-enabled">虚拟日程</label><select id="schedule-enabled"><option value="true">开启</option><option value="false">关闭</option></select></div>
+        <div class="field"><label for="schedule-timezone">日程时区</label><select id="schedule-timezone"><option value="system">跟随系统</option><option value="Asia/Shanghai">中国标准时间</option><option value="Asia/Tokyo">日本标准时间</option><option value="UTC">UTC</option></select></div>
+        <div class="split-fields"><div class="field"><label for="schedule-profile">今日 profile</label><select id="schedule-profile"><option value="auto">自动</option><option value="default">模板默认</option><option value="rest_like">休息类</option><option value="recovery_like">恢复类</option></select></div><div class="field"><label for="schedule-variation">计划变体</label><select id="schedule-variation"><option value="stable">稳定</option><option value="moderate">适中</option><option value="free">自由</option></select></div></div>
+        <div class="split-fields"><div class="field"><label for="schedule-grace">睡前缓冲</label><select id="schedule-grace"><option value="0">0 分钟</option><option value="15">15 分钟</option><option value="30">30 分钟</option><option value="45">45 分钟</option><option value="60">60 分钟</option></select></div><div class="field"><label for="schedule-extension">最大挽留延长</label><select id="schedule-extension"><option value="0">0 分钟</option><option value="15">15 分钟</option><option value="30">30 分钟</option></select></div></div>
+        <div class="split-fields"><div class="field"><label for="schedule-share">虚拟生活分享</label><select id="schedule-share"><option value="off">关闭</option><option value="low">低频</option><option value="standard">标准</option></select></div><div class="field"><label for="schedule-curiosity">主动了解用户</label><select id="schedule-curiosity"><option value="off">关闭</option><option value="low">低频</option><option value="standard">标准</option></select></div></div>
+        <div class="status-strip"><span id="schedule-status">日程状态读取中</span></div>
+        <div class="field"><label>模板文件</label><div id="schedule-template-path" class="readonly">当前角色目录读取中</div></div>
       </div>
 
       <div class="page" data-page="advanced">
