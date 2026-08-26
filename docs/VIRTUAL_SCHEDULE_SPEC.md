@@ -1,8 +1,8 @@
 # 虚拟日程与生活主动性模块设计规范
 
-> 版本：v1.1
+> 版本：v1.2
 >
-> 状态：设计稿 v1.1，尚未声称已实现。
+> 状态：设计稿 v1.2，尚未声称已实现。
 >
 > 范围：Veranima 角色的虚拟日程、日常活动状态、当前活动对回复表现的影响，以及由此产生的主动了解与主动分享候选。
 >
@@ -92,7 +92,7 @@
 | `virtual_life_event` | 角色虚拟世界中的模拟活动或计划变化 | 不可以直接写成共同记忆 |
 | `external_fact` | 现实世界可验证事实 | 只能在有来源时使用 |
 
-`virtual_life_event` 可以被角色分享，但其 `truth_class` 必须保持 `virtual_simulation`。它不能提供“我在现实中完成了某事”的证据，也不能作为“我们一起做过某事”的依据。
+`virtual_life_event` 可以被角色分享，但其 `truth_class` 必须保持 `virtual_simulation`。它不能提供“我在现实中完成了某事”的证据，也不能作为“我们一起做过某事”的依据。虚拟事件可以进入独立的角色自传归档，但不进入普通 `shared_episode` 或用户事实层。
 
 ### 3.2 核心对象
 
@@ -101,6 +101,11 @@
 - **`DayPlan`**：由大纲、当天条件和角色状态生成的一份具体虚拟计划。
 - **`ScheduleItem`**：计划中的一个时间段活动。
 - **`ScheduleEvent`**：活动开始、完成、跳过、偏离、未完成或内部想法等可分享事件。
+- **`DayCloseSummary`**：入睡后对当日模拟状态的收尾快照，是次日计划和角色自传归档的输入。
+- **`SleepMessageArchive`**：睡眠窗口内收到的消息元数据及受既有策略保护的原始消息引用，用于起床衔接。
+- **`ScheduleOffset` / `SleepDebt`**：分别表示作息时间位置和睡眠不足造成的疲劳负担。
+- **`EffectiveSpan`**：活动扣除中断后的有效投入跨度。
+- **`AutobiographicalContext`**：虚拟事件的可回顾摘要，不等同于共同记忆。
 - **`ScheduleContext`**：当前时间点提供给回复编排器的最小上下文。
 - **`UserInfoGap`**：角色“想了解用户”的具体信息缺口、来源和询问历史。
 - **`SelfShareCandidate`**：由日程事件、虚拟状态或角色长期兴趣产生的主动分享候选。
@@ -574,7 +579,35 @@ awake/active
 
 ## 8. 作息偏移、睡眠债务与回正
 
-### 8.1 `DayPlan` 状态
+### 8.1 两个正交状态量
+
+`schedule_offset` 和 `sleep_debt` 不能合并成一个“疲劳/偏移”数：
+
+- `schedule_offset_minutes`：相对于模板作息基线的时间位置偏移，回答“现在处于周期的什么位置”；
+- `sleep_debt_minutes`：相对于角色需要睡眠量的累计缺口，回答“当前有多累”。
+
+同样的时间偏移可能来自不同原因，必须保留 `offset_reason`：主动晚睡、被动失眠、早睡、过度活动、补觉或节假日选择。原因不同，次日活动压缩、回复情绪和可分享素材不同。
+
+### 8.2 睡眠债务模型
+
+每个睡眠周期结束后，按模板的 `target_sleep_minutes`、实际模拟睡眠时长和额外清醒延长计算：
+
+```text
+sleep_debt_next = clamp(
+  sleep_debt_previous
+  + target_sleep_minutes - simulated_sleep_minutes
+  + sleep_extension_minutes * extension_cost,
+  0,
+  max_sleep_debt_minutes
+)
+```
+
+恢复性睡眠、补觉和低负荷日可以减少债务；减少速度由模板的 `debt_recovery_minutes_per_day` 限制，不能一觉把任意高债务清零。`SleepDebt` 影响虚拟精力、活动压缩顺序、`drowsy` 触发阈值和分享内容权重，但不直接覆盖 `AgentState.energy`；两者通过明确的 `schedule_context` 修正项连接。
+
+`early_sleep` 不等于“睡得更好”：如果早睡导致计划提前结束，可减少债务；如果是因高强度活动被迫提前结束，则同时记录 `high_load` 残留。`late_sleep` 与 `insomnia_like` 也必须区分，前者是活动/选择造成的清醒延长，后者是无法入睡的模拟状态，不应套用同一种角色叙事。
+
+### 8.3 偏移传播和回正
+
 
 ```text
 draft → active → closed
@@ -588,7 +621,7 @@ draft → active → closed
 - `closed`：当天正常结束。
 - `expired`：过期但未能确认完整执行；不能等同于“全部完成”。
 
-### 8.2 `ScheduleItem` 状态
+### 8.4 `ScheduleItem` 状态
 
 ```text
 planned → active → completed
@@ -609,7 +642,7 @@ active → interrupted → resumed → completed
 
 进程离线后重新启动，不应把所有跨越的活动批量标记为已完成。默认标记为 `expired_unknown`，由下一次计划修正或角色化表达处理。这是防止“后台没运行却声称做完了”的关键约束。
 
-### 8.3 事件类型
+### 8.5 活动事件与有效投入跨度
 
 建议事件集合：
 
@@ -625,7 +658,15 @@ unfinished_thought
 preference_revisited
 ```
 
-事件必须包含：
+活动事件还必须维护 `effective_span`，而不是只记录计划开始和结束：
+
+```text
+effective_span = max(0, active_wall_time - sum(interruption_spans))
+```
+
+`interrupted` 表示活动暂停，期间不计入有效投入；不允许把角色回复用户的 20 分钟自动算作后台继续活动。恢复时创建新的 active span，并通过 `parent_event_id` 关联同一活动。`DayCloseSummary` 至少保存计划时长、有效投入时长、中断次数和中断总时长，供角色形成“今天忙了很久但实际推进有限”的自我评价素材。
+
+以下事件类型必须在事件对象中区分：
 
 ```text
 truth_class = "virtual_simulation"
@@ -931,27 +972,59 @@ CREATE TABLE virtual_schedule_items (
 );
 ```
 
-### 13.3 `virtual_life_events`
+### 13.3 `virtual_life_events` 与自传归档
+
+`virtual_life_events` 是可回顾的角色自身素材，但必须和普通记忆分开。完成的 DayCloseSummary 可以按 `share_policy` 投影为一个或多个 `virtual_life_event`，而不是直接写进 `episodic/shared_episode`。
+
+```text
+DayCloseSummary
+  → virtual_life_event(truth_class=virtual_simulation)
+  → AutobiographicalContext 查询
+  → 用户主动追问或有来源的 self-share
+```
+
+事件归档至少保存：
+
+```text
+role_id
+source_plan_id
+source_item_id
+source_rule_id
+truth_class = virtual_simulation
+summary
+completion_basis
+effective_span_minutes
+source_event_ids
+created_at
+expires_at
+```
+
+归档可以保留数日或按角色模板 TTL 过期。查询结果必须带来源锚点和虚拟性质，生成器只能据此表达已存在的摘要；如果用户追问的细节不在归档中，必须承认不记得或这是虚拟日程设定，不得补写具体事实。
+
+### 13.4 `sleep_message_archive`
+
+睡眠期间消息需要独立于正常对话内容的“睡眠窗口归档”：
 
 ```sql
-CREATE TABLE virtual_life_events (
-    id TEXT PRIMARY KEY,
-    plan_id TEXT NOT NULL,
-    item_id TEXT,
-    event_kind TEXT NOT NULL,
-    truth_class TEXT NOT NULL,
-    summary TEXT NOT NULL,
-    reason TEXT NOT NULL,
-    source_rule_id TEXT,
-    occurred_at TEXT NOT NULL,
-    share_policy TEXT NOT NULL,
-    expires_at TEXT,
-    created_at TEXT NOT NULL,
-    FOREIGN KEY(plan_id) REFERENCES virtual_day_plans(id)
+CREATE TABLE sleep_message_archive (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    role_id TEXT NOT NULL,
+    user_scope TEXT NOT NULL,
+    sleep_cycle_id TEXT NOT NULL,
+    message_id INTEGER,
+    received_at TEXT NOT NULL,
+    sender_scope TEXT NOT NULL,
+    content_retained INTEGER NOT NULL DEFAULT 0,
+    processed_at TEXT,
+    UNIQUE(role_id, sleep_cycle_id, message_id)
 );
 ```
 
-### 13.4 `user_info_gaps`
+默认写入到达时间、发送者作用域和原始 `message_id` 引用，不复制正文。若既有消息保留策略允许正文留在 `messages` 表，起床衔接可以按 `message_id` 受控读取少量未处理消息；日程模块不能另存一份正文。没有正文许可时只能说“睡眠期间收到若干条消息”，不能声称知道具体内容。
+
+睡眠归档按角色、用户和睡眠周期隔离，处理后标记 `processed_at`，并按保留策略清理。它不是 `shared_episode`，也不产生关系惩罚。
+
+### 13.6 `user_info_gaps`
 
 ```sql
 CREATE TABLE user_info_gaps (
@@ -971,7 +1044,7 @@ CREATE TABLE user_info_gaps (
 );
 ```
 
-### 13.5 发送审计
+### 13.7 发送审计
 
 已有 `proactive_feedback` 继续作为交付结果记录；需要确保它能区分：
 
@@ -987,7 +1060,7 @@ responded / dismissed / interrupted
 
 `source_event_id` 不能填入 `source_message_id`，`source_memory_id` 不能冒充原始消息 ID。来源链必须能从主动消息回到活动事件或用户消息。
 
-### 13.6 角色与用户隔离
+### 13.8 角色与用户隔离
 
 - `role_id + local_date` 是计划唯一作用域；切换角色不能复用另一角色的日计划。
 - 用户信息缺口按当前用户/关系 profile 作用域保存。
@@ -1222,3 +1295,59 @@ responded / dismissed / interrupted
 - 本规范本身：v1.1 设计契约，后续按 S0→S6 实施。
 
 结论：本模块的成功标准不是“定时发送更多消息”，而是让角色拥有一个可持续、可解释、可中断、可恢复、不会冒充现实经历的虚拟生活状态，并让这套状态真正影响回复资源分配、主动了解和主动分享的来源链。
+
+---
+
+## 20. 术语索引
+
+按名称索引核心对象，括号内为定义章节：
+
+| 术语 | 定义 |
+|---|---|
+| `AmbientContext` | 虚拟空间与感官氛围，仅作角色素材（§5.7） |
+| `AutobiographicalContext` | 虚拟生活事件的可回顾上下文，不等同于共同记忆（§3.2、§13.3） |
+| `CuriosityCandidate` | 由用户信息缺口生成的主动了解候选（§10） |
+| `DayCloseSummary` | 入睡后固化的当日模拟收尾摘要（§3.2、§7.2） |
+| `DayContext` | 当前日的条件分类和覆盖信息（§3.2、§5.1） |
+| `DayPlan` | 某个角色、日期和 revision 的具体虚拟计划（§3.2、§8.1） |
+| `EffectiveSpan` | 活动扣除中断后的有效投入时间（§3.2、§8.5） |
+| `EmotionalResidue` | 活动结束后短期保留的情绪/注意力残留（§5.7） |
+| `LifeTheme` | 跨多日的生活主题，影响活动变体和偏离解释（§5.7） |
+| `ScheduleEvent` | 活动或计划变化产生的可追溯虚拟事件（§3.2、§8.5） |
+| `ScheduleItem` | DayPlan 中的一个活动时间段（§3.2、§8.4） |
+| `ScheduleOffset` | 相对模板作息的时间位置偏移（§3.2、§8.1、§8.3） |
+| `ScheduleOutline` | 角色长期日程模板和变体规则（§3.2、§4） |
+| `ScheduleContext` | 注入回复编排的当前活动最小上下文（§3.2、§9.2） |
+| `SelfShareCandidate` | 由虚拟活动/事件产生的主动分享候选（§11） |
+| `SleepDebt` | 相对目标睡眠量的累计缺口（§3.2、§8.2） |
+| `SleepMessageArchive` | 睡眠窗口内消息的受控归档（§3.2、§13.4） |
+| `UserInfoGap` | 角色希望了解但尚未确认的用户信息缺口（§10.1） |
+| `virtual_life_event` | `truth_class=virtual_simulation` 的角色自身事件（§3.1、§13.3） |
+
+---
+
+## 附录 A：反事实与边界条件
+
+以下规则是实现和验收的快速边界表：
+
+| 反事实场景 | 必须发生 | 禁止发生 |
+|---|---|---|
+| LLM 返回模板外活动 | 整体拒绝，按输入生成确定性回退 | 部分接受外部活动名称 |
+| 前一日未进入睡眠 | 推迟次日计划生成 | 按服务器午夜自动生成 |
+| 进程离线跨过活动 | 标记 `expired_unknown` | 批量标记 `completed` |
+| 睡眠期间收到消息 | 记录受策略控制的元数据/引用 | 自动回复或复制一份正文归档 |
+| 起床后无正文保留许可 | 只能说明收到若干条消息 | 声称知道具体内容 |
+| grace period 已到上限 | 强制入睡并结束回复 | 无限挽留、继续调用 LLM |
+| 活动中被用户消息打断 | 记录 interruption，暂停有效跨度 | 把中断时间计入活动投入 |
+| 活动发生短期偏移 | 增加有原因的 `ScheduleOffset`，逐日回正 | 永久改变角色 chronotype |
+| 时间不足 | 先压缩/跳过低优先级非必需活动 | 无视 required、产生时间重叠 |
+| 角色为 `night_aligned` | 按角色模板使用白天睡眠窗口 | 强制套用白天作息 |
+| 用户未按互动期望窗口出现 | 低强度残留或无变化 | 责备、惩罚、编造用户承诺 |
+| 虚拟事件用于后续回顾 | 从自传归档带出 `virtual_simulation` 性质 | 写入 `shared_episode` 伪装共同经历 |
+| 当前活动为 `inconvenient` | 普通闲聊变短/变慢，认真问题仍回答 | 以“正在忙”为由拒绝重要问题 |
+| 当前活动为 `unavailable` | 停止普通 LLM 回复，等恢复阶段 | 发送“已看到”或虚假处理结果 |
+| QQ 与桌宠同时有候选 | 各自运行独立 Gate、冷却和额度 | 共享发送计数或互相绕过 Gate |
+| 计划/事件来源缺失 | 不生成主动分享或主动提问 | 用 LLM 自由补齐经历 |
+| 用户询问活动是否真实 | 明确虚拟模拟边界 | 继续杜撰现实证据 |
+
+这些规则优先于文案自然度。自然表达不能成为绕过来源、授权、睡眠边界、作用域和交付 Gate 的理由。
