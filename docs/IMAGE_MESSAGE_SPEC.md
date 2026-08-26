@@ -2,6 +2,7 @@
 
 > 状态：实现版 v1.0（2026-08-21）。
 > 覆盖：Electron 桌宠聊天框、QQ OneBot 图片段、Agent 多模态输入。
+> 后续设计：图片持久化边界、表情候选授权与生命周期见 `IMAGE_STICKER_LIFECYCLE_SPEC.md`；该设计尚未实现。
 
 ## 统一契约
 
