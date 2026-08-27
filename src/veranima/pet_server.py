@@ -253,11 +253,12 @@ class PetServer:
             return
         runtime = getattr(self._agent, "schedule_runtime", None)
         if runtime is not None:
-            advance = getattr(self._agent, "advance_schedule_async", None)
-            if callable(advance):
-                await advance()
-            else:
-                runtime.advance(__import__("datetime").datetime.now(__import__("datetime").timezone.utc))
+            async with self._agent_lock:
+                advance = getattr(self._agent, "advance_schedule_async", None)
+                if callable(advance):
+                    await advance()
+                else:
+                    runtime.advance(__import__("datetime").datetime.now(__import__("datetime").timezone.utc))
 
     async def tick_presence(self) -> bool:
         """R1 无缝衔接（R1_SPEC 4.召回）：L0 在场检测 → absent→present 转变 → 衔接语。

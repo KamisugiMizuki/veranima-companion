@@ -74,4 +74,24 @@ def test_runtime_route_respects_profile_allowlist(tmp_path):
     (role / "virtual_schedule.json").write_text(json.dumps(value), encoding="utf-8")
     runtime = ScheduleRuntime(ScheduleOutline.from_role_dir(role))
 
-    assert runtime._route("desk", "window") is None
+    runtime.advance(dt.datetime(2026, 8, 28, 1, tzinfo=dt.timezone.utc))
+    runtime.advance(dt.datetime(2026, 8, 28, 2, 30, tzinfo=dt.timezone.utc))
+
+    assert runtime.scene_state == "reconciling"
+    assert runtime.target_place_id is None
+
+
+def test_profile_override_uses_one_plan_for_context_and_route(tmp_path):
+    role = make_role(tmp_path)
+    path = role / "virtual_schedule.json"
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value["day_profiles"]["other"] = {"allowed_block_ids": ["a", "b"]}
+    value["space"]["routes"][0]["allowed_day_profiles"] = ["other"]
+    path.write_text(json.dumps(value), encoding="utf-8")
+    runtime = ScheduleRuntime(ScheduleOutline.from_role_dir(role))
+    runtime.profile_override = "other"
+    when = dt.datetime(2026, 8, 28, 1, tzinfo=dt.timezone.utc)
+
+    runtime.advance(when)
+
+    assert runtime.day_route.plan_id == runtime.current_context(when).plan_id

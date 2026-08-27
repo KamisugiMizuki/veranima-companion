@@ -865,6 +865,14 @@ ScheduleRuntime.current_place_id / target_place_id /
 - route 插入和时间重叠校验；
 - DayPlan/DayRoute digest；当前已实现 route transition 的时间占用校验。
 
+### VSP-1.5：运行时路线统一
+
+- `ScheduleRuntime` 为当前 plan 缓存 `DayRoute`；
+- runtime 地点迁移优先消费 DayRoute transition；
+- 缺路线时保持原地并进入 `reconciling`；
+- `fixed/choose/any_allowed/remote/stay` 地点策略已实现基础选择；
+- 复杂路线导致的全局活动重排仍属于后续优化，不再作为基础路线校验的别名。
+
 ### VSP-2：CurrentScene
 
 - runtime snapshot：已实现当前地点、目标地点、移动起止时间、scene state 和 role scope；

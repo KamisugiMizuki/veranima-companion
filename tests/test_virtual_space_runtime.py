@@ -165,6 +165,15 @@ def test_production_role_day_route_is_complete(role_id):
     assert route.stops
 
 
+def test_runtime_uses_cached_day_route_for_transition(tmp_path):
+    runtime = ScheduleRuntime(ScheduleOutline.from_role_dir(write_role(tmp_path)))
+    runtime.advance(dt.datetime(2026, 8, 28, 1, tzinfo=dt.timezone.utc))
+    runtime.advance(dt.datetime(2026, 8, 28, 4, tzinfo=dt.timezone.utc))
+    assert runtime.day_route is not None
+    assert runtime.day_route.transitions
+    assert runtime.scene_state == "in_transition"
+
+
 def test_missing_route_does_not_teleport(tmp_path):
     role = write_role(tmp_path)
     value = json.loads((role / "virtual_schedule.json").read_text(encoding="utf-8"))

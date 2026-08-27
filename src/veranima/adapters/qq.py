@@ -715,27 +715,31 @@ class QQAdapter:
                     await workers
                     raise
 
+    async def _advance_schedule_once(self) -> str:
+        async with self._lock:
+            advance = getattr(self.agent, "advance_schedule_async", None)
+            runtime = getattr(self.agent, "schedule_runtime", None)
+            if callable(advance):
+                await advance()
+            elif runtime is not None:
+                runtime.advance(__import__("datetime").datetime.now(__import__("datetime").timezone.utc))
+            return runtime.pop_notice() if runtime is not None else ""
+
     async def _bg_loop_async(self, stop: asyncio.Event) -> None:
         """同进程模式的主动循环；所有 Agent 调用共享 self._lock。"""
         while not stop.is_set():
             try:
-                advance = getattr(self.agent, "advance_schedule_async", None)
-                if callable(advance):
-                    await advance()
-                elif getattr(self.agent, "schedule_runtime", None) is not None:
-                    self.agent.schedule_runtime.advance(__import__("datetime").datetime.now(__import__("datetime").timezone.utc))
-                if getattr(self.agent, "schedule_runtime", None) is not None:
-                    notice = self.agent.schedule_runtime.pop_notice()
-                    if notice:
-                        candidate = self.agent.schedule_notice_candidate(notice, "qq")
-                        decision = self.agent.gate.decide(
-                            candidate, scene=self.agent.scene_lock.current(),
-                            character_sleeping=False,
-                        ) if candidate else None
-                        text = await asyncio.to_thread(self.agent.schedule_notice_text, notice) if decision and decision.allow else ""
-                        if text and await self._send_to_all_async(text):
-                            self.agent.gate.commit(candidate)
-                            self.agent.record_proactive_message(text, channel="qq")
+                notice = await self._advance_schedule_once()
+                if notice:
+                    candidate = self.agent.schedule_notice_candidate(notice, "qq")
+                    decision = self.agent.gate.decide(
+                        candidate, scene=self.agent.scene_lock.current(),
+                        character_sleeping=False,
+                    ) if candidate else None
+                    text = await asyncio.to_thread(self.agent.schedule_notice_text, notice) if decision and decision.allow else ""
+                    if text and await self._send_to_all_async(text):
+                        self.agent.gate.commit(candidate)
+                        self.agent.record_proactive_message(text, channel="qq")
                 if not self._in_quiet_hours():
                     if self.proactive:
                         await self._send_due_meal_reminder_async()
@@ -1211,11 +1215,8 @@ class QQAdapter:
             try:
                 runtime = getattr(self.agent, "schedule_runtime", None)
                 if runtime is not None:
-                    before_schedule = runtime.to_snapshot()
-                    runtime.advance(datetime.datetime.now(datetime.timezone.utc))
-                    if runtime.to_snapshot() != before_schedule:
-                        self.agent._persist_state()
-                    notice = runtime.pop_notice()
+                    future = asyncio.run_coroutine_threadsafe(self._advance_schedule_once(), loop)
+                    notice = future.result()
                     if notice:
                         candidate = self.agent.schedule_notice_candidate(notice, "qq")
                         decision = self.agent.gate.decide(

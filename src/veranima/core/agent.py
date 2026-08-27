@@ -7,6 +7,7 @@ MVP2 范围：隐式反馈学习 + 风格参数（bandits+EMA）+ 语言镜像 +
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 import random
 import time
@@ -438,9 +439,15 @@ class Agent:
         before = snapshot() if callable(snapshot) else None
         runtime.advance(current)
         after_scene = runtime.current_scene(current)
-        if after_scene != before_scene:
+        if after_scene != before_scene or runtime.pending_scene_event:
             event = runtime.scene_event(current)
-            key = json.dumps(event["scene"], ensure_ascii=False, sort_keys=True)
+            pending_kind = runtime.pending_scene_event
+            if pending_kind:
+                event["event_kind"] = pending_kind
+            key = json.dumps(
+                {"event_kind": event["event_kind"], "scene": event["scene"]},
+                ensure_ascii=False, sort_keys=True,
+            )
             if key != runtime.last_scene_event_key:
                 self.memory.store_virtual_life_event(
                     role_id=runtime.outline.role_id,
@@ -451,6 +458,8 @@ class Agent:
                     source={**after_scene, "at": event["at"]},
                 )
                 runtime.last_scene_event_key = key
+            if pending_kind:
+                runtime.pending_scene_event = ""
         if callable(snapshot) and snapshot() != before:
             self._persist_state()
 
@@ -485,6 +494,8 @@ class Agent:
         if runtime is None:
             return "我这边没有可用的空间状态，只能说个大概。"
         scene = runtime.current_scene(when or datetime.datetime.now(datetime.timezone.utc))
+        if scene.get("scene_state") in {"unknown_after_downtime", "reconciling"}:
+            return "空间状态还没完全对上，我不硬编具体位置，先按虚拟日程继续走。"
         if scene.get("scene_state") == "in_transition":
             if getattr(runtime, "space_detail", "brief") == "hidden":
                 return "我这会儿在处理自己的安排，等状态稳定一点再说。"
@@ -799,7 +810,9 @@ class Agent:
 
         schedule_runtime = getattr(self, "schedule_runtime", None)
         resolved_scope = getattr(self, "_current_user_scope", None) or ("pet:default" if channel == "tts" else "qq:default")
-        interaction_now = datetime.datetime.now(datetime.timezone.utc)
+        if schedule_runtime is not None and channel == "im" and schedule_runtime.reconcile_from_user(user_text, interaction_now):
+            self._persist_state()
+
         if schedule_runtime is not None:
             schedule_runtime.advance(interaction_now)
             context = schedule_runtime.current_context(interaction_now)

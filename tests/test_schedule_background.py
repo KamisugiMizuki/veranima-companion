@@ -11,6 +11,7 @@ def test_qq_background_tick_advances_schedule_runtime(monkeypatch):
         sleeping = False
         def __init__(self): self.calls = []
         def advance(self, when): self.calls.append(when)
+        def pop_notice(self): return ""
 
     class Agent:
         schedule_runtime = Runtime()
@@ -25,6 +26,7 @@ def test_qq_background_tick_advances_schedule_runtime(monkeypatch):
     adapter._in_quiet_hours = lambda: True
 
     async def run_once():
+        adapter._lock = asyncio.Lock()
         stop = asyncio.Event()
         task = asyncio.create_task(adapter._bg_loop_async(stop))
         await asyncio.sleep(0.03)

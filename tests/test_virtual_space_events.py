@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import json
 import pytest
@@ -91,6 +92,31 @@ def test_downtime_recovery_marks_scene_unknown_without_fabricating_arrival(tmp_p
     assert scene["target_place_id"] == "work"
 
 
+def test_downtime_unknown_event_reaches_virtual_life_store(tmp_path):
+    role = tmp_path / "characters" / "downtime-event"
+    role.mkdir(parents=True)
+    (role / "virtual_schedule.json").write_text(json.dumps(space_template_for_restart()), encoding="utf-8")
+    card_path = role / "character.json"
+    card_path.write_text("{}", encoding="utf-8")
+    memory = MemoryStore(str(tmp_path / "db.sqlite"), config={}, provider=Embed())
+    agent = Agent(CharacterCard(name="Downtime"), memory, LLM(), AgentState(), config={
+        "root": str(tmp_path), "character_card": str(card_path),
+    })
+    runtime = agent.schedule_runtime
+    runtime.current_place_id = "home"
+    runtime.target_place_id = "work"
+    runtime.scene_state = "in_transition"
+    runtime.transition_started_at = dt.datetime(2026, 8, 28, 1, tzinfo=dt.timezone.utc)
+    runtime.expected_arrival_at = runtime.transition_started_at + dt.timedelta(minutes=5)
+    when = dt.datetime(2026, 8, 28, 2, tzinfo=dt.timezone.utc)
+
+    runtime.reconcile_after_downtime(when)
+    asyncio.run(agent.advance_schedule_async(when))
+
+    events = memory.virtual_life_events(runtime.outline.role_id)
+    assert events[0]["event_kind"] == "place_unknown_after_downtime"
+
+
 def test_current_space_answer_uses_scene_label_without_internal_ids(tmp_path):
     role = tmp_path / "characters" / "answer"
     role.mkdir(parents=True)
@@ -109,6 +135,24 @@ def test_current_space_answer_uses_scene_label_without_internal_ids(tmp_path):
     answer = agent.current_space_answer()
     assert "窗边" in answer
     assert "home" not in answer
+
+
+def test_transition_completion_has_distinct_event_kind(tmp_path):
+    role = tmp_path / "characters" / "route-event"
+    role.mkdir(parents=True)
+    value = space_template_for_restart()
+    value["blocks"] = [{"id": "a", "category": "obligation", "activity_pool": ["a"], "preferred_window": {"start": "09:00", "end": "10:00"}, "duration_minutes": {"min": 30, "max": 30}, "required": True, "share_policy": "never", "interaction_profile": "normal", "interaction_impact": "none", "deviation_policy": {}, "place_requirement": {"place_policy": "fixed", "fixed_place_id": "home"}}, {"id": "b", "category": "rest", "activity_pool": ["b"], "preferred_window": {"start": "12:00", "end": "14:00"}, "duration_minutes": {"min": 30, "max": 30}, "required": False, "share_policy": "normal", "interaction_profile": "normal", "interaction_impact": "none", "deviation_policy": {}, "place_requirement": {"place_policy": "fixed", "fixed_place_id": "rest"}}]
+    value["day_profiles"]["base"]["allowed_block_ids"] = ["a", "b"]
+    value["space"]["places"].append({"id": "rest", "label": "休息处", "kind": "home", "sleep_allowed": True})
+    value["space"]["routes"] = [{"from_place_id": "home", "to_place_id": "rest", "duration_minutes": 5, "bidirectional": True}]
+    (role / "virtual_schedule.json").write_text(json.dumps(value), encoding="utf-8")
+    runtime = ScheduleRuntime(ScheduleOutline.from_role_dir(role))
+    start = dt.datetime(2026, 8, 28, 1, 0, tzinfo=dt.timezone.utc)
+    runtime.advance(dt.datetime(2026, 8, 28, 1, 0, tzinfo=dt.timezone.utc))
+    runtime.advance(dt.datetime(2026, 8, 28, 4, 0, tzinfo=dt.timezone.utc))
+    runtime.advance(dt.datetime(2026, 8, 28, 4, 6, tzinfo=dt.timezone.utc))
+
+    assert runtime.scene_event(dt.datetime(2026, 8, 28, 4, 6, tzinfo=dt.timezone.utc))["event_kind"] == "transition_completed"
 
 
 def test_space_overrides_survive_agent_restart(tmp_path):

@@ -171,6 +171,8 @@ class ScheduleRuntime:
         self.last_scene_event_key: str = ""
         self.scene_state: str = "unknown"
         self.space_preference: str = "stable"
+        self.pending_scene_event: str = ""
+        self.day_route: DayRoute | None = None
 
     @property
     def sleeping(self) -> bool:
@@ -199,6 +201,7 @@ class ScheduleRuntime:
             "last_scene_event_key": self.last_scene_event_key,
             "scene_state": self.scene_state,
             "space_preference": self.space_preference,
+            "pending_scene_event": self.pending_scene_event,
         }
         if self._next_day_plan is not None:
             data["next_plan_date"] = self._next_day_plan.local_date.isoformat()
@@ -249,8 +252,13 @@ class ScheduleRuntime:
         runtime.last_scene_event_key = str(snapshot.get("last_scene_event_key") or "")
         runtime.scene_state = str(snapshot.get("scene_state")) if snapshot.get("scene_state") in {"at_place", "in_transition", "unknown_after_downtime", "reconciling", "unknown"} else "unknown"
         runtime.space_preference = str(snapshot.get("space_preference") or "stable") if snapshot.get("space_preference") in {None, "stable", "balanced"} else "stable"
+        pending_scene_event = snapshot.get("pending_scene_event")
+        runtime.pending_scene_event = str(pending_scene_event) if pending_scene_event in {
+            "transition_completed", "transition_interrupted", "place_reconciled", "place_unknown_after_downtime",
+        } else ""
         if runtime.scene_state == "in_transition" and runtime.expected_arrival_at is None:
             runtime.scene_state = "unknown_after_downtime"
+            runtime.pending_scene_event = "place_unknown_after_downtime"
         next_date = snapshot.get("next_plan_date")
         if next_date:
             try:
@@ -260,6 +268,7 @@ class ScheduleRuntime:
                     day_profile=str(snapshot.get("next_plan_profile") or outline.default_day_profile),
                     adjustments=[dict(item) for item in snapshot.get("next_plan_adjustments", []) if isinstance(item, dict)],
                     source=str(snapshot.get("next_plan_source") or "deterministic_fallback"),
+                    space_preference=runtime.space_preference,
                 )
                 runtime._next_day_adjustments = [dict(item) for item in snapshot.get("next_plan_adjustments", []) if isinstance(item, dict)]
                 runtime._next_day_profile = str(snapshot.get("next_plan_profile") or outline.default_day_profile)
@@ -362,12 +371,13 @@ class ScheduleRuntime:
         active_profile = self.profile_override or self.outline.default_day_profile
         plan = self.outline.build_day_plan(
             when, day_profile=active_profile, adjustments=offset_adjustments or None,
+            space_preference=self.space_preference,
         )
         if plan is None:
             raise ScheduleTemplateError("cannot generate a plan from a disabled outline")
         if not valid:
             return DayPlan(plan.plan_id, plan.role_id, plan.local_date, plan.timezone, plan.items,
-                           plan.interaction_profiles, source="deterministic_fallback")
+                           plan.interaction_profiles, source="deterministic_fallback", day_profile=plan.day_profile)
         try:
             return self.outline.build_day_plan(
                 when,
@@ -377,10 +387,11 @@ class ScheduleRuntime:
                     for item in candidate.get("items", [])
                 ],
                 source="llm_structured_template",
+                space_preference=self.space_preference,
             ) or plan
         except (TypeError, ValueError, ScheduleTemplateError):
             return DayPlan(plan.plan_id, plan.role_id, plan.local_date, plan.timezone, plan.items,
-                           plan.interaction_profiles, source="deterministic_fallback")
+                           plan.interaction_profiles, source="deterministic_fallback", day_profile=plan.day_profile)
 
     def begin_sleep_preparation(self, when: dt.datetime) -> ScheduleRuntimeState:
         if self.state.state == "sleeping":
@@ -454,7 +465,23 @@ class ScheduleRuntime:
                 )
                 self.pending_notice = "woke"
                 self.recover_offset(when)
-        plan = self._next_day_plan or self.outline.build_day_plan(when, space_preference=self.space_preference)
+        plan = self._next_day_plan or self.outline.build_day_plan(
+            when, day_profile=self.profile_override or None,
+            space_preference=self.space_preference,
+        )
+        if getattr(self, "space_enabled", True):
+            self._settle_transition(when)
+        if plan and self.outline.space and (self.day_route is None or self.day_route.plan_id != plan.plan_id):
+            active_profile = plan.day_profile or self.profile_override or self.outline.default_day_profile
+            try:
+                self.day_route = self.outline.build_day_route(
+                    when, day_profile=active_profile, plan=plan,
+                    space_preference=self.space_preference,
+                )
+            except ScheduleTemplateError:
+                self.day_route = DayRoute("", self.outline.role_id, plan.plan_id, plan.local_date, (), ())
+                self.scene_state = "reconciling"
+                self.pending_scene_event = "transition_interrupted"
         if self.state.state == "awake" and self.outline.circadian:
             local = when.astimezone(ZoneInfo(self.outline.timezone))
             start = _local_time(local.date(), self.outline.circadian.sleep_start, ZoneInfo(self.outline.timezone))
@@ -476,21 +503,21 @@ class ScheduleRuntime:
                 self.expected_arrival_at = None
                 context = replace(context, place_id=None, place_label="", target_place_id=None,
                                   scene_state="unknown", ambient_context={})
-            if self.expected_arrival_at and when >= self.expected_arrival_at and self.scene_state != "unknown_after_downtime":
-                self.previous_place_id = self.current_place_id
-                self.current_place_id = self.target_place_id
-                self.target_place_id = None
-                self.transition_started_at = None
-                self.expected_arrival_at = None
-                self.scene_state = "at_place"
-                context = replace(context, place_id=self.current_place_id, target_place_id=None)
             desired_place = context.place_id
+            if (self.scene_state == "reconciling" and desired_place == self.current_place_id
+                    and self.target_place_id is None):
+                self.scene_state = "at_place"
+                self.pending_scene_event = "place_reconciled"
             if desired_place and self.current_place_id is None:
                 self.current_place_id = desired_place
             elif desired_place and desired_place != self.current_place_id and self.target_place_id is None:
-                route = self._route(self.current_place_id, desired_place)
+                active_profile = plan.day_profile or self.profile_override or self.outline.default_day_profile
+                route = self._route_from_day_route(self.current_place_id, desired_place) or self._route(
+                    self.current_place_id, desired_place, active_profile,
+                )
                 if route is None:
                     self.scene_state = "reconciling"
+                    self.pending_scene_event = "transition_interrupted"
                 else:
                     minutes = route.get("duration_minutes", 0)
                     if isinstance(minutes, dict):
@@ -521,15 +548,39 @@ class ScheduleRuntime:
             self.generate_next_day_after_sleep(when)
         return self.state
 
-    def _route(self, from_place: str, to_place: str) -> dict | None:
-        if self.outline.space is None:
+    def _route_from_day_route(self, from_place: str, to_place: str) -> dict | None:
+        if self.day_route is None:
             return None
-        for route in self.outline.space.routes:
-            if route.get("from_place_id") == from_place and route.get("to_place_id") == to_place:
-                return route
-            if route.get("bidirectional") and route.get("from_place_id") == to_place and route.get("to_place_id") == from_place:
-                return route
+        for transition in self.day_route.transitions:
+            if transition.from_place_id == from_place and transition.to_place_id == to_place:
+                return {
+                    "from_place_id": from_place, "to_place_id": to_place,
+                    "duration_minutes": max(1, int((transition.planned_end - transition.planned_start).total_seconds() // 60)),
+                    "mode": transition.mode,
+                }
         return None
+
+    def _route(self, from_place: str, to_place: str, profile_id: str | None = None) -> dict | None:
+        return self.outline._route_edge(
+            from_place, to_place, profile_id or self.profile_override or self.outline.default_day_profile,
+        )
+
+    def _settle_transition(self, when: dt.datetime) -> None:
+        if not self.target_place_id or not self.expected_arrival_at or when < self.expected_arrival_at:
+            return
+        if self.scene_state == "reconciling":
+            self.scene_state = "unknown_after_downtime"
+            self.pending_scene_event = "place_unknown_after_downtime"
+            return
+        if self.scene_state != "in_transition":
+            return
+        self.previous_place_id = self.current_place_id
+        self.current_place_id = self.target_place_id
+        self.target_place_id = None
+        self.transition_started_at = None
+        self.expected_arrival_at = None
+        self.scene_state = "at_place"
+        self.pending_scene_event = "transition_completed"
 
     def _force_sleep(self, when: dt.datetime) -> ScheduleRuntimeState:
         extension = max(0, self.state.sleep_extension_minutes)
@@ -547,18 +598,17 @@ class ScheduleRuntime:
     def current_context(self, when: dt.datetime) -> ScheduleContext:
         if self.state.state == "sleeping":
             return ScheduleContext("", None, "sleep_window", "sleep_like", 1.0, "sleep_like", 0.0, {}, False, False, {"truth_class": "virtual_simulation"})
-        plan = self._next_day_plan or self.outline.build_day_plan(when, space_preference=self.space_preference)
+        plan = self._next_day_plan or self.outline.build_day_plan(
+            when, day_profile=self.profile_override or None,
+            space_preference=self.space_preference,
+        )
         if plan is None:
             return ScheduleContext("", None, "gap", "gap", 0.0, "available_normal", 1.0, {}, True, True, {})
+        if getattr(self, "space_enabled", True):
+            self._settle_transition(when)
         context = plan.context_at(when)
         if not getattr(self, "space_enabled", True):
             return replace(context, place_id=None, place_label="", target_place_id=None, scene_state="unknown", ambient_context={})
-        if self.expected_arrival_at and when >= self.expected_arrival_at and self.scene_state != "unknown_after_downtime":
-            self.current_place_id = self.target_place_id
-            self.target_place_id = None
-            self.transition_started_at = None
-            self.expected_arrival_at = None
-            self.scene_state = "at_place"
         if self.scene_state != "unknown":
             context = replace(context, scene_state=self.scene_state, place_id=self.current_place_id or context.place_id, target_place_id=self.target_place_id or context.target_place_id)
         if self.expected_arrival_at and when < self.expected_arrival_at:
@@ -577,6 +627,7 @@ class ScheduleRuntime:
         context = self.current_context(when)
         if self.scene_state == "in_transition" and self.expected_arrival_at is None:
             self.scene_state = "unknown_after_downtime"
+            self.pending_scene_event = "place_unknown_after_downtime"
         place_id = self.current_place_id if self.current_place_id and context.item_id is None else context.place_id
         place = self.outline.space.places.get(place_id, {}) if self.outline.space and place_id else {}
         return {
@@ -598,7 +649,7 @@ class ScheduleRuntime:
 
     def scene_event(self, when: dt.datetime) -> dict:
         scene = self.current_scene(when)
-        kind = {"in_transition": "transition_started", "unknown_after_downtime": "place_unknown_after_downtime", "reconciling": "place_reconciled"}.get(scene["scene_state"], "place_entered")
+        kind = self.pending_scene_event or {"in_transition": "transition_started", "unknown_after_downtime": "place_unknown_after_downtime", "reconciling": "transition_interrupted"}.get(scene["scene_state"], "place_entered")
         return {"event_kind": kind, "scene": scene, "at": when.isoformat()}
 
     def reconcile_after_downtime(self, when: dt.datetime, *, arrived: bool = False) -> dict:
@@ -608,12 +659,22 @@ class ScheduleRuntime:
             self.transition_started_at = None
             self.expected_arrival_at = None
             self.scene_state = "at_place"
+            self.pending_scene_event = "place_reconciled"
             return self.current_scene(when)
         if self.expected_arrival_at and when > self.expected_arrival_at and self.target_place_id:
             self.scene_state = "unknown_after_downtime"
-        elif self.current_place_id:
+            self.pending_scene_event = "place_unknown_after_downtime"
+        elif self.scene_state != "unknown_after_downtime" and self.current_place_id:
             self.scene_state = "reconciling"
         return self.current_scene(when)
+
+    def reconcile_from_user(self, text: str, when: dt.datetime) -> bool:
+        if self.scene_state not in {"unknown_after_downtime", "reconciling"} or not self.target_place_id:
+            return False
+        if str(text).strip() not in {"到了", "我到了", "已到", "算到了", "继续按到了算"}:
+            return False
+        self.reconcile_after_downtime(when, arrived=True)
+        return True
 
     def pop_notice(self) -> str:
         value, self.pending_notice = self.pending_notice, ""
@@ -639,7 +700,7 @@ class ScheduleRuntime:
             {**item, "shift_minutes": int(item.get("shift_minutes", 0)) + self.schedule_offset_minutes}
             for item in (output or {}).get("items", []) if isinstance(item, dict)
         ]
-        self._next_day_profile = str((output or {}).get("day_profile") or self.outline.default_day_profile)
+        self._next_day_profile = self._next_day_plan.day_profile or self.outline.default_day_profile
         return self._next_day_plan
 
 
@@ -652,6 +713,7 @@ class DayPlan:
     items: tuple[ScheduleItem, ...]
     interaction_profiles: dict
     source: str = "deterministic_template"
+    day_profile: str = ""
 
     def context_at(self, when: dt.datetime) -> ScheduleContext:
         zone = ZoneInfo(self.timezone)
@@ -871,18 +933,23 @@ class ScheduleOutline:
         for previous, current in zip(items, items[1:]):
             if current.planned_start < previous.planned_end:
                 raise ScheduleTemplateError("generated schedule items overlap")
-        return DayPlan(plan_id, self.role_id, local_date, self.timezone, tuple(items), dict(self.interaction_profiles), source=source)
+        return DayPlan(
+            plan_id, self.role_id, local_date, self.timezone, tuple(items),
+            dict(self.interaction_profiles), source=source, day_profile=profile_id,
+        )
 
-    def build_day_route(self, when: dt.datetime, *, day_profile: str | None = None) -> DayRoute:
-        plan = self.build_day_plan(when, day_profile=day_profile)
+    def build_day_route(self, when: dt.datetime, *, day_profile: str | None = None,
+                        space_preference: str = "stable", plan: DayPlan | None = None) -> DayRoute:
+        plan = plan or self.build_day_plan(when, day_profile=day_profile, space_preference=space_preference)
         if plan is None or self.space is None:
             return DayRoute("", self.role_id, plan.plan_id if plan else "", plan.local_date if plan else when.date(), (), ())
+        active_profile = plan.day_profile or day_profile or self.default_day_profile
         stops = tuple(RouteStop(item.id, item.place_id, item.planned_start, item.planned_end) for item in plan.items if item.place_id)
         transitions = []
         for previous, current in zip(stops, stops[1:]):
             if previous.place_id == current.place_id:
                 continue
-            route = self._route_edge(previous.place_id, current.place_id, day_profile or self.default_day_profile)
+            route = self._route_edge(previous.place_id, current.place_id, active_profile)
             if route is None:
                 raise ScheduleTemplateError(f"no route from {previous.place_id} to {current.place_id}")
             minutes = route.get("duration_minutes", 0)

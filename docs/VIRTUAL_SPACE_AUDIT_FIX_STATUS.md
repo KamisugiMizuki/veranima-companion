@@ -50,19 +50,15 @@
 - CurrentScene 补充 previous place、transition/arrival 时间和 confidence；
 - 修复 transition 到达后旧 context 覆盖目标地点的问题，支持连续移动；
 
-## 最新验证
-
-```text
-空间/日程相关：通过
-全量 pytest：967 passed, 1 warning
-Node 语法检查：通过
-zima DayRoute：3 transitions
- yuki DayRoute：2 transitions
-真实空间 Agent/prompt：工作区域 + screen_cool/quiet_keyboard
-```
-
 ## 严格结论
 
-当前可以声称：空间模板加载、固定地点、活动环境、基础 CurrentScene、基础 transition、离线 unknown、防瞬移、地点问答和 prompt 接线已实现。
+当前可以声称：空间模板加载、固定地点、活动环境、基础 CurrentScene、DayRoute transition、地点选择策略、space_preference、space_detail、离线 unknown、安全确认 API、地点问答和 prompt 接线已实现。
 
-当前不能声称：完整 DayRoute 已成为唯一生产调度路径、完整路线重排、空间设置偏好算法、完整空间事件状态机、真实 NapCat/Pet 双端联机验收已完成。
+当前不能声称：复杂路线全局时间重排、完整空间事件 UI、真实 NapCat/Pet 双端联机验收已完成。
+
+## 最新复验
+
+```text
+全量 pytest：970 passed, 1 warning
+真实空间 API：公共空间 at_place → 回家 in_transition → 一居室 at_place
+```
