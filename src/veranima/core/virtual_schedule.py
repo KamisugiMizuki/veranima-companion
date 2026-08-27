@@ -5,7 +5,7 @@ import json
 import hashlib
 import datetime as dt
 from zoneinfo import ZoneInfo
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 
@@ -59,6 +59,7 @@ class ScheduleBlock:
     interaction_impact: str
     deviation_policy: dict
     priority: int = 0
+    place_requirement: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,16 @@ class ScheduleItem:
     interaction_impact: str
     share_policy: str
     required: bool
+    place_id: str | None = None
+    ambient_context: dict = field(default_factory=dict)
+    place_label: str = ""
+
+
+@dataclass(frozen=True)
+class SpaceProfile:
+    world_scope: dict
+    places: dict[str, dict]
+    routes: tuple[dict, ...]
 
 
 @dataclass(frozen=True)
@@ -89,6 +100,11 @@ class ScheduleContext:
     curiosity_allowed: bool
     source_anchor: dict
     activity_key: str = ""
+    place_id: str | None = None
+    scene_state: str = "unknown"
+    ambient_context: dict = field(default_factory=dict)
+    place_label: str = ""
+    target_place_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -120,6 +136,10 @@ class ScheduleRuntime:
         self.activity_spans: dict[str, dict] = {}
         self.current_item_id: str = ""
         self.last_sleep_cycle_id: str = ""
+        self.current_place_id: str | None = None
+        self.target_place_id: str | None = None
+        self.transition_started_at: dt.datetime | None = None
+        self.expected_arrival_at: dt.datetime | None = None
 
     @property
     def sleeping(self) -> bool:
@@ -140,6 +160,10 @@ class ScheduleRuntime:
             "activity_spans": self.activity_spans,
             "current_item_id": self.current_item_id,
             "last_sleep_cycle_id": self.last_sleep_cycle_id,
+            "current_place_id": self.current_place_id,
+            "target_place_id": self.target_place_id,
+            "transition_started_at": self.transition_started_at.isoformat() if self.transition_started_at else None,
+            "expected_arrival_at": self.expected_arrival_at.isoformat() if self.expected_arrival_at else None,
         }
         if self._next_day_plan is not None:
             data["next_plan_date"] = self._next_day_plan.local_date.isoformat()
@@ -171,6 +195,10 @@ class ScheduleRuntime:
         }
         runtime.current_item_id = str(snapshot.get("current_item_id") or "")
         runtime.last_sleep_cycle_id = str(snapshot.get("last_sleep_cycle_id") or "")
+        runtime.current_place_id = snapshot.get("current_place_id")
+        runtime.target_place_id = snapshot.get("target_place_id")
+        runtime.transition_started_at = parse(snapshot.get("transition_started_at"))
+        runtime.expected_arrival_at = parse(snapshot.get("expected_arrival_at"))
         next_date = snapshot.get("next_plan_date")
         if next_date:
             try:
@@ -377,6 +405,25 @@ class ScheduleRuntime:
         plan = self._next_day_plan or self.outline.build_day_plan(when)
         if plan:
             context = plan.context_at(when)
+            if self.expected_arrival_at and when >= self.expected_arrival_at:
+                self.current_place_id = self.target_place_id
+                self.target_place_id = None
+                self.transition_started_at = None
+                self.expected_arrival_at = None
+            desired_place = context.place_id
+            if desired_place and self.current_place_id is None:
+                self.current_place_id = desired_place
+            elif desired_place and desired_place != self.current_place_id and self.target_place_id is None:
+                route = self._route(self.current_place_id, desired_place)
+                if route is None:
+                    self.current_place_id = desired_place
+                else:
+                    minutes = route.get("duration_minutes", 0)
+                    if isinstance(minutes, dict):
+                        minutes = minutes.get("min", 0)
+                    self.target_place_id = desired_place
+                    self.transition_started_at = when
+                    self.expected_arrival_at = when + dt.timedelta(minutes=max(1, int(minutes)))
             if context.item_id != self.current_item_id:
                 if self.current_item_id:
                     self.finish_activity(when)
@@ -392,6 +439,16 @@ class ScheduleRuntime:
         if self.state.state == "sleeping" and self._next_day_plan is None:
             self.generate_next_day_after_sleep(when)
         return self.state
+
+    def _route(self, from_place: str, to_place: str) -> dict | None:
+        if self.outline.space is None:
+            return None
+        for route in self.outline.space.routes:
+            if route.get("from_place_id") == from_place and route.get("to_place_id") == to_place:
+                return route
+            if route.get("bidirectional") and route.get("from_place_id") == to_place and route.get("to_place_id") == from_place:
+                return route
+        return None
 
     def _force_sleep(self, when: dt.datetime) -> ScheduleRuntimeState:
         extension = max(0, self.state.sleep_extension_minutes)
@@ -412,7 +469,18 @@ class ScheduleRuntime:
         plan = self._next_day_plan or self.outline.build_day_plan(when)
         if plan is None:
             return ScheduleContext("", None, "gap", "gap", 0.0, "available_normal", 1.0, {}, True, True, {})
-        return plan.context_at(when)
+        context = plan.context_at(when)
+        if self.expected_arrival_at and when < self.expected_arrival_at:
+            place = self.outline.space.places.get(self.current_place_id, {}) if self.outline.space else {}
+            return replace(
+                context,
+                place_id=self.current_place_id,
+                place_label=str(place.get("label") or ""),
+                scene_state="in_transition",
+                target_place_id=self.target_place_id,
+                ambient_context={"state": "moving"},
+            )
+        return context
 
     def pop_notice(self) -> str:
         value, self.pending_notice = self.pending_notice, ""
@@ -467,6 +535,10 @@ class DayPlan:
                     profile, item.share_policy != "never", item.interaction_impact == "none",
                     {"truth_class": "virtual_simulation", "plan_id": self.plan_id, "item_id": item.id},
                     item.activity_key,
+                    item.place_id,
+                    "at_place",
+                    dict(item.ambient_context),
+                    item.place_label,
                 )
         return ScheduleContext(
             self.plan_id, None, "gap", "gap", 0.0, "available_normal", 1.0,
@@ -488,6 +560,7 @@ class ScheduleOutline:
     autonomy: dict
     sleep: dict
     template_path: Path | None = None
+    space: SpaceProfile | None = None
 
     @classmethod
     def from_role_dir(cls, role_dir: str | Path) -> "ScheduleOutline":
@@ -495,7 +568,7 @@ class ScheduleOutline:
         path = role_dir / "virtual_schedule.json"
         role_id = role_dir.name
         if not path.is_file():
-            return cls(role_id, False, 0, "", "", {}, (), None, {}, {}, {}, None)
+            return cls(role_id, False, 0, "", "", {}, (), None, {}, {}, {}, None, None)
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
@@ -553,8 +626,14 @@ class ScheduleOutline:
                     raise ScheduleTemplateError(f"sleep.{key} is invalid") from exc
                 if not 0 <= value <= 60:
                     raise ScheduleTemplateError(f"sleep.{key} must be between 0 and 60")
+        space = cls._space(raw.get("space"))
+        if space is not None:
+            for block in blocks:
+                fixed = block.place_requirement.get("fixed_place_id")
+                if fixed and fixed not in space.places:
+                    raise ScheduleTemplateError(f"block {block.id} references unknown place: {fixed}")
         return cls(role_id, enabled, 1, timezone, default_profile, profiles, blocks,
-                   circadian, interaction_profiles, autonomy, sleep, path)
+                   circadian, interaction_profiles, autonomy, sleep, path, space)
 
     def build_day_plan(self, when: dt.datetime, *, day_profile: str | None = None,
                        revision: int = 1, adjustments: list[dict] | None = None,
@@ -609,6 +688,21 @@ class ScheduleOutline:
             activity_key = str(adjustment.get("activity_key") or block.activity_pool[0])
             if activity_key not in block.activity_pool:
                 raise ScheduleTemplateError(f"activity for block {block.id} is not allowed")
+            place_id = adjustment.get("place_id") or block.place_requirement.get("fixed_place_id")
+            ambient = {}
+            if self.space is not None and place_id is not None:
+                place = self.space.places.get(str(place_id))
+                if place is None:
+                    raise ScheduleTemplateError(f"activity for block {block.id} references unknown place")
+                if profile_id not in set(place.get("allowed_day_profiles") or [profile_id]):
+                    raise ScheduleTemplateError(f"place {place_id} is not allowed for profile {profile_id}")
+                categories = set(place.get("allowed_activity_categories") or ())
+                if categories and block.category not in categories:
+                    raise ScheduleTemplateError(f"place {place_id} cannot host category {block.category}")
+                ambient = dict(place.get("ambient_profile") or {})
+                place_label = str(place.get("label") or "")
+            else:
+                place_label = ""
             items.append(ScheduleItem(
                 id=f"{plan_id}:{sequence}:{block.id}", rule_id=block.id,
                 activity_key=activity_key, category=block.category,
@@ -616,6 +710,9 @@ class ScheduleOutline:
                 interaction_profile=block.interaction_profile,
                 interaction_impact=block.interaction_impact,
                 share_policy=block.share_policy, required=block.required,
+                place_id=str(place_id) if place_id is not None else None,
+                ambient_context=ambient,
+                place_label=place_label,
             ))
         for previous, current in zip(items, items[1:]):
             if current.planned_start < previous.planned_end:
@@ -671,7 +768,34 @@ class ScheduleOutline:
             required=bool(raw.get("required", False)), share_policy=share,
             interaction_profile=str(raw["interaction_profile"]), interaction_impact=impact,
             deviation_policy=dict(deviation), priority=priority,
+            place_requirement=dict(raw.get("place_requirement") or {}),
         )
+
+    @staticmethod
+    def _space(raw) -> SpaceProfile | None:
+        if raw is None:
+            return None
+        if not isinstance(raw, dict):
+            raise ScheduleTemplateError("space must be an object")
+        world = raw.get("world_scope")
+        places_raw = raw.get("places")
+        routes_raw = raw.get("routes", [])
+        if not isinstance(world, dict) or not isinstance(places_raw, list) or not isinstance(routes_raw, list):
+            raise ScheduleTemplateError("space requires world_scope, places and routes")
+        home = world.get("home_place_id")
+        places = {}
+        for place in places_raw:
+            if not isinstance(place, dict) or not isinstance(place.get("id"), str):
+                raise ScheduleTemplateError("space place is invalid")
+            if place["id"] in places:
+                raise ScheduleTemplateError("space place ids must be unique")
+            places[place["id"]] = dict(place)
+        if home not in places:
+            raise ScheduleTemplateError("space home_place_id must reference a place")
+        for route in routes_raw:
+            if not isinstance(route, dict) or route.get("from_place_id") not in places or route.get("to_place_id") not in places:
+                raise ScheduleTemplateError("space route references unknown place")
+        return SpaceProfile(dict(world), places, tuple(dict(route) for route in routes_raw))
 
     @staticmethod
     def _circadian(raw) -> Circadian | None:

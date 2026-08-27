@@ -433,10 +433,23 @@ class Agent:
         if context is None:
             return ""
         budget = ", ".join(f"{key}={value}" for key, value in context.reply_budget.items())
+        ambient_labels = {
+            "screen_cool": "屏幕冷光", "quiet_keyboard": "安静的键盘声",
+            "soft_daylight": "柔和日光", "outside_quiet": "窗外较安静",
+            "quiet_room": "安静的室内", "open_sky": "开阔天空",
+            "wind": "有风", "soft_indoor": "柔和室内光线",
+            "evening_light": "傍晚光线", "distant_town": "远处的小镇声",
+            "low_public_noise": "低声的公共环境",
+        }
+        ambient = "、".join(ambient_labels.get(str(value), str(value)) for value in context.ambient_context.values())
+        place = f"当前虚拟地点={context.place_label}，" if context.place_label else ""
+        environment = f"活动环境={ambient}。" if ambient else ""
+        scene = f"场景状态={context.scene_state}。"
         return (
             "【当前虚拟活动交互资源】这是角色虚拟日程的内部模拟状态，不是现实行动证据。"
-            f"当前阶段={context.phase}，活动类别={context.activity_category}，活动={context.activity_key or '未指定'}，"
+            f"当前阶段={context.phase}，活动类别={context.activity_category}，活动={context.activity_key or '未指定'}，{place}"
             f"交互画像={context.interaction_profile}，可用度={context.availability:.2f}。"
+            f"{scene}{environment}"
             f"回复约束：{budget or '按正常通道自然交流'}。"
             "普通回复无需播报当前活动；认真问题仍须回答核心内容。"
         )

@@ -4,7 +4,7 @@
 >
 > 日期：2026-08-27
 >
-> 状态：设计稿，尚未按本文实现。
+> 状态：实现中；VSP-0 和 VSP-1 的固定地点、活动环境、轻量移动状态与 prompt 接线已落地，完整 DayRoute/空间事件/设置页仍未实现。
 >
 > 上位契约：[`VIRTUAL_SCHEDULE_SPEC.md`](VIRTUAL_SCHEDULE_SPEC.md)
 >
@@ -811,6 +811,45 @@ active item reference
 
 ## 17. 实现分期
 
+### 17.0 实现契约
+
+实现必须保持单向来源链：
+
+```text
+virtual_schedule.json.space
+  → ScheduleOutline.space（加载/校验）
+  → ScheduleBlock.place_requirement
+  → DayPlan.ScheduleItem.place_id + ambient_context
+  → ScheduleRuntime CurrentScene snapshot
+  → ScheduleContext 最小地点/环境摘要
+  → Agent prompt
+  → QQ 主通讯与桌宠辅助展示
+```
+
+活动发生变化时按以下规则更新环境：
+
+1. 活动不变、地点不变：保留 PlaceAmbient，只更新 ActivityAmbient 和 progress；
+2. 活动变化、地点不变：立即切换活动环境，不产生移动；
+3. 活动变化、地点变化且存在 RouteEdge：先进入 `in_transition`，到达后再进入目标 PlaceAmbient；
+4. 地点变化但无合法 RouteEdge：v1 固定地点切片可确定性切换，但必须记录为待 DayRoute 阶段收敛的兼容行为，不允许生成路线细节；
+5. sleeping：使用合法 sleep place，消息不改变地点；
+6. 空间模板缺失：返回 `place_id=None / scene_state=unknown / ambient_context={}`，时间日程和对话继续运行；
+7. prompt 只使用 PlaceProfile.label 和受控环境摘要，禁止注入内部 place_id/route_id/event_id；
+8. 任何 LLM place_id 必须存在并满足 profile/category 约束，否则整体拒绝。
+
+实现对象最小契约：
+
+```text
+ScheduleBlock.place_requirement
+ScheduleItem.place_id / place_label / ambient_context
+ScheduleContext.place_id / place_label / scene_state /
+                target_place_id / ambient_context
+ScheduleRuntime.current_place_id / target_place_id /
+                transition_started_at / expected_arrival_at
+```
+
+上述状态必须随既有 runtime snapshot 持久化，并按 role_id 隔离。
+
 ### VSP-0：契约与角色加载
 
 - 扩展 `ScheduleOutline` 的 `space` 字段；
@@ -917,10 +956,10 @@ active item reference
 | 时间日程、睡眠、offset、effective span | 已有实现，见 `VIRTUAL_SCHEDULE_COMPLETION_AUDIT.md` |
 | `AmbientContext` 概念 | 已在日程规范定义，空间消费未实现 |
 | 角色固定 `scenario` | 已存在，但尚未迁移为世界范围 + 空间锚点 |
-| VirtualWorldScope / PlaceRegistry | 未实现 |
-| PlaceRequirement / DayRoute | 未实现 |
-| CurrentScene / 空间事件 | 未实现 |
-| 空间 prompt 与用户可见表达 | 未实现 |
+| VirtualWorldScope / PlaceRegistry | 已实现最小加载与校验；稳定地点由角色模板提供 |
+| PlaceRequirement / DayRoute | fixed place 已实现；完整 DayRoute 和计划时间插入未实现 |
+| CurrentScene / 空间事件 | at_place/in_transition runtime snapshot 已实现；独立空间事件未实现 |
+| 空间 prompt 与用户可见表达 | 当前地点 label 与受控活动环境已注入 prompt；用户询问专用表达未实现 |
 | 空间设置页 | 未实现 |
 | 真实 API 空间生命周期验收 | 未执行 |
 
