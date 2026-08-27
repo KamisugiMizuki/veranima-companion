@@ -405,6 +405,21 @@ class ScheduleRuntime:
         plan = self._next_day_plan or self.outline.build_day_plan(when)
         if plan:
             context = plan.context_at(when)
+            if not getattr(self, "space_enabled", True):
+                self.current_place_id = None
+                self.target_place_id = None
+                self.transition_started_at = None
+                self.expected_arrival_at = None
+                if context.item_id != self.current_item_id:
+                    if self.current_item_id:
+                        self.finish_activity(when)
+                    self.current_item_id = context.item_id or ""
+                    if self.current_item_id and context.activity_category not in {"sleep_window", "gap"}:
+                        self.start_activity(self.current_item_id, when)
+                context = replace(context, place_id=None, place_label="", target_place_id=None,
+                                  scene_state="unknown", ambient_context={})
+            else:
+                context = context
             if self.expected_arrival_at and when >= self.expected_arrival_at:
                 self.current_place_id = self.target_place_id
                 self.target_place_id = None
