@@ -43,7 +43,7 @@ def space_template():
                 {"id": "desk", "label": "工作区域", "kind": "workspace", "tags": ["focus"], "interaction_impact": "inconvenient", "sleep_allowed": False, "ambient_profile": {"light": "screen_cool", "sound": "quiet_keyboard"}},
                 {"id": "window", "label": "窗边", "kind": "home", "tags": ["rest"], "interaction_impact": "none", "sleep_allowed": True, "ambient_profile": {"light": "soft_daylight", "sound": "outside_quiet"}},
             ],
-            "routes": [{"from_place_id": "desk", "to_place_id": "window", "duration_minutes": 5, "mode": "indoor_transition"}],
+            "routes": [{"from_place_id": "desk", "to_place_id": "window", "duration_minutes": 5, "mode": "indoor_transition", "bidirectional": True}],
         },
     }
 
@@ -113,6 +113,23 @@ def test_place_change_enters_transition_before_arrival(tmp_path):
     assert arrived.place_id == "window"
 
 
+def test_two_consecutive_place_changes_can_start_new_transition(tmp_path):
+    runtime = ScheduleRuntime(ScheduleOutline.from_role_dir(write_role(tmp_path)))
+    first = dt.datetime(2026, 8, 28, 1, 0, tzinfo=dt.timezone.utc)
+    second = dt.datetime(2026, 8, 28, 4, 0, tzinfo=dt.timezone.utc)
+    third = dt.datetime(2026, 8, 29, 1, 0, tzinfo=dt.timezone.utc)
+    runtime.advance(first)
+    runtime.advance(second)
+    runtime.advance(second + dt.timedelta(minutes=6))
+    runtime.advance(third)
+
+    context = runtime.current_context(third)
+
+    assert context.scene_state == "in_transition"
+    assert context.place_id == "window"
+    assert context.target_place_id == "desk"
+
+
 def test_space_setting_can_disable_environment_without_disabling_schedule(tmp_path):
     role = write_role(tmp_path)
     card_path = role / "character.json"
@@ -138,3 +155,23 @@ def test_day_route_inserts_transition_and_consumes_time(tmp_path):
     assert route.transitions[0].to_place_id == "window"
     assert route.transitions[0].planned_end > route.transitions[0].planned_start
     assert route.transitions[0].planned_end <= route.stops[1].planned_start
+
+
+@pytest.mark.parametrize("role_id", ["zima", "yuki"])
+def test_production_role_day_route_is_complete(role_id):
+    root = __import__("pathlib").Path(__file__).resolve().parents[1]
+    outline = ScheduleOutline.from_role_dir(root / "characters" / role_id)
+    route = outline.build_day_route(dt.datetime(2026, 8, 28, tzinfo=dt.timezone.utc))
+    assert route.stops
+
+
+def test_missing_route_does_not_teleport(tmp_path):
+    role = write_role(tmp_path)
+    value = json.loads((role / "virtual_schedule.json").read_text(encoding="utf-8"))
+    value["space"]["routes"] = []
+    (role / "virtual_schedule.json").write_text(json.dumps(value), encoding="utf-8")
+    runtime = ScheduleRuntime(ScheduleOutline.from_role_dir(role))
+    runtime.advance(dt.datetime(2026, 8, 28, 1, tzinfo=dt.timezone.utc))
+    runtime.advance(dt.datetime(2026, 8, 28, 4, tzinfo=dt.timezone.utc))
+    assert runtime.current_place_id == "desk"
+    assert runtime.scene_state == "reconciling"

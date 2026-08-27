@@ -164,6 +164,7 @@ class ScheduleRuntime:
         self.current_item_id: str = ""
         self.last_sleep_cycle_id: str = ""
         self.current_place_id: str | None = None
+        self.previous_place_id: str | None = None
         self.target_place_id: str | None = None
         self.transition_started_at: dt.datetime | None = None
         self.expected_arrival_at: dt.datetime | None = None
@@ -190,6 +191,7 @@ class ScheduleRuntime:
             "current_item_id": self.current_item_id,
             "last_sleep_cycle_id": self.last_sleep_cycle_id,
             "current_place_id": self.current_place_id,
+            "previous_place_id": self.previous_place_id,
             "target_place_id": self.target_place_id,
             "transition_started_at": self.transition_started_at.isoformat() if self.transition_started_at else None,
             "expected_arrival_at": self.expected_arrival_at.isoformat() if self.expected_arrival_at else None,
@@ -208,17 +210,28 @@ class ScheduleRuntime:
         runtime = cls(outline, planner=planner)
         if str(snapshot.get("role_id") or "") != outline.role_id:
             return runtime
-        parse = lambda value: dt.datetime.fromisoformat(value) if value else None
+        def parse(value):
+            if not value:
+                return None
+            try:
+                return dt.datetime.fromisoformat(value)
+            except (TypeError, ValueError):
+                return None
+        def safe_int(value, default=0):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return default
         runtime.state = ScheduleRuntimeState(
             state=str(snapshot.get("state") or "awake"),
             sleep_cycle_id=str(snapshot.get("sleep_cycle_id") or ""),
             sleep_started_at=parse(snapshot.get("sleep_started_at")),
             grace_deadline=parse(snapshot.get("grace_deadline")),
-            sleep_debt_minutes=max(0, int(snapshot.get("sleep_debt_minutes", 0))),
-            sleep_extension_minutes=max(0, int(snapshot.get("sleep_extension_minutes", 0))),
+            sleep_debt_minutes=max(0, safe_int(snapshot.get("sleep_debt_minutes", 0))),
+            sleep_extension_minutes=max(0, safe_int(snapshot.get("sleep_extension_minutes", 0))),
             sleep_reason=str(snapshot.get("sleep_reason") or ""),
         )
-        runtime.schedule_offset_minutes = int(snapshot.get("schedule_offset_minutes", 0))
+        runtime.schedule_offset_minutes = safe_int(snapshot.get("schedule_offset_minutes", 0))
         runtime.offset_history = [dict(item) for item in snapshot.get("offset_history", []) if isinstance(item, dict)]
         runtime.activity_spans = {
             str(key): dict(value) for key, value in (snapshot.get("activity_spans") or {}).items()
@@ -227,6 +240,7 @@ class ScheduleRuntime:
         runtime.current_item_id = str(snapshot.get("current_item_id") or "")
         runtime.last_sleep_cycle_id = str(snapshot.get("last_sleep_cycle_id") or "")
         runtime.current_place_id = snapshot.get("current_place_id")
+        runtime.previous_place_id = snapshot.get("previous_place_id")
         runtime.target_place_id = snapshot.get("target_place_id")
         runtime.transition_started_at = parse(snapshot.get("transition_started_at"))
         runtime.expected_arrival_at = parse(snapshot.get("expected_arrival_at"))
@@ -436,36 +450,42 @@ class ScheduleRuntime:
                 self.pending_notice = "woke"
                 self.recover_offset(when)
         plan = self._next_day_plan or self.outline.build_day_plan(when)
+        if self.state.state == "awake" and self.outline.circadian:
+            local = when.astimezone(ZoneInfo(self.outline.timezone))
+            start = _local_time(local.date(), self.outline.circadian.sleep_start, ZoneInfo(self.outline.timezone))
+            end = _local_time(local.date(), self.outline.circadian.sleep_end, ZoneInfo(self.outline.timezone))
+            if end <= start:
+                end += dt.timedelta(days=1)
+            if start <= local < end and (plan is None or plan.context_at(when).activity_category == "gap"):
+                self.begin_sleep_preparation(when)
         if plan:
             context = plan.context_at(when)
+            if self.scene_state == "in_transition" or self.scene_state == "unknown_after_downtime":
+                context = replace(context, scene_state=self.scene_state,
+                                  place_id=self.current_place_id or context.place_id,
+                                  target_place_id=self.target_place_id or context.target_place_id)
             if not getattr(self, "space_enabled", True):
                 self.current_place_id = None
                 self.target_place_id = None
                 self.transition_started_at = None
                 self.expected_arrival_at = None
-                if context.item_id != self.current_item_id:
-                    if self.current_item_id:
-                        self.finish_activity(when)
-                    self.current_item_id = context.item_id or ""
-                    if self.current_item_id and context.activity_category not in {"sleep_window", "gap"}:
-                        self.start_activity(self.current_item_id, when)
                 context = replace(context, place_id=None, place_label="", target_place_id=None,
                                   scene_state="unknown", ambient_context={})
-            else:
-                context = context
-            if self.expected_arrival_at and when >= self.expected_arrival_at:
+            if self.expected_arrival_at and when >= self.expected_arrival_at and self.scene_state != "unknown_after_downtime":
+                self.previous_place_id = self.current_place_id
                 self.current_place_id = self.target_place_id
                 self.target_place_id = None
                 self.transition_started_at = None
                 self.expected_arrival_at = None
                 self.scene_state = "at_place"
+                context = replace(context, place_id=self.current_place_id, target_place_id=None)
             desired_place = context.place_id
             if desired_place and self.current_place_id is None:
                 self.current_place_id = desired_place
             elif desired_place and desired_place != self.current_place_id and self.target_place_id is None:
                 route = self._route(self.current_place_id, desired_place)
                 if route is None:
-                    self.current_place_id = desired_place
+                    self.scene_state = "reconciling"
                 else:
                     minutes = route.get("duration_minutes", 0)
                     if isinstance(minutes, dict):
@@ -481,7 +501,13 @@ class ScheduleRuntime:
                 if self.current_item_id and context.activity_category not in {"sleep_window", "gap"}:
                     self.start_activity(self.current_item_id, when)
             if context.activity_category == "sleep_window" and self.state.state == "awake":
-                self.begin_sleep_preparation(when)
+                sleep_place = context.place_id
+                if self.outline.space is None or bool(
+                    self.outline.space.places.get(sleep_place, {}).get("sleep_allowed", False)
+                ):
+                    self.begin_sleep_preparation(when)
+                else:
+                    self.scene_state = "reconciling"
         if self.state.state == "sleep_preparing":
             deadline = self.state.grace_deadline
             if deadline is not None and when >= deadline:
@@ -522,6 +548,14 @@ class ScheduleRuntime:
         context = plan.context_at(when)
         if not getattr(self, "space_enabled", True):
             return replace(context, place_id=None, place_label="", target_place_id=None, scene_state="unknown", ambient_context={})
+        if self.expected_arrival_at and when >= self.expected_arrival_at and self.scene_state != "unknown_after_downtime":
+            self.current_place_id = self.target_place_id
+            self.target_place_id = None
+            self.transition_started_at = None
+            self.expected_arrival_at = None
+            self.scene_state = "at_place"
+        if self.scene_state != "unknown":
+            context = replace(context, scene_state=self.scene_state, place_id=self.current_place_id or context.place_id, target_place_id=self.target_place_id or context.target_place_id)
         if self.expected_arrival_at and when < self.expected_arrival_at:
             place = self.outline.space.places.get(self.current_place_id, {}) if self.outline.space else {}
             return replace(
@@ -543,15 +577,26 @@ class ScheduleRuntime:
             "plan_id": context.plan_id,
             "item_id": context.item_id,
             "current_place_id": place_id,
+            "previous_place_id": self.previous_place_id or (place_id if self.target_place_id else None),
             "place_label": str(place.get("label") or context.place_label),
             "target_place_id": self.target_place_id if self.scene_state == "unknown_after_downtime" else context.target_place_id,
             "scene_state": self.scene_state if self.scene_state != "unknown" else context.scene_state,
+            "transition_started_at": self.transition_started_at.isoformat() if self.transition_started_at else None,
+            "expected_arrival_at": self.expected_arrival_at.isoformat() if self.expected_arrival_at else None,
+            "confidence": "unknown" if self.scene_state == "unknown_after_downtime" else ("planned_current" if place_id else "unknown"),
             "activity_key": context.activity_key,
             "ambient_context": dict(context.ambient_context),
             "truth_class": "virtual_simulation",
         }
 
-    def reconcile_after_downtime(self, when: dt.datetime) -> dict:
+    def reconcile_after_downtime(self, when: dt.datetime, *, arrived: bool = False) -> dict:
+        if arrived and self.target_place_id:
+            self.current_place_id = self.target_place_id
+            self.target_place_id = None
+            self.transition_started_at = None
+            self.expected_arrival_at = None
+            self.scene_state = "at_place"
+            return self.current_scene(when)
         if self.expected_arrival_at and when > self.expected_arrival_at and self.target_place_id:
             self.scene_state = "unknown_after_downtime"
         elif self.current_place_id:
@@ -704,6 +749,8 @@ class ScheduleOutline:
                     raise ScheduleTemplateError(f"sleep.{key} must be between 0 and 60")
         space = cls._space(raw.get("space"))
         if space is not None:
+            if not any(bool(place.get("sleep_allowed", False)) for place in space.places.values()):
+                raise ScheduleTemplateError("space requires at least one sleep_allowed place")
             for block in blocks:
                 fixed = block.place_requirement.get("fixed_place_id")
                 if fixed and fixed not in space.places:
@@ -775,6 +822,8 @@ class ScheduleOutline:
                 categories = set(place.get("allowed_activity_categories") or ())
                 if categories and block.category not in categories:
                     raise ScheduleTemplateError(f"place {place_id} cannot host category {block.category}")
+                if block.category == "sleep_window" and not bool(place.get("sleep_allowed", False)):
+                    raise ScheduleTemplateError(f"place {place_id} cannot host sleep")
                 ambient = dict(place.get("ambient_profile") or {})
                 place_label = str(place.get("label") or "")
             else:

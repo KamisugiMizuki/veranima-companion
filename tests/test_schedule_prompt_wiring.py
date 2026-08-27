@@ -18,7 +18,7 @@ def space_template_for_prompt():
         "interaction_profiles": {"occupied_brief": {"reply_style": "short_precise", "max_sentences": 2, "question_budget": 0}},
         "circadian": {"wake_window": {"start": "07:00", "end": "08:00"}, "sleep_window": {"start": "22:00", "end": "23:00"}, "chronotype": "day_aligned", "target_sleep_minutes": 480},
         "sleep": {}, "autonomy": {},
-        "space": {"world_scope": {"id": "town", "kind": "fictional_town", "home_place_id": "desk"}, "places": [{"id": "desk", "label": "工作区域", "kind": "workspace", "allowed_day_profiles": ["base"], "allowed_activity_categories": ["obligation"], "ambient_profile": {"light": "屏幕冷光"}, "sleep_allowed": False}], "routes": []},
+        "space": {"world_scope": {"id": "town", "kind": "fictional_town", "home_place_id": "desk"}, "places": [{"id": "desk", "label": "工作区域", "kind": "workspace", "allowed_day_profiles": ["base"], "allowed_activity_categories": ["obligation"], "ambient_profile": {"light": "屏幕冷光"}, "sleep_allowed": True}], "routes": []},
     }
 
 

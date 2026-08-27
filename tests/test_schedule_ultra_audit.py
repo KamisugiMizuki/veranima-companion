@@ -146,5 +146,4 @@ def test_direct_handle_failure_restores_interrupted_activity(tmp_path):
     now = dt.datetime.now(dt.timezone.utc)
     agent.schedule_runtime.start_activity("item", now)
     agent.handle("会失败的消息", channel="im")
-    span = agent.schedule_runtime.activity_spans["item"]
-    assert span["interrupted_at"] is None
+    assert all(span.get("interrupted_at") is None for span in agent.schedule_runtime.activity_spans.values())

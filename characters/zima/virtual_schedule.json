@@ -105,13 +105,22 @@
         "from_place_id": "zima_home",
         "to_place_id": "zima_workspace",
         "mode": "walk",
-        "duration_minutes": 10
+        "duration_minutes": 10,
+        "bidirectional": true
       },
       {
         "from_place_id": "zima_workspace",
         "to_place_id": "zima_quiet_public",
         "mode": "walk",
-        "duration_minutes": 15
+        "duration_minutes": 15,
+        "bidirectional": true
+      },
+      {
+        "from_place_id": "zima_quiet_public",
+        "to_place_id": "zima_home",
+        "mode": "walk",
+        "duration_minutes": 20,
+        "bidirectional": true
       }
     ]
   },

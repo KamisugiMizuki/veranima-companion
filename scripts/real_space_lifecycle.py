@@ -32,7 +32,7 @@ def main():
             assert context.place_label and context.ambient_context
             prompt = agent._format_schedule_context(context)
             assert context.place_label in prompt and "活动环境=" in prompt
-            answer = agent.current_space_answer()
+            answer = agent.current_space_answer(now)
             assert context.place_label in answer
             print(json.dumps({"ok": True, "role": runtime.outline.role_id, "place": context.place_label, "scene_state": context.scene_state, "ambient": context.ambient_context, "answer": answer}, ensure_ascii=False))
         finally:

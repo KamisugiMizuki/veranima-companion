@@ -106,13 +106,22 @@
         "from_place_id": "yuki_rooftop",
         "to_place_id": "yuki_home",
         "mode": "indoor_transition",
-        "duration_minutes": 5
+        "duration_minutes": 5,
+        "bidirectional": true
       },
       {
         "from_place_id": "yuki_home",
         "to_place_id": "yuki_street",
         "mode": "walk",
-        "duration_minutes": 10
+        "duration_minutes": 10,
+        "bidirectional": true
+      },
+      {
+        "from_place_id": "yuki_rooftop",
+        "to_place_id": "yuki_street",
+        "mode": "walk",
+        "duration_minutes": 15,
+        "bidirectional": true
       }
     ]
   },
@@ -181,8 +190,8 @@
         "reset"
       ],
       "preferred_window": {
-        "start": "18:30",
-        "end": "20:00"
+        "start": "19:00",
+                "end": "20:00"
       },
       "duration_minutes": {
         "min": 20,

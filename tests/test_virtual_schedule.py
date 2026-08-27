@@ -194,6 +194,26 @@ def test_runtime_advance_enters_sleep_from_scheduled_sleep_item(tmp_path):
     state = runtime.advance(dt.datetime(2026, 8, 28, 14, 0, tzinfo=dt.timezone.utc))
 
     assert state.state == "sleep_preparing"
+
+
+def test_runtime_cold_start_inside_sleep_window_enters_sleep(tmp_path):
+    role_dir = tmp_path / "characters" / "cold-sleep"
+    role_dir.mkdir(parents=True)
+    value = template()
+    value["blocks"] = [{
+        "id": "sleep", "category": "sleep_window", "activity_pool": ["sleep"],
+        "preferred_window": {"start": "22:00", "end": "02:00"}, "duration_minutes": {"min": 60, "max": 240},
+        "required": True, "share_policy": "never", "interaction_profile": "occupied_brief",
+        "interaction_impact": "unavailable", "deviation_policy": {},
+    }]
+    value["day_profiles"]["baseline"]["allowed_block_ids"] = ["sleep"]
+    value["circadian"]["sleep_window"] = {"start": "22:00", "end": "02:00"}
+    (role_dir / "virtual_schedule.json").write_text(json.dumps(value), encoding="utf-8")
+    runtime = ScheduleRuntime(ScheduleOutline.from_role_dir(role_dir))
+
+    state = runtime.advance(dt.datetime(2026, 8, 28, 15, 0, tzinfo=dt.timezone.utc))
+
+    assert state.state == "sleep_preparing"
     assert runtime.current_context(dt.datetime(2026, 8, 28, 14, 0, tzinfo=dt.timezone.utc)).interaction_profile == "occupied_brief"
 
 

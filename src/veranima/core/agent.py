@@ -161,7 +161,6 @@ class Agent:
         )
         if self.schedule_runtime is not None:
             self.schedule_runtime.space_enabled = bool(schedule_cfg.get("space_enabled", True))
-        if self.schedule_runtime is not None:
             self.schedule_runtime.calendar = self.holiday_calendar
             profile_override = str(schedule_cfg.get("day_profile") or "auto")
             if profile_override not in {"auto", "default"} and profile_override in self.schedule_outline.day_profiles:
@@ -206,6 +205,11 @@ class Agent:
                 self.schedule_runtime = ScheduleRuntime.from_snapshot(
                     self.schedule_outline, saved_schedule, planner=self._plan_schedule_with_llm,
                 )
+                self.schedule_runtime.space_enabled = bool(schedule_cfg.get("space_enabled", True))
+                self.schedule_runtime.calendar = self.holiday_calendar
+                profile_override = str(schedule_cfg.get("day_profile") or "auto")
+                if profile_override not in {"auto", "default"} and profile_override in self.schedule_outline.day_profiles:
+                    self.schedule_runtime.profile_override = profile_override
                 self.schedule_runtime.reconcile_after_downtime(datetime.datetime.now(datetime.timezone.utc))
 
         # P-5 反思计数器（每 20 个有效人格候选触发一次整合）
@@ -471,11 +475,11 @@ class Agent:
             "普通回复无需播报当前活动；认真问题仍须回答核心内容。"
         )
 
-    def current_space_answer(self) -> str:
+    def current_space_answer(self, when=None) -> str:
         runtime = self.schedule_runtime
         if runtime is None:
             return "我这边没有可用的空间状态，只能说个大概。"
-        scene = runtime.current_scene(datetime.datetime.now(datetime.timezone.utc))
+        scene = runtime.current_scene(when or datetime.datetime.now(datetime.timezone.utc))
         if scene.get("scene_state") == "in_transition":
             return f"我正从{scene.get('place_label') or '刚才的位置'}往别处走，到了再说。"
         if scene.get("place_label"):
@@ -777,8 +781,9 @@ class Agent:
         if not user_text and not images:
             return TurnResult(reply="", energy=self.state.energy, mood=self.state.mood)
 
+        interaction_now = datetime.datetime.now(datetime.timezone.utc)
         if channel == "im" and any(token in user_text for token in ("你在哪", "你现在在哪里", "你在什么地方")):
-            answer = self.current_space_answer()
+            answer = self.current_space_answer(interaction_now)
             self.memory.store_message("assistant", answer, self.state.energy, self.state.mood, channel="qq")
             self._history.append(self._history_entry("user", user_text))
             self._history.append(self._history_entry("assistant", answer))
