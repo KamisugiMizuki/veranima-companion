@@ -170,6 +170,7 @@ class ScheduleRuntime:
         self.expected_arrival_at: dt.datetime | None = None
         self.last_scene_event_key: str = ""
         self.scene_state: str = "unknown"
+        self.space_preference: str = "stable"
 
     @property
     def sleeping(self) -> bool:
@@ -197,6 +198,7 @@ class ScheduleRuntime:
             "expected_arrival_at": self.expected_arrival_at.isoformat() if self.expected_arrival_at else None,
             "last_scene_event_key": self.last_scene_event_key,
             "scene_state": self.scene_state,
+            "space_preference": self.space_preference,
         }
         if self._next_day_plan is not None:
             data["next_plan_date"] = self._next_day_plan.local_date.isoformat()
@@ -246,6 +248,7 @@ class ScheduleRuntime:
         runtime.expected_arrival_at = parse(snapshot.get("expected_arrival_at"))
         runtime.last_scene_event_key = str(snapshot.get("last_scene_event_key") or "")
         runtime.scene_state = str(snapshot.get("scene_state")) if snapshot.get("scene_state") in {"at_place", "in_transition", "unknown_after_downtime", "reconciling", "unknown"} else "unknown"
+        runtime.space_preference = str(snapshot.get("space_preference") or "stable") if snapshot.get("space_preference") in {None, "stable", "balanced"} else "stable"
         if runtime.scene_state == "in_transition" and runtime.expected_arrival_at is None:
             runtime.scene_state = "unknown_after_downtime"
         next_date = snapshot.get("next_plan_date")
@@ -451,7 +454,7 @@ class ScheduleRuntime:
                 )
                 self.pending_notice = "woke"
                 self.recover_offset(when)
-        plan = self._next_day_plan or self.outline.build_day_plan(when)
+        plan = self._next_day_plan or self.outline.build_day_plan(when, space_preference=self.space_preference)
         if self.state.state == "awake" and self.outline.circadian:
             local = when.astimezone(ZoneInfo(self.outline.timezone))
             start = _local_time(local.date(), self.outline.circadian.sleep_start, ZoneInfo(self.outline.timezone))
@@ -544,7 +547,7 @@ class ScheduleRuntime:
     def current_context(self, when: dt.datetime) -> ScheduleContext:
         if self.state.state == "sleeping":
             return ScheduleContext("", None, "sleep_window", "sleep_like", 1.0, "sleep_like", 0.0, {}, False, False, {"truth_class": "virtual_simulation"})
-        plan = self._next_day_plan or self.outline.build_day_plan(when)
+        plan = self._next_day_plan or self.outline.build_day_plan(when, space_preference=self.space_preference)
         if plan is None:
             return ScheduleContext("", None, "gap", "gap", 0.0, "available_normal", 1.0, {}, True, True, {})
         context = plan.context_at(when)
@@ -592,6 +595,11 @@ class ScheduleRuntime:
             "ambient_context": dict(context.ambient_context),
             "truth_class": "virtual_simulation",
         }
+
+    def scene_event(self, when: dt.datetime) -> dict:
+        scene = self.current_scene(when)
+        kind = {"in_transition": "transition_started", "unknown_after_downtime": "place_unknown_after_downtime", "reconciling": "place_reconciled"}.get(scene["scene_state"], "place_entered")
+        return {"event_kind": kind, "scene": scene, "at": when.isoformat()}
 
     def reconcile_after_downtime(self, when: dt.datetime, *, arrived: bool = False) -> dict:
         if arrived and self.target_place_id:
@@ -764,7 +772,7 @@ class ScheduleOutline:
 
     def build_day_plan(self, when: dt.datetime, *, day_profile: str | None = None,
                        revision: int = 1, adjustments: list[dict] | None = None,
-                       source: str = "deterministic_template") -> DayPlan | None:
+                       source: str = "deterministic_template", space_preference: str = "stable") -> DayPlan | None:
         if not self.enabled:
             return None
         zone = ZoneInfo(self.timezone)
@@ -817,6 +825,23 @@ class ScheduleOutline:
                 raise ScheduleTemplateError(f"activity for block {block.id} is not allowed")
             place_id = adjustment.get("place_id") or block.place_requirement.get("fixed_place_id")
             ambient = {}
+            requirement = block.place_requirement
+            if self.space is not None and not place_id and requirement.get("place_policy") in {"choose", "any_allowed", "remote", "stay"}:
+                candidates = []
+                preferred = requirement.get("preferred_place_ids") or []
+                for candidate_id in preferred + list(self.space.places):
+                    place = self.space.places.get(candidate_id, {})
+                    if candidate_id in candidates or profile_id not in set(place.get("allowed_day_profiles") or [profile_id]):
+                        continue
+                    categories = set(place.get("allowed_activity_categories") or ())
+                    if categories and block.category not in categories:
+                        continue
+                    if requirement.get("place_policy") == "remote" and "remote_activity" not in set(place.get("tags") or ()):
+                        continue
+                    candidates.append(candidate_id)
+                if candidates:
+                    place_id = candidates[0] if space_preference == "stable" else candidates[-1]
+
             if self.space is not None and place_id is not None:
                 place = self.space.places.get(str(place_id))
                 if place is None:

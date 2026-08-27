@@ -161,6 +161,8 @@ class Agent:
         )
         if self.schedule_runtime is not None:
             self.schedule_runtime.space_enabled = bool(schedule_cfg.get("space_enabled", True))
+            self.schedule_runtime.space_preference = str(schedule_cfg.get("space_preference") or "stable") if schedule_cfg.get("space_preference") in {None, "stable", "balanced"} else "stable"
+            self.schedule_runtime.space_detail = str(schedule_cfg.get("space_detail") or "brief") if schedule_cfg.get("space_detail") in {None, "hidden", "brief"} else "brief"
             self.schedule_runtime.calendar = self.holiday_calendar
             profile_override = str(schedule_cfg.get("day_profile") or "auto")
             if profile_override not in {"auto", "default"} and profile_override in self.schedule_outline.day_profiles:
@@ -206,6 +208,8 @@ class Agent:
                     self.schedule_outline, saved_schedule, planner=self._plan_schedule_with_llm,
                 )
                 self.schedule_runtime.space_enabled = bool(schedule_cfg.get("space_enabled", True))
+                self.schedule_runtime.space_preference = str(schedule_cfg.get("space_preference") or "stable") if schedule_cfg.get("space_preference") in {None, "stable", "balanced"} else "stable"
+                self.schedule_runtime.space_detail = str(schedule_cfg.get("space_detail") or "brief") if schedule_cfg.get("space_detail") in {None, "hidden", "brief"} else "brief"
                 self.schedule_runtime.calendar = self.holiday_calendar
                 profile_override = str(schedule_cfg.get("day_profile") or "auto")
                 if profile_override not in {"auto", "default"} and profile_override in self.schedule_outline.day_profiles:
@@ -435,15 +439,16 @@ class Agent:
         runtime.advance(current)
         after_scene = runtime.current_scene(current)
         if after_scene != before_scene:
-            key = json.dumps(after_scene, ensure_ascii=False, sort_keys=True)
+            event = runtime.scene_event(current)
+            key = json.dumps(event["scene"], ensure_ascii=False, sort_keys=True)
             if key != runtime.last_scene_event_key:
                 self.memory.store_virtual_life_event(
                     role_id=runtime.outline.role_id,
-                    event_kind=("transition_started" if after_scene["scene_state"] == "in_transition" else "place_entered"),
+                    event_kind=event["event_kind"],
                     plan_id=str(after_scene.get("plan_id") or ""),
                     item_id=str(after_scene.get("item_id") or "") or None,
                     summary=(f"当前虚拟地点：{after_scene.get('place_label')}" if after_scene.get("place_label") else "空间状态发生变化"),
-                    source=after_scene,
+                    source={**after_scene, "at": event["at"]},
                 )
                 runtime.last_scene_event_key = key
         if callable(snapshot) and snapshot() != before:
@@ -481,6 +486,8 @@ class Agent:
             return "我这边没有可用的空间状态，只能说个大概。"
         scene = runtime.current_scene(when or datetime.datetime.now(datetime.timezone.utc))
         if scene.get("scene_state") == "in_transition":
+            if getattr(runtime, "space_detail", "brief") == "hidden":
+                return "我这会儿在处理自己的安排，等状态稳定一点再说。"
             return f"我正从{scene.get('place_label') or '刚才的位置'}往别处走，到了再说。"
         if scene.get("place_label"):
             return f"按现在的虚拟日程，我在{scene['place_label']}。"

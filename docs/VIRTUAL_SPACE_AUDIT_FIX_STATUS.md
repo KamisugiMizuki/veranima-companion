@@ -54,7 +54,7 @@
 
 ```text
 空间/日程相关：通过
-全量 pytest：961 passed, 1 warning
+全量 pytest：967 passed, 1 warning
 Node 语法检查：通过
 zima DayRoute：3 transitions
  yuki DayRoute：2 transitions

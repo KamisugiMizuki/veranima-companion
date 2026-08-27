@@ -14,7 +14,7 @@ Veranima 是一个以 **QQ 私聊为主要收发端** 的人格化 AI 陪伴系�
 | 长期记忆 | SQLite + FTS5 + sqlite-vec + 本地 bge-m3；五层记忆、版本链、时间线、衰减、整理、审核收件箱和 Context Brief |
 | 人格与关系 | PAD、依恋度、PersonaBrief、ResponsePlan、Imprint、冲突跟踪、关系张力和修复过程 |
 | 虚拟日程 | 每角色 `virtual_schedule.json`、昼夜节律、结构化次日计划、睡眠/唤醒、grace period、睡眠债务、schedule offset 回正、effective span、日终自传归档、主动分享和用户信息缺口 |
-| 虚拟空间 | 每角色有限生活范围、稳定地点池、活动环境、地点切换 transition、CurrentScene 快照、空间事件和 QQ 地点问答；无路线不瞬移、离线 unknown/reconcile、DayRoute 基础时间校验已接入；完整路线重排与真实 QQ 空间验收仍在实现 |
+| 虚拟空间 | 每角色有限生活范围、稳定地点池、活动环境、地点切换 transition、CurrentScene 快照、空间事件和 QQ 地点问答；无路线不瞬移、离线 unknown/reconcile、DayRoute 基础时间校验已接入；地点选择策略、完整路线重排与真实 QQ 空间验收仍在实现 |
 | 联网日历 | Nager.Date 公共节假日 JSON API；按年缓存；失败时回退本地工作日/周末；不包含中国官方调休工作日规则 |
 | 图片与表情 | QQ/桌宠图片安全校验；QQ 表情候选审核、用户 scope 隔离、TTL、停用/删除、概率和发送间隔；动图不进入静态库 |
 | 主动消息 | QQ/pet 使用独立 Gate、冷却和每日额度；角色 sleeping 时统一阻断主动消息；日程状态通知只由 QQ 发送 |
