@@ -470,6 +470,8 @@ class ScheduleRuntime:
         if plan is None:
             return ScheduleContext("", None, "gap", "gap", 0.0, "available_normal", 1.0, {}, True, True, {})
         context = plan.context_at(when)
+        if not getattr(self, "space_enabled", True):
+            return replace(context, place_id=None, place_label="", target_place_id=None, scene_state="unknown", ambient_context={})
         if self.expected_arrival_at and when < self.expected_arrival_at:
             place = self.outline.space.places.get(self.current_place_id, {}) if self.outline.space else {}
             return replace(

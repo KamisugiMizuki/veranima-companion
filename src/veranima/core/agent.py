@@ -160,6 +160,8 @@ class Agent:
             and bool(schedule_cfg.get("enabled", True)) else None
         )
         if self.schedule_runtime is not None:
+            self.schedule_runtime.space_enabled = bool(schedule_cfg.get("space_enabled", True))
+        if self.schedule_runtime is not None:
             self.schedule_runtime.calendar = self.holiday_calendar
             profile_override = str(schedule_cfg.get("day_profile") or "auto")
             if profile_override not in {"auto", "default"} and profile_override in self.schedule_outline.day_profiles:

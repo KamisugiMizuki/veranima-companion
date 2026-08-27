@@ -6,6 +6,20 @@ import json
 import pytest
 
 from veranima.core.virtual_schedule import ScheduleOutline, ScheduleRuntime, ScheduleTemplateError
+from veranima.core.agent import Agent
+from veranima.core.character import CharacterCard
+from veranima.core.state import AgentState
+from veranima.memory.store import MemoryStore
+
+
+class Embed:
+    dim = 8
+    def embed(self, texts): return [[0.0] * 8 for _ in texts]
+
+
+class ProbeLLM:
+    def is_model_loaded(self): return True
+    def chat(self, messages, **kwargs): return '{"segments":[{"text":"收到"}]}'
 
 
 def space_template():
@@ -97,3 +111,19 @@ def test_place_change_enters_transition_before_arrival(tmp_path):
     assert moving.target_place_id == "window"
     assert arrived.scene_state == "at_place"
     assert arrived.place_id == "window"
+
+
+def test_space_setting_can_disable_environment_without_disabling_schedule(tmp_path):
+    role = write_role(tmp_path)
+    card_path = role / "character.json"
+    card_path.write_text("{}", encoding="utf-8")
+    memory = MemoryStore(str(tmp_path / "db.sqlite"), config={}, provider=Embed())
+    agent = Agent(CharacterCard(name="SpaceOff"), memory, ProbeLLM(), AgentState(), config={
+        "root": str(tmp_path), "character_card": str(card_path),
+        "virtual_schedule": {"enabled": True, "space_enabled": False},
+    })
+    context = agent.schedule_runtime.current_context(dt.datetime(2026, 8, 28, 1, 0, tzinfo=dt.timezone.utc))
+
+    assert context.activity_category == "obligation"
+    assert context.place_id is None
+    assert context.ambient_context == {}

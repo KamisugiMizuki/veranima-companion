@@ -156,6 +156,8 @@ window.pet.getConfig().then((cfg) => {
   set('schedule-grace', schedule.grace_period_minutes ?? 30); set('schedule-extension', schedule.max_extension_minutes ?? 30);
   set('schedule-share', schedule.self_share || 'low'); set('schedule-curiosity', schedule.curiosity || 'low');
   bool('schedule-calendar-enabled', schedule.calendar && schedule.calendar.enabled); set('schedule-calendar-country', schedule.calendar && schedule.calendar.country_code || 'CN');
+  bool('schedule-space-enabled', schedule.space_enabled ?? true); set('schedule-space-preference', schedule.space_preference || 'stable'); set('schedule-space-detail', schedule.space_detail || 'brief');
+  $('schedule-space-status').textContent = schedule.space_enabled === false ? '空间环境已关闭，时间日程仍运行' : '空间环境由当前角色模板提供';
   $('schedule-status').textContent = `当前角色：${cfg.character_card || '未设置'} · 日程${schedule.enabled === false ? '已关闭' : '已开启'}`;
   $('schedule-template-path').textContent = cfg.character_card ? cfg.character_card.replace(/character\.json$/, 'virtual_schedule.json') : '未设置角色卡';
 }).catch(() => showMsg('读取配置失败', false));
@@ -252,6 +254,7 @@ $('save').addEventListener('click', async () => {
       day_profile: $('schedule-profile').value,
       grace_period_minutes: Number($('schedule-grace').value), max_extension_minutes: Number($('schedule-extension').value),
       self_share: $('schedule-share').value, curiosity: $('schedule-curiosity').value,
+      space_enabled: $('schedule-space-enabled').value === 'true', space_preference: $('schedule-space-preference').value, space_detail: $('schedule-space-detail').value,
       calendar: { enabled: $('schedule-calendar-enabled').value === 'true', country_code: $('schedule-calendar-country').value,
         base_url: 'https://date.nager.at/api/v3/PublicHolidays', timeout_seconds: 8, cache_ttl_seconds: 86400 } },
     tasks: {

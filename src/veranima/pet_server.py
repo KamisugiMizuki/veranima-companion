@@ -143,6 +143,9 @@ def _schedule_settings_payload(cfg: dict) -> dict:
             "timeout_seconds": int(calendar.get("timeout_seconds", 8)),
             "cache_ttl_seconds": int(calendar.get("cache_ttl_seconds", 86400)),
         },
+        "space_enabled": bool(value.get("space_enabled", True)),
+        "space_preference": str(value.get("space_preference", "stable")),
+        "space_detail": str(value.get("space_detail", "brief")),
     }
 
 
@@ -155,6 +158,8 @@ def _validate_schedule_settings(value: dict) -> list[str]:
         "variation": {"stable", "moderate", "free"},
         "self_share": {"off", "low", "standard"},
         "curiosity": {"off", "low", "standard"},
+        "space_preference": {"stable", "balanced"},
+        "space_detail": {"hidden", "brief"},
     }
     for key, choices in enums.items():
         if str(value.get(key) or "") not in choices:
