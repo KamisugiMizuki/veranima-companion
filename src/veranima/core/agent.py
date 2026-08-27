@@ -206,6 +206,7 @@ class Agent:
                 self.schedule_runtime = ScheduleRuntime.from_snapshot(
                     self.schedule_outline, saved_schedule, planner=self._plan_schedule_with_llm,
                 )
+                self.schedule_runtime.reconcile_after_downtime(datetime.datetime.now(datetime.timezone.utc))
 
         # P-5 反思计数器（每 20 个有效人格候选触发一次整合）
         self._reflection_counters = {"persona_candidates": 0, "high_emotion_events": 0, "user_corrections": 0}
@@ -419,6 +420,7 @@ class Agent:
         if runtime is None:
             return
         current = when or datetime.datetime.now(datetime.timezone.utc)
+        before_scene = runtime.current_scene(current)
         calendar = getattr(runtime, "calendar", None)
         if calendar is not None:
             local_year = current.astimezone(ZoneInfo(runtime.outline.timezone)).year
@@ -427,6 +429,19 @@ class Agent:
         snapshot = getattr(runtime, "to_snapshot", None)
         before = snapshot() if callable(snapshot) else None
         runtime.advance(current)
+        after_scene = runtime.current_scene(current)
+        if after_scene != before_scene:
+            key = json.dumps(after_scene, ensure_ascii=False, sort_keys=True)
+            if key != runtime.last_scene_event_key:
+                self.memory.store_virtual_life_event(
+                    role_id=runtime.outline.role_id,
+                    event_kind=("transition_started" if after_scene["scene_state"] == "in_transition" else "place_entered"),
+                    plan_id=str(after_scene.get("plan_id") or ""),
+                    item_id=str(after_scene.get("item_id") or "") or None,
+                    summary=(f"当前虚拟地点：{after_scene.get('place_label')}" if after_scene.get("place_label") else "空间状态发生变化"),
+                    source=after_scene,
+                )
+                runtime.last_scene_event_key = key
         if callable(snapshot) and snapshot() != before:
             self._persist_state()
 
@@ -455,6 +470,17 @@ class Agent:
             f"回复约束：{budget or '按正常通道自然交流'}。"
             "普通回复无需播报当前活动；认真问题仍须回答核心内容。"
         )
+
+    def current_space_answer(self) -> str:
+        runtime = self.schedule_runtime
+        if runtime is None:
+            return "我这边没有可用的空间状态，只能说个大概。"
+        scene = runtime.current_scene(datetime.datetime.now(datetime.timezone.utc))
+        if scene.get("scene_state") == "in_transition":
+            return f"我正从{scene.get('place_label') or '刚才的位置'}往别处走，到了再说。"
+        if scene.get("place_label"):
+            return f"按现在的虚拟日程，我在{scene['place_label']}。"
+        return "空间状态没对上，我不硬编，暂时只能说在自己的虚拟生活范围里。"
 
     @staticmethod
     def _format_history_content(content: str, created_at: str | None = None) -> str:
@@ -750,6 +776,14 @@ class Agent:
             images = validated
         if not user_text and not images:
             return TurnResult(reply="", energy=self.state.energy, mood=self.state.mood)
+
+        if channel == "im" and any(token in user_text for token in ("你在哪", "你现在在哪里", "你在什么地方")):
+            answer = self.current_space_answer()
+            self.memory.store_message("assistant", answer, self.state.energy, self.state.mood, channel="qq")
+            self._history.append(self._history_entry("user", user_text))
+            self._history.append(self._history_entry("assistant", answer))
+            self._persist_state()
+            return TurnResult(reply=answer, energy=self.state.energy, mood=self.state.mood)
 
         schedule_runtime = getattr(self, "schedule_runtime", None)
         resolved_scope = getattr(self, "_current_user_scope", None) or ("pet:default" if channel == "tts" else "qq:default")

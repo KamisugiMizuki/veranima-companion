@@ -87,6 +87,33 @@ class SpaceProfile:
 
 
 @dataclass(frozen=True)
+class RouteStop:
+    item_id: str
+    place_id: str
+    planned_start: dt.datetime
+    planned_end: dt.datetime
+
+
+@dataclass(frozen=True)
+class RouteTransition:
+    from_place_id: str
+    to_place_id: str
+    planned_start: dt.datetime
+    planned_end: dt.datetime
+    mode: str
+
+
+@dataclass(frozen=True)
+class DayRoute:
+    route_id: str
+    role_id: str
+    plan_id: str
+    local_date: dt.date
+    stops: tuple[RouteStop, ...]
+    transitions: tuple[RouteTransition, ...]
+
+
+@dataclass(frozen=True)
 class ScheduleContext:
     plan_id: str
     item_id: str | None
@@ -140,6 +167,8 @@ class ScheduleRuntime:
         self.target_place_id: str | None = None
         self.transition_started_at: dt.datetime | None = None
         self.expected_arrival_at: dt.datetime | None = None
+        self.last_scene_event_key: str = ""
+        self.scene_state: str = "unknown"
 
     @property
     def sleeping(self) -> bool:
@@ -164,6 +193,8 @@ class ScheduleRuntime:
             "target_place_id": self.target_place_id,
             "transition_started_at": self.transition_started_at.isoformat() if self.transition_started_at else None,
             "expected_arrival_at": self.expected_arrival_at.isoformat() if self.expected_arrival_at else None,
+            "last_scene_event_key": self.last_scene_event_key,
+            "scene_state": self.scene_state,
         }
         if self._next_day_plan is not None:
             data["next_plan_date"] = self._next_day_plan.local_date.isoformat()
@@ -199,6 +230,8 @@ class ScheduleRuntime:
         runtime.target_place_id = snapshot.get("target_place_id")
         runtime.transition_started_at = parse(snapshot.get("transition_started_at"))
         runtime.expected_arrival_at = parse(snapshot.get("expected_arrival_at"))
+        runtime.last_scene_event_key = str(snapshot.get("last_scene_event_key") or "")
+        runtime.scene_state = str(snapshot.get("scene_state") or "unknown")
         next_date = snapshot.get("next_plan_date")
         if next_date:
             try:
@@ -425,6 +458,7 @@ class ScheduleRuntime:
                 self.target_place_id = None
                 self.transition_started_at = None
                 self.expected_arrival_at = None
+                self.scene_state = "at_place"
             desired_place = context.place_id
             if desired_place and self.current_place_id is None:
                 self.current_place_id = desired_place
@@ -439,6 +473,7 @@ class ScheduleRuntime:
                     self.target_place_id = desired_place
                     self.transition_started_at = when
                     self.expected_arrival_at = when + dt.timedelta(minutes=max(1, int(minutes)))
+                    self.scene_state = "in_transition"
             if context.item_id != self.current_item_id:
                 if self.current_item_id:
                     self.finish_activity(when)
@@ -498,6 +533,30 @@ class ScheduleRuntime:
                 ambient_context={"state": "moving"},
             )
         return context
+
+    def current_scene(self, when: dt.datetime) -> dict:
+        context = self.current_context(when)
+        place_id = self.current_place_id if self.current_place_id and context.item_id is None else context.place_id
+        place = self.outline.space.places.get(place_id, {}) if self.outline.space and place_id else {}
+        return {
+            "role_id": self.outline.role_id,
+            "plan_id": context.plan_id,
+            "item_id": context.item_id,
+            "current_place_id": place_id,
+            "place_label": str(place.get("label") or context.place_label),
+            "target_place_id": self.target_place_id if self.scene_state == "unknown_after_downtime" else context.target_place_id,
+            "scene_state": self.scene_state if self.scene_state != "unknown" else context.scene_state,
+            "activity_key": context.activity_key,
+            "ambient_context": dict(context.ambient_context),
+            "truth_class": "virtual_simulation",
+        }
+
+    def reconcile_after_downtime(self, when: dt.datetime) -> dict:
+        if self.expected_arrival_at and when > self.expected_arrival_at and self.target_place_id:
+            self.scene_state = "unknown_after_downtime"
+        elif self.current_place_id:
+            self.scene_state = "reconciling"
+        return self.current_scene(when)
 
     def pop_notice(self) -> str:
         value, self.pending_notice = self.pending_notice, ""
@@ -735,6 +794,41 @@ class ScheduleOutline:
             if current.planned_start < previous.planned_end:
                 raise ScheduleTemplateError("generated schedule items overlap")
         return DayPlan(plan_id, self.role_id, local_date, self.timezone, tuple(items), dict(self.interaction_profiles), source=source)
+
+    def build_day_route(self, when: dt.datetime, *, day_profile: str | None = None) -> DayRoute:
+        plan = self.build_day_plan(when, day_profile=day_profile)
+        if plan is None or self.space is None:
+            return DayRoute("", self.role_id, plan.plan_id if plan else "", plan.local_date if plan else when.date(), (), ())
+        stops = tuple(RouteStop(item.id, item.place_id, item.planned_start, item.planned_end) for item in plan.items if item.place_id)
+        transitions = []
+        for previous, current in zip(stops, stops[1:]):
+            if previous.place_id == current.place_id:
+                continue
+            route = self._route_edge(previous.place_id, current.place_id, day_profile or self.default_day_profile)
+            if route is None:
+                raise ScheduleTemplateError(f"no route from {previous.place_id} to {current.place_id}")
+            minutes = route.get("duration_minutes", 0)
+            if isinstance(minutes, dict):
+                minutes = minutes.get("min", 0)
+            end = current.planned_start
+            start = end - dt.timedelta(minutes=max(1, int(minutes)))
+            if start < previous.planned_end:
+                raise ScheduleTemplateError("route transition overlaps activities")
+            transitions.append(RouteTransition(previous.place_id, current.place_id, start, end, str(route.get("mode") or "role_defined")))
+        route_id = hashlib.sha256(f"{plan.plan_id}|route|{self.role_id}".encode()).hexdigest()[:24]
+        return DayRoute(route_id, self.role_id, plan.plan_id, plan.local_date, stops, tuple(transitions))
+
+    def _route_edge(self, from_place: str, to_place: str, profile_id: str) -> dict | None:
+        if self.space is None:
+            return None
+        for route in self.space.routes:
+            if profile_id not in set(route.get("allowed_day_profiles") or [profile_id]):
+                continue
+            if route.get("from_place_id") == from_place and route.get("to_place_id") == to_place:
+                return route
+            if route.get("bidirectional") and route.get("from_place_id") == to_place and route.get("to_place_id") == from_place:
+                return route
+        return None
 
     @staticmethod
     def _block(raw) -> ScheduleBlock:

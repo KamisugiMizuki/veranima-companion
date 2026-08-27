@@ -127,3 +127,14 @@ def test_space_setting_can_disable_environment_without_disabling_schedule(tmp_pa
     assert context.activity_category == "obligation"
     assert context.place_id is None
     assert context.ambient_context == {}
+
+
+def test_day_route_inserts_transition_and_consumes_time(tmp_path):
+    outline = ScheduleOutline.from_role_dir(write_role(tmp_path))
+    route = outline.build_day_route(dt.datetime(2026, 8, 28, 0, 0, tzinfo=dt.timezone.utc))
+
+    assert route.stops[0].place_id == "desk"
+    assert route.transitions[0].from_place_id == "desk"
+    assert route.transitions[0].to_place_id == "window"
+    assert route.transitions[0].planned_end > route.transitions[0].planned_start
+    assert route.transitions[0].planned_end <= route.stops[1].planned_start

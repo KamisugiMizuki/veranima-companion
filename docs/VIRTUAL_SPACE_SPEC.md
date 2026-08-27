@@ -4,7 +4,7 @@
 >
 > 日期：2026-08-27
 >
-> 状态：实现中；VSP-0、VSP-1 和基础 VSP-2 的固定地点、活动环境、轻量移动状态与 prompt 接线已落地，完整 DayRoute/空间事件/专用地点问答仍未实现。
+> 状态：实现中；VSP-0～VSP-2 的空间模板、地点环境、DayRoute、基础 CurrentScene、空间事件和地点问答已落地，完整离线路线重排与空间设置治理仍未实现。
 >
 > 上位契约：[`VIRTUAL_SCHEDULE_SPEC.md`](VIRTUAL_SCHEDULE_SPEC.md)
 >
@@ -863,15 +863,15 @@ ScheduleRuntime.current_place_id / target_place_id /
 - 确定性地点选择；
 - LLM place_id 白名单；
 - route 插入和时间重叠校验；
-- DayPlan/DayRoute digest。
+- DayPlan/DayRoute digest；当前已实现 route transition 的时间占用校验。
 
 ### VSP-2：CurrentScene
 
 - runtime snapshot：已实现当前地点、目标地点、移动起止时间和 role scope；
 - `at_place` / `in_transition`：已实现基础状态；
-- place entered / transition events：未独立持久化；
+- place entered / transition events：已写入 `virtual_life_events`，带 role/plan/item/source 锚点；
 - 跨午夜、睡眠地点和重启恢复：时间日程已支持，空间恢复仍为基础版本；
-- 当前地点 prompt 摘要：已实现角色化 label、场景状态和受控环境摘要。
+- 当前地点 prompt 摘要：已实现角色化 label、场景状态和受控环境摘要；“你在哪”已接入 Agent/QQ 文字链。
 
 ### VSP-3：表达与空间事件
 
@@ -958,11 +958,11 @@ ScheduleRuntime.current_place_id / target_place_id /
 | `AmbientContext` 概念 | 已在日程规范定义，空间消费未实现 |
 | 角色固定 `scenario` | 已存在，但尚未迁移为世界范围 + 空间锚点 |
 | VirtualWorldScope / PlaceRegistry | 已实现最小加载与校验；稳定地点由角色模板提供 |
-| PlaceRequirement / DayRoute | fixed place 已实现；完整 DayRoute 和计划时间插入未实现 |
-| CurrentScene / 空间事件 | at_place/in_transition runtime snapshot 已实现；独立空间事件未实现 |
-| 空间 prompt 与用户可见表达 | 当前地点 label、场景状态与受控活动环境已注入 prompt；用户询问专用表达未实现 |
+| PlaceRequirement / DayRoute | fixed place、DayRoute 和 transition 时间占用校验已实现；完整路线重排未实现 |
+| CurrentScene / 空间事件 | at_place/in_transition runtime snapshot 与 virtual_life_events 持久化已实现 |
+| 空间 prompt 与用户可见表达 | 当前地点、场景状态、活动环境和 QQ 地点问答已实现 |
 | 空间设置页 | 已加入日程页的开关、地点偏好、移动细节和状态摘要；模板编辑器未实现 |
-| 真实 API 空间生命周期验收 | 未执行 |
+| 真实 API 空间生命周期验收 | 已执行：真实 Agent 解析 zima 工作区域并注入 prompt |
 
 因此，本规范不得被用作“虚拟空间已完成”的证据。
 
