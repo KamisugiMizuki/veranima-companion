@@ -223,7 +223,7 @@ class ScheduleRuntime:
             except (TypeError, ValueError):
                 return default
         runtime.state = ScheduleRuntimeState(
-            state=str(snapshot.get("state") or "awake"),
+            state=str(snapshot.get("state")) if snapshot.get("state") in {"awake", "sleep_preparing", "sleeping"} else "awake",
             sleep_cycle_id=str(snapshot.get("sleep_cycle_id") or ""),
             sleep_started_at=parse(snapshot.get("sleep_started_at")),
             grace_deadline=parse(snapshot.get("grace_deadline")),
@@ -239,13 +239,15 @@ class ScheduleRuntime:
         }
         runtime.current_item_id = str(snapshot.get("current_item_id") or "")
         runtime.last_sleep_cycle_id = str(snapshot.get("last_sleep_cycle_id") or "")
-        runtime.current_place_id = snapshot.get("current_place_id")
-        runtime.previous_place_id = snapshot.get("previous_place_id")
-        runtime.target_place_id = snapshot.get("target_place_id")
+        runtime.current_place_id = snapshot.get("current_place_id") if isinstance(snapshot.get("current_place_id"), str) else None
+        runtime.previous_place_id = snapshot.get("previous_place_id") if isinstance(snapshot.get("previous_place_id"), str) else None
+        runtime.target_place_id = snapshot.get("target_place_id") if isinstance(snapshot.get("target_place_id"), str) else None
         runtime.transition_started_at = parse(snapshot.get("transition_started_at"))
         runtime.expected_arrival_at = parse(snapshot.get("expected_arrival_at"))
         runtime.last_scene_event_key = str(snapshot.get("last_scene_event_key") or "")
-        runtime.scene_state = str(snapshot.get("scene_state") or "unknown")
+        runtime.scene_state = str(snapshot.get("scene_state")) if snapshot.get("scene_state") in {"at_place", "in_transition", "unknown_after_downtime", "reconciling", "unknown"} else "unknown"
+        if runtime.scene_state == "in_transition" and runtime.expected_arrival_at is None:
+            runtime.scene_state = "unknown_after_downtime"
         next_date = snapshot.get("next_plan_date")
         if next_date:
             try:
@@ -570,6 +572,8 @@ class ScheduleRuntime:
 
     def current_scene(self, when: dt.datetime) -> dict:
         context = self.current_context(when)
+        if self.scene_state == "in_transition" and self.expected_arrival_at is None:
+            self.scene_state = "unknown_after_downtime"
         place_id = self.current_place_id if self.current_place_id and context.item_id is None else context.place_id
         place = self.outline.space.places.get(place_id, {}) if self.outline.space and place_id else {}
         return {

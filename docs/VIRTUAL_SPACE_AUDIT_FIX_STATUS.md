@@ -40,11 +40,21 @@
 - 新增连续地点迁移、脏快照和空间运行时行为测试；
 - 完成度文档明确区分基础实现、部分实现和未实机验证。
 
+## 二次复审后的修正
+
+- `unknown_after_downtime` 不再被普通 `advance()` 覆盖；显式 reconcile 才能确认到达；
+- `ScheduleContext` 会暴露 unknown 状态；
+- 完整路线闭合、无路线不瞬移、空间开关恢复和 `sleep_allowed` 均有回归；
+- 脏 snapshot 的 state、scene、place ID、时间和数值字段 fail-closed；
+- 空 transition timestamp 降级为 unknown，不永久保持移动状态；
+- CurrentScene 补充 previous place、transition/arrival 时间和 confidence；
+- 修复 transition 到达后旧 context 覆盖目标地点的问题，支持连续移动；
+
 ## 最新验证
 
 ```text
 空间/日程相关：通过
-全量 pytest：957 passed, 1 warning
+全量 pytest：961 passed, 1 warning
 Node 语法检查：通过
 zima DayRoute：3 transitions
  yuki DayRoute：2 transitions
