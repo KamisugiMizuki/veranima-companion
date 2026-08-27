@@ -398,6 +398,8 @@ recovery_rate_minutes_per_day
 - `EmotionalResidue`：活动结束后保留有限时长的成就感、疲惫、社交透支、无聊或专注残留，作为下一个活动的软滤镜；不能直接覆盖 `AgentState` 的核心情绪。
 - `AmbientContext`：由模板和计划事件定义的虚拟空间/感官氛围，如安静、嘈杂、光线、天气意象或声音类型；不是 GPS、截图或现实传感器事实。
 
+`AmbientContext` 不等于角色当前位置。角色长期生活范围、稳定场所、活动地点选择、移动路线和 `CurrentScene` 的规范性契约见 [`VIRTUAL_SPACE_SPEC.md`](VIRTUAL_SPACE_SPEC.md)。角色卡中的固定 `scenario` 只能作为世界范围和高频空间锚点，不能覆盖有来源的当前地点。
+
 ```text
 LifeTheme → activity variant / deviation reason
 EmotionalResidue → availability / reply tempo / expansion budget
