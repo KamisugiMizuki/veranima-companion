@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 from veranima.core.character import CharacterCard, IDENTITY_BLOCK
 
 # 系统级约束中不应出现角色级内容（换角色卡时这些会串味）
@@ -84,3 +88,22 @@ def test_initial_affection_injected():
     sp = card.to_system_prompt()
     assert "【初始好感】" in sp
     assert "性吸引力" in sp
+
+
+@pytest.mark.parametrize("role_id", ["zima", "yuki"])
+def test_runtime_role_space_is_scope_not_permanent_current_scene(role_id):
+    root = Path(__file__).resolve().parents[1]
+    role_dir = root / "characters" / role_id
+    card = CharacterCard.from_file(role_dir / "character.json")
+    prompt = card.to_system_prompt()
+    guide = (role_dir / "card.md").read_text(encoding="utf-8")
+
+    assert "具体位置由有来源的日程与空间状态决定" in card.scenario
+    assert "不是永久当前位置" in card.scenario
+    assert "不临时发明真实地点、店名或地址" in card.scenario
+    assert "【背景设定】" in prompt
+    assert "具体位置由有来源的日程与空间状态决定" in prompt
+    assert "空间锚点" in guide
+    assert "永久当前位置" in guide
+    assert "屋顶是稳定的虚构场景" not in card.scenario
+    assert "深夜的独居一居室" not in card.scenario
