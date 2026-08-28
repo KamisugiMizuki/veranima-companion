@@ -32,7 +32,7 @@ veranima 是一个具有稳定人格核心、可追溯自传、关系历史和�
 |---|---|---|
 | 核心运行时 | Python 3.11 + `src/veranima` | 复用现有包结构 |
 | LLM | OpenAI 兼容 HTTP API，`httpx` | `llm/client.py`；thinking 模型输出预算由配置提供 |
-| 记忆/状态 | SQLite + FTS5 + sqlite-vec；完整契约见 `docs/MEMORY_SPEC.md` | `memory/schema.py`, `memory/store.py`, `core/learning.py` |
+| 记忆/状态 | SQLite + FTS5 + memory_embedding blob（暴力余弦）；完整契约见 `docs/MEMORY_SPEC.md` | `memory/schema.py`, `memory/store.py`, `core/learning.py` |
 | 人格循环 | Character Core + User/Self/Relationship Model + Persona Brief + PAD/ResponsePlan；完整契约见 `docs/PERSONA_LOOP_SPEC.md` | 复用 `core/character.py`, `core/agent.py`, `core/state.py`, `memory/`；按 P-0~P-9 增量实现 |
 | Embedding | 本地 `sentence-transformers` / bge-m3 | `memory/embedding.py`；远程 API 不作为默认 embedding |
 | 角色卡 | Character Card V3 兼容 JSON + `extensions.veranima` | `core/character.py`, `core/roles.py` |

@@ -37,8 +37,7 @@ class MainActivity : ComponentActivity() {
 
                 LaunchedEffect(Unit) {
                     val files = applicationContext.filesDir.absolutePath
-                    val native = applicationInfo.nativeLibraryDir
-                    val r = withContext(Dispatchers.IO) { bridge.callAttr("boot", files, native).toString() }
+                    val r = withContext(Dispatchers.IO) { bridge.callAttr("boot", files).toString() }
                     status.value = "boot: $r"
                 }
 

@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from .schema import LAYERS, init_db
+from .schema import LAYERS, init_db, unit_blob
 from .embedding import EmbeddingProvider, make_provider
 
 logger = logging.getLogger(__name__)
@@ -195,7 +195,6 @@ class MemoryStore:
         self.llm_config = llm_config or {}
         self.provider = provider or make_provider(self.config, self.llm_config)
         self.con = init_db(db_path, dim=self.provider.dim, provider=self.provider)
-        self._vec_ok = self._check_vec()
 
     def warm_embedding(self) -> None:
         """后台预热本地 embedding；远程/无预热 provider 直接跳过。"""
@@ -203,12 +202,43 @@ class MemoryStore:
         if callable(warm):
             warm()
 
-    def _check_vec(self) -> bool:
+    def _store_embedding(self, memory_id: int, content: str) -> None:
+        """写入向量（归一化 blob）。失败只警告：FTS5 召回仍在。"""
+        if not content.strip():
+            return
         try:
-            self.con.execute("SELECT count(*) FROM memory_vec")
-            return True
-        except Exception:
-            return False
+            vec = self.provider.embed([content])[0]
+            self.con.execute(
+                "INSERT OR REPLACE INTO memory_embedding(memory_id, embedding) VALUES (?,?)",
+                (memory_id, unit_blob(vec)),
+            )
+            self.con.commit()
+        except Exception as e:
+            logger.warning("vector index failed for memory %s: %s", memory_id, e)
+
+    def _knn(self, vec: list[float], k: int) -> list[tuple[int, float]]:
+        """暴力余弦（归一化 blob 上=点积）。与 sqlite-vec 同为 exact KNN，结果逐位一致。
+
+        ponytail: 全表扫描，实测纯 Python 5000 条 214ms（recall 含远程 embed 数百 ms，
+        属噪音）；上限 ~5 万条仍可感知，破 5 万再上 numpy/分块。
+        """
+        import heapq
+        from array import array
+        import operator
+        nq = math.sqrt(sum(x * x for x in vec)) or 1.0
+        q = array("f", (x / nq for x in vec))
+        out: list[tuple[float, int]] = []
+        for mid, blob in self.con.execute("SELECT memory_id, embedding FROM memory_embedding"):
+            v = array("f")
+            v.frombytes(bytes(blob))
+            if len(v) != len(q):
+                continue  # 换模型未重铸的陈旧向量：跳过不炸
+            sim = sum(map(operator.mul, q, v))
+            if len(out) < k:
+                heapq.heappush(out, (sim, mid))
+            elif sim > out[0][0]:
+                heapq.heapreplace(out, (sim, mid))
+        return [(mid, sim) for sim, mid in sorted(out, reverse=True)]
 
     # ---------- M-D 审核准入收件箱（MEMORY_BACKEND_EVAL） ----------
 
@@ -335,16 +365,7 @@ class MemoryStore:
             except Exception as e:
                 logger.warning("memories_fts index failed for memory %s: %s", mid, e)
         # 向量索引（写入即检索：零开销摄入的向量侧）
-        if self._vec_ok and content.strip():
-            try:
-                vec = self.provider.embed([content])[0]
-                self.con.execute(
-                    "INSERT INTO memory_vec(memory_id, embedding) VALUES (?,?)",
-                    (mid, json.dumps(vec)),
-                )
-                self.con.commit()
-            except Exception as e:
-                logger.warning("vector index failed for memory %s: %s", mid, e)
+        self._store_embedding(mid, content)
         return entry
 
     def store_message(self, role: str, content: str, energy: float | None = None,
@@ -652,16 +673,7 @@ class MemoryStore:
             self.con.commit()
         except Exception as e:
             logger.warning("memories_fts index failed on version %s: %s", mid, e)
-        if self._vec_ok:
-            try:
-                vec = self.provider.embed([new_content])[0]
-                self.con.execute(
-                    "INSERT INTO memory_vec(memory_id, embedding) VALUES (?,?)",
-                    (mid, json.dumps(vec)),
-                )
-                self.con.commit()
-            except Exception as e:
-                logger.warning("vector index failed on version %s: %s", mid, e)
+        self._store_embedding(mid, new_content)
         return self.get(mid)
 
     # ---------- 读取 ----------
@@ -841,22 +853,17 @@ class MemoryStore:
         # (entry, sim|None) 候选池；fts 命中 id 集合
         pool: dict[int, tuple[MemoryEntry, float | None]] = {}
         fts_hits: set[int] = set()
-        if self._vec_ok:
-            try:
-                vec = self.provider.embed([query])[0]
-                rows = self.con.execute(
-                    "SELECT memory_id, distance FROM memory_vec WHERE embedding MATCH ? AND k = ?",
-                    (json.dumps(vec), top_k * 4),
-                ).fetchall()
-                for r in rows:
-                    entry = self.get(r["memory_id"])
-                    if entry is None:
-                        continue
-                    if layer and entry.layer != layer:
-                        continue
-                    pool[entry.id] = (entry, 1.0 - r["distance"])
-            except Exception as e:
-                logger.warning("vector recall failed: %s", e)
+        try:
+            vec = self.provider.embed([query])[0]
+            for mid, sim in self._knn(vec, top_k * 4):
+                entry = self.get(mid)
+                if entry is None:
+                    continue
+                if layer and entry.layer != layer:
+                    continue
+                pool[mid] = (entry, sim)
+        except Exception as e:
+            logger.warning("vector recall failed: %s", e)
         # FTS5 直接命中规范记忆（M-3，MEMORY_SPEC 10.2：不依赖消息巧合命中）
         try:
             for r in self.con.execute(
@@ -1104,8 +1111,7 @@ class MemoryStore:
                 self.con.execute(f"DELETE FROM memories_fts WHERE rowid IN ({ph})", ids)
             except Exception as e:
                 logger.warning("memories_fts delete failed: %s", e)
-            if self._vec_ok:
-                self.con.execute(f"DELETE FROM memory_vec WHERE memory_id IN ({ph})", ids)
+            self.con.execute(f"DELETE FROM memory_embedding WHERE memory_id IN ({ph})", ids)
             self.con.commit()
             return len(ids)
         where, params = [], []
@@ -1134,8 +1140,7 @@ class MemoryStore:
             self.con.execute(f"DELETE FROM memories_fts WHERE rowid IN ({ph})", ids)
         except Exception as e:
             logger.warning("memories_fts delete failed: %s", e)
-        if self._vec_ok:
-            self.con.execute(f"DELETE FROM memory_vec WHERE memory_id IN ({ph})", ids)
+        self.con.execute(f"DELETE FROM memory_embedding WHERE memory_id IN ({ph})", ids)
         self.con.commit()
         return len(ids)
 
@@ -1288,21 +1293,14 @@ class MemoryStore:
                         vecs[a.id] = self.provider.embed([merged])[0]
         # 5. 缺失向量重建
         rebuilt = 0
-        if self._vec_ok:
-            try:
-                indexed = {r["memory_id"] for r in self.con.execute("SELECT memory_id FROM memory_vec").fetchall()}
-                for e in self.list_layer("semantic", limit=300):
-                    if e.id not in indexed:
-                        vec = self.provider.embed([e.content])[0]
-                        self.con.execute(
-                            "INSERT INTO memory_vec(memory_id, embedding) VALUES (?,?)",
-                            (e.id, json.dumps(vec)),
-                        )
-                        rebuilt += 1
-                if rebuilt:
-                    self.con.commit()
-            except Exception as ex:
-                logger.warning("curate vector rebuild failed: %s", ex)
+        try:
+            indexed = {r["memory_id"] for r in self.con.execute("SELECT memory_id FROM memory_embedding").fetchall()}
+            for e in self.list_layer("semantic", limit=300):
+                if e.id not in indexed:
+                    self._store_embedding(e.id, e.content)
+                    rebuilt += 1
+        except Exception as ex:
+            logger.warning("curate vector rebuild failed: %s", ex)
         ops["created"] += rebuilt
         return {"counts": self._layer_counts(), "ops": ops}
 

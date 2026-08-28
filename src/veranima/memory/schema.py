@@ -1,8 +1,11 @@
 """记忆系统 SQLite schema：五层记忆 + 消息（零开销摄入）+ FTS5 + 向量表。"""
 
 import logging
+import math
 import sqlite3
+from array import array
 from pathlib import Path
+from typing import Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -180,15 +183,52 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
     content, tokenize='trigram'
 );
 
--- 记忆向量表：仅在 sqlite-vec 扩展可用时创建（见 init_db 的 vec 分支）
-"""
-
-_VEC_SCHEMA = """
-CREATE VIRTUAL TABLE IF NOT EXISTS memory_vec USING vec0(
+-- 记忆向量（方案 B，2026-08 定案）：归一化 float32 blob + Python 暴力点积。
+-- sqlite-vec 本来就是 brute-force exact KNN（无 ANN），本表与其结果逐位一致；
+-- 换宿主换出的是 Chaquopy 兼容性（安卓系统 libsqlite3 无 enable_load_extension）。
+CREATE TABLE IF NOT EXISTS memory_embedding (
     memory_id INTEGER PRIMARY KEY,
-    embedding float[{dim}] distance_metric=cosine
+    embedding BLOB NOT NULL
 );
 """
+
+
+def unit_blob(vec: Sequence[float]) -> bytes:
+    """L2 归一化 → float32 blob（cosine 退化为点积，读取端零归一化成本）。"""
+    n = math.sqrt(sum(x * x for x in vec)) or 1.0
+    return array("f", (x / n for x in vec)).tobytes()
+
+
+def migrate_vec0(con: sqlite3.Connection) -> int:
+    """一次性迁移：老库的 vec0 虚拟表 → memory_embedding（读原始 blob 归一化重存）。
+
+    依赖 sqlite-vec 扩展（PC 端有、安卓端老库根本建不出 vec0 表——不存在即返回 0）。
+    扩展不可用但 vec0 表存在时跳过：备份导入路径会全量重铸，不静默丢数据。
+    """
+    if not con.execute("SELECT count(*) FROM sqlite_master WHERE name='memory_vec'").fetchone()[0]:
+        return 0
+    try:
+        con.enable_load_extension(True)
+        import sqlite_vec
+        sqlite_vec.load(con)
+        rows = con.execute("SELECT memory_id, embedding FROM memory_vec").fetchall()
+    except Exception as e:
+        logger.warning("vec0 migration skipped (%s); embeddings re-forge via backup import", e)
+        return 0
+    copied = 0
+    for r in rows:
+        v = array("f")
+        v.frombytes(bytes(r["embedding"]))
+        n = math.sqrt(sum(x * x for x in v)) or 1.0
+        con.execute(
+            "INSERT OR REPLACE INTO memory_embedding(memory_id, embedding) VALUES (?,?)",
+            (r["memory_id"], array("f", (x / n for x in v)).tobytes()),
+        )
+        copied += 1
+    con.execute("DROP TABLE memory_vec")
+    con.commit()
+    logger.info("migrated %d vec0 embeddings to memory_embedding", copied)
+    return copied
 
 
 def init_db(db_path: str | Path, dim: int = EMBEDDING_DIM, provider=None) -> sqlite3.Connection:
@@ -205,19 +245,12 @@ def init_db(db_path: str | Path, dim: int = EMBEDDING_DIM, provider=None) -> sql
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA busy_timeout=5000")
     con.execute("PRAGMA foreign_keys=ON")
-    # 加载 sqlite-vec 扩展（部分平台 python-sqlite 未开扩展支持：如 Chaquopy
-    # 链系统 libsqlite3，enable_load_extension 不存在——降级为 FTS5-only 而非崩溃）
-    vec_ok = False
-    try:
-        con.enable_load_extension(True)
-        import sqlite_vec
-        sqlite_vec.load(con)
-        vec_ok = True
-    except Exception:
-        logger.info("sqlite-vec unavailable, vector recall degraded (FTS5 still on)")
     con.executescript(SCHEMA.format(dim=dim))
-    if vec_ok:
-        con.executescript(_VEC_SCHEMA.format(dim=dim))
+    # 老库 vec0 虚拟表一次性迁移（新库无此表，直接零成本通过）
+    try:
+        migrate_vec0(con)
+    except Exception as e:
+        logger.warning("vec0 migration check failed: %s", e)
     # 虚拟生活事件迁移：早期实现没有 cycle_key；先补列再创建唯一索引。
     try:
         life_cols = {r["name"] for r in con.execute("PRAGMA table_info(virtual_life_events)").fetchall()}
@@ -244,31 +277,6 @@ def init_db(db_path: str | Path, dim: int = EMBEDDING_DIM, provider=None) -> sql
             logger.info("memories_fts rebuilt for %s memories", mem_count)
     except Exception as e:
         logger.warning("memories_fts migration check failed: %s", e)
-    # 迁移：旧版 memory_vec 为默认 L2 度量（distance≠余弦），重建为 cosine 并重新嵌入
-    try:
-        sql = con.execute("SELECT sql FROM sqlite_master WHERE name='memory_vec'").fetchone()[0]
-        if "distance_metric=cosine" not in sql:
-            con.execute("DROP TABLE memory_vec")
-            con.executescript(_VEC_SCHEMA.format(dim=dim))
-            logger.warning("memory_vec rebuilt with cosine metric (old L2 dropped)")
-            if provider is not None:
-                rows = con.execute("SELECT id, content FROM memories WHERE content != ''").fetchall()
-                import json
-                reembedded = 0
-                for r in rows:
-                    try:
-                        vec = provider.embed([r["content"]])[0]
-                        con.execute(
-                            "INSERT INTO memory_vec(memory_id, embedding) VALUES (?,?)",
-                            (r["id"], json.dumps(vec)),
-                        )
-                        reembedded += 1
-                    except Exception:
-                        continue
-                con.commit()
-                logger.info("re-embedded %s memories after migration", reembedded)
-    except Exception as e:
-        logger.warning("memory_vec migration check failed: %s", e)
     # 迁移：agent_state 补 R1 列（R1_SPEC 5，旧库无新列）
     try:
         cols = {r["name"] for r in con.execute("PRAGMA table_info(agent_state)").fetchall()}

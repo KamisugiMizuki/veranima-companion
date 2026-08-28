@@ -9,10 +9,9 @@ import traceback
 from pathlib import Path
 
 log = logging.getLogger("fuyuno.bridge")
-_VECDIR_ENV = "FUYUNO_VECDIR"  # chaquopy 解包目录只读，路径经 os.environ 传递给替身
 
 
-def boot(files_dir: str, native_dir: str = "") -> str:
+def boot(files_dir: str) -> str:
     """首次调用：配置 → create_agent（远程 LLM + 远程 embedding，全链无本地模型）。
 
     幂等：重复调用返回缓存状态。返回 {ok, ...诊断}。
@@ -23,10 +22,6 @@ def boot(files_dir: str, native_dir: str = "") -> str:
         root = Path(files_dir)
         (root / "data").mkdir(exist_ok=True)
         (root / "logs").mkdir(exist_ok=True)
-        # sqlite-vec 的 libvec0.so 在 jniLibs（nativeLibraryDir），经 env 传给 sqlite_vec 替身
-        if native_dir:
-            import os
-            os.environ[_VECDIR_ENV] = native_dir
         fh = logging.FileHandler(root / "logs" / "core.log", encoding="utf-8")
         fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
         logging.getLogger().addHandler(fh)
@@ -45,7 +40,6 @@ def boot(files_dir: str, native_dir: str = "") -> str:
         probe = {
             "ok": True,
             "python": __import__("sys").version.split()[0],
-            "vec": _vec_probe(),
             "role": agent.card.name,
             "memories": _mem_probe(agent),
         }
@@ -55,20 +49,6 @@ def boot(files_dir: str, native_dir: str = "") -> str:
         tb = traceback.format_exc(limit=6)
         log.error("boot failed:\n%s", tb)
         return json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}", "trace": tb}, ensure_ascii=False)
-
-
-def _vec_probe() -> str:
-    import sqlite3
-    con = sqlite3.connect(":memory:")
-    try:
-        con.enable_load_extension(True)
-        import sqlite_vec
-        sqlite_vec.load(con)
-        return str(con.execute("select vec_version()").fetchone()[0])
-    except Exception as e:
-        return f"FAIL {type(e).__name__}: {e}"
-    finally:
-        con.close()
 
 
 def _mem_probe(agent) -> int:

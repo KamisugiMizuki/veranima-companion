@@ -59,6 +59,6 @@ tools/hermes_bridge.py, tools/dsh_bridge.py, core/workorder.py, core/task_sessio
 工程位 `android/fuyuno/`（Chaquopy 16.1.0 需 AGP 8.6/Gradle 8.13；Python 运行时 3.12，pip 面 httpx+pyyaml+tzdata 共 30.7MB APK）。
 
 - ✅ 核心零拷贝进 APK（chaquopy srcDir 指 `src/`）；boot→create_agent→yuki 卡加载→远程 embedding 构造全部在安卓进程内跑通；用户消息落库实测验证。
-- ❌ **sqlite-vec 在 Chaquopy 下不可用**（推翻 Termux 探针结论）：Chaquopy 的 sqlite3 链安卓系统 libsqlite3，`enable_load_extension` 属性不存在（Termux 能加载是因为它自带编译的 libsqlite）。已按降级路径处理：schema 的 vec0 表改条件创建、不可用时 FTS5-only。**待决**：向量召回在安卓端要么接受 FTS5-only（MVP 可行），要么上 numpy 暴力余弦（记忆量 <1 万条时毫秒级，代码 ~40 行）。
-- ✅ 安卓雷区记账：`zoneinfo` 需要 pip `tzdata` 包（系统无 tz 库，缺了虚拟日程 advance 直接炸）；Chaquopy 只读解包目录（运行期 side-file 写不进 assets 解压区，配置传递走 env/参数）。
+- ✅ **向量检索方案 B 定案（取代上条）**：vec0 整体退役——sqlite-vec 本来就是 brute-force exact KNN（无 ANN），PC 端实测其与纯 Python 暴力余弦 top10 逐位一致。双端统一为 `memory_embedding` 归一化 float32 blob 表 + stdlib 点积（`store._knn`），零扩展依赖、零精度损失；老库 vec0 由 `schema.migrate_vec0` 一次性迁移（真库 177 条实测 0.1s）。规模天花板：5000 条 214ms（recall 含远程 embed 数百 ms 属噪音），破 5 万再上 numpy。
+- ✅ 安卓雷区记账：`zoneinfo` 需要 pip `tzdata` 包（系统无 tz 库，缺了虚拟日程 advance 直接炸）；Chaquopy 只读解包目录（运行期 side-file 写不进 assets 解压区）。
 - ⏳ LLM 回复上屏：链路已打到 `POST /chat/completions`，被 gemai 全站 503（磁盘 96.1%，PC 侧同样复现）挡住——非安卓问题，恢复后重发一条即闭环。

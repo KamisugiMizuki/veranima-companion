@@ -205,10 +205,8 @@ def _backup_cmd(args) -> int:
             print(f"已导入记忆备份（{res.get('created_at')}，记忆 {res.get('memories')} 条）")
             if res.get("reembedded", 0) > 0:
                 print(f"embedding 模型/维度已变化或向量缺失 → 全量重嵌 {res['reembedded']} 条")
-            elif res.get("reembedded") == 0:
-                print("向量与当前模型一致，未重嵌")
             else:
-                print("警告：sqlite-vec 不可用，向量未校验（FTS5 召回仍可用）")
+                print("向量与当前模型一致，未重嵌")
             print(f"旧数据已保留: {', '.join(res.get('stowed', []))}")
             print("请重启核心生效。")
             return 0

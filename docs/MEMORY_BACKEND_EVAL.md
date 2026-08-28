@@ -12,7 +12,7 @@
 |---|---|---|
 | 存储 | SQLite（WAL、busy_timeout、外键） | `data/veranima.db`，gitignore |
 | 全文检索 | FTS5 `memories_fts`（trigram） | 显式同步，非触发器（外部内容表模式实测会损坏库，已弃用） |
-| 向量检索 | sqlite-vec `memory_vec`（cosine） | 扩展缺失时降级为纯 FTS |
+| 向量检索 | `memory_embedding` 归一化 blob 表 + Python 暴力余弦（方案 B，2026-08-29 vec0 退役） | 无扩展依赖，双端同一代码路径；老库 vec0 一次性迁移 |
 | Embedding | 本地 bge-m3（fastembed ONNX / Ollama 可选），1024 维 | 无远程依赖 |
 | 召回 | 混合：FTS + 向量 + 时间/重要性加权 | `recall_top_k=5`，`recall_threshold=0.3` |
 | 契约 | 五层记忆、ADD-only 候选、版本链、`source_message_id` 追溯、事件生命周期、预算注入 | `MEMORY_SPEC.md` |
@@ -45,7 +45,7 @@
 
 1. **数据所有权**：人物记忆的版本链、来源消息 ID、事件生命周期与关系状态深度耦合在现有 schema 和行为测试里。迁移到任何外部记忆服务都要先把这些契约在对方模型上重建一遍，收益为零、风险为正。
 2. **部署形态**：kiwi-mem 需要 PostgreSQL+Docker；Memory Trigger/KokoroMemo 是独立进程或代理。veranima 的分发目标是 clone 后填 key 即跑（用户既定约束），当前栈零额外服务。
-3. **规模错配**：单用户单机，记忆量级为万条以下。SQLite+sqlite-vec 在该量级的检索延迟和准确率不是瓶颈；没有任何候选项目针对「中文陪伴对话+本地 bge-m3」给出优于现状的证据。
+3. **规模错配**：单用户单机，记忆量级为万条以下。SQLite+blob 表在该量级的检索延迟和准确率不是瓶颈（sqlite-vec 本体亦为暴力 KNN，已统一为纯 Python 路径）；没有任何候选项目针对「中文陪伴对话+本地 bge-m3」给出优于现状的证据。
 4. **许可证**：AGPL-3.0（kiwi-mem）直接复用代码会使本项目承担传染义务；MIT/Apache 项目又未提供超出现状的机制。
 5. **清单自身的局限**：多数为个人项目，star 数与维护活跃度未经核实，作为运行时依赖的供应链风险高于自持代码。
 

@@ -1,14 +1,14 @@
 """伴侣备份行为测试：导出→换端导入→向量按当前模型重铸→召回可用；全量覆盖留 .old。"""
 import json
+import math
 import sqlite3
+from array import array
 from pathlib import Path
 
 import pytest
 
-sqlite_vec = pytest.importorskip("sqlite_vec")
-
 from veranima.core.backup import export_backup, import_backup
-from veranima.memory.schema import init_db
+from veranima.memory.schema import init_db, unit_blob
 
 
 class StubProvider:
@@ -21,7 +21,7 @@ class StubProvider:
     def embed(self, texts):
         self.calls += 1
         out = []
-        for i, t in enumerate(texts):
+        for t in texts:
             h = sum(ord(c) for c in t)
             out.append([((h >> (j * 2)) % 7) / 7.0 + 0.1 for j in range(8)])
         return out
@@ -29,10 +29,7 @@ class StubProvider:
 
 def _make_root(tmp: Path, n_mem: int = 5) -> Path:
     root = tmp / "project"
-    (root / "characters" / "r1" / "portraits").mkdir(parents=True)
-    (root / "characters" / "r1" / "character.json").write_text('{"name":"R1"}', encoding="utf-8")
-    (root / "characters" / "r1" / "portraits" / "p1.png").write_bytes(b"\x89PNG")
-    (root / "data").mkdir()
+    (root / "data").mkdir(parents=True)
     (root / "data" / "mirror.json").write_text('{"top":1}', encoding="utf-8")
     con = init_db(root / "data" / "veranima.db", dim=8, provider=StubProvider())
     for i in range(n_mem):
@@ -40,14 +37,27 @@ def _make_root(tmp: Path, n_mem: int = 5) -> Path:
             "INSERT INTO memories(layer,content,created_at,updated_at) VALUES('semantic',?,?,?)",
             (f"记忆条目 {i} 内容", "2026-08-01T00:00:00", "2026-08-01T00:00:00"))
     con.commit()
-    rows = con.execute("SELECT id, content FROM memories").fetchall()
     prov = StubProvider()
-    for r in rows:
-        con.execute("INSERT INTO memory_vec(memory_id, embedding) VALUES (?,?)",
-                    (r[0], json.dumps(prov.embed([r[1]])[0])))
+    for r in con.execute("SELECT id, content FROM memories").fetchall():
+        con.execute("INSERT INTO memory_embedding(memory_id, embedding) VALUES (?,?)",
+                    (r[0], unit_blob(prov.embed([r["content"]])[0])))
     con.commit()
     con.close()
     return root
+
+
+def _cos_hit(db: Path, qvec: list[float]) -> str:
+    """blob KNN 的独立实现（测试侧），验证导入后向量真能召回正确原文。"""
+    con = sqlite3.connect(db)
+    q = array("f", ((x / (math.sqrt(sum(v * v for v in qvec)) or 1.0)) for x in qvec))
+    best, best_id = -9.0, -1
+    for mid, blob in con.execute(
+            "SELECT memory_id, embedding FROM memory_embedding"):
+        v = array("f"); v.frombytes(bytes(blob))
+        s = sum(a * b for a, b in zip(q, v))
+        if s > best:
+            best, best_id = s, mid
+    return con.execute("SELECT content FROM memories WHERE id=?", (best_id,)).fetchone()[0]
 
 
 def test_export_import_same_model_keeps_vectors(tmp_path):
@@ -87,16 +97,10 @@ def test_import_new_model_reembeds_and_recall_works(tmp_path):
                         embedding_dim=8, embed_fn=prov.embed)
     assert res["reembedded"] == 5          # 模型变了 → 全量重铸
     con = sqlite3.connect(dest / "data" / "veranima.db")
-    con.enable_load_extension(True)
-    sqlite_vec.load(con)
-    assert con.execute("SELECT count(*) FROM memory_vec").fetchone()[0] == 5
-    q = json.dumps(prov.embed(["记忆条目 3 内容"])[0])
-    hit = con.execute(
-        "SELECT memory_id FROM memory_vec WHERE embedding MATCH ? AND k=1 ORDER BY distance",
-        (q,)).fetchone()
-    content = con.execute("SELECT content FROM memories WHERE id=?", (hit[0],)).fetchone()[0]
-    assert content == "记忆条目 3 内容"     # 召回命中重嵌后的正确原文
+    assert con.execute("SELECT count(*) FROM memory_embedding").fetchone()[0] == 5
     con.close()
+    content = _cos_hit(dest / "data" / "veranima.db", prov.embed(["记忆条目 3 内容"])[0])
+    assert content == "记忆条目 3 内容"     # 召回命中重嵌后的正确原文
 
 
 def test_import_without_embed_fn_raises(tmp_path):
