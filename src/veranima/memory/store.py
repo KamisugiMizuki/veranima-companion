@@ -219,26 +219,25 @@ class MemoryStore:
     def _knn(self, vec: list[float], k: int) -> list[tuple[int, float]]:
         """暴力余弦（归一化 blob 上=点积）。与 sqlite-vec 同为 exact KNN，结果逐位一致。
 
-        ponytail: 全表扫描，实测纯 Python 5000 条 214ms（recall 含远程 embed 数百 ms，
-        属噪音）；上限 ~5 万条仍可感知，破 5 万再上 numpy/分块。
+        ponytail: 全表扫描。numpy 矩阵乘 10 万条 ~10ms，join/读 blob 先行；
+        真到百万级再考虑分块或 ANN（届时 recall 质量才是主矛盾）。
         """
-        import heapq
-        from array import array
-        import operator
-        nq = math.sqrt(sum(x * x for x in vec)) or 1.0
-        q = array("f", (x / nq for x in vec))
-        out: list[tuple[float, int]] = []
-        for mid, blob in self.con.execute("SELECT memory_id, embedding FROM memory_embedding"):
-            v = array("f")
-            v.frombytes(bytes(blob))
-            if len(v) != len(q):
-                continue  # 换模型未重铸的陈旧向量：跳过不炸
-            sim = sum(map(operator.mul, q, v))
-            if len(out) < k:
-                heapq.heappush(out, (sim, mid))
-            elif sim > out[0][0]:
-                heapq.heapreplace(out, (sim, mid))
-        return [(mid, sim) for sim, mid in sorted(out, reverse=True)]
+        import numpy as np
+        q = np.asarray(vec, dtype=np.float32)
+        q /= float(np.linalg.norm(q)) or 1.0
+        d4 = q.size * 4
+        rows = [(mid, blob) for mid, blob in
+                self.con.execute("SELECT memory_id, embedding FROM memory_embedding")
+                if len(blob) == d4]  # 换模型未重铸的陈旧维度：跳过不炸
+        if not rows:
+            return []
+        M = np.frombuffer(b"".join(b for _, b in rows), dtype=np.float32,
+                          count=len(rows) * q.size).reshape(len(rows), q.size)
+        sims = M @ q
+        k = min(k, len(rows))
+        idx = np.argpartition(sims, -k)[-k:]
+        idx = idx[np.argsort(sims[idx])[::-1]]
+        return [(rows[i][0], float(sims[i])) for i in idx]
 
     # ---------- M-D 审核准入收件箱（MEMORY_BACKEND_EVAL） ----------
 

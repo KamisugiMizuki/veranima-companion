@@ -12,7 +12,8 @@ dependencies = [
     "APScheduler>=3.10",
     # 运行时基础设施（原为传递依赖，显式声明避免新环境缺失）
     "httpx>=0.27",
-    "sqlite-vec>=0.1",
+    "sqlite-vec>=0.1",       # 仅老库 vec0→blob 一次性迁移用（运行时向量检索=纯 numpy）
+    "numpy>=1.26",           # memory_embedding 暴力余弦（_knn 矩阵乘）
     "pillow>=10",
     "pyyaml>=6",
     "sentence-transformers>=3",  # 本地 embedding（bge-m3，远程 API 不支持 embeddings 时必需）

@@ -37,6 +37,7 @@ chaquopy {
             install("httpx")
             install("pyyaml")
             install("tzdata")  // 安卓无系统 tz 库，zoneinfo 自动回退到此包
+            install("numpy")   // 记忆向量 _knn（chaquopy 线 1.26.2）
         }
     }
     sourceSets {
