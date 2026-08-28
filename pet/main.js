@@ -392,6 +392,34 @@ function stopTTS() {
   if (ttsProc) { terminateProcessTree(ttsProc); ttsProc = null; }
 }
 
+// ---------- 语音按需启停（2026-08-29）----------
+// TTS 常驻吃 3.2GB 显存（实测）；壳日常只亮立绘、通讯走 QQ → 不随启动拉起。
+// 事件驱动预热：QQ 通道来的 chat 消息（renderer 转发）= 用户在场，把出声端拉起来
+// 等用（10s 藏在打字间隔里）；语音真正被用到的信号（合成失败/speak-request/按住说话）
+// 只做保活，不重复 spawn。空闲 5 分钟一起释放。
+const VOICE_IDLE_MS = 5 * 60 * 1000;
+let voiceTimer = null;
+
+function touchVoice() {  // 需要语音：拉起（已在跑就只是保活）+ 重置空闲计时
+  if (isQuitting) return;
+  if (voiceTimer) clearTimeout(voiceTimer);
+  voiceTimer = setTimeout(() => { voiceTimer = null; stopVoice(); }, VOICE_IDLE_MS);
+  if (!ttsProc) startTTS();
+  if (!sttProc) startSTT();
+}
+
+function keepVoiceAlive() {  // 语音被用到（转写成功/合成失败重试）：只续命不 spawn
+  if (isQuitting || !voiceTimer) return;
+  clearTimeout(voiceTimer);
+  voiceTimer = setTimeout(() => { voiceTimer = null; stopVoice(); }, VOICE_IDLE_MS);
+}
+
+function stopVoice() {
+  if (voiceTimer) { clearTimeout(voiceTimer); voiceTimer = null; }
+  stopTTS();
+  stopSTT();
+}
+
 function terminateProcessTree(proc) {
   if (!proc || proc.killed) return;
   if (process.platform === 'win32') {
@@ -918,6 +946,7 @@ function applyPetHitShape(payload = {}) {
 function buildContextMenu() {
   return Menu.buildFromTemplate([
     { label: '戳一下', click: () => {
+      touchVoice();  // 主动互动=可能出声
       if (ws && ws.readyState === 1) {
         ws.send(JSON.stringify({ type: 'poke', request_id: crypto.randomUUID() }));
       }
@@ -1144,6 +1173,7 @@ function handleCoreMsg(msg) {
     case 'reply_error': {
       if (!replyMatches(payload)) break;
       if (payload.code === 'tts_failed') {
+        touchVoice();  // TTS 未就绪/挂了 → 拉起，下句恢复出声
         sendChatEvent('speech-error', {
           code: payload.code, turn_id: activeReply.turn_id,
           request_id: activeReply.request_id,
@@ -1196,6 +1226,7 @@ function handleCoreMsg(msg) {
 
 // ---------- 聊天窗口（QQ 风格对话框，独立窗口，复用模式 hide 不销毁） ----------
 function openChatWindow() {
+  touchVoice();
   loadChatHistory();
   if (chatWin && !chatWin.isDestroyed()) { chatWin.show(); chatWin.focus(); return; }
   chatWin = new BrowserWindow({
@@ -1326,6 +1357,7 @@ function restoreChatImageRefs(message) {
   return message;
 }
 function dispatchChat(text, images = [], messageId = '', existingRefs = []) {
+  touchVoice();  // 用户在场打字=预热出声端（10s 藏在生成延迟里）
   const t = String(text || '').trim();
   let message = messageId && chatHistory.find((item) => item.message_id === messageId);
   const imageResult = existingRefs.length
@@ -1392,13 +1424,14 @@ ipcMain.handle('stt-transcribe', async (e, payload) => {
       throw new Error(`STT HTTP ${response.status}: ${detail}`);
     }
     sttRestartDelay = 3000;
+    keepVoiceAlive();
     const result = await response.json();
     const text = String(result.text || '').trim();
     pushLog('stt', `transcription complete: chars=${text.length}, language=${result.language || language}`);
     return text;
   } catch (error) {
     pushLog('shell', `stt transcribe failed: ${error.message}`);
-    startSTT();
+    touchVoice();  // 用户明确要语音 → 拉起/重试 + 重置空闲
     return '';
   }
 });
@@ -1535,8 +1568,7 @@ if (!gotLock) {
     createWindow();             // 先显示桌宠，后台服务不阻塞首屏
     createTray();
     setTimeout(() => startCore(), 0);
-    setTimeout(() => startTTS(), 0);
-    setTimeout(() => startSTT(), 0);
+    // TTS/STT 不随启动（2026-08-29 按需启停）：聊天活动 → touchVoice()
     connect();
     setInterval(healthCheck, HEALTH_INTERVAL_MS);
   });
