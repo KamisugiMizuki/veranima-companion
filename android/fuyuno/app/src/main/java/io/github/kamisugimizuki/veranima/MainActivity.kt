@@ -42,6 +42,19 @@ class MainActivity : ComponentActivity() {
                     status.value = "boot: $r"
                 }
 
+                val send = fun() {
+                    val q = input.value.trim()
+                    if (q.isEmpty() || busy.value) return
+                    msgs.add(Msg(true, q)); input.value = ""
+                    busy.value = true
+                    scope.launch {
+                        val r = withContext(Dispatchers.IO) { bridge.callAttr("chat", q).toString() }
+                        val o = org.json.JSONObject(r)
+                        if (o.optBoolean("ok")) msgs.add(Msg(false, o.getString("reply")))
+                        else status.value = "chat 失败: ${o.optString("error")}"
+                        busy.value = false
+                    }
+                }
                 Column(Modifier.fillMaxSize().padding(12.dp)) {
                     Text(status.value, style = MaterialTheme.typography.bodySmall)
                     LazyColumn(Modifier.weight(1f)) {
@@ -60,32 +73,11 @@ class MainActivity : ComponentActivity() {
                             input.value, { input.value = it },
                             Modifier.weight(1f), singleLine = true,
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                            keyboardActions = KeyboardActions(onSend = {
-                                val q = input.value.trim()
-                                if (q.isNotEmpty() && !busy.value) {
-                                    msgs.add(Msg(true, q)); input.value = ""
-                                    busy.value = true; scope.launch {
-                                        val r = withContext(Dispatchers.IO) {
-                                            bridge.callAttr("chat", q).toString()
-                                        }
-                                        msgs.add(Msg(false, r))
-                                        busy.value = false
-                                    }
-                                }
-                            })
+                            keyboardActions = KeyboardActions(onSend = { send() })
                         )
                         Spacer(Modifier.width(8.dp))
                         if (busy.value) CircularProgressIndicator(Modifier.size(28.dp))
-                        else Button(onClick = {
-                            val q = input.value.trim()
-                            if (q.isNotEmpty()) {
-                                msgs.add(Msg(true, q)); input.value = ""
-                                busy.value = true; scope.launch {
-                                    val r = withContext(Dispatchers.IO) { bridge.callAttr("chat", q).toString() }
-                                    msgs.add(Msg(false, r)); busy.value = false
-                                }
-                            }
-                        }) { Text("发送") }
+                        else Button(onClick = { send() }) { Text("发送") }
                     }
                 }
             }

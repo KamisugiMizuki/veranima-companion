@@ -78,7 +78,9 @@ class LLMClient:
             )
             content = (msg.get("content") or "").strip()
             if not content:
-                raise LLMError("empty structured completion")
+                # 推理模型偶发把预算烧在 reasoning 上返回空 content：降级普通 chat 重试
+                logger.warning("structured completion empty (thinking ate budget?); retry plain")
+                return self.chat(messages, max_tokens=budget, temperature=temperature)
             try:
                 data = json.loads(content)
             except (json.JSONDecodeError, TypeError):
