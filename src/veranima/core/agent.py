@@ -274,6 +274,7 @@ class Agent:
                 max_results=int(search_cfg.get("max_results", 5)),
                 timeout=float(search_cfg.get("timeout_seconds", 8)),
                 cache_ttl=float(search_cfg.get("cache_ttl_seconds", 900)),
+                base_url=str(search_cfg.get("base_url") or "").strip() or None,
             )
         else:
             self.search = SearXNGClient(

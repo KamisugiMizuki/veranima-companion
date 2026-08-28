@@ -63,12 +63,13 @@ class BochaClient:
     """与 SearXNGClient 同接口：search(query, time_range=…) → list[dict]；healthcheck()。"""
 
     def __init__(self, api_key: str, *, max_results: int = 5, timeout: float = 8.0,
-                 cache_ttl: float = 900, base_url: str = ENDPOINT):
+                 cache_ttl: float = 900, base_url: str | None = None):
         self.api_key = api_key.strip()
         self.max_results = max(1, min(int(max_results), 10))
         self.timeout = max(0.5, float(timeout))
         self.cache_ttl = max(0.0, float(cache_ttl))
-        self.base_url = base_url.rstrip("/")
+        # config 里 base_url = 完整 endpoint（含 /v1/web-search），非根地址
+        self.base_url = (base_url or ENDPOINT).rstrip("/")
         self._cache: dict[tuple[str, str], tuple[float, list[dict]]] = {}
 
     def search(self, query: str, *, language: str = "zh-CN", force_refresh: bool = False,
