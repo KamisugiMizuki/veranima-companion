@@ -176,7 +176,12 @@ def make_provider(config: dict, llm_config: dict | None = None) -> EmbeddingProv
             f"embedding 本地模型不存在: {path}。请下载（ModelScope BAAI/bge-m3）或配置 openai:<model> 使用 API。"
         )
     if spec.startswith("openai:"):
-        return OpenAIEmbedProvider(llm_config.get("base_url", ""), llm_config.get("api_key", ""), spec.split(":", 1)[1])
+        # embedding 专用 base_url/api_key 覆盖（留空则复用 llm 段）
+        return OpenAIEmbedProvider(
+            config.get("embedding_base_url") or llm_config.get("base_url", ""),
+            config.get("embedding_api_key") or llm_config.get("api_key", ""),
+            spec.split(":", 1)[1],
+        )
     if spec.startswith("ollama:"):
         return OllamaEmbedProvider(config.get("host", "http://localhost:11434"), spec.split(":", 1)[1])
     try:
