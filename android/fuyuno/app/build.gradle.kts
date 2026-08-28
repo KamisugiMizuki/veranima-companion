@@ -14,7 +14,7 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "0.1-spike"
-        ndk { abiFilters += listOf("x86_64") }  // spike 只跑 MuMu；真机阶段加 arm64-v8a
+        ndk { abiFilters += listOf("x86_64", "arm64-v8a") }  // MuMu + 真机
     }
     // chaquopy 的 python 任务名带 abi 后缀，srcDir 方式对每个 abi 复用同一树
     packaging {

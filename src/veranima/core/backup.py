@@ -80,9 +80,12 @@ def export_backup(root: Path, db_path: Path, *, embedding_spec: str,
 
 
 def _vec_dim(con: sqlite3.Connection) -> int | None:
-    """当前向量维度：memory_embedding 归一化 blob 每维 4 字节（float32）。"""
-    row = con.execute(
-        "SELECT min(length(embedding)) FROM memory_embedding").fetchone()
+    """当前向量维度：memory_embedding 归一化 blob 每维 4 字节（vec0 老库=无表=0，导入端自动重铸）。"""
+    try:
+        row = con.execute(
+            "SELECT min(length(embedding)) FROM memory_embedding").fetchone()
+    except sqlite3.Error:
+        return None
     return row[0] // 4 if row and row[0] else None
 
 

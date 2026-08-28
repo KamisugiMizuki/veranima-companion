@@ -5,6 +5,7 @@
 """
 import json
 import logging
+import shutil
 import traceback
 from pathlib import Path
 
@@ -12,20 +13,40 @@ log = logging.getLogger("fuyuno.bridge")
 
 
 def boot(files_dir: str) -> str:
-    """首次调用：配置 → create_agent（远程 LLM + 远程 embedding，全链无本地模型）。
+    """首次调用：捡 inbox → 配置 → create_agent（远程 LLM + 远程 embedding，全链无本地模型）。
 
+    inbox/ 是调试投递口（adb push /data/local/tmp + run-as cp 送进私有目录）：
+    config.yaml / characters/ / backup.zip 各自捡到位，backup.zip 仅当本机库为空才导入，
+    导入后改名 backup.zip.done 防重复。
     幂等：重复调用返回缓存状态。返回 {ok, ...诊断}。
     """
     if getattr(boot, "_done", False):
         return json.dumps({"ok": True, "already": True})
     try:
         root = Path(files_dir)
+        inbox = root / "inbox"
         (root / "data").mkdir(exist_ok=True)
         (root / "logs").mkdir(exist_ok=True)
         fh = logging.FileHandler(root / "logs" / "core.log", encoding="utf-8")
         fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
         logging.getLogger().addHandler(fh)
         logging.getLogger().setLevel(logging.INFO)
+
+        # inbox 投递：config → characters → backup（顺序即依赖）
+        cfg_in = inbox / "config.yaml"
+        if cfg_in.exists():
+            shutil.copy(cfg_in, root / "config.yaml")
+            cfg_in.unlink()
+            log.info("inbox: config.yaml 就位")
+        chars_in = inbox / "characters"
+        if chars_in.is_dir():
+            for sub in chars_in.iterdir():
+                if sub.is_dir():
+                    dst = root / "characters" / sub.name
+                    if not dst.exists():
+                        shutil.copytree(sub, dst)
+            shutil.rmtree(chars_in)
+            log.info("inbox: characters 捡完")
 
         import yaml
         from veranima.app import create_agent
@@ -34,6 +55,9 @@ def boot(files_dir: str) -> str:
         cfg["root"] = str(root)
         # 路径全部锚定到应用私有目录
         cfg.setdefault("memory", {})["db_path"] = str(root / "data" / "veranima.db")
+
+        imported = _pickup_backup(root, cfg, inbox)
+
         agent = create_agent(cfg)
         boot.agent = agent
         boot._done = True
@@ -43,12 +67,45 @@ def boot(files_dir: str) -> str:
             "role": agent.card.name,
             "memories": _mem_probe(agent),
         }
+        if imported:
+            probe["imported"] = imported
         log.info("boot ok: %s", probe)
         return json.dumps(probe, ensure_ascii=False)
     except Exception as e:
         tb = traceback.format_exc(limit=6)
         log.error("boot failed:\n%s", tb)
         return json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}", "trace": tb}, ensure_ascii=False)
+
+
+def _pickup_backup(root: Path, cfg: dict, inbox: Path) -> int:
+    """inbox 里的 backup.zip → 全量导入（仅当本机 memories 为空）。返回导入条数。"""
+    src = inbox / "backup.zip" if inbox else None
+    if not src or not src.exists():
+        return 0
+    db_path = Path(cfg["memory"]["db_path"])
+    if db_path.exists():
+        import sqlite3
+        con = sqlite3.connect(db_path)
+        try:
+            n = con.execute("SELECT count(*) FROM memories").fetchone()[0]
+        except Exception:
+            n = 0
+        finally:
+            con.close()
+        if n:
+            log.info("backup.zip 存在但本机库非空（%d 条），跳过导入", n)
+            return 0
+    from veranima.core.backup import import_backup
+    from veranima.memory.embedding import make_provider
+    mem_cfg = cfg.get("memory") or {}
+    prov = make_provider(mem_cfg, cfg.get("llm") or {})
+    spec = (mem_cfg.get("embedding_model") or "").strip()
+    res = import_backup(root, src, embedding_spec=spec, embedding_dim=prov.dim,
+                        embed_fn=prov.embed)
+    src.rename(src.with_suffix(".zip.done"))
+    log.info("backup imported: %s memories, reembedded=%s",
+             res.get("memories"), res.get("reembedded"))
+    return int(res.get("memories") or 0)
 
 
 def _mem_probe(agent) -> int:
