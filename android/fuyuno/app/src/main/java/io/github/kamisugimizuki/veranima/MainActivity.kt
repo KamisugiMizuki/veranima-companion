@@ -1,5 +1,6 @@
 package io.github.kamisugimizuki.veranima
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -27,6 +28,14 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         if (!Python.isStarted()) Python.start(AndroidPlatform(this))
         val bridge = Python.getInstance().getModule("bridge")
+        // Android 13+ 通知权限（不给则主动消息静默丢弃，故必须请求）
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
+                android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1)
+        }
+        androidx.core.content.ContextCompat.startForegroundService(
+            this, Intent(this, CompanionService::class.java))
         setContent {
             MaterialTheme {
                 val msgs = remember { mutableStateListOf<Msg>() }
@@ -39,6 +48,7 @@ class MainActivity : ComponentActivity() {
                     val files = applicationContext.filesDir.absolutePath
                     val r = withContext(Dispatchers.IO) { bridge.callAttr("boot", files).toString() }
                     status.value = "boot: $r"
+                    withContext(Dispatchers.IO) { bridge.callAttr("start_ticks") }
                 }
 
                 val send = fun() {

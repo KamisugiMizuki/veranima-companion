@@ -11,6 +11,41 @@ from pathlib import Path
 
 log = logging.getLogger("fuyuno.bridge")
 
+_pending: list[str] = []  # tick 产出的主动消息，Kotlin 轮询取走
+
+
+def _tick_loop(interval: float = 60.0) -> None:
+    """后台每分钟 tick_proactive（同 CLI adapter 模式）；消息进 _pending。"""
+    import time as _t
+    while True:
+        _t.sleep(interval)
+        agent = getattr(boot, "agent", None)
+        if agent is None:
+            continue
+        try:
+            for msg in agent.tick_proactive():
+                _pending.append(msg)
+                log.info("proactive queued: %s", msg[:60])
+        except Exception:
+            log.exception("proactive tick failed")
+
+
+def start_ticks() -> str:
+    """boot 后由 Kotlin 调一次：起 daemon tick 线程。"""
+    if getattr(start_ticks, "_on", False):
+        return json.dumps({"ok": True, "already": True})
+    import threading
+    threading.Thread(target=_tick_loop, daemon=True).start()
+    start_ticks._on = True
+    return json.dumps({"ok": True})
+
+
+def drain_pending() -> str:
+    """取走全部待发主动消息（Kotlin 侧发通知）。"""
+    out = list(_pending)
+    _pending.clear()
+    return json.dumps({"ok": True, "messages": out}, ensure_ascii=False)
+
 
 def boot(files_dir: str) -> str:
     """首次调用：捡 inbox → 配置 → create_agent（远程 LLM + 远程 embedding，全链无本地模型）。
