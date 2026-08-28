@@ -57,6 +57,27 @@ def test_charpkg_roundtrip_has_manifest_and_checksums(tmp_path: Path):
     assert (installed / "portraits" / "idle.png").read_bytes() == b"not-a-real-image"
 
 
+def test_charpkg_asset_options_no_portraits_and_with_voice(tmp_path: Path):
+    """安卓轻量包（无立绘）与 PC 搬运包（含 refs 不含 models）两个开关。"""
+    source = _character_dir(tmp_path)
+
+    lite = tmp_path / "lite.charpkg"
+    export_character(source, lite, include_portraits=False)
+    with zipfile.ZipFile(lite) as archive:
+        names = set(archive.namelist())
+    assert not any(n.startswith("character/portraits/") for n in names)
+    installed = import_character(lite, tmp_path / "characters")  # 表达式引用缺文件不拦截
+    assert not (installed / "portraits").exists()
+
+    full = tmp_path / "with-voice.charpkg"
+    export_character(source, full, include_voice=True)
+    with zipfile.ZipFile(full) as archive:
+        checksums = json.loads(archive.read("checksums.json"))
+    assert "character/voice/refs/private.wav" in checksums
+    assert "character/example_voices/private.ogg" in checksums
+    assert "character/voice/models/unsafe.ckpt" not in checksums  # 权重永不入包
+
+
 def test_charpkg_rejects_tampered_member(tmp_path: Path):
     source = _character_dir(tmp_path)
     package = tmp_path / "test.charpkg"

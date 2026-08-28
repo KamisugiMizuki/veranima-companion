@@ -40,11 +40,17 @@ class CharacterArchiveError(RuntimeError):
 
 # ---------- 导出 ----------
 
-def export_character(dir_path: Path, out_path: Path, *, package_format: str | None = None) -> Path:
+def export_character(dir_path: Path, out_path: Path, *, package_format: str | None = None,
+                     include_portraits: bool = True, include_voice: bool = False) -> Path:
     """角色目录（character.json + card.md + portraits/ + voice/）→ .char zip。
 
     manifest.json 自动生成：id 从角色名派生（slug 化，冲突时加哈希后缀），
     display_name 取角色名。不要求角色卡自带 id 字段（与 sakura 格式兼容）。
+
+    .charpkg 资产开关（安卓等轻量端用；legacy 格式不受影响，始终全量）：
+    - include_portraits=False：不收 portraits/（卡内表达式路径引用保留，导入端跳过缺文件校验）
+    - include_voice=True：收 voice/refs 与 example_voices（供 PC 间搬运训练素材）；
+      voice/models/ 因 pickle 任意代码执行风险**任何组合都不收**，训练权重走原目录复制。
     """
     dir_path = Path(dir_path)
     manifest_path = dir_path / "character.json"
@@ -87,7 +93,12 @@ def export_character(dir_path: Path, out_path: Path, *, package_format: str | No
         if not p.is_file():
             continue
         relative = p.relative_to(dir_path)
-        if relative.parts[:1] in {("voice",), ("example_voices",)}:
+        top = relative.parts[0]
+        if top in ("voice", "example_voices") and not include_voice:
+            continue
+        if top == "voice" and len(relative.parts) > 1 and relative.parts[1] == "models":
+            continue  # 训练权重（pickle）永不进包：导入即任意代码执行面，PC 间搬运走目录复制
+        if top == "portraits" and not include_portraits:
             continue
         if p.suffix.lower() not in _CHARPKG_ALLOWED_SUFFIXES:
             raise CharacterArchiveError(f".charpkg 不允许的文件类型: {relative.as_posix()}")
@@ -315,12 +326,14 @@ def _validate_character_tree(char_dir: Path) -> None:
         raise CharacterArchiveError("character.json 缺少角色名")
     root = char_dir.resolve()
     expressions = (card.veranima.get("avatar") or {}).get("expressions") or {}
+    # 无 portraits/ 目录 = 立绘可选导出包（--no-portraits）：引用保留，缺文件不拦截
+    has_portraits = (char_dir / "portraits").is_dir()
     for label, relative in expressions.items():
         rel = Path(str(relative))
         target = (char_dir / rel).resolve()
         if rel.is_absolute() or not target.is_relative_to(root):
             raise CharacterArchiveError(f"立绘路径越界: {label}={relative}")
-        if not target.is_file():
+        if has_portraits and not target.is_file():
             raise CharacterArchiveError(f"立绘资源缺失: {label}={relative}")
 
 

@@ -1,19 +1,18 @@
-"""伴侣备份：记忆本体（SQLite 一致性快照）+ 活动角色目录 + 学习状态文件。
+"""记忆备份：共享记忆本体（SQLite 一致性快照）+ 学习状态文件。
 
 设计（2026-08-29 拍板）：
+- 记忆是**所有角色共用**的，所以这里只管 veranima.db + mirror/style 状态；
+  角色是**角色间互相独立**的，走 roles export/import（.char 包）另一条通道。
 - 备份的是原文与状态。DB 快照虽连带向量，但向量只在**模型+维度一致**时才可信复用；
   否则导入端丢弃并按当前 embedding 模型全量重铸（memory_vec 是派生数据）。
 - 导入 = **全量覆盖**：DB 覆盖前移为 veranima.db.old、状态文件移为 *.old（各留一份，
-  防手滑）。角色目录按包内文件叠加写入——不整目录 stow，否则端侧可再生的大文件
-  （voice/ 232M）会被自己导回的动作误删。
+  防手滑）。
 - Windows 与安卓跑同一份代码，格式通用：一个 zip。
-- 排除：voice/（TTS 模型/参考音频，端侧可再生或不适用）、data/models（17G）。
 
 包结构::
 
-    manifest.json            {version, created_at, embedding_model, embedding_dim, role_id, counts}
+    manifest.json            {version, created_at, embedding_model, embedding_dim, counts}
     db/veranima.db           sqlite3.backup() 一致性快照
-    characters/<role>/...    活动角色目录（不含 voice/）
     state/mirror.json        风格镜像状态（存在才收）
     state/style.json         风格学习参数（存在才收）
 """
@@ -44,9 +43,9 @@ def _db_tables(con: sqlite3.Connection) -> dict[str, int]:
     return out
 
 
-def export_backup(root: Path, db_path: Path, *, embedding_spec: str, role_id: str,
+def export_backup(root: Path, db_path: Path, *, embedding_spec: str,
                   out_path: Path) -> Path:
-    """生成备份包。root=项目根（找角色目录与状态文件），db_path=veranima.db。"""
+    """生成记忆备份包。root=项目根（找状态文件），db_path=veranima.db。"""
     root = Path(root)
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -63,17 +62,11 @@ def export_backup(root: Path, db_path: Path, *, embedding_spec: str, role_id: st
             "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
             "embedding_model": embedding_spec,
             "embedding_dim": _vec_dim(src) or 0,
-            "role_id": role_id,
             "counts": _db_tables(src),
         }
         with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.write(snap, "db/" + BACKUP_DB_NAME)
             zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=1))
-            role_dir = root / "characters" / role_id
-            if role_dir.is_dir():
-                for p in role_dir.rglob("*"):
-                    if p.is_file() and "voice" not in p.relative_to(role_dir).parts:
-                        zf.write(p, f"characters/{role_id}/{p.relative_to(role_dir).as_posix()}")
             for name in ("mirror.json", "style.json"):
                 f = root / "data" / name
                 if f.exists():
@@ -106,7 +99,7 @@ def _stow(path: Path) -> None:
 
 def import_backup(root: Path, zip_path: Path, *, embedding_spec: str, embedding_dim: int,
                   embed_fn=None) -> dict:
-    """全量覆盖导入。embed_fn: Callable[[list[str]], list[list[float]]]，重嵌时调。
+    """全量覆盖导入记忆。embed_fn: Callable[[list[str]], list[list[float]]]，重嵌时调。
 
     返回 manifest + 摘要 {reembedded: int, stowed: [paths]}。
     调用前提：核心已停止（Windows 端先关桌宠/QQ bot）。
@@ -129,16 +122,10 @@ def import_backup(root: Path, zip_path: Path, *, embedding_spec: str, embedding_
 
     # 学习状态文件
     with zipfile.ZipFile(zip_path) as zf:
-        role_id = manifest["role_id"]
         for info in zf.infolist():
             if info.filename.startswith("state/"):
                 target = root / "data" / Path(info.filename).name
                 _stow(target)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(zf.read(info))
-            elif info.filename.startswith(f"characters/{role_id}/"):
-                rel = info.filename[len(f"characters/{role_id}/"):]
-                target = root / "characters" / role_id / rel
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(zf.read(info))
 
@@ -185,5 +172,4 @@ def import_backup(root: Path, zip_path: Path, *, embedding_spec: str, embedding_
             con.commit()
         reembedded = len(rows)
     con.close()
-    return {**manifest, "reembedded": reembedded, "stowed": stowed,
-            "role_id": role_id, "memories": mem_n}
+    return {**manifest, "reembedded": reembedded, "stowed": stowed, "memories": mem_n}

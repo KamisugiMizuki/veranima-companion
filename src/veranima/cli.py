@@ -40,7 +40,8 @@ def _roles_cmd(args) -> int:
         from .core.character_archive import export_character
         from pathlib import Path
         try:
-            out = export_character(roles_dir() / args.role_id, Path(args.new_id or f"{args.role_id}.charpkg"))
+            out = export_character(roles_dir() / args.role_id, Path(args.new_id or f"{args.role_id}.charpkg"),
+                                   include_portraits=not args.no_portraits, include_voice=args.with_voice)
             print(f"已导出: {out}")
             return 0
         except Exception as e:
@@ -174,7 +175,7 @@ def _style_cmd(args) -> int:
 
 
 def _backup_cmd(args) -> int:
-    """伴侣备份（全量覆盖语义）：export <zip> / import <zip>。"""
+    """记忆备份（共享记忆，全量覆盖语义）：export <zip> / import <zip>。角色走 roles export/import。"""
     from .core.backup import export_backup, import_backup
     from pathlib import Path
 
@@ -187,12 +188,10 @@ def _backup_cmd(args) -> int:
     spec = (mem_cfg.get("embedding_model") or "").strip()
     try:
         if args.backup_action == "export":
-            active = cfg.get("character_card", "")
-            role_id = Path(active).parent.name if active else ""
-            out = Path(args.path or f"veranima-backup-{datetime.now():%Y%m%d-%H%M}.zip")
-            export_backup(root, db_path, embedding_spec=spec, role_id=role_id, out_path=out)
-            print(f"已导出备份: {out}（角色 {role_id or '未激活'}，embedding {spec}）")
-            print("提示：备份只含记忆本体与角色卡；向量在导入端按当时模型自动重铸。")
+            out = Path(args.path or f"veranima-memory-{datetime.now():%Y%m%d-%H%M}.zip")
+            export_backup(root, db_path, embedding_spec=spec, out_path=out)
+            print(f"已导出记忆备份: {out}（embedding {spec}）")
+            print("提示：只含共享记忆与学习状态；角色请用 roles export。向量在导入端按当时模型自动重铸。")
             return 0
         if args.backup_action == "import":
             src = Path(args.path)
@@ -203,7 +202,7 @@ def _backup_cmd(args) -> int:
             prov = make_provider(mem_cfg, cfg.get("llm") or {})
             res = import_backup(root, src, embedding_spec=spec, embedding_dim=prov.dim,
                                 embed_fn=prov.embed)
-            print(f"已导入备份（{res.get('created_at')}，记忆 {res.get('memories')} 条，角色 {res.get('role_id')}）")
+            print(f"已导入记忆备份（{res.get('created_at')}，记忆 {res.get('memories')} 条）")
             if res.get("reembedded", 0) > 0:
                 print(f"embedding 模型/维度已变化或向量缺失 → 全量重嵌 {res['reembedded']} 条")
             elif res.get("reembedded") == 0:
@@ -211,10 +210,6 @@ def _backup_cmd(args) -> int:
             else:
                 print("警告：sqlite-vec 不可用，向量未校验（FTS5 召回仍可用）")
             print(f"旧数据已保留: {', '.join(res.get('stowed', []))}")
-            card_role = Path(cfg.get("character_card", "")).parent.name
-            if res.get("role_id") and res["role_id"] != card_role:
-                print(f"注意：备份角色是 {res['role_id']}，当前激活 {card_role or '无'}——"
-                      f"执行 python -m veranima.cli roles switch {res['role_id']} 切换")
             print("请重启核心生效。")
             return 0
     except Exception as e:
@@ -234,7 +229,9 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("roles_action", choices=["list", "switch", "clone", "export", "import"])
     rp.add_argument("role_id", nargs="?")
     rp.add_argument("new_id", nargs="?")
-    bp = sub.add_parser("backup", help="伴侣备份：记忆+角色+学习状态 → 单 zip（跨 Windows/安卓）")
+    rp.add_argument("--no-portraits", action="store_true", help="export 时不收立绘（安卓等轻量端）")
+    rp.add_argument("--with-voice", action="store_true", help="export 时收 voice/refs 与 example_voices（voice/models 永不入包）")
+    bp = sub.add_parser("backup", help="记忆备份：共享记忆+学习状态 → 单 zip（跨 Windows/安卓；角色用 roles export）")
     bp.add_argument("backup_action", choices=["export", "import"])
     bp.add_argument("path", nargs="?", default="", help="zip 路径（export 可省略，自动生成带时间戳文件名）")
     tp = sub.add_parser("task", help="R5 任务管道：模糊指令 → 工单 → dsh")

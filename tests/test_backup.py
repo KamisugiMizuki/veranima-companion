@@ -53,8 +53,7 @@ def _make_root(tmp: Path, n_mem: int = 5) -> Path:
 def test_export_import_same_model_keeps_vectors(tmp_path):
     root = _make_root(tmp_path)
     out = export_backup(root, root / "data" / "veranima.db",
-                        embedding_spec="openai:m-a", role_id="r1",
-                        out_path=tmp_path / "bk.zip")
+                        embedding_spec="openai:m-a", out_path=tmp_path / "bk.zip")
     assert out.exists()
 
     dest = tmp_path / "phone" / "project"
@@ -67,15 +66,13 @@ def test_export_import_same_model_keeps_vectors(tmp_path):
     assert res["reembedded"] == 0          # 同模型同维度 → 不重嵌
     assert prov.calls == 0
     assert (dest / "data" / "veranima.db.old").read_bytes() == b"OLDDB"
-    assert (dest / "characters" / "r1" / "character.json").exists()
     assert json.loads((dest / "data" / "mirror.json").read_text()) == {"top": 1}
 
 
 def test_import_new_model_reembeds_and_recall_works(tmp_path):
     root = _make_root(tmp_path)
     export_backup(root, root / "data" / "veranima.db",
-                  embedding_spec="openai:old-bge", role_id="r1",
-                  out_path=tmp_path / "bk.zip")
+                  embedding_spec="openai:old-bge", out_path=tmp_path / "bk.zip")
     dest = tmp_path / "phone2" / "project"
     (dest / "data").mkdir(parents=True)
 
@@ -105,7 +102,7 @@ def test_import_new_model_reembeds_and_recall_works(tmp_path):
 def test_import_without_embed_fn_raises(tmp_path):
     root = _make_root(tmp_path)
     export_backup(root, root / "data" / "veranima.db",
-                  embedding_spec="openai:x", role_id="r1", out_path=tmp_path / "bk.zip")
+                  embedding_spec="openai:x", out_path=tmp_path / "bk.zip")
     dest = tmp_path / "p3"
     (dest / "data").mkdir(parents=True)
     with pytest.raises(RuntimeError, match="embedding"):
