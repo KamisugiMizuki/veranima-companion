@@ -185,6 +185,7 @@ GUI 实现以 `docs/GUI_SPEC.md` 为唯一界面契约：主窗突出角色存�
 
 以下是围绕角色包、表达适配和共同经历的专项契约；核心状态以各文档头部为准：
 
+- [`COMPANION_CONTINUITY_DESIGN.md`](COMPANION_CONTINUITY_DESIGN.md)：伴侣连续性增强方案；统一关系上下文、未完事项跟进、共同意义回用、主动关怀和虚拟生活回顾。当前为方案稿，尚未进入实现。
 - [`CHARPKG_SPEC.md`](CHARPKG_SPEC.md)：在现有 `.char` ZIP 归档基础上升级 `.charpkg`，增加 manifest/schema、哈希清单、quarantine、原子安装、冲突和回滚；不允许执行代码、打包密钥或默认导出用户记忆。
 - [`STYLE_LEARNING_SPEC.md`](STYLE_LEARNING_SPEC.md)：未标注语料的自动处理、抽样复核、`StyleProfile → StyleBrief → ResponsePlan` 核心已实现；LoRA 仍暂缓，风格不得覆盖角色核心。
 - [`SHARED_CREATION_SPEC.md`](SHARED_CREATION_SPEC.md)：复用 `shared_episode/shared_meaning/commitment/relationship_event` 和现有关系模型，增加 Project/Arc/Scene/Decision/Artifact/OpenThread 的协作工作流；关系变化必须有证据和用户确认。
