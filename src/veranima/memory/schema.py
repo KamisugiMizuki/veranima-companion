@@ -180,7 +180,10 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
     content, tokenize='trigram'
 );
 
--- 记忆向量（cosine 度量：distance = 1 - 余弦相似度，recall 直接 1-distance 即相似度）
+-- 记忆向量表：仅在 sqlite-vec 扩展可用时创建（见 init_db 的 vec 分支）
+"""
+
+_VEC_SCHEMA = """
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_vec USING vec0(
     memory_id INTEGER PRIMARY KEY,
     embedding float[{dim}] distance_metric=cosine
@@ -202,15 +205,19 @@ def init_db(db_path: str | Path, dim: int = EMBEDDING_DIM, provider=None) -> sql
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA busy_timeout=5000")
     con.execute("PRAGMA foreign_keys=ON")
-    # 加载 sqlite-vec 扩展
-    con.enable_load_extension(True)
+    # 加载 sqlite-vec 扩展（部分平台 python-sqlite 未开扩展支持：如 Chaquopy
+    # 链系统 libsqlite3，enable_load_extension 不存在——降级为 FTS5-only 而非崩溃）
+    vec_ok = False
     try:
+        con.enable_load_extension(True)
         import sqlite_vec
         sqlite_vec.load(con)
+        vec_ok = True
     except Exception:
-        # 扩展不可用时向量检索降级（FTS5 仍可用）
-        pass
+        logger.info("sqlite-vec unavailable, vector recall degraded (FTS5 still on)")
     con.executescript(SCHEMA.format(dim=dim))
+    if vec_ok:
+        con.executescript(_VEC_SCHEMA.format(dim=dim))
     # 虚拟生活事件迁移：早期实现没有 cycle_key；先补列再创建唯一索引。
     try:
         life_cols = {r["name"] for r in con.execute("PRAGMA table_info(virtual_life_events)").fetchall()}
@@ -242,7 +249,7 @@ def init_db(db_path: str | Path, dim: int = EMBEDDING_DIM, provider=None) -> sql
         sql = con.execute("SELECT sql FROM sqlite_master WHERE name='memory_vec'").fetchone()[0]
         if "distance_metric=cosine" not in sql:
             con.execute("DROP TABLE memory_vec")
-            con.executescript(SCHEMA.format(dim=dim))
+            con.executescript(_VEC_SCHEMA.format(dim=dim))
             logger.warning("memory_vec rebuilt with cosine metric (old L2 dropped)")
             if provider is not None:
                 rows = con.execute("SELECT id, content FROM memories WHERE content != ''").fetchall()

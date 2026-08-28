@@ -1,0 +1,6 @@
+# 安卓 spike 构建产物与本地密钥
+.gradle/
+build/
+local.properties
+tools/device-config.yaml
+*.apk

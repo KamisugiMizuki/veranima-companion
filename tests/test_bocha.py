@@ -81,3 +81,33 @@ def test_error_degrades_to_empty(monkeypatch):
 
 def test_no_key_returns_empty():
     assert BochaClient(api_key="").search("anything") == []
+
+
+def test_agent_wires_bocha_client(tmp_path):
+    """provider=bocha 时 Agent 真的构造 BochaClient（防模块路径错位回归）。"""
+    from veranima.core.agent import Agent
+    from veranima.core.character import CharacterCard
+    from veranima.core.state import AgentState
+    from veranima.memory.store import MemoryStore
+
+    class FakeEmbed:
+        dim = 8
+
+        def embed(self, texts):
+            return [[0.1] * 8 for _ in texts]
+
+    class StubLLM:
+        low_energy_max_tokens = 256
+
+        def chat(self, messages, **kw):
+            return "ok"
+
+    agent = Agent(
+        card=CharacterCard(name="T", description="", personality=""),
+        memory=MemoryStore(db_path=str(tmp_path / "t.db"), config={}, provider=FakeEmbed()),
+        llm=StubLLM(),
+        state=AgentState(),
+        config={"search": {"enabled": True, "provider": "bocha", "api_key": "sk-x"}},
+    )
+    assert isinstance(agent.search, BochaClient)
+    assert agent.search.api_key == "sk-x"

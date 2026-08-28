@@ -268,7 +268,7 @@ class Agent:
         self.search_config = search_cfg
         self.search_enabled = bool(search_cfg.get("enabled", False))
         if str(search_cfg.get("provider", "searxng")).strip().lower() == "bocha":
-            from .bocha import BochaClient
+            from ..tools.bocha import BochaClient
             self.search = BochaClient(
                 api_key=str(search_cfg.get("api_key", "")),
                 max_results=int(search_cfg.get("max_results", 5)),
