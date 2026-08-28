@@ -267,17 +267,26 @@ class Agent:
         search_cfg = self.config.get("search", {})
         self.search_config = search_cfg
         self.search_enabled = bool(search_cfg.get("enabled", False))
-        self.search = SearXNGClient(
-            base_url=search_cfg.get("base_url", "http://127.0.0.1:8080"),
-            max_results=int(search_cfg.get("max_results", 5)),
-            timeout=float(search_cfg.get("timeout_seconds", 8)),
-            max_response_bytes=int(search_cfg.get("max_response_bytes", 1_048_576)),
-            cache_ttl=float(search_cfg.get("cache_ttl_seconds", 900)),
-            fetch_pages=bool(search_cfg.get("fetch_pages", False)),
-            max_page_results=int(search_cfg.get("max_page_results", 2)),
-            page_char_limit=int(search_cfg.get("page_char_limit", 1200)),
-            max_page_bytes=int(search_cfg.get("max_page_bytes", 524_288)),
-        )
+        if str(search_cfg.get("provider", "searxng")).strip().lower() == "bocha":
+            from .bocha import BochaClient
+            self.search = BochaClient(
+                api_key=str(search_cfg.get("api_key", "")),
+                max_results=int(search_cfg.get("max_results", 5)),
+                timeout=float(search_cfg.get("timeout_seconds", 8)),
+                cache_ttl=float(search_cfg.get("cache_ttl_seconds", 900)),
+            )
+        else:
+            self.search = SearXNGClient(
+                base_url=search_cfg.get("base_url", "http://127.0.0.1:8080"),
+                max_results=int(search_cfg.get("max_results", 5)),
+                timeout=float(search_cfg.get("timeout_seconds", 8)),
+                max_response_bytes=int(search_cfg.get("max_response_bytes", 1_048_576)),
+                cache_ttl=float(search_cfg.get("cache_ttl_seconds", 900)),
+                fetch_pages=bool(search_cfg.get("fetch_pages", False)),
+                max_page_results=int(search_cfg.get("max_page_results", 2)),
+                page_char_limit=int(search_cfg.get("page_char_limit", 1200)),
+                max_page_bytes=int(search_cfg.get("max_page_bytes", 524_288)),
+            )
         self.search_trigger = SearchTrigger()
         self.semantic_locator = SemanticLocator(
             max_queries=int(search_cfg.get("semantic_locator_max_queries", 3)),
