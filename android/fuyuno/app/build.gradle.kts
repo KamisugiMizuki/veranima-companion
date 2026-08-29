@@ -54,6 +54,8 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.activity:activity-compose:1.9.2")
+    implementation("io.coil-kt:coil-compose:2.7.0")          // 历史缩略图异步加载+内存缓存
+    implementation("dev.chrisbanes.haze:haze:0.9.0-rc03")    // 面板真 backdrop 模糊（API31+，<31 自动降级）
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
     implementation("androidx.core:core-ktx:1.13.1")
 }

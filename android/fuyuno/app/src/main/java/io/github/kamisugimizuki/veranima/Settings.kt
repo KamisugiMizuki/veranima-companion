@@ -8,11 +8,13 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
@@ -107,55 +109,79 @@ fun SettingsScreen(onBack: () -> Unit) {
         }
     }
 
-    Scaffold(snackbarHost = { SnackbarHost(snackbar) }, topBar = {
-        TopAppBar(title = { Text("设置") },
-            navigationIcon = { TextButton(onClick = onBack) { Text("返回") } },
-            actions = { if (dirty) TextButton(onClick = { restartApp(ctx) }) { Text("重启生效") } })
+    Scaffold(snackbarHost = { SnackbarHost(snackbar) },
+             containerColor = Canvas,
+             topBar = {
+        // 聊天页风格统一（2026-08-29）：衬线页头、无灰底；珊瑚只留给「重启生效」
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = onBack) { Text("返回", color = Muted) }
+            Text("设置", style = MaterialTheme.typography.headlineSmall)
+            Spacer(Modifier.weight(1f))
+            if (dirty) Button(onClick = { restartApp(ctx) },
+                colors = ButtonDefaults.buttonColors(Coral),
+                shape = MaterialTheme.shapes.small) { Text("重启生效") }
+        }
     }) { pad ->
-        Column(Modifier.padding(pad).padding(16.dp).verticalScroll(rememberScrollState())) {
+        Column(Modifier.padding(pad).padding(horizontal = 16.dp).verticalScroll(rememberScrollState())) {
             val st = s
-            if (st == null) { Text("读取设置中…"); return@Column }
+            if (st == null) { Text("读取设置中…", color = Muted); return@Column }
             val f = st.getJSONObject("fields")
 
-            Text("LLM", style = MaterialTheme.typography.titleSmall)
-            CommitRow("API Key（当前 ${f.getString("llm_api_key")}）", "", true) { set("llm_api_key", it) }
-            CommitRow("Base URL", f.getString("llm_base_url")) { set("llm_base_url", it) }
-            CommitRow("模型名", f.getString("llm_model")) { set("llm_model", it) }
-            CommitRow("视觉模型名（发图时用；留空=不支持发图）", f.getString("llm_vision_model")) { set("llm_vision_model", it) }
+            SectionCard("LLM") {
+                CommitRow("API Key（当前 ${f.getString("llm_api_key")}）", "", true) { set("llm_api_key", it) }
+                CommitRow("Base URL", f.getString("llm_base_url")) { set("llm_base_url", it) }
+                CommitRow("模型名", f.getString("llm_model")) { set("llm_model", it) }
+                CommitRow("视觉模型名（发图时用；留空=不支持发图）", f.getString("llm_vision_model")) { set("llm_vision_model", it) }
+            }
 
-            Spacer(Modifier.height(16.dp))
-            Text("Embedding（记忆召回的语义向量，安卓走远程 API，必填）",
-                style = MaterialTheme.typography.titleSmall)
-            CommitRow("API Key（当前 ${f.getString("embedding_api_key")}）", "", true) { set("embedding_api_key", it) }
-            CommitRow("Base URL", f.getString("embedding_base_url")) { set("embedding_base_url", it) }
-            CommitRow("模型名", f.getString("embedding_model")) { set("embedding_model", it) }
+            SectionCard("Embedding（记忆召回的语义向量，安卓走远程 API，必填）") {
+                CommitRow("API Key（当前 ${f.getString("embedding_api_key")}）", "", true) { set("embedding_api_key", it) }
+                CommitRow("Base URL", f.getString("embedding_base_url")) { set("embedding_base_url", it) }
+                CommitRow("模型名", f.getString("embedding_model")) { set("embedding_model", it) }
+            }
 
-            Spacer(Modifier.height(16.dp))
-            Text("联网搜索（博查 Bocha，安卓唯一后端）", style = MaterialTheme.typography.titleSmall)
-            CommitRow("API Key（当前 ${f.getString("search_api_key")}）", "", true) { set("search_api_key", it) }
-            CommitRow("Base URL", f.getString("search_base_url")) { set("search_base_url", it) }
+            SectionCard("联网搜索（博查 Bocha，安卓唯一后端）") {
+                CommitRow("API Key（当前 ${f.getString("search_api_key")}）", "", true) { set("search_api_key", it) }
+                CommitRow("Base URL", f.getString("search_base_url")) { set("search_base_url", it) }
+            }
 
-            Spacer(Modifier.height(16.dp))
-            Text("角色（点名字切换；导出=轻量 .char 不含立绘语音）", style = MaterialTheme.typography.titleSmall)
-            chars.forEach { c ->
-                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                    RadioButton(selected = activeChar == c, onClick = { activeChar = c; set("active_character", c) })
-                    Text(c, Modifier.padding(end = 8.dp))
-                    TextButton(onClick = { pendingRole = c; exportRole.launch("veranima-role-$c.char") }) { Text("导出…") }
+            SectionCard("角色（点名字切换；导出=轻量 .char 不含立绘语音）") {
+                chars.forEach { c ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = activeChar == c, onClick = { activeChar = c; set("active_character", c) })
+                        Text(c, Modifier.padding(end = 8.dp))
+                        TextButton(onClick = { pendingRole = c; exportRole.launch("veranima-role-$c.char") }) { Text("导出…", color = Muted) }
+                    }
+                }
+                TextButton(onClick = { importRole.launch("*/*") }) { Text("导入角色包（.char）", color = Muted) }
+            }
+
+            SectionCard("共享记忆备份（导出=全部角色的共同记忆 zip；导入=全量覆盖）") {
+                Row {
+                    Button(onClick = { exportBackup.launch("veranima-backup.zip") },
+                        colors = ButtonDefaults.buttonColors(Coral), shape = MaterialTheme.shapes.small) { Text("导出…") }
+                    Spacer(Modifier.width(12.dp))
+                    Button(onClick = { importBackup.launch("application/zip") },
+                        colors = ButtonDefaults.buttonColors(Coral), shape = MaterialTheme.shapes.small) { Text("导入…") }
                 }
             }
-            TextButton(onClick = { importRole.launch("*/*") }) { Text("导入角色包（.char）") }
+            TextButton(onClick = { openBatterySettings(ctx) }) { Text("电池优化白名单", color = Muted) }
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+}
 
-            Spacer(Modifier.height(16.dp))
-            Text("共享记忆备份（导出=全部角色的共同记忆 zip；导入=全量覆盖）",
-                style = MaterialTheme.typography.titleSmall)
-            Row {
-                Button(onClick = { exportBackup.launch("veranima-backup.zip") }) { Text("导出…") }
-                Spacer(Modifier.width(12.dp))
-                Button(onClick = { importBackup.launch("application/zip") }) { Text("导入…") }
-            }
-            Spacer(Modifier.height(16.dp))
-            TextButton(onClick = { openBatterySettings(ctx) }) { Text("电池优化白名单") }
+/** 设置页分区卡：surface-card 色块即层级（无阴影），hairline 边 + 圆角 12（聊天页同款） */
+@Composable
+private fun SectionCard(title: String, content: @Composable ColumnScope.() -> Unit) {
+    Surface(color = SurfaceCard, shape = RoundedCornerShape(12.dp),
+            border = androidx.compose.foundation.BorderStroke(1.dp, Hairline),
+            modifier = Modifier.fillMaxWidth().padding(bottom = 14.dp)) {
+        Column(Modifier.padding(16.dp)) {
+            Text(title, style = MaterialTheme.typography.titleSmall)
+            Spacer(Modifier.height(8.dp))
+            content()
         }
     }
 }

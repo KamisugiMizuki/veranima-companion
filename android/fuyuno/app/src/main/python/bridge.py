@@ -398,6 +398,32 @@ def role_import() -> str:
         return json.dumps({"ok": False, "error": str(e)})
 
 
+def portrait_path() -> str:
+    """当前角色立绘的绝对路径（视觉小说舞台用；空串=无图，UI 回退纯色舞台）。
+
+    assets/portraits/<char>.jpg 由 Kotlin 在 boot 时解到 filesDir/portraits/
+    （见 sync_assets.py / MainActivity），这里按角色名匹配、目录唯一文件兜底。
+    """
+    try:
+        root = Path(getattr(boot, "root", "."))
+        d = root / "portraits"
+        if not d.is_dir():
+            return ""
+        char = ""
+        try:
+            char = (boot.config or {}).get("active_character", "") or ""
+        except Exception:
+            pass
+        for f in sorted(d.iterdir()):
+            if char and char in f.stem:
+                return str(f)
+        files = [f for f in sorted(d.iterdir()) if f.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")]
+        return str(files[0]) if files else ""
+    except Exception:
+        log.exception("portrait_path failed")
+        return ""
+
+
 def history(limit: int = 80) -> str:
     """最近 N 条对话（id 升序）。主动消息核心已落库（record_proactive_message），
     这里一起带出——聊天 UI 以库为准，无需单独通道。"""
