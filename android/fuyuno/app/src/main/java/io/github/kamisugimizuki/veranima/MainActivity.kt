@@ -568,7 +568,9 @@ class MainActivity : ComponentActivity() {
                                                             .widthIn(max = (screenW * 0.78f).dp)) {
                                                     Column(Modifier.padding(12.dp)) {
                                                         m.images.forEach { p -> ImageThumb(p, (screenW * 0.6f).dp) { zoom.value = p } }
-                                                        if (m.text.isNotEmpty()) Text(m.text, style = MaterialTheme.typography.bodyMedium)
+                                                        if (m.text.isNotEmpty()) Text(m.text,
+                                                            style = MaterialTheme.typography.bodyMedium,
+                                                            color = if (m.me) OnDark else Ink)
                                                         // 展开态=IM 历史原样（spec 3.2）：不挂逐条情绪徽章，
                                                         // 标签只属于收起态最新一轮——历史 mood_at 是全局静态值，逐条显示全是同一标签=噪音
                                                         // 时间戳（ISO→本地 HH:mm；解析失败静默不显示）
@@ -582,7 +584,7 @@ class MainActivity : ComponentActivity() {
                                                             }
                                                             if (hhmm.isNotEmpty()) Text(hhmm,
                                                                 style = MaterialTheme.typography.labelSmall,
-                                                                color = MutedSoft,
+                                                                color = if (m.me) OnDarkSoft else MutedSoft,
                                                                 modifier = Modifier.align(
                                                                     if (m.me) Alignment.End else Alignment.Start))
                                                         }
