@@ -281,6 +281,25 @@ class MainActivity : ComponentActivity() {
                 val scope = rememberCoroutineScope()
                 val focusManager = LocalFocusManager.current
                 val haptic = LocalHapticFeedback.current
+                // 横幅→气泡同步：CompanionService 发主动消息通知时广播，这里收后刷新历史
+                // （core 已落库，UI 以 DB 为准；开着应用时通知弹出=气泡同步出现）
+                val proactiveTick = remember { mutableStateOf(0) }
+                val proactiveReceiver = remember {
+                    object : android.content.BroadcastReceiver() {
+                        override fun onReceive(c: android.content.Context?, i: android.content.Intent?) {
+                            if (i?.action == CompanionService.ACTION_PROACTIVE) {
+                                proactiveTick.value++
+                            }
+                        }
+                    }
+                }
+                DisposableEffect(Unit) {
+                    androidx.core.content.ContextCompat.registerReceiver(
+                        applicationContext, proactiveReceiver,
+                        android.content.IntentFilter(CompanionService.ACTION_PROACTIVE),
+                        androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
+                    onDispose { runCatching { applicationContext.unregisterReceiver(proactiveReceiver) } }
+                }
                 val animScale = remember {
                     try { AndSettings.Global.getFloat(contentResolver, AndSettings.Global.ANIMATOR_DURATION_SCALE, 1f) }
                     catch (e: Exception) { 1f }
@@ -364,6 +383,10 @@ class MainActivity : ComponentActivity() {
                     }
                     leOwner.lifecycle.addObserver(obs)
                     onDispose { leOwner.lifecycle.removeObserver(obs) }
+                }
+                // 横幅→气泡：主动消息通知广播到达时刷新（避免 30s 轮询空窗）
+                LaunchedEffect(proactiveTick.value) {
+                    if (proactiveTick.value > 0) loadHistory()
                 }
 
                 val send = fun() {

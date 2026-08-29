@@ -76,6 +76,9 @@ class CompanionService : Service() {
                 .setAutoCancel(true)
                 .setContentIntent(pi)
                 .build())
+        // 横幅 → 应用内气泡同步：通知发出即广播，MainActivity 收到后 loadHistory
+        // （core 已落库 record_proactive_message，UI 以 DB 为准，只差刷新钩子）
+        runCatching { sendBroadcast(Intent(ACTION_PROACTIVE)) }
     }
 
     private fun mgr(): NotificationManager =
@@ -102,5 +105,7 @@ class CompanionService : Service() {
         private const val CHANNEL_STATUS = "status"
         private const val CHANNEL_PROACTIVE = "proactive"
         private const val NOTIF_STATUS = 1
+        /** 主动消息通知发出 → MainActivity 刷新气泡的广播 action */
+        const val ACTION_PROACTIVE = "io.github.kamisugimizuki.veranima.PROACTIVE"
     }
 }
