@@ -41,6 +41,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.TextStyle
@@ -440,17 +441,17 @@ class MainActivity : ComponentActivity() {
                     animationSpec = infiniteRepeatable(tween(2800, easing = FastOutSlowInEasing), RepeatMode.Reverse))
                 val breathDp = if (animScale == 0f) 0f else (breath - 0.5f) * 6f
 
-                // 面板高度=Animatable（Float px：拖动中实时 snap 跟手，松手动画到目标档）
-                val panelH = remember { Animatable(screenH * 0.40f) }
-                val panelMin = screenH * 0.25f
-                val panelMax = screenH * 0.85f
-                fun snapPanel(to: Boolean) {
-                    scope.launch {
-                        panelH.animateTo(
-                            if (to) screenH * 0.70f else screenH * 0.40f,
-                            animationSpec = tween(260, easing = FastOutSlowInEasing))
-                    }
-                }
+                // 面板高度：base(档位) + dragOff(手指偏移)；拖动中 0ms 动画=严格跟手，
+                // 松手后 260ms 平滑归档（drag.y 是 px，screenH 是 dp——dragOff 必须转 dp，
+                // 否则分界线移动量被 density 倍放大，2026-08-30 用户实测距离对不上）
+                val density = LocalDensity.current.density
+                var dragOff by remember { mutableFloatStateOf(0f) }
+                var dragging by remember { mutableStateOf(false) }
+                val baseH = if (expanded.value) screenH * 0.70f else screenH * 0.40f
+                val panelH by animateFloatAsState(
+                    baseH + dragOff,
+                    animationSpec = tween(if (dragging) 0 else 260, easing = FastOutSlowInEasing),
+                    label = "panel")
 
                 // 返回键：设置页→回聊天；聊天页→3 秒内双击退出
                 val backAt = remember { mutableStateOf(0L) }
@@ -501,7 +502,7 @@ class MainActivity : ComponentActivity() {
                                 val imgW = (screenW * 0.86f).dp
                                 // 舞台区 bottom padding 绑定 panelH：面板上滑时立绘随之整体上移并在
                                 // 剩余可见区内自动缩放，永不被聊天框遮挡（2026-08-29 用户追加）
-                                Box(Modifier.fillMaxWidth().weight(1f).padding(bottom = panelH.value.dp),
+                                Box(Modifier.fillMaxWidth().weight(1f).padding(bottom = panelH.dp),
                                     contentAlignment = Alignment.TopCenter) {
                                     Box(Modifier.width(imgW).offset(y = breathDp.dp)) {
                                         Image(portraitBmp!!.asImageBitmap(), charName.value,
@@ -522,23 +523,29 @@ class MainActivity : ComponentActivity() {
                         }
                         // ---- L3 毛玻璃对话面板（两态；面板高度即立绘可见区，天然适配长宽比） ----
                         var dragTotal by remember { mutableFloatStateOf(0f) }
-                        Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(panelH.value.dp)
+                        Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(panelH.dp)
                                 .panelHaze()   // 背景由 hazeChild 画（含模糊+底色），不再单独 background
                                 .pointerInput(Unit) {
                                     detectDragGestures(
-                                        onDragStart = { dragTotal = 0f },
-                                        onDragEnd = {
-                                            if (dragTotal < -60f) { expanded.value = true; snapPanel(true) }
-                                            else if (dragTotal > 60f) { expanded.value = false; snapPanel(false) }
-                                            else snapPanel(expanded.value)
+                                        onDragStart = {
+                                            dragTotal = 0f
+                                            dragging = true
                                         },
-                                        onDragCancel = { snapPanel(expanded.value) },
+                                        onDragEnd = {
+                                            dragging = false
+                                            dragOff = 0f
+                                            if (dragTotal < -60f) expanded.value = true
+                                            else if (dragTotal > 60f) expanded.value = false
+                                        },
+                                        onDragCancel = {
+                                            dragging = false
+                                            dragOff = 0f
+                                        },
                                         onDrag = { _, drag ->
                                             dragTotal += drag.y
-                                            scope.launch {
-                                                // 上滑 drag.y<0 → 高度增大（分界条随手指上移）；下滑反之
-                                                panelH.snapTo((panelH.value - drag.y).coerceIn(panelMin, panelMax))
-                                            }
+                                            // 上滑 drag.y<0 → 分界线随手指上移（高度增大）；限幅 25%-85%
+                                            dragOff = (dragOff - drag.y / density).coerceIn(
+                                                -(baseH - screenH * 0.25f), screenH * 0.85f - baseH)
                                         })
                                 }) {
                             Column(Modifier.fillMaxSize()) {
@@ -599,7 +606,7 @@ class MainActivity : ComponentActivity() {
                                     val lastHer = msgs.lastOrNull { !it.me && it.text.isNotEmpty() }
                                     val lastMe = msgs.lastOrNull { it.me }
                                     Column(Modifier.weight(1f).padding(horizontal = 20.dp)
-                                            .clickable { expanded.value = true; snapPanel(true) }) {
+                                            .clickable { expanded.value = true }) {
                                         if (lastHer != null) {
                                             // P2 情绪标签徽章（tone→词表原样；无 tone→mood 三档图标）
                                             EmotionBadge(lastHer.tone, lastHer.mood)
