@@ -536,7 +536,8 @@ class MainActivity : ComponentActivity() {
                                         onDrag = { _, drag ->
                                             dragTotal += drag.y
                                             scope.launch {
-                                                panelH.snapTo((panelH.value + drag.y).coerceIn(panelMin, panelMax))
+                                                // 上滑 drag.y<0 → 高度增大（分界条随手指上移）；下滑反之
+                                                panelH.snapTo((panelH.value - drag.y).coerceIn(panelMin, panelMax))
                                             }
                                         })
                                 }) {
