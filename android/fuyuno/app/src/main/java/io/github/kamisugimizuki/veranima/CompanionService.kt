@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -44,7 +45,8 @@ class CompanionService : Service() {
         val pi = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
         val notif: Notification = NotificationCompat.Builder(this, CHANNEL_STATUS)
-            .setSmallIcon(android.R.drawable.sym_call_incoming)
+            .setSmallIcon(R.drawable.ic_stat_veranima)
+            .setLargeIcon(bigIcon())
             .setContentTitle("駒川 冬乃")
             // 安卓政策：前台服务必须挂常驻通知，去不掉；占位压到最低（MIN 通道、空文本、不折叠）
             .setContentText(" ")
@@ -54,12 +56,16 @@ class CompanionService : Service() {
         startForeground(NOTIF_STATUS, notif)
     }
 
+    private fun bigIcon(): android.graphics.Bitmap =
+        BitmapFactory.decodeResource(resources, R.mipmap.ic_launcher)
+
     private fun notifyProactive(text: String) {
         val pi = PendingIntent.getActivity(
             this, 1, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
         mgr().notify(System.currentTimeMillis().toInt(),
             NotificationCompat.Builder(this, CHANNEL_PROACTIVE)
-                .setSmallIcon(android.R.drawable.sym_call_incoming)
+                .setSmallIcon(R.drawable.ic_stat_veranima)
+                .setLargeIcon(bigIcon())
                 .setContentTitle("驹川冬乃")
                 .setContentText(text)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(text))
@@ -76,8 +82,10 @@ class CompanionService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             mgr().createNotificationChannel(
                 NotificationChannel(CHANNEL_STATUS, "冬乃运行状态", NotificationManager.IMPORTANCE_MIN))
+            // 主动消息=heads-up 横幅弹出（IMPORTANCE_DEFAULT 在部分 MIUI 上只进抽屉不弹）
             mgr().createNotificationChannel(
-                NotificationChannel(CHANNEL_PROACTIVE, "冬乃的消息", NotificationManager.IMPORTANCE_DEFAULT))
+                NotificationChannel(CHANNEL_PROACTIVE, "冬乃的消息", NotificationManager.IMPORTANCE_HIGH)
+                    .apply { enableLights(false); enableVibration(true) })
         }
     }
 
