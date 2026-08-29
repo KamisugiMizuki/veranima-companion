@@ -1105,6 +1105,8 @@ class Agent:
             reply = "（我这边暂时没拿到回复，再说一遍？）"
             self._append_history_message("user", store_text, self._message_time_for_id(user_msg_id))
             self._persist_state()
+            if schedule_runtime is not None and not schedule_runtime.sleeping:
+                schedule_runtime.resume_activity(datetime.datetime.now(datetime.timezone.utc))
             return TurnResult(reply=reply, energy=self.state.energy, mood=self.state.mood)
 
         # 5. 生成（低精力时限短；联网搜索开启时走工具调用链路）
@@ -1178,6 +1180,8 @@ class Agent:
         if generation_failed:
             self._history.append(self._history_entry("user", store_text, self._message_time_for_id(user_msg_id)))
             self._persist_state()
+            if schedule_runtime is not None and not schedule_runtime.sleeping:
+                schedule_runtime.resume_activity(datetime.datetime.now(datetime.timezone.utc))
             return TurnResult(
                 reply=reply,
                 energy=self.state.energy,
