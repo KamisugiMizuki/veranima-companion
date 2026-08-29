@@ -33,6 +33,10 @@ class CompanionService : Service() {
                     val r = JSONObject(bridge.callAttr("drain_pending").toString())
                     val msgs = r.getJSONArray("messages")
                     for (i in 0 until msgs.length()) notifyProactive(msgs.getString(i))
+                    // 前台应用感知（UsageStats→包名+app名→LLM 判断动作）：仅授权后生效，内部有冷却
+                    foregroundApp()?.let { (pkg, label) ->
+                        bridge.callAttr("visual_note", pkg, label)
+                    }
                 } catch (e: Exception) {
                     // 核心未 boot / drain 失败：下轮再试，服务不死
                 }
@@ -83,6 +87,32 @@ class CompanionService : Service() {
 
     private fun mgr(): NotificationManager =
         getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+    /** 前台应用 → (包名, app 显示名)（UsageStats；未授权/无前台返回 null）。
+     *  动作判断交给 bridge 的 LLM（包名+app 名 → 动作短语），这里不维护映射表。 */
+    private fun foregroundApp(): Pair<String, String>? {
+        return try {
+            if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.LOLLIPOP) return null
+            val usm = getSystemService(Context.USAGE_STATS_SERVICE) as? android.app.usage.UsageStatsManager
+                ?: return null
+            val end = System.currentTimeMillis()
+            val events = usm.queryEvents(end - 60_000, end)
+            var pkg: String? = null
+            val e = android.app.usage.UsageEvents.Event()
+            while (events.hasNextEvent()) {
+                events.getNextEvent(e)
+                if (e.eventType == android.app.usage.UsageEvents.Event.ACTIVITY_RESUMED) pkg = e.packageName
+            }
+            if (pkg == null || pkg == packageName) return null  // 本应用自身不感知
+            val pm = packageManager
+            val label = try {
+                pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
+            } catch (e: Exception) { pkg }
+            pkg to label
+        } catch (e: Exception) {
+            null
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()

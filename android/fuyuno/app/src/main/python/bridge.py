@@ -493,6 +493,65 @@ def memories_erase(memory_id: int) -> str:
         return json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"})
 
 
+_VISUAL_COOLDOWN_S = 20 * 60  # 视觉联想冷却 20 分钟（防每次 tick 都发 LLM）
+_last_visual_at: float = 0.0
+_last_visual_key: str = ""
+
+
+def visual_note(pkg: str, label: str) -> str:
+    """前台应用感知 → 联想主动消息（复用 R4 proactive_from_visual）。
+
+    判断点哲学（用户 2026-08 拍板）：动作判断=一次低成本 LLM 调用
+    （包名+app 名 → 动作短语，如「聊微信」「刷B站」），失败回退 app 名。
+    冷却：20 分钟内同 pkg 不重复发；产出进 _pending（走既有通知+横幅链路）。
+    """
+    global _last_visual_at, _last_visual_key
+    agent = getattr(boot, "agent", None)
+    pkg = str(pkg or "").strip()
+    label = str(label or "").strip() or pkg
+    if agent is None or not pkg:
+        return json.dumps({"ok": False, "error": "未就绪"})
+    import time as _t
+    now = _t.time()
+    if pkg == _last_visual_key and now - _last_visual_at < _VISUAL_COOLDOWN_S:
+        return json.dumps({"ok": True, "detail": "cooldown"})
+    _last_visual_key = pkg
+    _last_visual_at = now
+    try:
+        tag = _classify_foreground_action(pkg, label) or label
+        log.info("visual_note: %s → %s (pkg=%s)", label, tag, pkg)
+        reply, _ja = agent.proactive_from_visual(tag)
+        if reply:
+            _pending.append(_render(agent, reply))
+            log.info("visual note queued: %s (%s → %s)", reply[:50], label, tag)
+            return json.dumps({"ok": True, "detail": f"联想已排队: {reply[:30]}…"})
+        return json.dumps({"ok": True, "detail": "无匹配记忆，未发起"})
+    except Exception as e:
+        log.warning("visual_note failed: %s", e)
+        return json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"})
+
+
+def _classify_foreground_action(pkg: str, label: str) -> str:
+    """包名+app 名 → 动作短语（一次低成本 LLM 调用，失败回退 None→用 app 名）。"""
+    try:
+        ui = (boot.config or {}).get("ui") or {}
+        if not ui.get("foreground_action_llm", True):
+            return ""
+        prompt = (
+            f"用户正在使用安卓应用「{label}」（包名 {pkg}）。"
+            "用 2-4 个字的中文动词短语描述他在干什么，比如「聊微信」「刷B站」"
+            "「逛淘宝」「打游戏」。只输出短语本身，不要解释。"
+        )
+        a = getattr(boot, "agent", None)
+        # 推理模型小预算烧 reasoning 返回空（R0_SPEC 6 教训）：256 起步
+        raw = a.llm.chat([{"role": "user", "content": prompt}], max_tokens=256, temperature=0.2) if a else ""
+        tag = str(raw or "").strip().strip('"').strip("'").strip()
+        return tag[:16] if tag and len(tag) >= 2 else ""
+    except Exception as e:
+        log.debug("foreground action classify failed: %s", e)
+        return ""
+
+
 def portrait_path() -> str:
     """当前角色立绘的绝对路径（视觉小说舞台用；空串=无图，UI 回退纯色舞台）。
 

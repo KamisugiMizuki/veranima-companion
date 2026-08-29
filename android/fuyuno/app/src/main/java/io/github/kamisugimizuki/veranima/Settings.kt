@@ -291,6 +291,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                 }
             }
             TextButton(onClick = { openBatterySettings(ctx) }) { Text("电池优化白名单", color = Muted) }
+            TextButton(onClick = { openUsageAccess(ctx) }) { Text("使用情况访问（前台感知联想用；需手动授权）", color = Muted) }
             Spacer(Modifier.height(24.dp))
         }
     }
@@ -335,6 +336,17 @@ private fun restartApp(ctx: Context) {
 private fun openBatterySettings(ctx: Context) {
     try {
         ctx.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    } catch (e: Exception) {
+        ctx.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+            .setData(android.net.Uri.fromParts("package", ctx.packageName, null))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+}
+
+private fun openUsageAccess(ctx: Context) {
+    try {
+        ctx.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     } catch (e: Exception) {
         ctx.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
