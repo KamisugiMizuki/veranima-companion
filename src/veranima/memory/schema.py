@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at TEXT NOT NULL,
     energy_at  REAL,
     mood_at    TEXT,
+    tone_at    TEXT NOT NULL DEFAULT '',
     attachments TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
@@ -324,6 +325,9 @@ def init_db(db_path: str | Path, dim: int = EMBEDDING_DIM, provider=None) -> sql
         if "attachments" not in message_cols:
             con.execute("ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT ''")
             logger.info("messages migration: added attachments")
+        if "tone_at" not in message_cols:
+            con.execute("ALTER TABLE messages ADD COLUMN tone_at TEXT NOT NULL DEFAULT ''")
+            logger.info("messages migration: added tone_at")
     except Exception as e:
         logger.warning("messages channel migration check failed: %s", e)
     con.commit()

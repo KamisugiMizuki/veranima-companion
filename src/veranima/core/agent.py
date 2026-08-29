@@ -1208,8 +1208,11 @@ class Agent:
             )
 
         # ===== R0 阶段 5: persist_turn（R0_SPEC 5）=====
+        if channel == "im" and not tone:
+            # P2：im 通道追加轻量情绪分类（失败/关闭→空，UI 回退 mood）
+            tone = self._classify_tone(reply)
         self.memory.store_message("assistant", reply, self.state.energy, self.state.mood,
-                                  channel="pet" if channel == "tts" else "qq")
+                                  channel="pet" if channel == "tts" else "qq", tone=tone)
         if sleep_archive_ids_to_process:
             self.memory.mark_sleep_messages_processed(sleep_archive_ids_to_process)
             schedule_runtime.state = replace(schedule_runtime.state, sleep_reason="awake_reconciled")
@@ -2208,6 +2211,34 @@ class Agent:
         return msg
 
     # ---------- 内部 ----------
+
+    def _classify_tone(self, text: str) -> str:
+        """P2 逐条回复情绪分类：一次低成本 LLM 调用（≤256 token、8s 超时）。
+
+        词表=角色卡 tones；失败/超时/词表外返回空串（UI 回退 mood 三档）。
+        绝不阻塞主回复：调用方在回复生成后追加执行，失败静默。
+        """
+        ui = (self.config.get("ui") or {})
+        if not ui.get("emotion_tags", True):
+            return ""
+        tones = list((self.card.tones or ["中性", "平静", "温柔"])[:19])
+        prompt = (
+            "给下面这句角色台词标一个情绪标签，只能从词表里选一个词，"
+            "只输出 JSON：{\"tone\":\"词表内一词\"}。\n"
+            f"词表：{'、'.join(tones)}\n台词：{str(text)[:300]}"
+        )
+        try:
+            raw = self.llm.chat_structured(
+                [{"role": "user", "content": prompt}],
+                max_tokens=128,
+                temperature=0.2,
+            )
+            value = json.loads(str(raw).strip().strip("`").removeprefix("json").strip())
+            t = str(value.get("tone", "")).strip()
+            return t if t in tones else ""
+        except Exception as e:
+            logger.debug("tone classify failed (fallback mood): %s", e)
+            return ""
 
     def _short_task(self, task: str, max_tokens: int | None = None, bilingual: bool = False) -> str | tuple[str, str]:
         """短任务生成：带完整 system prompt（角色锚定）。

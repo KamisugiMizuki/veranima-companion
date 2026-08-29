@@ -369,14 +369,15 @@ class MemoryStore:
 
     def store_message(self, role: str, content: str, energy: float | None = None,
                       mood: str | None = None, channel: str = "qq",
-                      attachments: str = "") -> int:
+                      attachments: str = "", tone: str = "") -> int:
         """零开销摄入：原始消息立即入库（FTS5 触发器同步索引），不等待 LLM。
 
         attachments: JSON 数组字符串（图片等附件的稳定文件名，非路径非 base64）。
+        tone: 回复情绪标签（P2 逐条分类；空=未分类/主动消息）。
         """
         cur = self.con.execute(
-            "INSERT INTO messages(role, content, channel, created_at, energy_at, mood_at, attachments) VALUES (?,?,?,?,?,?,?)",
-            (role, content, channel or "qq", _now(), energy, mood, attachments or ""),
+            "INSERT INTO messages(role, content, channel, created_at, energy_at, mood_at, tone_at, attachments) VALUES (?,?,?,?,?,?,?,?)",
+            (role, content, channel or "qq", _now(), energy, mood, tone or "", attachments or ""),
         )
         self.con.commit()
         return int(cur.lastrowid)
@@ -742,15 +743,16 @@ class MemoryStore:
 
     def recent_messages(self, limit: int = 20, channel: str | None = None) -> list[dict]:
         from ..core.reply import is_internal_reply
+        cols = "id, role, content, channel, created_at, energy_at, mood_at, tone_at, attachments"
         if channel:
             rows = self.con.execute(
-                "SELECT id, role, content, channel, created_at, attachments FROM messages WHERE channel=? ORDER BY id DESC LIMIT ?",
+                f"SELECT {cols} FROM messages WHERE channel=? ORDER BY id DESC LIMIT ?",
                 (channel, limit),
             ).fetchall()
             return [dict(r) for r in reversed(rows)
                     if not (r["role"] == "assistant" and is_internal_reply(r["content"]))]
         rows = self.con.execute(
-            "SELECT id, role, content, channel, created_at, attachments FROM messages ORDER BY id DESC LIMIT ?",
+            f"SELECT {cols} FROM messages ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()
         return [dict(r) for r in reversed(rows)

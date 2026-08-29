@@ -11,6 +11,8 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -26,17 +28,20 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
@@ -57,7 +62,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 data class Msg(val id: Long, val me: Boolean, val text: String, val images: List<String> = emptyList(),
-               val time: String = "")
+               val time: String = "", val tone: String = "", val mood: String = "")
 
 // 图片图标（手画 24dp：圆角相框+山+太阳；不引 material-icons-extended 整个包）
 private val PhotoIcon: androidx.compose.ui.graphics.vector.ImageVector by lazy {
@@ -104,6 +109,86 @@ private val PhotoIcon: androidx.compose.ui.graphics.vector.ImageVector by lazy {
 }
 
 // ---------- 舞台部件 ----------
+
+/** P2 图片主色：16×16 降采样求平均色（纯 SDK，无 Palette 依赖；失败→null 不参与混合） */
+private fun averageColor(path: String): Color? {
+    return try {
+        val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(path, opts)
+        var ss = 1
+        while (opts.outWidth / (ss * 2) > 16 && opts.outHeight / (ss * 2) > 16) ss *= 2
+        val bmp = BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = ss })
+            ?: return null
+        val w = bmp.width; val h = bmp.height
+        var r = 0L; var g = 0L; var b = 0L
+        for (y in 0 until h step 2) for (x in 0 until w step 2) {
+            val c = bmp.getPixel(x, y)
+            r += (c shr 16) and 0xFF; g += (c shr 8) and 0xFF; b += c and 0xFF
+        }
+        val n = (((w + 1) / 2) * ((h + 1) / 2)).toLong().coerceAtLeast(1)
+        bmp.recycle()
+        Color(android.graphics.Color.rgb((r / n).toInt(), (g / n).toInt(), (b / n).toInt()))
+    } catch (e: Exception) {
+        null
+    }
+}
+
+/** P2 情绪→环境光边缘色：tone 优先（19 词表→6 组），回退 mood 三档，再回退米白 */
+private fun ambientEdge(tone: String, mood: String, dark: Boolean, image: Color?): Color {
+    var c = ToneAmbient[tone] ?: MoodAmbient[mood] ?: Color(0xFFE8E4DC)
+    if (dark) {
+        // 夜间：整体降明度（混合藏青 55%）
+        c = androidx.compose.ui.graphics.lerp(c, NightAmbient, 0.55f)
+    }
+    if (image != null) c = androidx.compose.ui.graphics.lerp(c, image, 0.3f)  // 图片主色混入 30%
+    return c
+}
+
+/** P2 情绪标签文案：tone 词表原样显示；回退 mood 三档图标+词 */
+private fun emotionLabel(tone: String, mood: String): Pair<String, Color> {
+    if (tone.isNotEmpty()) return tone to (ToneLabelColor[tone] ?: Muted)
+    return when (mood) {
+        "开心" -> "✨ 心情不错" to Color(0xFFC77B4A)
+        "低落" -> "🌧 有点闷" to Color(0xFF7A87A8)
+        else -> "💭 平静" to Muted
+    }
+}
+
+/** P2 情绪标签徽章（圆角小胶囊，随回复到达 α 淡入） */
+@Composable
+private fun EmotionBadge(tone: String, mood: String) {
+    val (label, color) = emotionLabel(tone, mood)
+    if (label.isEmpty()) return
+    val alpha by animateFloatAsState(if (label.isNotEmpty()) 1f else 0f,
+        animationSpec = tween(220), label = "badge")
+    Surface(
+        color = color.copy(alpha = 0.12f),
+        shape = RoundedCornerShape(999.dp),
+        modifier = Modifier.graphicsLayer { this.alpha = alpha })
+    {
+        Text(label, style = MaterialTheme.typography.labelSmall,
+            color = color, modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp))
+    }
+}
+
+/** P3 思考粒子：3 粒子上抛 8dp 错峰 0.25s + 「正在酝酿…」（替代转圈） */
+@Composable
+private fun ThinkingParticles() {
+    val t = rememberInfiniteTransition(label = "thinking")
+    Row(verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
+        repeat(3) { i ->
+            val y by t.animateFloat(0f, -8f, label = "dot$i",
+                animationSpec = infiniteRepeatable(
+                    tween(800, delayMillis = i * 250, easing = FastOutSlowInEasing),
+                    RepeatMode.Reverse))
+            Box(Modifier.size(5.dp).offset(y = y.dp).graphicsLayer { alpha = 0.6f - i * 0.15f }
+                .background(Coral, RoundedCornerShape(50)))
+            Spacer(Modifier.width(5.dp))
+        }
+        Text("正在酝酿…", style = MaterialTheme.typography.bodySmall, color = MutedSoft)
+    }
+}
 
 /** 解码图片并按目标边长降采样（历史缩略/点击放大共用） */
 private fun decodeSampled(path: String, targetPx: Int): Bitmap? = try {
@@ -183,6 +268,11 @@ class MainActivity : ComponentActivity() {
                 val portraitPath = remember { mutableStateOf("") }
                 val input = remember { mutableStateOf("") }
                 val busy = remember { mutableStateOf(false) }
+                // P2 情绪：最新一条回复的 tone/mood（驱动情绪标签+环境光；空→默认平静）
+                val lastTone = remember { mutableStateOf("") }
+                val lastMood = remember { mutableStateOf("") }
+                // P3 图片主色：用户最近发图的平均色（16×16 降采样），混入环境光 30%
+                val imageAmbient = remember { mutableStateOf<Color?>(null) }
                 val pendingImages = remember { mutableStateOf(listOf<String>()) }
                 val showSettings = remember { mutableStateOf(false) }
                 val expanded = remember { mutableStateOf(false) }  // 面板两态：收起=最新一轮 / 展开=全历史
@@ -190,6 +280,7 @@ class MainActivity : ComponentActivity() {
                 val zoom = remember { mutableStateOf<String?>(null) }
                 val scope = rememberCoroutineScope()
                 val focusManager = LocalFocusManager.current
+                val haptic = LocalHapticFeedback.current
                 val animScale = remember {
                     try { AndSettings.Global.getFloat(contentResolver, AndSettings.Global.ANIMATOR_DURATION_SCALE, 1f) }
                     catch (e: Exception) { 1f }
@@ -235,9 +326,11 @@ class MainActivity : ComponentActivity() {
                                 val imgs = mutableListOf<String>()
                                 m.optJSONArray("images")?.let { ia -> for (j in 0 until ia.length()) imgs.add(ia.getString(j)) }
                                 msgs.add(Msg(m.getLong("id"), m.getBoolean("me"), m.getString("text"), imgs,
-                                    m.optString("time")))
+                                    m.optString("time"), m.optString("tone"), m.optString("mood")))
                             }
                             if (typedIds.isEmpty()) msgs.forEach { typedIds.add(it.id) }  // 首载快照：旧消息不重演
+                            // P2：最新一条 assistant 的 tone/mood 驱动环境光（收起态展示）
+                            msgs.lastOrNull { !it.me }?.let { lastMood.value = it.mood; lastTone.value = it.tone }
                         }
                     }
                 }
@@ -281,15 +374,28 @@ class MainActivity : ComponentActivity() {
                     pendingImages.value = emptyList()
                     focusManager.clearFocus()  // 发送后收起键盘，别挡消息
                     busy.value = true
+                    // P3 触感：发送成功一次轻震
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    // P2 图片主色：首图 16×16 降采样求均值（纯 SDK，无 Palette 依赖）
+                    imgs.firstOrNull()?.let { p ->
+                        scope.launch(Dispatchers.IO) {
+                            imageAmbient.value = averageColor(p)
+                        }
+                    }
                     scope.launch {
                         val r = withContext(Dispatchers.IO) {
                             bridge.callAttr("chat", q, org.json.JSONArray(imgs).toString()).toString()
                         }
                         val o = JSONObject(r)
-                        if (o.optBoolean("ok")) msgs.add(Msg(-2, false, o.getString("reply")))
+                        if (o.optBoolean("ok")) {
+                            msgs.add(Msg(-2, false, o.getString("reply"), emptyList(), "", o.optString("tone"), ""))
+                            lastTone.value = o.optString("tone")
+                            // 触感：收到回复一次轻震（P3）
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        }
                         else status.value = "chat 失败: ${o.optString("error")}"
                         busy.value = false
-                        loadHistory()  // 拿真实 id（打字机判定用）
+                        loadHistory()  // 拿真实 id（打字机判定用）+ mood/tone 对齐
                     }
                 }
 
@@ -322,10 +428,19 @@ class MainActivity : ComponentActivity() {
                             backgroundColor = SurfaceCard.copy(alpha = 0.92f),
                             tints = emptyList(),
                             blurRadius = 24.dp))
+                    val dark = androidx.compose.foundation.isSystemInDarkTheme()
+                    // P2 环境光：中心固定白（立绘背后白不变，用户裁决），边缘色随
+                    // 最新回复情绪 tone/mood + 用户图片主色；夜间整体降明度
+                    val ambient by animateColorAsState(
+                        ambientEdge(lastTone.value, lastMood.value, dark, imageAmbient.value),
+                        animationSpec = tween(1200), label = "ambient")
                     Box(Modifier.fillMaxSize().background(Canvas)) {
-                        // L0 舞台底：固定立绘背景的纯白（立绘是白底图，白色底消除矩形边界；
-                        // 固定不随正常/黑夜模式变，2026-08-30 用户追加）
-                        Box(Modifier.fillMaxSize().background(Color.White))
+                        // L0 环境光背景：径向渐变（中心=立绘区白，矩形边界不可见；边缘=情绪氛围色）
+                        // 立绘显示层背景固定白（用户裁决）：渐变中心白覆盖立绘背后，氛围色只露在四周
+                        Box(Modifier.fillMaxSize().background(Brush.radialGradient(
+                            colors = listOf(Color.White, Color.White, ambient),
+                            center = Offset(screenW / 2f, screenH * 0.30f),
+                            radius = screenH * 0.62f)))
                         // ---- L1 立绘舞台（宽适配+顶对齐：任意长宽比不裁脸；无图则整层消失=纯色舞台） ----
                         // haze 挂这里：hazeChild（面板）是兄弟层级，不能是子孙（Haze 硬约束）
                         Column(Modifier.fillMaxSize().stageHaze(), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -395,11 +510,13 @@ class MainActivity : ComponentActivity() {
                                                     Column(Modifier.padding(12.dp)) {
                                                         m.images.forEach { p -> ImageThumb(p, (screenW * 0.6f).dp) { zoom.value = p } }
                                                         if (m.text.isNotEmpty()) Text(m.text, style = MaterialTheme.typography.bodyMedium)
+                                                        // 展开态=IM 历史原样（spec 3.2）：不挂逐条情绪徽章，
+                                                        // 标签只属于收起态最新一轮——历史 mood_at 是全局静态值，逐条显示全是同一标签=噪音
                                                         // 时间戳（ISO→本地 HH:mm；解析失败静默不显示）
                                                         if (m.time.isNotEmpty()) {
                                                             val hhmm = remember(m.time) {
                                                                 runCatching {
-                                                                    java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(
+                                                                    java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault()).format(
                                                                         java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX",
                                                                             java.util.Locale.US).parse(m.time))
                                                                 }.getOrDefault("")
@@ -422,6 +539,8 @@ class MainActivity : ComponentActivity() {
                                     Column(Modifier.weight(1f).padding(horizontal = 20.dp)
                                             .clickable { expanded.value = true }) {
                                         if (lastHer != null) {
+                                            // P2 情绪标签徽章（tone→词表原样；无 tone→mood 三档图标）
+                                            EmotionBadge(lastHer.tone, lastHer.mood)
                                             TypewriterText(lastHer.text,
                                                 animate = lastHer.id !in typedIds && animScale > 0f,
                                                 animScale = animScale,
@@ -437,6 +556,8 @@ class MainActivity : ComponentActivity() {
                                         }
                                     }
                                 }
+                                // P3 思考粒子：busy 时替代转圈（每轮回复有真实 1-2s LLM 延迟）
+                                if (busy.value) ThinkingParticles()
                                 // 待发图片预览（拍立得卡片：白边+随机轻旋；再点 📷 重选即覆盖）
                                 if (pendingImages.value.isNotEmpty()) {
                                     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),

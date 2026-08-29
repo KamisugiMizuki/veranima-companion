@@ -398,6 +398,101 @@ def role_import() -> str:
         return json.dumps({"ok": False, "error": str(e)})
 
 
+def growth_report() -> str:
+    """成长树只读数据（DESIGN §11-A）：关系七维+阶段 / 风格四维 / procedural 技能点 / 承诺。
+
+    零 core 改动：全部来自 relationship.to_dict() + StyleLearner.params +
+    list_layer(procedural) + PromiseBook.open_promises。
+    """
+    agent = getattr(boot, "agent", None)
+    if agent is None:
+        return json.dumps({"ok": False, "error": "未初始化"})
+    try:
+        rel = agent.relationship.to_dict()
+        stage = derive_stage(agent.relationship)
+        style = {}
+        try:
+            p = agent.style.params
+            style = {k: round(float(getattr(p, k, 0.5)), 3) for k in
+                     ("reply_length", "formality", "humor", "topic_follow")}
+        except Exception as e:
+            log.debug("style params unavailable: %s", e)
+        skills = []
+        try:
+            for e in agent.memory.list_layer("procedural", limit=100, include_superseded=False):
+                kind = (e.meta or {}).get("kind") or "other"
+                skills.append({"id": e.id, "kind": kind, "content": e.content[:60],
+                               "strength": round(e.strength, 2),
+                               "updated_at": e.updated_at or ""})
+        except Exception as e:
+            log.debug("procedural list failed: %s", e)
+        promises = []
+        try:
+            for p in agent.promises.open_promises(limit=8):
+                promises.append({"content": str(p.get("content", ""))[:60],
+                                 "status": str(p.get("status", ""))})
+        except Exception as e:
+            log.debug("promises list failed: %s", e)
+        return json.dumps({"ok": True, "relationship": rel, "stage": stage,
+                           "style": style, "skills": skills, "promises": promises},
+                          ensure_ascii=False)
+    except Exception as e:
+        tb = traceback.format_exc(limit=4)
+        log.error("growth_report failed:\n%s", tb)
+        return json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"}, ensure_ascii=False)
+
+
+def derive_stage(model) -> str:
+    """关系阶段（persona.derive_relationship_stage 的容错包装）。"""
+    try:
+        from veranima.core.persona import derive_relationship_stage
+        return derive_relationship_stage(model)
+    except Exception:
+        return "初识"
+
+
+def memories_list(layer: str = "", limit: int = 200) -> str:
+    """记忆列表（DESIGN §11-B）：可选按层过滤，带 category 供标签云聚合。"""
+    agent = getattr(boot, "agent", None)
+    if agent is None:
+        return json.dumps({"ok": False, "error": "未初始化"})
+    try:
+        from veranima.memory.schema import LAYERS
+        if layer:
+            entries = agent.memory.list_layer(layer, limit=int(limit), include_superseded=False)
+        else:
+            entries = []
+            for lyr in LAYERS:
+                entries.extend(agent.memory.list_layer(lyr, limit=int(limit), include_superseded=False))
+        # 全量合并按 updated_at 倒序（最新在前）
+        entries.sort(key=lambda e: e.updated_at or "", reverse=True)
+        out = [{"id": e.id, "layer": e.layer, "category": e.category or "未分类",
+                "content": e.content[:120], "strength": round(e.strength, 2),
+                "created_at": e.created_at or "", "updated_at": e.updated_at or ""}
+               for e in entries]
+        # 标签云聚合：category → 计数
+        tags: dict[str, int] = {}
+        for it in out:
+            tags[it["category"]] = tags.get(it["category"], 0) + 1
+        return json.dumps({"ok": True, "memories": out, "tags": tags}, ensure_ascii=False)
+    except Exception as e:
+        tb = traceback.format_exc(limit=4)
+        log.error("memories_list failed:\n%s", tb)
+        return json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"}, ensure_ascii=False)
+
+
+def memories_erase(memory_id: int) -> str:
+    """删除一条记忆（整条版本链+FTS+向量）。删除是幂等操作；core 后续可能重新提取同内容。"""
+    agent = getattr(boot, "agent", None)
+    if agent is None:
+        return json.dumps({"ok": False, "error": "未初始化"})
+    try:
+        n = agent.memory.erase(int(memory_id))
+        return json.dumps({"ok": True, "detail": f"已删除 {n} 条（含版本链）"})
+    except Exception as e:
+        return json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"})
+
+
 def portrait_path() -> str:
     """当前角色立绘的绝对路径（视觉小说舞台用；空串=无图，UI 回退纯色舞台）。
 
@@ -441,6 +536,7 @@ def history(limit: int = 80) -> str:
                 att = []
             out.append({"id": int(r["id"]), "me": r["role"] == "user",
                         "time": r["created_at"],
+                        "tone": r.get("tone_at", ""), "mood": r.get("mood_at", "") or "",
                         # 有附件真图时剥掉 [图片] 占位（占位是给纯文本记忆用的，别渲染出来）
                         "text": r["content"].replace(" [图片]", "").strip() if att else r["content"],
                         "images": att})
@@ -485,7 +581,7 @@ def chat(text: str, image_paths: str = "[]") -> str:
         res = agent.handle(text, images=images or None, channel="im", attachments=attachments)
         # 与 QQ 统一出口一致：Reply 对象优先、渲染后才可见（防内部痕迹外漏）
         out = {"ok": True, "reply": _render(agent, res.reply_obj or res.reply), "portrait": res.portrait,
-               "energy": round(res.energy, 2)}
+               "energy": round(res.energy, 2), "tone": res.tone or ""}
         return json.dumps(out, ensure_ascii=False)
     except Exception as e:
         tb = traceback.format_exc(limit=6)

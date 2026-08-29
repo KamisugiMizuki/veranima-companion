@@ -6,6 +6,7 @@ import android.content.Intent
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -16,10 +17,12 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.chaquo.python.Python
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -164,6 +167,127 @@ fun SettingsScreen(onBack: () -> Unit) {
                     Spacer(Modifier.width(12.dp))
                     Button(onClick = { importBackup.launch("application/zip") },
                         colors = ButtonDefaults.buttonColors(Coral), shape = MaterialTheme.shapes.small) { Text("导入…") }
+                }
+            }
+
+            // ---- DESIGN §11-A 性格成长树（只读：关系七维+阶段 / 风格四维 / 技能点 / 承诺） ----
+            SectionCard("性格成长（关系阶段 / 风格画像 / 学会的规矩）") {
+                var g by remember { mutableStateOf<JSONObject?>(null) }
+                LaunchedEffect(Unit) {
+                    g = JSONObject(withContext(Dispatchers.IO) { bridge.callAttr("growth_report").toString() })
+                }
+                val gd = g
+                if (gd == null || !gd.optBoolean("ok")) {
+                    Text("读取中…", style = MaterialTheme.typography.bodySmall, color = Muted)
+                } else {
+                    Text("阶段：${gd.optString("stage")}", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(4.dp))
+                    val rel = gd.optJSONObject("relationship") ?: JSONObject()
+                    // 关系七维进度条（只读：core 确定性更新，UI 不手调）
+                    listOf("trust" to "信任", "familiarity" to "熟悉", "intimacy" to "亲密",
+                           "reciprocity" to "互惠", "safety" to "安全感",
+                           "conflict_tension" to "冲突张力", "repair_progress" to "修复进度"
+                    ).forEach { (k, label) ->
+                        Row(verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(top = 3.dp)) {
+                            Text(label, style = MaterialTheme.typography.bodySmall, color = Muted,
+                                modifier = Modifier.width(64.dp))
+                            Box(Modifier.weight(1f).height(6.dp).background(Hairline, RoundedCornerShape(3.dp))) {
+                                Box(Modifier.fillMaxWidth(rel.optDouble(k, 0.0).toFloat().coerceIn(0f, 1f))
+                                    .height(6.dp).background(Coral, RoundedCornerShape(3.dp)))
+                            }
+                            Text("${(rel.optDouble(k, 0.0) * 100).toInt()}%",
+                                style = MaterialTheme.typography.labelSmall, color = MutedSoft,
+                                modifier = Modifier.width(40.dp), textAlign = androidx.compose.ui.text.style.TextAlign.End)
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    // 风格画像（四维）
+                    val st = gd.optJSONObject("style") ?: JSONObject()
+                    Text("文风：回复 ${st.optString("reply_length", "—")} / 语气 ${st.optString("formality", "—")} / 幽默 ${st.optString("humor", "—")} / 话题跟随 ${st.optString("topic_follow", "—")}",
+                        style = MaterialTheme.typography.bodySmall, color = Muted)
+                    Spacer(Modifier.height(8.dp))
+                    // 技能点（procedural 规则）
+                    val skills = gd.optJSONArray("skills") ?: org.json.JSONArray()
+                    Text("学会的规矩：${skills.length()} 条", style = MaterialTheme.typography.bodySmall, color = Muted)
+                    for (i in 0 until minOf(skills.length(), 3)) {
+                        val sk = skills.getJSONObject(i)
+                        Text("· ${sk.optString("kind")}：${sk.optString("content")}",
+                            style = MaterialTheme.typography.labelSmall, color = MutedSoft,
+                            maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                    }
+                    val pr = gd.optJSONArray("promises") ?: org.json.JSONArray()
+                    if (pr.length() > 0) {
+                        Text("未兑现承诺：${pr.length()} 条", style = MaterialTheme.typography.bodySmall,
+                            color = Coral, modifier = Modifier.padding(top = 4.dp))
+                    }
+                }
+            }
+
+            // ---- DESIGN §11-B 记忆库管理（标签云 + 手动删除） ----
+            SectionCard("记忆库（标签云选择分类；点删除移除不良记忆）") {
+                var mem by remember { mutableStateOf<JSONObject?>(null) }
+                var filter by remember { mutableStateOf("") }
+                fun loadMem() {
+                    scope.launch {
+                        mem = JSONObject(withContext(Dispatchers.IO) {
+                            bridge.callAttr("memories_list", filter).toString() })
+                    }
+                }
+                LaunchedEffect(Unit) { loadMem() }
+                val md = mem
+                if (md == null || !md.optBoolean("ok")) {
+                    Text("读取中…", style = MaterialTheme.typography.bodySmall, color = Muted)
+                } else {
+                    val tags = md.optJSONObject("tags") ?: JSONObject()
+                    val total = md.optJSONArray("memories")?.length() ?: 0
+                    Text("共 $total 条记忆", style = MaterialTheme.typography.bodySmall, color = Muted)
+                    Spacer(Modifier.height(6.dp))
+                    // 标签云：字号/深浅随数量
+                    val keys = tags.keys().asSequence().toList()
+                    val maxN = keys.map { tags.optInt(it) }.maxOrNull() ?: 1
+                    @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+                    androidx.compose.foundation.layout.FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        keys.forEach { k ->
+                            val n = tags.optInt(k)
+                            val sel = filter == k
+                            Surface(
+                                onClick = { filter = if (sel) "" else k; loadMem() },
+                                color = if (sel) Coral else SurfaceCard,
+                                shape = RoundedCornerShape(999.dp)) {
+                                Text("$k $n",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (sel) Color.White else Ink,
+                                    fontSize = (11 + 3 * n / maxN).sp,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp))
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    val arr = md.optJSONArray("memories") ?: org.json.JSONArray()
+                    val shown = (0 until minOf(arr.length(), 20)).map { arr.getJSONObject(it) }
+                    shown.forEach { m0 ->
+                        Row(verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(top = 4.dp)) {
+                            Column(Modifier.weight(1f)) {
+                                Text("${m0.optString("layer")}·${m0.optString("category")}·强度${m0.optDouble("strength", 0.0)}",
+                                    style = MaterialTheme.typography.labelSmall, color = MutedSoft)
+                                Text(m0.optString("content"), style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                            }
+                            TextButton(onClick = {
+                                scope.launch {
+                                    val r = JSONObject(withContext(Dispatchers.IO) {
+                                        bridge.callAttr("memories_erase", m0.getInt("id")).toString() })
+                                    report(r, "删除记忆")
+                                    loadMem()
+                                }
+                            }) { Text("删除", color = Coral) }
+                        }
+                    }
+                    if (arr.length() > 20) Text("…共 ${arr.length()} 条，仅显示最近 20",
+                        style = MaterialTheme.typography.labelSmall, color = MutedSoft)
                 }
             }
             TextButton(onClick = { openBatterySettings(ctx) }) { Text("电池优化白名单", color = Muted) }
