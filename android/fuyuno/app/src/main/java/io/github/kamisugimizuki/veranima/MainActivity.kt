@@ -56,7 +56,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
-data class Msg(val id: Long, val me: Boolean, val text: String, val images: List<String> = emptyList())
+data class Msg(val id: Long, val me: Boolean, val text: String, val images: List<String> = emptyList(),
+               val time: String = "")
 
 // 图片图标（手画 24dp：圆角相框+山+太阳；不引 material-icons-extended 整个包）
 private val PhotoIcon: androidx.compose.ui.graphics.vector.ImageVector by lazy {
@@ -177,7 +178,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             VeranimaTheme {
                 val msgs = remember { mutableStateListOf<Msg>() }
-                val status = remember { mutableStateOf("启动核心…") }
+                val status = remember { mutableStateOf("") }
                 val charName = remember { mutableStateOf("凛") }
                 val portraitPath = remember { mutableStateOf("") }
                 val input = remember { mutableStateOf("") }
@@ -233,7 +234,8 @@ class MainActivity : ComponentActivity() {
                                 val m = arr.getJSONObject(i)
                                 val imgs = mutableListOf<String>()
                                 m.optJSONArray("images")?.let { ia -> for (j in 0 until ia.length()) imgs.add(ia.getString(j)) }
-                                msgs.add(Msg(m.getLong("id"), m.getBoolean("me"), m.getString("text"), imgs))
+                                msgs.add(Msg(m.getLong("id"), m.getBoolean("me"), m.getString("text"), imgs,
+                                    m.optString("time")))
                             }
                             if (typedIds.isEmpty()) msgs.forEach { typedIds.add(it.id) }  // 首载快照：旧消息不重演
                         }
@@ -242,7 +244,9 @@ class MainActivity : ComponentActivity() {
                 LaunchedEffect(Unit) {
                     val files = applicationContext.filesDir.absolutePath
                     val r = withContext(Dispatchers.IO) { bridge.callAttr("boot", files).toString() }
-                    status.value = "boot: $r"
+                    val bootOk = runCatching { JSONObject(r).optBoolean("ok", false) }.getOrDefault(false)
+                    // boot 诊断行：正常启动不显示，异常/失败才在顶部浮层显示 log
+                    if (!bootOk) status.value = "boot: $r"
                     runCatching { JSONObject(r).optString("role").takeIf { it.isNotEmpty() }?.let { charName.value = it } }
                     withContext(Dispatchers.IO) { bridge.callAttr("start_ticks") }
                     // 立绘：assets → filesDir/portraits（Kotlin 侧解包，bridge.portrait_path 只报路径）
@@ -319,10 +323,9 @@ class MainActivity : ComponentActivity() {
                             tints = emptyList(),
                             blurRadius = 24.dp))
                     Box(Modifier.fillMaxSize().background(Canvas)) {
-                        // L0 舞台晕影：立绘是白底图，白色径向渐变垫底消除矩形边界
-                        // （只画背景层，不改立绘颜色；P2 环境光将接管此层）
-                        Box(Modifier.fillMaxSize().background(Brush.radialGradient(
-                            colors = listOf(Color.White, Canvas))))
+                        // L0 舞台底：固定立绘背景的纯白（立绘是白底图，白色底消除矩形边界；
+                        // 固定不随正常/黑夜模式变，2026-08-30 用户追加）
+                        Box(Modifier.fillMaxSize().background(Color.White))
                         // ---- L1 立绘舞台（宽适配+顶对齐：任意长宽比不裁脸；无图则整层消失=纯色舞台） ----
                         // haze 挂这里：hazeChild（面板）是兄弟层级，不能是子孙（Haze 硬约束）
                         Column(Modifier.fillMaxSize().stageHaze(), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -344,9 +347,11 @@ class MainActivity : ComponentActivity() {
                                 Spacer(Modifier.weight(1f))
                             }
                         }
-                        // boot 诊断浮层（不占舞台高度，防立绘顶裁切）
-                        Text(status.value, style = MaterialTheme.typography.bodySmall, color = MutedSoft,
-                            modifier = Modifier.align(Alignment.TopStart).padding(start = 12.dp, top = 4.dp))
+                        // boot 诊断浮层（仅异常时显示；正常启动为空，不占舞台高度）
+                        if (status.value.isNotEmpty()) {
+                            Text(status.value, style = MaterialTheme.typography.bodySmall, color = MutedSoft,
+                                modifier = Modifier.align(Alignment.TopStart).padding(start = 12.dp, top = 4.dp))
+                        }
                         // ---- L3 毛玻璃对话面板（两态；面板高度即立绘可见区，天然适配长宽比） ----
                         var dragTotal by remember { mutableFloatStateOf(0f) }
                         Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(panelH)
@@ -390,6 +395,21 @@ class MainActivity : ComponentActivity() {
                                                     Column(Modifier.padding(12.dp)) {
                                                         m.images.forEach { p -> ImageThumb(p, (screenW * 0.6f).dp) { zoom.value = p } }
                                                         if (m.text.isNotEmpty()) Text(m.text, style = MaterialTheme.typography.bodyMedium)
+                                                        // 时间戳（ISO→本地 HH:mm；解析失败静默不显示）
+                                                        if (m.time.isNotEmpty()) {
+                                                            val hhmm = remember(m.time) {
+                                                                runCatching {
+                                                                    java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(
+                                                                        java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX",
+                                                                            java.util.Locale.US).parse(m.time))
+                                                                }.getOrDefault("")
+                                                            }
+                                                            if (hhmm.isNotEmpty()) Text(hhmm,
+                                                                style = MaterialTheme.typography.labelSmall,
+                                                                color = MutedSoft,
+                                                                modifier = Modifier.align(
+                                                                    if (m.me) Alignment.End else Alignment.Start))
+                                                        }
                                                     }
                                                 }
                                             }

@@ -440,6 +440,7 @@ def history(limit: int = 80) -> str:
             except Exception:
                 att = []
             out.append({"id": int(r["id"]), "me": r["role"] == "user",
+                        "time": r["created_at"],
                         # 有附件真图时剥掉 [图片] 占位（占位是给纯文本记忆用的，别渲染出来）
                         "text": r["content"].replace(" [图片]", "").strip() if att else r["content"],
                         "images": att})
