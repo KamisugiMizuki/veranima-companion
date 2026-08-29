@@ -25,9 +25,13 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
@@ -53,6 +57,50 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 data class Msg(val id: Long, val me: Boolean, val text: String, val images: List<String> = emptyList())
+
+// 图片图标（手画 24dp：圆角相框+山+太阳；不引 material-icons-extended 整个包）
+private val PhotoIcon: androidx.compose.ui.graphics.vector.ImageVector by lazy {
+    androidx.compose.ui.graphics.vector.ImageVector.Builder(
+        defaultWidth = 24.dp, defaultHeight = 24.dp, viewportWidth = 24f, viewportHeight = 24f
+    ).apply {
+        // 相框（圆角矩形描边→用 fill 加内框）
+        path(fill = androidx.compose.ui.graphics.SolidColor(Muted)) {
+            moveTo(4f, 5.5f)
+            curveTo(4f, 4.67f, 4.67f, 4f, 5.5f, 4f)
+            horizontalLineTo(18.5f)
+            curveTo(19.33f, 4f, 20f, 4.67f, 20f, 5.5f)
+            verticalLineTo(18.5f)
+            curveTo(20f, 19.33f, 19.33f, 20f, 18.5f, 20f)
+            horizontalLineTo(5.5f)
+            curveTo(4.67f, 20f, 4f, 19.33f, 4f, 18.5f)
+            close()
+        }
+        path(fill = androidx.compose.ui.graphics.SolidColor(Canvas)) {
+            moveTo(6.5f, 7.5f)
+            curveTo(6.5f, 6.95f, 6.95f, 6.5f, 7.5f, 6.5f)
+            horizontalLineTo(16.5f)
+            curveTo(17.05f, 6.5f, 17.5f, 6.95f, 17.5f, 7.5f)
+            verticalLineTo(16.5f)
+            curveTo(17.5f, 17.05f, 17.05f, 17.5f, 16.5f, 17.5f)
+            horizontalLineTo(7.5f)
+            curveTo(6.95f, 17.5f, 6.5f, 17.05f, 6.5f, 16.5f)
+            close()
+        }
+        // 山+太阳
+        path(fill = androidx.compose.ui.graphics.SolidColor(Muted)) {
+            moveTo(9f, 9f)
+            arcTo(1.6f, 1.6f, 0f, true, false, 12.2f, 9f)
+            arcTo(1.6f, 1.6f, 0f, true, false, 9f, 9f)
+            moveTo(8.4f, 14.6f)
+            lineTo(10.8f, 11.9f)
+            lineTo(13.4f, 14.4f)
+            lineTo(16f, 11.5f)
+            lineTo(18f, 16f)
+            horizontalLineTo(6.6f)
+            close()
+        }
+    }.build()
+}
 
 // ---------- 舞台部件 ----------
 
@@ -149,12 +197,18 @@ class MainActivity : ComponentActivity() {
                 val screenW = conf.screenWidthDp
                 val screenH = conf.screenHeightDp
 
-                val pickImages = androidx.activity.compose.rememberLauncherForActivityResult(
-                    androidx.activity.result.contract.ActivityResultContracts.GetMultipleContents()
-                ) { uris: List<android.net.Uri> ->
-                    if (uris.isEmpty()) return@rememberLauncherForActivityResult
+                val showAlbumPicker = remember { mutableStateOf(false) }
+                // 相册读取权限：33+ READ_MEDIA_IMAGES，否则 READ_EXTERNAL_STORAGE
+                val albumPerm = if (android.os.Build.VERSION.SDK_INT >= 33)
+                    android.Manifest.permission.READ_MEDIA_IMAGES
+                else android.Manifest.permission.READ_EXTERNAL_STORAGE
+                val permLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+                    androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+                ) { granted -> if (granted) showAlbumPicker.value = true }
+                val saveToPhotos = fun(uris: List<android.net.Uri>) {
+                    if (uris.isEmpty()) return
                     scope.launch(Dispatchers.IO) {
-                        val saved = uris.take(4).mapNotNull { uri ->
+                        val saved = uris.mapNotNull { uri ->
                             try {  // 存 filesDir/photos：cacheDir 随时被系统清，历史图会变黑块
                                 val bytes = applicationContext.contentResolver
                                     .openInputStream(uri)?.use { it.readBytes() } ?: return@mapNotNull null
@@ -363,17 +417,42 @@ class MainActivity : ComponentActivity() {
                                         }
                                     }
                                 }
-                                // 待发图片预览（发送前可反悔：再点 📎 重选即覆盖）
+                                // 待发图片预览（拍立得卡片：白边+随机轻旋；再点 📷 重选即覆盖）
                                 if (pendingImages.value.isNotEmpty()) {
-                                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
-                                        pendingImages.value.forEach { Text("[${it.substringAfterLast('/')}] ",
-                                            style = MaterialTheme.typography.bodySmall) }
+                                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        pendingImages.value.forEachIndexed { i, p ->
+                                            androidx.compose.foundation.layout.Box(
+                                                Modifier.size(56.dp).background(Color.White,
+                                                    RoundedCornerShape(6.dp)).padding(2.dp)
+                                                    .graphicsLayer {
+                                                        rotationZ = if (i % 2 == 0) -3f else 2f
+                                                    }) {
+                                                coil.compose.AsyncImage(
+                                                    model = java.io.File(p),
+                                                    contentDescription = "待发送图片",
+                                                    contentScale = ContentScale.Crop,
+                                                    modifier = Modifier.fillMaxSize()
+                                                        .clip(RoundedCornerShape(4.dp))
+                                                        .clickable { pendingImages.value = pendingImages.value - p })
+                                            }
+                                        }
                                     }
                                 }
                                 Row(Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
                                     verticalAlignment = Alignment.CenterVertically) {
-                                    IconButton(onClick = { pickImages.launch("image/*") }) {
-                                        Text("📎", fontSize = MaterialTheme.typography.bodyLarge.fontSize)
+                                    IconButton(onClick = {
+                                        if (checkSelfPermission(albumPerm) ==
+                                            android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                                            showAlbumPicker.value = true
+                                        } else {
+                                            permLauncher.launch(albumPerm)
+                                        }
+                                    }) {
+                                        // 图片图标（material "image"：相框+山），替代原回形针 emoji
+                                        // tint=Unspecified：vector 内自带相框灰/内芯奶油，任何 tint 都会整体染成一色
+                                        Icon(PhotoIcon, contentDescription = "选择图片",
+                                            tint = Color.Unspecified, modifier = Modifier.size(24.dp))
                                     }
                                     OutlinedTextField(
                                         input.value, { input.value = it },
@@ -394,6 +473,14 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                         zoom.value?.let { p -> ZoomDialog(p) { zoom.value = null } }
+                        if (showAlbumPicker.value) {
+                            AlbumPicker(maxPick = 4,
+                                onPick = { uris ->
+                                    showAlbumPicker.value = false
+                                    saveToPhotos(uris)
+                                },
+                                onDismiss = { showAlbumPicker.value = false })
+                        }
                     }
                 }
             }
