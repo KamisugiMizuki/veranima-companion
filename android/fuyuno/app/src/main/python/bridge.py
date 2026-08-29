@@ -14,8 +14,74 @@ log = logging.getLogger("fuyuno.bridge")
 _pending: list[str] = []  # tick 产出的主动消息，Kotlin 轮询取走
 
 
+def _render(agent, text: str) -> str:
+    """IM 通道统一出口（与 QQ _send_to_all 同构）：换行/波浪号/感叹号/emoji
+    规则 + 内部提示词/思考痕迹剥离。渲染失败回退原文（宁可不修饰不能不发）。"""
+    if not text:
+        return ""
+    try:
+        from veranima.core.render import render_im
+        emoji_freq = (agent.card.veranima or {}).get("emoji_frequency", "low") if agent.card else "low"
+        return render_im(text, attachment=agent.state.attachment, emoji_frequency=emoji_freq) or text
+    except Exception:
+        log.exception("render_im failed, raw fallback")
+        return text
+
+
+def _advance_schedule(agent) -> str:
+    """虚拟日程推进一格，返回迁移公告（sleep_preparing/woke）或空串。
+
+    advance_schedule_async 内部是 to_thread 包装（无网络协程），bridge 无线
+    程事件循环 → 用 asyncio.run 跑一次；缺该函数时退到 runtime.advance 同步版。
+    """
+    import asyncio
+    import datetime
+    runtime = getattr(agent, "schedule_runtime", None)
+    if runtime is None:
+        return ""
+    advance = getattr(agent, "advance_schedule_async", None)
+    try:
+        if callable(advance):
+            asyncio.run(advance())
+        else:
+            runtime.advance(datetime.datetime.now(datetime.timezone.utc))
+        return runtime.pop_notice() or ""
+    except Exception:
+        log.exception("schedule advance failed")
+        return ""
+
+
+def _due_meal(agent, scheduler, now_ts: float) -> str:
+    """三餐提醒（确定性随机锚点±jitter）；发送前过 gate，与 QQ 侧同构。"""
+    import datetime
+    now = datetime.datetime.now().astimezone()
+    feedback = agent.memory.recent_proactive_feedback(source="meal", limit=30)
+    sent_ids = {str(row.get("candidate_id") or "") for row in feedback}
+    due = scheduler.due(now=now, sent_ids=sent_ids)
+    if not due:
+        return ""
+    meal, text, candidate_id = due
+    from veranima.core.ambient import ProactiveCandidate
+    cand = ProactiveCandidate(
+        source="ritual", reason=f"{meal} meal reminder",
+        relevance=1.0, urgency=0.6, intent="remind",
+        context={"calendar_source": "meal", "meal": meal}, channel="im",
+    )
+    if not agent.gate.decide(cand, scene=agent.scene_lock.current(),
+                             now=now.timestamp()).allow:
+        return ""
+    agent.gate.commit(cand)
+    agent.record_proactive_message(text, channel="im")
+    agent.memory.record_proactive_feedback(source="meal", channel="im",
+                                           candidate_id=candidate_id)
+    return text
+
+
 def _tick_loop(interval: float = 60.0) -> None:
-    """后台每分钟 tick_proactive（同 CLI adapter 模式）；消息进 _pending。"""
+    """后台每分钟周期循环，对齐 QQ adapter 的驱动面（2026-08-29 盘点补全）：
+    日程推进公告 → ritual 问候/节庆（tick_proactive）→ 三餐提醒 →
+    离线思考（late_reply 优先 / heartbeat 破冰）→ 夜间 digest（内部日去重）。
+    quiet hours 已退役（睡眠模拟由虚拟日程承担）。消息进 _pending。"""
     import time as _t
     while True:
         _t.sleep(interval)
@@ -23,9 +89,39 @@ def _tick_loop(interval: float = 60.0) -> None:
         if agent is None or getattr(boot, "_shutdown", False):
             continue
         try:
+            now = _t.time()
+            notice = _advance_schedule(agent)
+            if notice:
+                cand = agent.schedule_notice_candidate(notice, "im")
+                decision = agent.gate.decide(
+                    cand, scene=agent.scene_lock.current(),
+                    character_sleeping=False,
+                ) if cand else None
+                text = agent.schedule_notice_text(notice) if decision and decision.allow else ""
+                if text:
+                    agent.gate.commit(cand)
+                    agent.record_proactive_message(text, channel="im")
+                    _pending.append(_render(agent, text))
+                    log.info("schedule notice queued: %s", text[:60])
             for msg in agent.tick_proactive():
-                _pending.append(msg)
+                _pending.append(_render(agent, msg))
                 log.info("proactive queued: %s", msg[:60])
+            meals = getattr(boot, "meals", None)
+            if meals is not None:
+                text = _due_meal(agent, meals, now)
+                if text:
+                    _pending.append(_render(agent, text))
+                    log.info("meal reminder queued: %s", text[:60])
+            off = getattr(boot, "offline", None)
+            if off is not None and off.due(now, getattr(boot, "_last_user_activity", None)):
+                # late_reply/heartbeat 内部已落库（store_message），不再 record
+                msg = agent.late_reply() or agent.heartbeat()
+                if msg:
+                    _pending.append(_render(agent, msg))
+                    log.info("offline think queued: %s", msg[:60])
+            digest = getattr(agent, "maybe_nightly_digest", None)
+            if callable(digest):
+                digest()
         except Exception:
             log.exception("proactive tick failed")
 
@@ -97,6 +193,11 @@ def boot(files_dir: str) -> str:
 
         agent = create_agent(cfg)
         boot.agent = agent
+        # 周期调度器（tick 线程消费）：三餐读 proactive.meal_reminders；
+        # 离线思考用默认参数（静默30min/概率0.3/日上限2），调参需求出现再进配置
+        from veranima.core.proactive import MealReminderScheduler, OfflineThinkTimer
+        boot.meals = MealReminderScheduler((cfg.get("proactive") or {}).get("meal_reminders", {}))
+        boot.offline = OfflineThinkTimer()
         boot._done = True
         probe = {
             "ok": True,
@@ -159,6 +260,7 @@ _CFG_FIELDS = (
     ("llm_api_key", ("llm", "profiles", "default", "api_key"), True),
     ("llm_base_url", ("llm", "profiles", "default", "base_url"), False),
     ("llm_model", ("llm", "profiles", "default", "model"), False),
+    ("llm_vision_model", ("llm", "profiles", "default", "vision_model"), False),
     ("embedding_api_key", ("memory", "embedding_api_key"), True),
     ("embedding_base_url", ("memory", "embedding_base_url"), False),
     ("embedding_model", ("memory", "embedding_model"), False),
@@ -329,14 +431,30 @@ def history(limit: int = 80) -> str:
         return json.dumps({"ok": False, "error": str(e), "messages": []})
 
 
-def chat(text: str) -> str:
-    """一轮对话（同步阻塞——真 UI 阶段换协程+回调）。"""
+def chat(text: str, image_paths: str = "[]") -> str:
+    """一轮对话（同步阻塞——真 UI 阶段换协程+回调）。
+
+    image_paths: JSON 数组字符串，本地图片文件路径（≤4 张）。核心管线
+    make_image_payload 校验（类型/大小/炸弹检测），agent.handle 以
+    OpenAI 多模态块发给 vision_model（llm.client 按含图自动切模型），
+    历史/记忆落 [图片] 占位。
+    """
     agent = getattr(boot, "agent", None)
     if agent is None:
         return json.dumps({"ok": False, "error": "未初始化"})
+    import time as _t
+    boot._last_user_activity = _t.time()  # 离线思考的静默窗口锚点
     try:
-        res = agent.handle(text, channel="im")
-        out = {"ok": True, "reply": res.reply, "portrait": res.portrait,
+        paths = [str(p) for p in json.loads(image_paths or "[]")][:4]
+        images: list[str] = []
+        if paths:
+            from veranima.core.image_payload import make_image_payload
+            for p in paths:
+                raw = Path(p).read_bytes()
+                images.append(make_image_payload(raw, source=p).data_url)
+        res = agent.handle(text, images=images or None, channel="im")
+        # 与 QQ 统一出口一致：Reply 对象优先、渲染后才可见（防内部痕迹外漏）
+        out = {"ok": True, "reply": _render(agent, res.reply_obj or res.reply), "portrait": res.portrait,
                "energy": round(res.energy, 2)}
         return json.dumps(out, ensure_ascii=False)
     except Exception as e:

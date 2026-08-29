@@ -44,6 +44,18 @@ class LLMClient:
         self.low_energy_max_tokens = config.get("low_energy_max_tokens", 256)
         self._timeout = float(config.get("timeout", 30.0))
         self._timeout_retries = max(0, int(config.get("timeout_retries", 3)))
+        # 含图请求自动切的视觉模型（DeepSeek 文档：图块只在 vision 模型上可用）。
+        # base_url/api_key 复用本 profile——只有模型名不同。留空=不切（当前模型自己带图会 400）。
+        self.vision_model = str(config.get("vision_model") or "").strip()
+
+    def _model_for(self, messages: list[dict]) -> str:
+        if self.vision_model and any(
+            isinstance(m.get("content"), list)
+            and any(b.get("type") == "image_url" for b in m["content"] if isinstance(b, dict))
+            for m in messages
+        ):
+            return self.vision_model
+        return self.model
 
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
@@ -109,7 +121,7 @@ class LLMClient:
             logger.info("LLM 未配置（config.yaml llm.base_url 留空）——流式返回缺省提示")
             return ["（模型连接尚未配置：请在 config.yaml 填写 llm.base_url / llm.api_key）"]
         payload = {
-            "model": self.model,
+            "model": self._model_for(messages),
             "messages": messages,
             "temperature": temperature if temperature is not None else self.temperature,
             "max_tokens": max_tokens or self.max_tokens,
@@ -158,7 +170,7 @@ class LLMClient:
         image_b64：无头 base64（PNG）。返回模型文本；失败返回 ""（调用方降级）。
         """
         payload = {
-            "model": self.model,
+            "model": self.vision_model or self.model,
             "messages": [{
                 "role": "user",
                 "content": [
@@ -186,7 +198,7 @@ class LLMClient:
                  response_format: dict | None = None) -> dict:
         """对话生成（完整 message 返回，含 tool_calls）。tools 为 OpenAI 格式工具定义。"""
         payload = {
-            "model": self.model,
+            "model": self._model_for(messages),
             "messages": messages,
             "temperature": temperature if temperature is not None else self.temperature,
             "max_tokens": max_tokens or self.max_tokens,

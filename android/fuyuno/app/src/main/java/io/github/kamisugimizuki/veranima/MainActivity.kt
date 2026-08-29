@@ -5,6 +5,7 @@ import android.os.Bundle
 import android.provider.Settings as AndSettings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -14,6 +15,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import com.chaquo.python.Python
@@ -22,7 +24,27 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-data class Msg(val me: Boolean, val text: String)
+data class Msg(val me: Boolean, val text: String, val images: List<String> = emptyList())
+
+@Composable
+private fun ImageThumb(path: String) {
+    val bmp = remember(path) {
+        try {  // BitmapFactory 直解，省一个 coil 依赖（ponytail：图多了再换加载库）
+            val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            android.graphics.BitmapFactory.decodeFile(path, opts)
+            var ss = 1
+            while (opts.outWidth / (ss * 2) > 512 && opts.outHeight / (ss * 2) > 512) ss *= 2
+            android.graphics.BitmapFactory.decodeFile(path, android.graphics.BitmapFactory.Options().apply { inSampleSize = ss })
+        } catch (e: Exception) { null }
+    }
+    if (bmp != null) {
+        Image(bmp.asImageBitmap(), contentDescription = "图片",
+            modifier = Modifier.padding(bottom = 4.dp).widthIn(max = 220.dp).heightIn(max = 220.dp),
+            contentScale = androidx.compose.ui.layout.ContentScale.Fit)
+    } else {
+        Text("[图片读取失败]", style = MaterialTheme.typography.bodySmall)
+    }
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -43,9 +65,27 @@ class MainActivity : ComponentActivity() {
                 val status = remember { mutableStateOf("启动核心…") }
                 val input = remember { mutableStateOf("") }
                 val busy = remember { mutableStateOf(false) }
+                val pendingImages = remember { mutableStateOf(listOf<String>()) }
                 val showSettings = remember { mutableStateOf(false) }
                 val scope = rememberCoroutineScope()
                 val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+                // 无依赖图片选择（GetMultipleContents 全版本可用，PhotoPicker 依赖不新鲜）
+                val pickImages = androidx.activity.compose.rememberLauncherForActivityResult(
+                    androidx.activity.result.contract.ActivityResultContracts.GetMultipleContents()
+                ) { uris: List<android.net.Uri> ->
+                    if (uris.isEmpty()) return@rememberLauncherForActivityResult
+                    scope.launch(Dispatchers.IO) {
+                        val saved = uris.take(4).mapNotNull { uri ->
+                            try {  // 拷进 cacheDir：bridge 只认本地路径
+                                val bytes = applicationContext.contentResolver
+                                    .openInputStream(uri)?.use { it.readBytes() } ?: return@mapNotNull null
+                                val f = java.io.File(applicationContext.cacheDir, "img_${System.nanoTime()}.bin")
+                                f.writeBytes(bytes); f.absolutePath
+                            } catch (e: Exception) { null }
+                        }
+                        withContext(Dispatchers.Main) { pendingImages.value = saved }
+                    }
+                }
 
                 // 聊天区以数据库为准（主动消息核心已落库），启动/回前台/收 reply 后刷新
                 val loadHistory = fun() {
@@ -81,12 +121,16 @@ class MainActivity : ComponentActivity() {
 
                 val send = fun() {
                     val q = input.value.trim()
-                    if (q.isEmpty() || busy.value) return
-                    msgs.add(Msg(true, q)); input.value = ""
+                    val imgs = pendingImages.value
+                    if ((q.isEmpty() && imgs.isEmpty()) || busy.value) return
+                    msgs.add(Msg(true, q, imgs)); input.value = ""
+                    pendingImages.value = emptyList()
                     focusManager.clearFocus()  // 发送后收起键盘，别挡消息
                     busy.value = true
                     scope.launch {
-                        val r = withContext(Dispatchers.IO) { bridge.callAttr("chat", q).toString() }
+                        val r = withContext(Dispatchers.IO) {
+                            bridge.callAttr("chat", q, org.json.JSONArray(imgs).toString()).toString()
+                        }
                         val o = org.json.JSONObject(r)
                         if (o.optBoolean("ok")) msgs.add(Msg(false, o.getString("reply")))
                         else status.value = "chat 失败: ${o.optString("error")}"
@@ -110,12 +154,22 @@ class MainActivity : ComponentActivity() {
                                 contentAlignment = if (m.me) Alignment.CenterEnd else Alignment.CenterStart) {
                                 Surface(tonalElevation = 2.dp, shape = MaterialTheme.shapes.medium,
                                         modifier = Modifier.padding(vertical = 3.dp).widthIn(max = 300.dp)) {
-                                    Text(m.text, Modifier.padding(10.dp))
+                                    Column(Modifier.padding(10.dp)) {
+                                        m.images.forEach { p -> ImageThumb(p) }
+                                        if (m.text.isNotEmpty()) Text(m.text)
+                                    }
                                 }
                             }
                         }
                     }
+                    // 待发图片预览（发送前可反悔：再点 📎 重选即覆盖）
+                    if (pendingImages.value.isNotEmpty()) {
+                        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                            pendingImages.value.forEach { Text("[${it.substringAfterLast('/')}] ", style = MaterialTheme.typography.bodySmall) }
+                        }
+                    }
                     Row(verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(onClick = { pickImages.launch("image/*") }) { Text("📎") }
                         OutlinedTextField(
                             input.value, { input.value = it },
                             Modifier.weight(1f), singleLine = true,

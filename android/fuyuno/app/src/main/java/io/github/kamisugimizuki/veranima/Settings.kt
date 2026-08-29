@@ -121,6 +121,7 @@ fun SettingsScreen(onBack: () -> Unit) {
             CommitRow("API Key（当前 ${f.getString("llm_api_key")}）", "", true) { set("llm_api_key", it) }
             CommitRow("Base URL", f.getString("llm_base_url")) { set("llm_base_url", it) }
             CommitRow("模型名", f.getString("llm_model")) { set("llm_model", it) }
+            CommitRow("视觉模型名（发图时用；留空=不支持发图）", f.getString("llm_vision_model")) { set("llm_vision_model", it) }
 
             Spacer(Modifier.height(16.dp))
             Text("Embedding（记忆召回的语义向量，安卓走远程 API，必填）",

@@ -21,6 +21,7 @@ class _FakeTransport:
         return False
 
     def post(self, *args, **kwargs):
+        self.last_payload = kwargs.get("json") or {}
         req = httpx.Request("POST", "https://api.example.com/v1/chat/completions")
         resp = httpx.Response(self._status, text=self._text, request=req)
         if self._status >= 400:
@@ -35,6 +36,47 @@ def client():
 
 def _stub_http(monkeypatch, status: int, text: str) -> None:
     monkeypatch.setattr(httpx, "Client", lambda **kw: _FakeTransport(status, text))
+
+
+def _stub_http_capture(monkeypatch, captured: dict) -> None:
+    """200 响应 + 记录请求 payload（验 model 字段用）。"""
+    class T:
+        def __enter__(self): return self
+        def __exit__(self, *exc): return False
+        def post(self, *a, **kw):
+            captured.update(kw.get("json") or {})
+            req = httpx.Request("POST", "https://api.example.com/v1/chat/completions")
+            return httpx.Response(200, json={"choices": [{"message": {"content": "ok"},
+                                                          "finish_reason": "stop"}]}, request=req)
+    monkeypatch.setattr(httpx, "Client", lambda **kw: T())
+
+
+def test_vision_model_switch_only_for_image_messages():
+    cfg = {"base_url": "https://api.example.com/v1", "model": "flash",
+           "vision_model": "flash-vision-exp"}
+    c = LLMClient(cfg)
+    assert c._model_for([{"role": "user", "content": "hi"}]) == "flash"
+    assert c._model_for([{"role": "user", "content": [
+        {"type": "text", "text": "看"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,x"}}]}]) == "flash-vision-exp"
+    # 未配置 vision_model → 永不切换
+    plain = LLMClient(cfg | {"vision_model": ""})
+    assert plain._model_for([{"role": "user", "content": [
+        {"type": "image_url", "image_url": {"url": "x"}}]}]) == "flash"
+
+
+def test_vision_model_reaches_request_payload(monkeypatch):
+    cap: dict = {}
+    _stub_http_capture(monkeypatch, cap)
+    c = LLMClient({"base_url": "https://api.example.com/v1", "model": "flash",
+                   "vision_model": "flash-vision-exp"})
+    c.chat([{"role": "user", "content": [
+        {"type": "text", "text": "这是什么"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}}]}])
+    assert cap["model"] == "flash-vision-exp"
+    cap2: dict = {}
+    _stub_http_capture(monkeypatch, cap2)
+    c.chat([{"role": "user", "content": "纯文本"}])
+    assert cap2["model"] == "flash"
 
 
 def test_400_jinja_template_error_is_llm_error(client, monkeypatch):

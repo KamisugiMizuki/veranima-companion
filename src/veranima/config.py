@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[2]
 
-LLM_PROFILE_FIELDS = ("base_url", "model", "temperature", "max_tokens", "api_key", "timeout", "timeout_retries")
+LLM_PROFILE_FIELDS = ("base_url", "model", "vision_model", "temperature", "max_tokens", "api_key", "timeout", "timeout_retries")
 _LLM_DEFAULTS = {
     "base_url": "",
     "model": "qwen3:8b",
@@ -92,6 +92,7 @@ def _coerce_profile(raw: dict | None, *, name: str = "") -> dict:
     profile.update({
         "base_url": str(raw.get("base_url") or "").strip(),
         "model": str(raw.get("model") or _LLM_DEFAULTS["model"]).strip(),
+        "vision_model": str(raw.get("vision_model") or "").strip(),
         "temperature": float(raw.get("temperature", _LLM_DEFAULTS["temperature"])),
         "max_tokens": int(raw.get("max_tokens", _LLM_DEFAULTS["max_tokens"])),
         "api_key": str(raw.get("api_key") or ""),

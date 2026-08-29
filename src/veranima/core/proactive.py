@@ -179,3 +179,79 @@ class OccasionChecker:
         if "生日" in kind:
             return f"今天是你的生日呀。{name}不怎么会挑礼物，但想跟你说：谢谢你来到这个世界。"
         return f"{kind}。{name}记得今天，想先跟你说一声。"
+class OfflineThinkTimer:
+    """8.7.4 离线思考定时器：静默 N 分钟后低概率触发（窗口去重）。
+
+    纯判定逻辑（now 注入），便于测试。触发一次后，需再静默满一个窗口
+    才可能再次触发（防止 bot 自说自话刷屏）。
+    """
+
+    def __init__(
+        self,
+        silence_minutes: int = 30,
+        probability: float = 0.3,
+        max_per_day: int = 2,
+        growth_factor: float = 0.08,
+        max_probability: float = 0.95,
+        rand: random.Random | None = None,
+    ):
+        self.silence_minutes = max(1, int(silence_minutes))
+        self.probability = max(0.0, min(1.0, probability))  # 当前概率（miss 后增长）
+        self._base_probability = self.probability           # 基础概率（发送后重置回）
+        self.growth_factor = max(0.0, min(1.0, growth_factor))
+        self.max_probability = max(0.0, min(1.0, max_probability))
+        self.max_per_day = max(0, int(max_per_day))  # 0 = 不限
+        self._rand = rand or random.Random()
+        self._last_check_at: float | None = None  # 上次掷骰时间（窗口内只掷一次）
+        self._day: str | None = None         # 当前计数日（YYYY-MM-DD）
+        self._day_count: int = 0             # 当日已触发次数
+
+    def due(self, now: float, last_activity: float | None) -> bool:
+        """静默超过 N 分钟且本窗口未触发 → 掷骰决定是否触发。
+
+        每个静默窗口只掷一次骰（`_last_check_at` 窗口去重），
+        否则 60s tick 会在窗口内掷 30 次骰、概率闸门形同虚设
+        （2026-08-04 修复：0.3 概率实际 ≈100% 每 30 分钟必发）。
+
+        渴望度积累（借鉴 revive-companion 的 PoissonEngine）：
+        掷骰未命中 → 概率 +growth_factor（"想念"随时间积累）；
+        命中 → 概率重置回基础值（"想念"得到满足）。
+        概率为 0 时视为关闭（永不触发，也不增长）。
+
+        每日上限：同一天触发次数达到 max_per_day 后不再触发
+        （2026-08 修复：防止用户入睡后整夜反复轰炸）。
+        """
+        if last_activity is None:
+            return False
+        if now - last_activity < self.silence_minutes * 60:
+            return False
+        # 窗口内只判定一次（无论是否触发，满一个窗口才重新掷骰）
+        if self._last_check_at is not None and now - self._last_check_at < self.silence_minutes * 60:
+            return False
+        self._last_check_at = now
+        if self.max_per_day > 0:
+            day = self._day_of(now)
+            if day != self._day:
+                self._day = day
+                self._day_count = 0
+            if self._day_count >= self.max_per_day:
+                return False  # 当日额度已用完
+        if self._rand.random() >= self.probability:
+            self._grow()  # miss → 渴望度积累
+            return False
+        # 命中：概率重置（发送后"想念满足"）
+        self.probability = self._base_probability
+        if self.max_per_day > 0:
+            self._day_count += 1
+        return True
+
+    def _grow(self) -> None:
+        """渴望度积累：未命中时概率增长，封顶 max_probability。"""
+        if self.probability <= 0:
+            return  # 0 = 关闭（永不触发）
+        self.probability = min(self.max_probability, self.probability + self.growth_factor)
+
+    @staticmethod
+    def _day_of(now: float) -> str:
+        import datetime
+        return datetime.datetime.fromtimestamp(now).strftime("%Y-%m-%d")
