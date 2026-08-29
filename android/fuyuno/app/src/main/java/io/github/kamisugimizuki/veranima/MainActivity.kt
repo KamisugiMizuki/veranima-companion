@@ -6,9 +6,11 @@ import android.provider.Settings as AndSettings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
@@ -60,7 +62,7 @@ class MainActivity : ComponentActivity() {
         androidx.core.content.ContextCompat.startForegroundService(
             this, Intent(this, CompanionService::class.java))
         setContent {
-            MaterialTheme {
+            VeranimaTheme {
                 val msgs = remember { mutableStateListOf<Msg>() }
                 val status = remember { mutableStateOf("启动核心…") }
                 val input = remember { mutableStateOf("") }
@@ -140,26 +142,36 @@ class MainActivity : ComponentActivity() {
                         busy.value = false
                     }
                 }
-                Column(Modifier.fillMaxSize().padding(12.dp)) {
-                    Text(status.value, style = MaterialTheme.typography.bodySmall)
+                Column(Modifier.fillMaxSize().background(Canvas).padding(12.dp)) {
+                    Text(status.value, style = MaterialTheme.typography.bodySmall,
+                        color = MutedSoft)
                     if (showSettings.value) {
                         SettingsScreen(onBack = { showSettings.value = false })
                         return@Column
                     }
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        TextButton(onClick = { showSettings.value = true }) { Text("设置") }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically) {
+                        // 显示衬线 + 负字距（设计稿：serif 是品牌声音，不 bold）
+                        Text("駒川 冬乃", style = MaterialTheme.typography.headlineSmall)
+                        TextButton(onClick = { showSettings.value = true }) { Text("设置", color = Muted) }
                     }
                     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
                     LaunchedEffect(msgs.size) { if (msgs.isNotEmpty()) listState.animateScrollToItem(msgs.size - 1) }
-                    LazyColumn(Modifier.weight(1f), state = listState) {
+                    LazyColumn(Modifier.weight(1f).padding(vertical = 8.dp), state = listState) {
                         items(msgs) { m ->
                             Box(if (m.me) Modifier.fillMaxWidth() else Modifier,
                                 contentAlignment = if (m.me) Alignment.CenterEnd else Alignment.CenterStart) {
-                                Surface(tonalElevation = 2.dp, shape = MaterialTheme.shapes.medium,
-                                        modifier = Modifier.padding(vertical = 3.dp).widthIn(max = 300.dp)) {
-                                    Column(Modifier.padding(10.dp)) {
+                                // 我=深色面板（surface-dark 上的奶油字），她=奶油卡片（surface-card 色块即层级，无阴影）
+                                Surface(color = if (m.me) SurfaceDark else SurfaceCard,
+                                        contentColor = if (m.me) OnDark else Ink,
+                                        shape = RoundedCornerShape(
+                                            topStart = 12.dp, topEnd = 12.dp,
+                                            bottomStart = if (m.me) 12.dp else 4.dp,
+                                            bottomEnd = if (m.me) 4.dp else 12.dp),
+                                        modifier = Modifier.padding(vertical = 4.dp).widthIn(max = 320.dp)) {
+                                    Column(Modifier.padding(12.dp)) {
                                         m.images.forEach { p -> ImageThumb(p) }
-                                        if (m.text.isNotEmpty()) Text(m.text)
+                                        if (m.text.isNotEmpty()) Text(m.text, style = MaterialTheme.typography.bodyMedium)
                                     }
                                 }
                             }
@@ -172,16 +184,24 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        TextButton(onClick = { pickImages.launch("image/*") }) { Text("📎") }
+                        IconButton(onClick = { pickImages.launch("image/*") }) {
+                            Text("📎", fontSize = MaterialTheme.typography.bodyLarge.fontSize)
+                        }
                         OutlinedTextField(
                             input.value, { input.value = it },
                             Modifier.weight(1f), singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Coral,
+                                unfocusedBorderColor = Hairline,
+                                cursorColor = Coral),
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                             keyboardActions = KeyboardActions(onSend = { send() })
                         )
                         Spacer(Modifier.width(8.dp))
-                        if (busy.value) CircularProgressIndicator(Modifier.size(28.dp))
-                        else Button(onClick = { send() }) { Text("发送") }
+                        if (busy.value) CircularProgressIndicator(Modifier.size(28.dp), color = Coral)
+                        else Button(onClick = { send() },
+                                colors = ButtonDefaults.buttonColors(Coral),
+                                shape = MaterialTheme.shapes.small) { Text("发送") }
                     }
                 }
             }
