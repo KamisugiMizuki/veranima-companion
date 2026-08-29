@@ -315,6 +315,20 @@ def role_import() -> str:
         return json.dumps({"ok": False, "error": str(e)})
 
 
+def history(limit: int = 80) -> str:
+    """最近 N 条对话（id 升序）。主动消息核心已落库（record_proactive_message），
+    这里一起带出——聊天 UI 以库为准，无需单独通道。"""
+    agent = getattr(boot, "agent", None)
+    if agent is None:
+        return json.dumps({"ok": False, "messages": []})
+    try:
+        rows = agent.memory.recent_messages(limit=int(limit))
+        out = [{"id": int(r["id"]), "me": r["role"] == "user", "text": r["content"]} for r in rows]
+        return json.dumps({"ok": True, "messages": out}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e), "messages": []})
+
+
 def chat(text: str) -> str:
     """一轮对话（同步阻塞——真 UI 阶段换协程+回调）。"""
     agent = getattr(boot, "agent", None)

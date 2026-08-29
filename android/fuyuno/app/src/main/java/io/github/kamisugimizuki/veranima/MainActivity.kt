@@ -47,11 +47,36 @@ class MainActivity : ComponentActivity() {
                 val scope = rememberCoroutineScope()
                 val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
 
+                // 聊天区以数据库为准（主动消息核心已落库），启动/回前台/收 reply 后刷新
+                val loadHistory = fun() {
+                    scope.launch {
+                        val o = org.json.JSONObject(
+                            withContext(Dispatchers.IO) { bridge.callAttr("history").toString() })
+                        if (o.optBoolean("ok")) {
+                            val arr = o.getJSONArray("messages")
+                            msgs.clear()
+                            for (i in 0 until arr.length()) {
+                                val m = arr.getJSONObject(i)
+                                msgs.add(Msg(m.getBoolean("me"), m.getString("text")))
+                            }
+                        }
+                    }
+                }
                 LaunchedEffect(Unit) {
                     val files = applicationContext.filesDir.absolutePath
                     val r = withContext(Dispatchers.IO) { bridge.callAttr("boot", files).toString() }
                     status.value = "boot: $r"
                     withContext(Dispatchers.IO) { bridge.callAttr("start_ticks") }
+                    loadHistory()
+                }
+                // 回前台=拉一次（后台期间产生的主动消息由此进对话流）
+                val leOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+                DisposableEffect(leOwner) {
+                    val obs = androidx.lifecycle.LifecycleEventObserver { _, ev ->
+                        if (ev == androidx.lifecycle.Lifecycle.Event.ON_RESUME) loadHistory()
+                    }
+                    leOwner.lifecycle.addObserver(obs)
+                    onDispose { leOwner.lifecycle.removeObserver(obs) }
                 }
 
                 val send = fun() {

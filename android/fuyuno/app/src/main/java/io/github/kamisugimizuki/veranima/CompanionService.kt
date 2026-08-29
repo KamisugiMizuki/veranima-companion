@@ -27,6 +27,7 @@ class CompanionService : Service() {
         startAsForeground()
         scope.launch {
             while (isActive) {
+                startAsForeground()  // MIUI 可划掉常驻通知：每轮重申，划掉 ≤30s 自动回来
                 try {
                     val bridge = Python.getInstance().getModule("bridge")
                     val r = JSONObject(bridge.callAttr("drain_pending").toString())
@@ -46,10 +47,11 @@ class CompanionService : Service() {
             this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
         val notif: Notification = NotificationCompat.Builder(this, CHANNEL_STATUS)
             .setSmallIcon(R.drawable.ic_stat_veranima)
+            .setColorized(true)
+            .setColor(0xFF7B5EA7.toInt())
             .setLargeIcon(bigIcon())
-            // 安卓政策：前台服务必须挂常驻通知；ongoing 所以划不掉，文案写明用途免误会
             .setContentTitle("冬乃正在运行（保活通知）")
-            .setContentText("用于维持主动发言与记忆后台，无法划除属正常；不用时退出应用即可")
+            .setContentText("用于维持主动发言与记忆后台；划掉会自动回来，退出应用才是真停")
             .setOngoing(true)
             .setContentIntent(pi)
             .build()
@@ -65,6 +67,8 @@ class CompanionService : Service() {
         mgr().notify(System.currentTimeMillis().toInt(),
             NotificationCompat.Builder(this, CHANNEL_PROACTIVE)
                 .setSmallIcon(R.drawable.ic_stat_veranima)
+                .setColorized(true)
+                .setColor(0xFF7B5EA7.toInt())
                 .setLargeIcon(bigIcon())
                 .setContentTitle("驹川冬乃")
                 .setContentText(text)
