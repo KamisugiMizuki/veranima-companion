@@ -46,7 +46,8 @@ class CompanionService : Service() {
         val notif: Notification = NotificationCompat.Builder(this, CHANNEL_STATUS)
             .setSmallIcon(android.R.drawable.sym_call_incoming)
             .setContentTitle("駒川 冬乃")
-            .setContentText("她在")
+            // 安卓政策：前台服务必须挂常驻通知，去不掉；占位压到最低（MIN 通道、空文本、不折叠）
+            .setContentText(" ")
             .setOngoing(true)
             .setContentIntent(pi)
             .build()
@@ -59,7 +60,7 @@ class CompanionService : Service() {
         mgr().notify(System.currentTimeMillis().toInt(),
             NotificationCompat.Builder(this, CHANNEL_PROACTIVE)
                 .setSmallIcon(android.R.drawable.sym_call_incoming)
-                .setContentTitle("冬乃")
+                .setContentTitle("驹川冬乃")
                 .setContentText(text)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(text))
                 .setAutoCancel(true)

@@ -154,10 +154,16 @@ def _mem_probe(agent) -> int:
 
 # ---------- 设置页后端（全部读写私有目录 config.yaml，改后重启生效） ----------
 
-_KEY_SLOTS = (  # (设置键, 路径, 提示名)
-    ("llm_api_key", ("llm", "profiles", "default", "api_key"), "LLM (DeepSeek)"),
-    ("embedding_api_key", ("memory", "embedding_api_key"), "Embedding (DashScope)"),
-    ("search_api_key", ("search", "api_key"), "搜索 (Bocha)"),
+# (设置键, 路径, 是否敏感)。敏感=key 打码显示、空值不写；非敏感=原文回显、可清空。
+_CFG_FIELDS = (
+    ("llm_api_key", ("llm", "profiles", "default", "api_key"), True),
+    ("llm_base_url", ("llm", "profiles", "default", "base_url"), False),
+    ("llm_model", ("llm", "profiles", "default", "model"), False),
+    ("embedding_api_key", ("memory", "embedding_api_key"), True),
+    ("embedding_base_url", ("memory", "embedding_base_url"), False),
+    ("embedding_model", ("memory", "embedding_model"), False),
+    ("search_api_key", ("search", "api_key"), True),
+    ("search_base_url", ("search", "base_url"), False),
 )
 
 
@@ -181,21 +187,17 @@ def get_settings() -> str:
     root = Path(getattr(boot, "root", "."))
     try:
         cfg = _load_cfg(root)
-        keys = {}
-        for name, path, hint in _KEY_SLOTS:
+        fields = {}
+        for name, path, secret in _CFG_FIELDS:
             node = cfg
             for p in path:
                 node = (node or {}).get(p) if isinstance(node, dict) else None
-            keys[name] = _mask(node)
-        search = cfg.get("search") or {}
-        proactive = cfg.get("proactive") or {}
+            fields[name] = _mask(node) if secret else str(node or "")
         chars = sorted(p.parent.name for p in root.glob("characters/*/character.json"))
         cur = str(cfg.get("character_card") or "")
         active = Path(cur).parent.name if cur else ""
-        return json.dumps({"ok": True, "keys": keys,
-                           "search_provider": search.get("provider", "searxng"),
-                           "proactive_min_gap": proactive.get("min_gap_minutes", 30),
-                           "proactive_max_per_day": proactive.get("max_per_day", 6),
+        return json.dumps({"ok": True, "fields": fields,
+                           "search_provider": "bocha",
                            "characters": chars, "active_character": active},
                           ensure_ascii=False)
     except Exception as e:
@@ -207,9 +209,9 @@ def set_setting(key: str, value: str) -> str:
     root = Path(getattr(boot, "root", "."))
     try:
         cfg = _load_cfg(root)
-        for name, path, _hint in _KEY_SLOTS:
+        for name, path, secret in _CFG_FIELDS:
             if key == name:
-                if value.strip():
+                if value.strip() or not secret:
                     node = cfg
                     for p in path[:-1]:
                         node = node.setdefault(p, {})
@@ -217,11 +219,7 @@ def set_setting(key: str, value: str) -> str:
                 break
         else:
             if key == "search_provider":
-                cfg.setdefault("search", {})["provider"] = value if value in ("bocha", "searxng") else "bocha"
-            elif key == "proactive_min_gap":
-                cfg.setdefault("proactive", {})["min_gap_minutes"] = max(5, min(720, int(value)))
-            elif key == "proactive_max_per_day":
-                cfg.setdefault("proactive", {})["max_per_day"] = max(0, min(50, int(value)))
+                cfg.setdefault("search", {})["provider"] = "bocha"  # 安卓唯一选项
             elif key == "active_character":
                 card = root / "characters" / value / "character.json"
                 if not card.exists():
@@ -294,7 +292,7 @@ def role_export(role_id: str) -> str:
     root = Path(getattr(boot, "root", "."))
     try:
         from veranima.core.character_archive import export_character
-        out = root / "inbox" / f"role_{role_id}.char"
+        out = root / "inbox" / "role_pending.char"  # 固定名：SAF 回调按约定名拷走
         export_character(root / "characters" / role_id, out,
                          include_portraits=False, include_voice=False)
         return json.dumps({"ok": True, "path": str(out), "bytes": out.stat().st_size})

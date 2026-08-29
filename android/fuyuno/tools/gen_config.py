@@ -36,6 +36,16 @@ def main(root: Path, out: Path):
     mem = dict(a.get("memory") or {})
     mem.pop("db_path", None)
     a["memory"] = mem
+    # 主动发言：安卓端不设人为频率闸门（2026-08-29 用户拍板"随心发言"）。
+    # gate 语义：max_per_day<=0 / min_gap_minutes<=0 = 不限制；quiet_hours 等策略保留。
+    p = dict(a.get("proactive") or {})
+    p["max_per_day"] = 0
+    p["min_gap_minutes"] = 0
+    ch = {k: {**v, "max_per_day": 0, "min_gap_minutes": 0}
+          for k, v in (p.get("channels") or {}).items()}
+    ch["im"] = {"enabled": True, "max_per_day": 0, "min_gap_minutes": 0}
+    p["channels"] = ch
+    a["proactive"] = p
     out.write_text(yaml.safe_dump(a, allow_unicode=True, sort_keys=False), encoding="utf-8")
     print(f"生成 {out}（llm={a['llm'].get('model')} emb={mem.get('embedding_model')} "
           f"search={a['search']['provider']}）")

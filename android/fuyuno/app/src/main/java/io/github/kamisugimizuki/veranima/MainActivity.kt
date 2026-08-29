@@ -45,6 +45,7 @@ class MainActivity : ComponentActivity() {
                 val busy = remember { mutableStateOf(false) }
                 val showSettings = remember { mutableStateOf(false) }
                 val scope = rememberCoroutineScope()
+                val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
 
                 LaunchedEffect(Unit) {
                     val files = applicationContext.filesDir.absolutePath
@@ -57,6 +58,7 @@ class MainActivity : ComponentActivity() {
                     val q = input.value.trim()
                     if (q.isEmpty() || busy.value) return
                     msgs.add(Msg(true, q)); input.value = ""
+                    focusManager.clearFocus()  // 发送后收起键盘，别挡消息
                     busy.value = true
                     scope.launch {
                         val r = withContext(Dispatchers.IO) { bridge.callAttr("chat", q).toString() }
@@ -75,7 +77,9 @@ class MainActivity : ComponentActivity() {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                         TextButton(onClick = { showSettings.value = true }) { Text("设置") }
                     }
-                    LazyColumn(Modifier.weight(1f)) {
+                    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+                    LaunchedEffect(msgs.size) { if (msgs.isNotEmpty()) listState.animateScrollToItem(msgs.size - 1) }
+                    LazyColumn(Modifier.weight(1f), state = listState) {
                         items(msgs) { m ->
                             Box(if (m.me) Modifier.fillMaxWidth() else Modifier,
                                 contentAlignment = if (m.me) Alignment.CenterEnd else Alignment.CenterStart) {

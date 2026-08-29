@@ -6,9 +6,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
     <application
         android:label="駒川 冬乃"
+        android:icon="@mipmap/ic_launcher"
         android:debuggable="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
-        <activity android:name=".MainActivity" android:exported="true">
+        <activity android:name=".MainActivity" android:exported="true" android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>

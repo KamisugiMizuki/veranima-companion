@@ -4,11 +4,13 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -22,7 +24,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
-/** 设置页（spike 级：表单直连 bridge，保存=写 config.yaml，改动后点右上"重启生效"）。 */
+/** 设置页：表单直连 bridge（写 config.yaml，改动后点右上"重启生效"）。
+ *  导入/导出走 SAF 系统文件选择器（GetContent/OpenDocument），不再依赖 inbox 约定。 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(onBack: () -> Unit) {
@@ -32,9 +35,6 @@ fun SettingsScreen(onBack: () -> Unit) {
     val ctx = LocalContext.current
     var s by remember { mutableStateOf<JSONObject?>(null) }
     var dirty by remember { mutableStateOf(false) }
-    var provider by remember { mutableStateOf("bocha") }
-    var minGap by remember { mutableStateOf("30") }
-    var maxDay by remember { mutableStateOf("6") }
     var activeChar by remember { mutableStateOf("") }
     var chars by remember { mutableStateOf(listOf<String>()) }
 
@@ -42,9 +42,6 @@ fun SettingsScreen(onBack: () -> Unit) {
         val o = JSONObject(withContext(Dispatchers.IO) { bridge.callAttr("get_settings").toString() })
         if (!o.optBoolean("ok")) { snackbar.showSnackbar("读取失败: ${o.optString("error")}"); return }
         s = o
-        provider = o.getString("search_provider")
-        minGap = o.getInt("proactive_min_gap").toString()
-        maxDay = o.getInt("proactive_max_per_day").toString()
         activeChar = o.getString("active_character")
         chars = o.getJSONArray("characters").let { a -> (0 until a.length()).map { a.getString(it) } }
     }
@@ -68,6 +65,47 @@ fun SettingsScreen(onBack: () -> Unit) {
         if (o.has("memories")) o.put("detail", "memories=" + o.getInt("memories"))
         report(o, name)
     }
+    // SAF：导出=用户选完目标后，bridge 现场生成 inbox 文件再拷过去（顺序=选→生成→拷贝，无竞态）
+    val cr = ctx.contentResolver
+    var pendingRole by remember { mutableStateOf<String?>(null) }
+    fun copyOut(name: String, uri: android.net.Uri): Long {
+        val src = java.io.File(ctx.filesDir, "inbox/$name")
+        cr.openOutputStream(uri)?.use { out -> src.inputStream().use { inp -> inp.copyTo(out) } }
+        return src.length()
+    }
+    fun stageIn(uri: android.net.Uri, name: String) {
+        val dst = java.io.File(ctx.filesDir, "inbox"); dst.mkdirs()
+        cr.openInputStream(uri)?.use { inp -> dst.resolve(name).outputStream().use { out -> inp.copyTo(out) } }
+    }
+    val exportBackup = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        if (uri != null) scope.launch {
+            val o = JSONObject(withContext(Dispatchers.IO) { bridge.callAttr("backup_export").toString() })
+            if (!o.optBoolean("ok")) { snackbar.showSnackbar("备份生成失败: ${o.optString("error")}"); return@launch }
+            val n = withContext(Dispatchers.IO) { copyOut("backup_out.zip", uri) }
+            snackbar.showSnackbar("记忆备份已导出 ${n / 1024}KB")
+        }
+    }
+    val importBackup = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) scope.launch {
+            withContext(Dispatchers.IO) { stageIn(uri, "backup.zip") }
+            act("backup_import")
+        }
+    }
+    val exportRole = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        if (uri != null) scope.launch {
+            val role = pendingRole ?: return@launch
+            val o = JSONObject(withContext(Dispatchers.IO) { bridge.callAttr("role_export", role).toString() })
+            if (!o.optBoolean("ok")) { snackbar.showSnackbar("角色包生成失败: ${o.optString("error")}"); return@launch }
+            val n = withContext(Dispatchers.IO) { copyOut("role_pending.char", uri) }
+            snackbar.showSnackbar("角色包已导出 ${n / 1024}KB")
+        }
+    }
+    val importRole = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) scope.launch {
+            withContext(Dispatchers.IO) { stageIn(uri, "pending.char") }
+            act("role_import")
+        }
+    }
 
     Scaffold(snackbarHost = { SnackbarHost(snackbar) }, topBar = {
         TopAppBar(title = { Text("设置") },
@@ -77,47 +115,43 @@ fun SettingsScreen(onBack: () -> Unit) {
         Column(Modifier.padding(pad).padding(16.dp).verticalScroll(rememberScrollState())) {
             val st = s
             if (st == null) { Text("读取设置中…"); return@Column }
-            Text("API Keys（输入后按回车保存；留空不动）", style = MaterialTheme.typography.titleSmall)
-            CommitRow("LLM（当前 ${st.getJSONObject("keys").getString("llm_api_key")}）", "", secret = true) {
-                set("llm_api_key", it) }
-            CommitRow("Embedding（当前 ${st.getJSONObject("keys").getString("embedding_api_key")}）", "", secret = true) {
-                set("embedding_api_key", it) }
-            CommitRow("搜索（当前 ${st.getJSONObject("keys").getString("search_api_key")}）", "", secret = true) {
-                set("search_api_key", it) }
+            val f = st.getJSONObject("fields")
+
+            Text("LLM", style = MaterialTheme.typography.titleSmall)
+            CommitRow("API Key（当前 ${f.getString("llm_api_key")}）", "", true) { set("llm_api_key", it) }
+            CommitRow("Base URL", f.getString("llm_base_url")) { set("llm_base_url", it) }
+            CommitRow("模型名", f.getString("llm_model")) { set("llm_model", it) }
 
             Spacer(Modifier.height(16.dp))
-            Text("搜索 provider", style = MaterialTheme.typography.titleSmall)
-            Row {
-                listOf("bocha", "searxng").forEach {
-                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                        RadioButton(selected = provider == it, onClick = { provider = it; set("search_provider", it) })
-                        Text(it, Modifier.padding(end = 16.dp))
-                    }
-                }
-            }
+            Text("Embedding（记忆召回的语义向量，安卓走远程 API，必填）",
+                style = MaterialTheme.typography.titleSmall)
+            CommitRow("API Key（当前 ${f.getString("embedding_api_key")}）", "", true) { set("embedding_api_key", it) }
+            CommitRow("Base URL", f.getString("embedding_base_url")) { set("embedding_base_url", it) }
+            CommitRow("模型名", f.getString("embedding_model")) { set("embedding_model", it) }
 
             Spacer(Modifier.height(16.dp))
-            Text("主动发言", style = MaterialTheme.typography.titleSmall)
-            CommitRow("最小间隔（分钟）", minGap) { minGap = it; set("proactive_min_gap", it) }
-            CommitRow("每日上限（条）", maxDay) { maxDay = it; set("proactive_max_per_day", it) }
+            Text("联网搜索（博查 Bocha，安卓唯一后端）", style = MaterialTheme.typography.titleSmall)
+            CommitRow("API Key（当前 ${f.getString("search_api_key")}）", "", true) { set("search_api_key", it) }
+            CommitRow("Base URL", f.getString("search_base_url")) { set("search_base_url", it) }
+
             Spacer(Modifier.height(16.dp))
-            Text("角色（点名字切换；导出=轻量 .char 进 inbox）", style = MaterialTheme.typography.titleSmall)
+            Text("角色（点名字切换；导出=轻量 .char 不含立绘语音）", style = MaterialTheme.typography.titleSmall)
             chars.forEach { c ->
                 Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                     RadioButton(selected = activeChar == c, onClick = { activeChar = c; set("active_character", c) })
                     Text(c, Modifier.padding(end = 8.dp))
-                    TextButton(onClick = { act("role_export", c) }) { Text("导出") }
+                    TextButton(onClick = { pendingRole = c; exportRole.launch("veranima-role-$c.char") }) { Text("导出…") }
                 }
             }
-            TextButton(onClick = { act("role_import") }) { Text("导入 inbox/*.char") }
+            TextButton(onClick = { importRole.launch("*/*") }) { Text("导入角色包（.char）") }
 
             Spacer(Modifier.height(16.dp))
-            Text("共享记忆备份（adb: push backup.zip 进 inbox 再导入；导出后 pull backup_out.zip）",
+            Text("共享记忆备份（导出=全部角色的共同记忆 zip；导入=全量覆盖）",
                 style = MaterialTheme.typography.titleSmall)
             Row {
-                Button(onClick = { act("backup_export") }) { Text("导出") }
+                Button(onClick = { exportBackup.launch("veranima-backup.zip") }) { Text("导出…") }
                 Spacer(Modifier.width(12.dp))
-                Button(onClick = { act("backup_import") }) { Text("导入") }
+                Button(onClick = { importBackup.launch("application/zip") }) { Text("导入…") }
             }
             Spacer(Modifier.height(16.dp))
             TextButton(onClick = { openBatterySettings(ctx) }) { Text("电池优化白名单") }

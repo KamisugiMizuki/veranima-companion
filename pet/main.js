@@ -651,6 +651,7 @@ function openSettingsWindow() {
   settingsWin = new BrowserWindow({
     width: 600, height: 800,
     title: 'Veranima 设置',
+    icon: path.join(__dirname, 'assets', 'icon.ico'),
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -1232,6 +1233,7 @@ function openChatWindow() {
   chatWin = new BrowserWindow({
     width: 420, height: 640, minWidth: 360, minHeight: 480,
     title: 'Veranima 聊天',
+    icon: path.join(__dirname, 'assets', 'icon.ico'),
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
