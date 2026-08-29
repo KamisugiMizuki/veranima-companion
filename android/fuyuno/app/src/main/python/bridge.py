@@ -474,6 +474,9 @@ def memories_list(layer: str = "", category: str = "", limit: int = 200) -> str:
                 entries.extend(agent.memory.list_layer(lyr, limit=int(limit), include_superseded=False))
         if category:
             entries = [e for e in entries if (e.category or "未分类") == category]
+        # 排除 tension 事件噪音（「用户认真回应了直接问题」类，2026-08-30 用户裁决
+        # 默认不显示；数据保留，删除入口=记忆库删条目后此类不再重新提取）
+        entries = [e for e in entries if ((e.meta or {}).get("kind") or "") != "relational_tension_event"]
         # 全量合并按 updated_at 倒序（最新在前）
         entries.sort(key=lambda e: e.updated_at or "", reverse=True)
         out = [{"id": e.id, "layer": e.layer, "category": e.category or "未分类",

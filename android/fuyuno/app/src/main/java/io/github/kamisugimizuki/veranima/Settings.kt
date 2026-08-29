@@ -132,21 +132,45 @@ fun SettingsScreen(onBack: () -> Unit) {
             val f = st.getJSONObject("fields")
 
             SectionCard("LLM") {
-                CommitRow("API Key（当前 ${f.getString("llm_api_key")}）", "", true) { set("llm_api_key", it) }
-                CommitRow("Base URL", f.getString("llm_base_url")) { set("llm_base_url", it) }
-                CommitRow("模型名", f.getString("llm_model")) { set("llm_model", it) }
-                CommitRow("视觉模型名（发图时用；留空=不支持发图）", f.getString("llm_vision_model")) { set("llm_vision_model", it) }
+                val k1 = remember { mutableStateOf("") }
+                val k2 = remember { mutableStateOf(f.getString("llm_base_url")) }
+                val k3 = remember { mutableStateOf(f.getString("llm_model")) }
+                val k4 = remember { mutableStateOf(f.getString("llm_vision_model")) }
+                CommitRow("API Key（当前 ${f.getString("llm_api_key")}；留空保存=保持不变）", "", true, k1)
+                CommitRow("Base URL", f.getString("llm_base_url"), false, k2)
+                CommitRow("模型名", f.getString("llm_model"), false, k3)
+                CommitRow("视觉模型名（发图时用；留空=不支持发图）", f.getString("llm_vision_model"), false, k4)
+                SaveButton("保存 LLM 配置") {
+                    set("llm_api_key", k1.value)
+                    set("llm_base_url", k2.value)
+                    set("llm_model", k3.value)
+                    set("llm_vision_model", k4.value)
+                }
             }
 
             SectionCard("Embedding（记忆召回的语义向量，安卓走远程 API，必填）") {
-                CommitRow("API Key（当前 ${f.getString("embedding_api_key")}）", "", true) { set("embedding_api_key", it) }
-                CommitRow("Base URL", f.getString("embedding_base_url")) { set("embedding_base_url", it) }
-                CommitRow("模型名", f.getString("embedding_model")) { set("embedding_model", it) }
+                val k1 = remember { mutableStateOf("") }
+                val k2 = remember { mutableStateOf(f.getString("embedding_base_url")) }
+                val k3 = remember { mutableStateOf(f.getString("embedding_model")) }
+                CommitRow("API Key（当前 ${f.getString("embedding_api_key")}；留空保存=保持不变）", "", true, k1)
+                CommitRow("Base URL", f.getString("embedding_base_url"), false, k2)
+                CommitRow("模型名", f.getString("embedding_model"), false, k3)
+                SaveButton("保存 Embedding 配置") {
+                    set("embedding_api_key", k1.value)
+                    set("embedding_base_url", k2.value)
+                    set("embedding_model", k3.value)
+                }
             }
 
             SectionCard("联网搜索（博查 Bocha，安卓唯一后端）") {
-                CommitRow("API Key（当前 ${f.getString("search_api_key")}）", "", true) { set("search_api_key", it) }
-                CommitRow("Base URL", f.getString("search_base_url")) { set("search_base_url", it) }
+                val k1 = remember { mutableStateOf("") }
+                val k2 = remember { mutableStateOf(f.getString("search_base_url")) }
+                CommitRow("API Key（当前 ${f.getString("search_api_key")}；留空保存=保持不变）", "", true, k1)
+                CommitRow("Base URL", f.getString("search_base_url"), false, k2)
+                SaveButton("保存搜索配置") {
+                    set("search_api_key", k1.value)
+                    set("search_base_url", k2.value)
+                }
             }
 
             SectionCard("角色（点名字切换；导出=轻量 .char 不含立绘语音）") {
@@ -173,9 +197,10 @@ fun SettingsScreen(onBack: () -> Unit) {
             // ---- DESIGN §11-A 性格成长树（只读：关系七维+阶段 / 风格四维 / 技能点 / 承诺） ----
             SectionCard("性格成长（关系阶段 / 风格画像 / 学会的规矩）") {
                 var g by remember { mutableStateOf<JSONObject?>(null) }
-                LaunchedEffect(Unit) {
+                suspend fun loadGrowth() {
                     g = JSONObject(withContext(Dispatchers.IO) { bridge.callAttr("growth_report").toString() })
                 }
+                LaunchedEffect(Unit) { loadGrowth() }
                 val gd = g
                 if (gd == null || !gd.optBoolean("ok")) {
                     Text("读取中…", style = MaterialTheme.typography.bodySmall, color = Muted)
@@ -214,9 +239,19 @@ fun SettingsScreen(onBack: () -> Unit) {
                     val skillN = if (skillShowAll) skills.length() else minOf(skills.length(), 3)
                     for (i in 0 until skillN) {
                         val sk = skills.getJSONObject(i)
-                        Text("· ${sk.optString("kind")}：${sk.optString("content")}",
-                            style = MaterialTheme.typography.labelSmall, color = MutedSoft,
-                            maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
+                            Text("· ${sk.optString("kind")}：${sk.optString("content")}",
+                                style = MaterialTheme.typography.labelSmall, color = MutedSoft,
+                                modifier = Modifier.weight(1f))  // 自动换行（不截断）
+                            TextButton(onClick = {
+                                scope.launch {
+                                    val r = JSONObject(withContext(Dispatchers.IO) {
+                                        bridge.callAttr("memories_erase", sk.getInt("id")).toString() })
+                                    report(r, "删除规矩")
+                                    loadGrowth()
+                                }
+                            }) { Text("删除", color = Coral) }
+                        }
                     }
                     if (skills.length() > 3) {
                         TextButton(onClick = { skillShowAll = !skillShowAll }, modifier = Modifier.padding(top = 2.dp)) {
@@ -326,17 +361,23 @@ private fun SectionCard(title: String, content: @Composable ColumnScope.() -> Un
 }
 
 @Composable
-private fun CommitRow(label: String, initial: String, secret: Boolean = false, onCommit: (String) -> Unit) {
-    var value by remember(initial) { mutableStateOf(initial) }
+private fun CommitRow(label: String, initial: String, secret: Boolean, state: androidx.compose.runtime.MutableState<String>) {
     Column {
         Text(label, style = MaterialTheme.typography.bodySmall)
         OutlinedTextField(
-            value, { value = it }, Modifier.fillMaxWidth(), singleLine = true,
+            state.value, { state.value = it }, Modifier.fillMaxWidth(), singleLine = true,
             visualTransformation = if (secret) PasswordVisualTransformation()
                                    else androidx.compose.ui.text.input.VisualTransformation.None,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-            keyboardActions = KeyboardActions(onDone = { onCommit(value.trim()) }),
         )
+    }
+}
+
+@Composable
+private fun SaveButton(label: String, onClick: () -> Unit) {
+    Button(onClick = onClick, colors = ButtonDefaults.buttonColors(Coral),
+        shape = MaterialTheme.shapes.small, modifier = Modifier.padding(top = 8.dp)) {
+        Text(label, style = MaterialTheme.typography.labelMedium)
     }
 }
 
