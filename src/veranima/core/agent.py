@@ -862,6 +862,16 @@ class Agent:
         self.state.tick(self.config.get("state", {}).get("energy_decay_per_minute", 0.02))
         self.state.on_user_message(recover_per_message=self.config.get("state", {}).get("energy_recover_per_message", 3.0))
         self.tension.decay(now=datetime.datetime.now(datetime.timezone.utc))
+        # 用户来消息 → 闭合最近未回期待（responded/replied 幂等，QQ adapter 重复执行无害）
+        try:
+            fb = self.memory.recent_proactive_feedback(limit=3)
+            pending = [f for f in fb if not f["responded"]]
+            if pending:
+                src = pending[-1]["source"]
+                self.memory.record_proactive_feedback(source=src, channel=pending[-1].get("channel") or "", responded=True)
+                self.gate.note_responded(src, channel=pending[-1].get("channel") or "")
+        except Exception as e:
+            logger.debug("close expectation on reply failed: %s", e)
 
         # 1.5 R4 场景锁：用户消息进来时更新场景（进入/退出 busy/away）
         scene = self.scene_lock.note(user_text)
@@ -1822,8 +1832,10 @@ class Agent:
         lines = [f"- {e.content}（来源消息：{', '.join(map(str, (e.meta or {}).get('source_message_ids') or []))}）"
                  for e in episodes[:10]]
         task = (
-            f"以下是用户近几天的情节片段，请整理成一段客观概括（不超过 80 字），只输出 JSON："
-            f'{{"content":"概括"}}。\n{chr(10).join(lines)}'
+            f"以下是用户近几天的情节片段，请整理成一段客观概括（不超过 80 字），"
+            "如果从中能看出用户的行为规律（深夜才来发消息、反复回到同一话题、"
+            "提到某事时情绪明显变化），在概括末尾用一句点出（例：' ta 好像总在深夜聊游戏'）；"
+            f"看不出规律就不要编。只输出 JSON：{{\"content\":\"概括\"}}。\n{chr(10).join(lines)}"
         )
         try:
             # 与 _short_task 相同的 system 锚定，但保留原始输出（JSON 协议，
@@ -1959,6 +1971,11 @@ class Agent:
         if not (persist is False) and msgs:
             for msg in msgs:
                 self.record_proactive_message(msg, channel="qq")
+                # 问句记期待（追问闭环的燃料；QQ 路径走自己的 _record_qq_expectation）
+                try:
+                    self.record_proactive_expectation(msg, source="ritual", channel="qq")
+                except Exception as e:
+                    logger.debug("record expectation failed: %s", e)
         if msgs and commit:
             self.gate.commit(cand)
         return msgs
@@ -1967,6 +1984,100 @@ class Agent:
         """发送成功后写入主动 assistant 消息，避免发送失败污染历史。"""
         self.memory.store_message("assistant", text, self.state.energy, self.state.mood, channel=channel)
         self._append_history_message("assistant", text)
+
+    def record_proactive_expectation(self, text: str, *, source: str,
+                                     channel: str = "im", candidate_id: str = "") -> None:
+        """主动消息含直接问句 → 记一条待回复期待（过期由 followup_message 消费）。"""
+        from .tension_events import extract_direct_question
+        import datetime
+        question = extract_direct_question(text or "")
+        if not question:
+            return
+        window = 24.0
+        try:
+            window = float(self.tension.UNANSWERED_REPLY_WINDOW_HOURS)
+        except Exception:
+            pass
+        self.memory.record_proactive_feedback(
+            source=source, channel=channel, candidate_id=candidate_id or "proactive",
+            requires_reply=True, direct_question=question,
+            expires_at=(datetime.datetime.now(datetime.timezone.utc)
+                        + datetime.timedelta(hours=window)).isoformat(timespec="seconds"),
+        )
+
+    def followup_message(self, now=None) -> str:
+        """无人应答闭环（design_append §3/§5 最小落地），每轮 tick 调一次：
+
+        1) pending 且过期 → 原子结算 expired + TV（QQ _expire_qq_expectations
+           的 core 等价物，dedupe_key 保证不重复计）；
+        2) expired 未回且没追问过 → 一句 ≤15 字轻追问（'asked' 原子占坑，只一次；
+           追问后再石沉大海即终，不再叠）。返回空串=本轮无事。
+        """
+        import datetime
+        now = now or datetime.datetime.now().astimezone()
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=datetime.timezone.utc)
+        try:
+            rows = self.memory.recent_proactive_feedback(limit=100)
+        except Exception:
+            return ""
+        due = []
+        for row in rows:
+            if (row.get("channel") or "").lower() not in ("im", "qq") or not row.get("requires_reply"):
+                continue
+            if int(row.get("responded") or 0):
+                continue
+            try:
+                expires = datetime.datetime.fromisoformat(str(row.get("expires_at")).replace("Z", "+00:00"))
+            except (TypeError, ValueError):
+                continue
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=datetime.timezone.utc)
+            status = str(row.get("expectation_status"))
+            if status == "pending" and now >= expires:
+                if self.memory.expire_proactive_expectation(row["id"]):
+                    self._apply_tension_event(
+                        event_type="unanswered_proactive", channel=row.get("channel") or "im",
+                        base_delta=10, reason="主动问题在回复窗口内没有得到回应",
+                        dedupe_key=f"proactive-unanswered:{row['id']}",
+                        confidence=1.0, evidence_message_ids=(),
+                        related_candidate_id=row.get("candidate_id") or None,
+                        occurred_at=now,
+                    )
+                status = "expired"
+            if status == "expired" and not row.get("followup_status"):
+                due.append((row, max(0, int((now - expires).total_seconds() // 3600))))
+        if not due:
+            return ""
+        row, overdue_h = due[-1]
+        # 原子占坑：同轮 tick 重复调用不双发（expire_proactive_expectation 同款 CAS）
+        cur = self.memory.con.execute(
+            "UPDATE proactive_feedback SET followup_status='asked' "
+            "WHERE id=? AND (followup_status IS NULL OR followup_status='')",
+            (row["id"],),
+        )
+        self.memory.con.commit()
+        if cur.rowcount != 1:
+            return ""
+        try:
+            task = (
+                f"你在 {row.get('sent_at')} 说过：「{(row.get('direct_question') or '')[:80]}」，"
+                f"已经过了大约 {overdue_h} 小时用户没回应。发一句非常短的追问/试探，"
+                "≤15 字，符合当前心情，别责备别阴阳，像自言自语想起对方那样自然。"
+            )
+            text = self._short_task(task, max_tokens=120) or ""
+        except Exception as e:
+            logger.debug("followup llm failed: %s", e)
+            text = ""
+        if not text:
+            self.memory.con.execute(
+                "UPDATE proactive_feedback SET followup_status='' WHERE id=?", (row["id"],))
+            self.memory.con.commit()
+            return ""
+        self.memory.store_message("assistant", text, self.state.energy, self.state.mood,
+                                  channel=row.get("channel") or "im")
+        self._append_history_message("assistant", text)
+        return text
 
     def heartbeat(self, *, commit: bool = True) -> str:
         """R4 后台心跳（R4_SPEC 1）：对话已闭合 + 静默 → 主动发起破冰。
@@ -1998,9 +2109,13 @@ class Agent:
                 ctx = ("最近的对话：\n" + "\n".join(
                     self._message_context_line(m)[:120] for m in recent[-4:]
                 )) if recent else ""
+                # 翻旧账接线（_dig_old_memory 原为孤儿函数）：给 LLM 一条旧事素材
+                dig = self._dig_old_memory()
+                dig_hint = f"\n（你刚想起一条旧事：{dig}）" if dig else ""
                 task = (
-                    f"{ctx}\n\n你刚在整理聊天记录（离线成长），想跟用户说点什么破冰。"
-                    "自然带出一点整理时的发现（他之前提过的事/你记住的细节），"
+                    f"{ctx}{dig_hint}\n\n你刚在整理聊天记录（离线成长），想跟用户说点什么破冰。"
+                    "自然带出一点整理时的发现（他之前提过的事/你记住的细节；"
+                    "如果记忆里有点到你小习惯的规律，可以用'我注意到你总是…'这样被看穿的语气，一次别超过一点）。"
                     "像平时聊天一样自然，长度随意。不要用「欢迎回来」这类生硬话。"
                 )
                 reply = self._short_task(task, max_tokens=1024)

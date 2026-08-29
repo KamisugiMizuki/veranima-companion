@@ -95,6 +95,12 @@ def _tick_loop(interval: float = 60.0) -> None:
                 if msg:
                     _pending.append(_render(agent, msg))
                     log.info("offline think queued: %s", msg[:60])
+            if not sent:
+                # 无人应答追问（期待过期后一句轻追问；每期待至多一次）
+                fu = agent.followup_message()
+                if fu:
+                    _pending.append(_render(agent, fu))
+                    log.info("followup queued: %s", fu[:60])
             digest = getattr(agent, "maybe_nightly_digest", None)
             if callable(digest):
                 digest()

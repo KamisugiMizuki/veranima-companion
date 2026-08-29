@@ -243,3 +243,62 @@ def test_state_initial_attachment_explicit_zero_respected():
     assert s.attachment == 0.0
     stage, _ = s.relationship_stage()
     assert stage == "初识期"
+
+
+# ---------- 无人应答追问闭环（design_append §3/§5 落地，2026-08-29） ----------
+
+def _make_agent(tmp_path):
+    from veranima.core.agent import Agent
+    from veranima.core.character import CharacterCard
+    from veranima.core.state import AgentState
+    card = CharacterCard(name="小V", description="测试", personality="温柔")
+    return Agent(
+        card=card,
+        memory=MemoryStore(db_path=str(tmp_path / "fu.db"), config={}, provider=FakeEmbed()),
+        llm=FakeLLM(reply="在吗"),
+        state=AgentState(),
+        config={},
+    )
+
+
+def test_proactive_question_records_expectation(tmp_path):
+    """主动消息含直接问句 → 记 pending 期待；纯陈述不记。"""
+    agent = _make_agent(tmp_path)
+    agent.record_proactive_expectation("你今天过得怎么样？", source="ritual", channel="im")
+    agent.record_proactive_expectation("刚看到个好笑的。", source="ritual", channel="im")
+    rows = agent.memory.recent_proactive_feedback(limit=5)
+    assert len(rows) == 1
+    assert rows[0]["requires_reply"] and rows[0]["expectation_status"] == "pending"
+
+
+def test_followup_expires_then_asks_once(tmp_path):
+    """期待过期 → 结算 expired+TV，并只追问一次；再次调用不重复。"""
+    agent = _make_agent(tmp_path)
+    agent.record_proactive_expectation("你今天过得怎么样？", source="ritual", channel="im")
+    row = agent.memory.recent_proactive_feedback(limit=1)[0]
+    past = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=2)).isoformat(timespec="seconds")
+    agent.memory.con.execute("UPDATE proactive_feedback SET expires_at=? WHERE id=?", (past, row["id"]))
+    agent.memory.con.commit()
+    now = datetime.datetime.now(datetime.timezone.utc)
+    text = agent.followup_message(now=now)
+    assert text  # FakeLLM 有输出
+    # recent_messages 正序（最新在末尾）
+    assert agent.memory.recent_messages(limit=50)[-1]["content"] == text
+    assert agent.followup_message(now=now) == ""  # 只一次
+    calls_before = agent.llm.calls
+    assert agent.followup_message(now=now) == ""
+    assert agent.llm.calls == calls_before  # 不再烧 LLM
+
+
+def test_followup_closed_by_user_reply(tmp_path):
+    """追问发出后用户回话 → 期待闭合（responded=1），过期结算不再触发。"""
+    agent = _make_agent(tmp_path)
+    agent.record_proactive_expectation("你今天过得怎么样？", source="ritual", channel="im")
+    row = agent.memory.recent_proactive_feedback(limit=1)[0]
+    past = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=2)).isoformat(timespec="seconds")
+    agent.memory.con.execute("UPDATE proactive_feedback SET expires_at=? WHERE id=?", (past, row["id"]))
+    agent.memory.con.commit()
+    agent.handle("还行", channel="im")  # 用户回话 → 闭合最近未回期待
+    assert agent.followup_message(now=datetime.datetime.now(datetime.timezone.utc)) == ""
+    fb = agent.memory.recent_proactive_feedback(limit=1)[0]
+    assert fb["responded"] == 1

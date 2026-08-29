@@ -193,3 +193,11 @@ GUI 实现以 `docs/GUI_SPEC.md` 为唯一界面契约：主窗突出角色存�
 - [`VIRTUAL_SPACE_SPEC.md`](VIRTUAL_SPACE_SPEC.md)：以有限生活范围、稳定场所池、路线和 CurrentScene 取代“角色永远固定在一个 scenario”；当前为设计稿，尚未实现。
 
 Yuki 运行时卡位于 [`characters/yuki/character.json`](../characters/yuki/character.json)，说明文件 [`characters/yuki/card.md`](../characters/yuki/card.md) 区分公开人设参考、项目原创桌宠延展和明确排除的原作文本/剧透。
+
+## 10. 主动交互增强（2026-08 design_append 裁决，已落码）
+
+- **无人应答追问**：主动消息含直接问句（`extract_direct_question`）→ 记 `proactive_feedback` pending 期待（窗口 `tension.unanswered_reply_window_hours`）；到期原子结算 expired + TV(+10, dedupe)；对 expired 未回期待发一句 ≤15 字轻追问（`followup_status='asked'` 原子占坑，每期待至多一次，追问后再石沉大海即终）；用户任何回话在 `handle` 统一闭合（responded=1 幂等）。消费端：安卓 bridge tick；QQ 侧过期结算由其 `_expire_qq_expectations` 承担，记录端 `_record_qq_expectation` 独立不双写。
+- **被看穿**：prompt 级——夜间 digest 在概括末尾可点一句行为规律（看不出就不编）；heartbeat 破冰可用「我注意到你总是…」语气。不做独立检测子系统。
+- **翻旧账**：`_dig_old_memory` 原为孤儿函数（能力在、消费端断），已接进 heartbeat 素材；独立触发条件（超一周/情绪强烈）暂不做。
+- **默契沉默**：不实现——沉默是现有架构默认态（候选+闸门+掷骰全过才说话），「我还以为你睡着了」是 LLM 拿时间上下文的自然产出。
+- **主动输**：暂缓——「观点分歧 vs 原则冲突」的语义判断错了就是角色崩；tension repair band 只管关系冲突降温。真要口味修正塞一句 prompt 即可。

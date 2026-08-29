@@ -308,6 +308,7 @@ def init_db(db_path: str | Path, dim: int = EMBEDDING_DIM, provider=None) -> sql
             ("direct_question", "TEXT NOT NULL DEFAULT ''"),
             ("expires_at", "TEXT"),
             ("expectation_status", "TEXT NOT NULL DEFAULT 'none'"),
+            ("followup_status", "TEXT"),  # 追问闭环：NULL/''=未追问, 'asked'=已追问一次
         ):
             if name not in feedback_cols:
                 con.execute(f"ALTER TABLE proactive_feedback ADD COLUMN {name} {ddl}")
