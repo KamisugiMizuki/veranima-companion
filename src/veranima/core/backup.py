@@ -166,5 +166,11 @@ def import_backup(root: Path, zip_path: Path, *, embedding_spec: str, embedding_
                             (mid, unit_blob(v)))
             con.commit()
         reembedded = len(rows)
+    # vec0 退役收尾：重铸完成即删虚拟表（老库/带残库一次性清掉，安卓端恒 no-op）
+    try:
+        con.execute("DROP TABLE IF EXISTS memory_vec")
+        con.commit()
+    except sqlite3.Error:
+        pass  # 无扩展环境下虚拟表动不了：留着无害，blob 表才是召回路径
     con.close()
     return {**manifest, "reembedded": reembedded, "stowed": stowed, "memories": mem_n}

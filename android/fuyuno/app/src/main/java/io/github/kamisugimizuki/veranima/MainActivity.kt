@@ -2,6 +2,7 @@ package io.github.kamisugimizuki.veranima
 
 import android.content.Intent
 import android.os.Bundle
+import android.provider.Settings as AndSettings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
@@ -42,6 +43,7 @@ class MainActivity : ComponentActivity() {
                 val status = remember { mutableStateOf("启动核心…") }
                 val input = remember { mutableStateOf("") }
                 val busy = remember { mutableStateOf(false) }
+                val showSettings = remember { mutableStateOf(false) }
                 val scope = rememberCoroutineScope()
 
                 LaunchedEffect(Unit) {
@@ -66,6 +68,13 @@ class MainActivity : ComponentActivity() {
                 }
                 Column(Modifier.fillMaxSize().padding(12.dp)) {
                     Text(status.value, style = MaterialTheme.typography.bodySmall)
+                    if (showSettings.value) {
+                        SettingsScreen(onBack = { showSettings.value = false })
+                        return@Column
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        TextButton(onClick = { showSettings.value = true }) { Text("设置") }
+                    }
                     LazyColumn(Modifier.weight(1f)) {
                         items(msgs) { m ->
                             Box(if (m.me) Modifier.fillMaxWidth() else Modifier,

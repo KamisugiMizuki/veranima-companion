@@ -20,7 +20,7 @@ def _tick_loop(interval: float = 60.0) -> None:
     while True:
         _t.sleep(interval)
         agent = getattr(boot, "agent", None)
-        if agent is None:
+        if agent is None or getattr(boot, "_shutdown", False):
             continue
         try:
             for msg in agent.tick_proactive():
@@ -31,11 +31,12 @@ def _tick_loop(interval: float = 60.0) -> None:
 
 
 def start_ticks() -> str:
-    """boot 后由 Kotlin 调一次：起 daemon tick 线程。"""
+    """boot 后由 Kotlin 调一次：起 daemon tick 线程（固定 60s 检查；发送频率由
+    proactive.min_gap_minutes 闸门控制，那才是设置页暴露的"主动发言频率"）。"""
     if getattr(start_ticks, "_on", False):
         return json.dumps({"ok": True, "already": True})
     import threading
-    threading.Thread(target=_tick_loop, daemon=True).start()
+    threading.Thread(target=_tick_loop, args=(60.0,), daemon=True).start()
     start_ticks._on = True
     return json.dumps({"ok": True})
 
@@ -88,6 +89,7 @@ def boot(files_dir: str) -> str:
 
         cfg = yaml.safe_load((root / "config.yaml").read_text(encoding="utf-8"))
         cfg["root"] = str(root)
+        boot.root = root  # 设置页后端锚点
         # 路径全部锚定到应用私有目录
         cfg.setdefault("memory", {})["db_path"] = str(root / "data" / "veranima.db")
 
@@ -148,6 +150,171 @@ def _mem_probe(agent) -> int:
         return agent.memory.con.execute("SELECT count(*) FROM memories").fetchone()[0]
     except Exception:
         return -1
+
+
+# ---------- 设置页后端（全部读写私有目录 config.yaml，改后重启生效） ----------
+
+_KEY_SLOTS = (  # (设置键, 路径, 提示名)
+    ("llm_api_key", ("llm", "profiles", "default", "api_key"), "LLM (DeepSeek)"),
+    ("embedding_api_key", ("memory", "embedding_api_key"), "Embedding (DashScope)"),
+    ("search_api_key", ("search", "api_key"), "搜索 (Bocha)"),
+)
+
+
+def _load_cfg(root: Path) -> dict:
+    import yaml
+    return yaml.safe_load((root / "config.yaml").read_text(encoding="utf-8"))
+
+
+def _save_cfg(root: Path, cfg: dict) -> None:
+    import yaml
+    with open(root / "config.yaml", "w", encoding="utf-8") as f:
+        yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)
+
+
+def _mask(v: str) -> str:
+    v = str(v or "")
+    return (v[:4] + "…" + v[-4:]) if len(v) > 12 else ("已设置" if v else "")
+
+
+def get_settings() -> str:
+    root = Path(getattr(boot, "root", "."))
+    try:
+        cfg = _load_cfg(root)
+        keys = {}
+        for name, path, hint in _KEY_SLOTS:
+            node = cfg
+            for p in path:
+                node = (node or {}).get(p) if isinstance(node, dict) else None
+            keys[name] = _mask(node)
+        search = cfg.get("search") or {}
+        proactive = cfg.get("proactive") or {}
+        chars = sorted(p.parent.name for p in root.glob("characters/*/character.json"))
+        cur = str(cfg.get("character_card") or "")
+        active = Path(cur).parent.name if cur else ""
+        return json.dumps({"ok": True, "keys": keys,
+                           "search_provider": search.get("provider", "searxng"),
+                           "proactive_min_gap": proactive.get("min_gap_minutes", 30),
+                           "proactive_max_per_day": proactive.get("max_per_day", 6),
+                           "characters": chars, "active_character": active},
+                          ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)})
+
+
+def set_setting(key: str, value: str) -> str:
+    """白名单直写。敏感值：空字符串=不改动（防 UI 打码回显误清空）。"""
+    root = Path(getattr(boot, "root", "."))
+    try:
+        cfg = _load_cfg(root)
+        for name, path, _hint in _KEY_SLOTS:
+            if key == name:
+                if value.strip():
+                    node = cfg
+                    for p in path[:-1]:
+                        node = node.setdefault(p, {})
+                    node[path[-1]] = value.strip()
+                break
+        else:
+            if key == "search_provider":
+                cfg.setdefault("search", {})["provider"] = value if value in ("bocha", "searxng") else "bocha"
+            elif key == "proactive_min_gap":
+                cfg.setdefault("proactive", {})["min_gap_minutes"] = max(5, min(720, int(value)))
+            elif key == "proactive_max_per_day":
+                cfg.setdefault("proactive", {})["max_per_day"] = max(0, min(50, int(value)))
+            elif key == "active_character":
+                card = root / "characters" / value / "character.json"
+                if not card.exists():
+                    raise ValueError(f"角色不存在: {value}")
+                cfg["character_card"] = str(card)
+            else:
+                raise ValueError(f"未知设置键: {key}")
+        _save_cfg(root, cfg)
+        return json.dumps({"ok": True, "restart_required": True})
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)})
+
+
+def backup_export() -> str:
+    """导出共享记忆备份 → inbox/backup_out.zip，adb pull 可取。"""
+    root = Path(getattr(boot, "root", "."))
+    try:
+        agent = getattr(boot, "agent", None)
+        if agent is None:
+            raise RuntimeError("核心未启动")
+        from veranima.core.backup import export_backup
+        cfg = _load_cfg(root)
+        spec = str((cfg.get("memory") or {}).get("embedding_model") or "")
+        out = root / "inbox" / "backup_out.zip"
+        out.parent.mkdir(exist_ok=True)
+        # db 锚点与 boot/app 一致（config 里未必写了 db_path）
+        db = Path(str((cfg.get("memory") or {}).get("db_path") or (root / "data" / "veranima.db")))
+        if not db.is_absolute():
+            db = root / db
+        export_backup(root, db, embedding_spec=spec, out_path=out)
+        return json.dumps({"ok": True, "path": str(out), "bytes": out.stat().st_size})
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)})
+
+
+def backup_import() -> str:
+    """inbox/backup.zip → 全量导入（覆盖旧库留 .old）。完成后需重启。"""
+    root = Path(getattr(boot, "root", "."))
+    try:
+        cfg = _load_cfg(root)
+        inbox = root / "inbox"
+        src = inbox / "backup.zip"
+        if not src.exists():
+            raise RuntimeError("inbox/backup.zip 不存在（adb push 后 cat 进来）")
+        # 先摘掉活核心（关连接），tick 停摆，再动库文件
+        boot._shutdown = True
+        agent = getattr(boot, "agent", None)
+        if agent is not None:
+            try:
+                agent.memory.con.close()
+            except Exception:
+                pass
+            boot.agent = None
+        from veranima.core.backup import import_backup
+        from veranima.memory.embedding import make_provider
+        mem_cfg = cfg.get("memory") or {}
+        prov = make_provider(mem_cfg, cfg.get("llm") or {})
+        spec = (mem_cfg.get("embedding_model") or "").strip()
+        res = import_backup(root, src, embedding_spec=spec, embedding_dim=prov.dim,
+                            embed_fn=prov.embed)
+        src.rename(src.with_suffix(".zip.done"))
+        return json.dumps({"ok": True, "memories": res.get("memories"),
+                           "reembedded": res.get("reembedded"), "restart_required": True},
+                          ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)})
+
+
+def role_export(role_id: str) -> str:
+    root = Path(getattr(boot, "root", "."))
+    try:
+        from veranima.core.character_archive import export_character
+        out = root / "inbox" / f"role_{role_id}.char"
+        export_character(root / "characters" / role_id, out,
+                         include_portraits=False, include_voice=False)
+        return json.dumps({"ok": True, "path": str(out), "bytes": out.stat().st_size})
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)})
+
+
+def role_import() -> str:
+    """inbox/*.char → 解进 characters/（重名加 _2）。返回角色名列表。"""
+    root = Path(getattr(boot, "root", "."))
+    try:
+        from veranima.core.character_archive import import_character
+        imported = []
+        for f in sorted((root / "inbox").glob("*.char")):
+            dest = import_character(f, root / "characters")
+            imported.append(dest.name)
+            f.unlink()
+        return json.dumps({"ok": True, "imported": imported}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)})
 
 
 def chat(text: str) -> str:
