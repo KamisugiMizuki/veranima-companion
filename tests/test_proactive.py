@@ -85,6 +85,13 @@ def test_meal_due_accepts_timezone_aware_clock():
     assert scheduler.due(now=aware, sent_ids=set())
 
 
+def test_meal_due_accepts_timezone_aware_clock():
+    scheduler = MealReminderScheduler()
+    target = scheduler.scheduled_at(datetime.date(2026, 8, 24), "dinner")
+    aware = target.replace(tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
+    assert scheduler.due(now=aware, sent_ids=set())
+
+
 # ---------- 节庆与纪念日 ----------
 
 def test_fixed_holiday():
@@ -183,6 +190,30 @@ def test_tick_proactive_idempotent(agent):
 def test_tick_proactive_no_trigger_off_window(agent):
     """非问候窗口 + 无节日：返回空。"""
     assert agent.tick_proactive(now=datetime.datetime(2026, 8, 3, 15, 0)) == []
+
+
+# ---------- 饭点收编进问候引擎（2026-08 双发修复） ----------
+
+def test_tick_proactive_greeting_absorbs_meal(agent):
+    """午餐锚点落在午问候窗口内 → 只发问候，饭点提醒被吸收，不双发。"""
+    target = MealReminderScheduler().scheduled_at(datetime.date(2026, 8, 4), "lunch")
+    assert 11 <= target.hour < 14  # 锚点必在午问候窗口内
+    agent.memory.store_message("user", "明天面试", 80, "开心")
+    msgs = agent.tick_proactive(now=target)
+    assert len(msgs) == 1
+    fb = agent.memory.recent_proactive_feedback(source="meal", limit=5)
+    assert not fb
+
+
+def test_tick_proactive_meal_fires_outside_greeting_window(agent):
+    """晚餐锚点（17 点，问候窗外）→ 饭点作为独立补位发出并记账去重。"""
+    target = MealReminderScheduler().scheduled_at(datetime.date(2026, 8, 4), "dinner")
+    assert target.hour == 17 and GreetingScheduler().due_greeting(now=target) is None
+    msgs = agent.tick_proactive(now=target)
+    assert len(msgs) == 1
+    fb = agent.memory.recent_proactive_feedback(source="meal", limit=5)
+    assert fb and fb[0]["candidate_id"] == f"meal:2026-08-04:dinner"
+    assert agent.tick_proactive(now=target) == []  # 当日同餐不重发
 
 
 # ---------- 状态：初始依恋度（DESIGN 6 章 2026-08） ----------

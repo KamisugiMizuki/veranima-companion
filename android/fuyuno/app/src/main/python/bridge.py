@@ -51,37 +51,15 @@ def _advance_schedule(agent) -> str:
         return ""
 
 
-def _due_meal(agent, scheduler, now_ts: float) -> str:
-    """三餐提醒（确定性随机锚点±jitter）；发送前过 gate，与 QQ 侧同构。"""
-    import datetime
-    now = datetime.datetime.now().astimezone()
-    feedback = agent.memory.recent_proactive_feedback(source="meal", limit=30)
-    sent_ids = {str(row.get("candidate_id") or "") for row in feedback}
-    due = scheduler.due(now=now, sent_ids=sent_ids)
-    if not due:
-        return ""
-    meal, text, candidate_id = due
-    from veranima.core.ambient import ProactiveCandidate
-    cand = ProactiveCandidate(
-        source="ritual", reason=f"{meal} meal reminder",
-        relevance=1.0, urgency=0.6, intent="remind",
-        context={"calendar_source": "meal", "meal": meal}, channel="im",
-    )
-    if not agent.gate.decide(cand, scene=agent.scene_lock.current(),
-                             now=now.timestamp()).allow:
-        return ""
-    agent.gate.commit(cand)
-    agent.record_proactive_message(text, channel="im")
-    agent.memory.record_proactive_feedback(source="meal", channel="im",
-                                           candidate_id=candidate_id)
-    return text
-
-
 def _tick_loop(interval: float = 60.0) -> None:
     """后台每分钟周期循环，对齐 QQ adapter 的驱动面（2026-08-29 盘点补全）：
-    日程推进公告 → ritual 问候/节庆（tick_proactive）→ 三餐提醒 →
-    离线思考（late_reply 优先 / heartbeat 破冰）→ 夜间 digest（内部日去重）。
-    quiet hours 已退役（睡眠模拟由虚拟日程承担）。消息进 _pending。"""
+    日程推进公告 → ritual 问候/节庆/饭点（tick_proactive，饭点 2026-08 收编进
+    问候引擎）→ 离线思考（late_reply 优先 / heartbeat 破冰）→ 夜间 digest（内部日去重）。
+    quiet hours 已退役（睡眠模拟由虚拟日程承担）。消息进 _pending。
+
+    同轮单发：安卓主动闸门按用户要求归零（随心发言），PC 端靠 min_gap=30
+    天然错峰的 ritual 各路（问候/节庆/三餐/公告）在这里会同轮撞车（2026-08-29
+    实测午饭提醒+中午问候连发两条）——一轮 tick 只放行第一条命中的。"""
     import time as _t
     while True:
         _t.sleep(interval)
@@ -90,6 +68,7 @@ def _tick_loop(interval: float = 60.0) -> None:
             continue
         try:
             now = _t.time()
+            sent = False  # 本轮已放行一条主动
             notice = _advance_schedule(agent)
             if notice:
                 cand = agent.schedule_notice_candidate(notice, "im")
@@ -102,18 +81,15 @@ def _tick_loop(interval: float = 60.0) -> None:
                     agent.gate.commit(cand)
                     agent.record_proactive_message(text, channel="im")
                     _pending.append(_render(agent, text))
+                    sent = True
                     log.info("schedule notice queued: %s", text[:60])
-            for msg in agent.tick_proactive():
-                _pending.append(_render(agent, msg))
-                log.info("proactive queued: %s", msg[:60])
-            meals = getattr(boot, "meals", None)
-            if meals is not None:
-                text = _due_meal(agent, meals, now)
-                if text:
-                    _pending.append(_render(agent, text))
-                    log.info("meal reminder queued: %s", text[:60])
+            if not sent:
+                for msg in agent.tick_proactive():
+                    _pending.append(_render(agent, msg))
+                    sent = True
+                    log.info("proactive queued: %s", msg[:60])
             off = getattr(boot, "offline", None)
-            if off is not None and off.due(now, getattr(boot, "_last_user_activity", None)):
+            if off is not None and not sent and off.due(now, getattr(boot, "_last_user_activity", None)):
                 # late_reply/heartbeat 内部已落库（store_message），不再 record
                 msg = agent.late_reply() or agent.heartbeat()
                 if msg:
@@ -193,10 +169,9 @@ def boot(files_dir: str) -> str:
 
         agent = create_agent(cfg)
         boot.agent = agent
-        # 周期调度器（tick 线程消费）：三餐读 proactive.meal_reminders；
-        # 离线思考用默认参数（静默30min/概率0.3/日上限2），调参需求出现再进配置
-        from veranima.core.proactive import MealReminderScheduler, OfflineThinkTimer
-        boot.meals = MealReminderScheduler((cfg.get("proactive") or {}).get("meal_reminders", {}))
+        # 周期调度器（tick 线程消费）：离线思考用默认参数（静默30min/概率0.3/
+        # 日上限2），调参需求出现再进配置。饭点提醒已收编进 core tick_proactive。
+        from veranima.core.proactive import OfflineThinkTimer
         boot.offline = OfflineThinkTimer()
         boot._done = True
         probe = {
@@ -425,7 +400,17 @@ def history(limit: int = 80) -> str:
         return json.dumps({"ok": False, "messages": []})
     try:
         rows = agent.memory.recent_messages(limit=int(limit))
-        out = [{"id": int(r["id"]), "me": r["role"] == "user", "text": r["content"]} for r in rows]
+        root = Path(getattr(boot, "root", "."))
+        out = []
+        for r in rows:
+            try:
+                att = [str(root / "photos" / n) for n in json.loads(r.get("attachments") or "[]")]
+            except Exception:
+                att = []
+            out.append({"id": int(r["id"]), "me": r["role"] == "user",
+                        # 有附件真图时剥掉 [图片] 占位（占位是给纯文本记忆用的，别渲染出来）
+                        "text": r["content"].replace(" [图片]", "").strip() if att else r["content"],
+                        "images": att})
         return json.dumps({"ok": True, "messages": out}, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"ok": False, "error": str(e), "messages": []})
@@ -437,7 +422,8 @@ def chat(text: str, image_paths: str = "[]") -> str:
     image_paths: JSON 数组字符串，本地图片文件路径（≤4 张）。核心管线
     make_image_payload 校验（类型/大小/炸弹检测），agent.handle 以
     OpenAI 多模态块发给 vision_model（llm.client 按含图自动切模型），
-    历史/记忆落 [图片] 占位。
+    历史/记忆落 [图片] 占位；附件文件名存 filesDir/photos/ 并写进
+    messages.attachments（历史重载渲染用——cacheDir 随时会被系统清）。
     """
     agent = getattr(boot, "agent", None)
     if agent is None:
@@ -447,12 +433,23 @@ def chat(text: str, image_paths: str = "[]") -> str:
     try:
         paths = [str(p) for p in json.loads(image_paths or "[]")][:4]
         images: list[str] = []
+        names: list[str] = []
         if paths:
             from veranima.core.image_payload import make_image_payload
-            for p in paths:
-                raw = Path(p).read_bytes()
-                images.append(make_image_payload(raw, source=p).data_url)
-        res = agent.handle(text, images=images or None, channel="im")
+            photos = Path(getattr(boot, "root", ".")) / "photos"
+            photos.mkdir(exist_ok=True)
+            for pth in paths:
+                raw = Path(pth).read_bytes()
+                payload = make_image_payload(raw, source=pth)
+                images.append(payload.data_url)
+                # 文件名带扩展名（按 content_type 推；历史重载按文件读，扩展名只为人可读）
+                ext = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif",
+                       "image/webp": "webp"}.get(payload.content_type, "bin")
+                name = f"{int(_t.time() * 1000000)}.{ext}"
+                (photos / name).write_bytes(raw)
+                names.append(name)
+        attachments = json.dumps(names, ensure_ascii=False) if names else ""
+        res = agent.handle(text, images=images or None, channel="im", attachments=attachments)
         # 与 QQ 统一出口一致：Reply 对象优先、渲染后才可见（防内部痕迹外漏）
         out = {"ok": True, "reply": _render(agent, res.reply_obj or res.reply), "portrait": res.portrait,
                "energy": round(res.energy, 2)}

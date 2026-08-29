@@ -246,9 +246,12 @@ class Agent:
         self.mirror.load()
         self.promises = PromiseBook(memory)
 
-        # 主动触发（定时问候 + 节庆纪念；CLI 与 QQ adapter 共用 tick_proactive）
+        # 主动触发（定时问候 + 节庆纪念 + 饭点兜底；CLI/QQ/安卓共用 tick_proactive）
         self.greeter = GreetingScheduler()
         self.occasion = OccasionChecker()
+        from .proactive import MealReminderScheduler
+        self.meals = MealReminderScheduler(
+            (self.config.get("proactive") or {}).get("meal_reminders", {}))
 
         # R4 时空沉浸：场景锁 + 通道互斥 + 主动仲裁（最小版，R4_SPEC 1）
         self.scene_lock = SceneLock()
@@ -786,7 +789,8 @@ class Agent:
         self._persist_state()
         return greeting
 
-    def handle(self, user_text: str, images: list[str] | None = None, channel: str = "im") -> TurnResult:
+    def handle(self, user_text: str, images: list[str] | None = None, channel: str = "im",
+               attachments: str = "") -> TurnResult:
         """处理一条用户消息，返回回复。
 
         images: 图片 data URL 列表（如 data:image/png;base64,...），
@@ -835,6 +839,7 @@ class Agent:
                 "user", user_text + (" [图片]" * len(images) if images else ""),
                 self.state.energy, self.state.mood,
                 channel="pet" if channel == "tts" else "qq",
+                attachments=attachments,
             )
             scope = resolved_scope
             self.memory.archive_sleep_message(
@@ -904,7 +909,7 @@ class Agent:
         # 2. 零开销摄入：消息立即入库（FTS5 同步索引）
         user_msg_id = self.memory.store_message(
             "user", store_text, self.state.energy, self.state.mood,
-            channel="pet" if channel == "tts" else "qq",
+            channel="pet" if channel == "tts" else "qq", attachments=attachments,
         )
         self._process_tension_user_message(store_text, channel=channel, message_id=user_msg_id)
         self._capture_user_info_gap(user_text, user_msg_id, channel, resolved_scope)
@@ -1933,6 +1938,24 @@ class Agent:
         if occasion:
             msg = self.occasion.occasion_reaction(occasion, self.card.name)
             msgs.append(msg)
+        # 饭点兜底（2026-08 收编进问候引擎）：仅当本轮问候/节庆都没发时才轮到，
+        # 且 meal.due 内部对问候窗口互斥——「中午好吃过饭了吗」与「到饭点了」不叠发。
+        # 文案走 LLM 口语化（角色口吻），失败回退模板。
+        meal_sent_ids = {
+            str(row.get("candidate_id") or "")
+            for row in self.memory.recent_proactive_feedback(source="meal", limit=30)
+        }
+        # 问候窗口内（早6-10/午11-14/晚18-23）饭点整体让位：锚点 8/12 点天然在
+        # 窗口里 → 实际只有 17 点晚餐作为独立提醒存活。这正是「饭点纳入问候」的效果。
+        in_greeting_slot = self.greeter.slot_at(now) is not None
+        due_meal = None if (msgs or in_greeting_slot) else self.meals.due(now=now, sent_ids=meal_sent_ids)
+        if due_meal:
+            meal_name, meal_text, meal_cid = due_meal
+            meal_msg = self._meal_message(meal_name, meal_text)
+            if meal_msg:
+                msgs.append(meal_msg)
+                self.memory.record_proactive_feedback(
+                    source="meal", channel="qq", candidate_id=meal_cid)
         if not (persist is False) and msgs:
             for msg in msgs:
                 self.record_proactive_message(msg, channel="qq")
@@ -2200,6 +2223,21 @@ class Agent:
         except Exception as e:
             logger.debug("dig old memory failed: %s", e)
             return None
+
+    def _meal_message(self, meal_name: str, fallback: str) -> str:
+        """饭点提醒去模板化（2026-08）：按角色口吻改写；LLM 不可用回退原文案。"""
+        if not (getattr(self.llm, "is_model_loaded", None) is not None and self.llm.is_model_loaded()):
+            return fallback
+        cn = {"breakfast": "早饭", "lunch": "午饭", "dinner": "晚饭"}.get(meal_name, "饭")
+        try:
+            task = (
+                f"到了该吃{cn}的时间点。用你自己的口吻提醒用户去吃饭，一句话，"
+                f"不要说「到饭点了」这种模板话，别解释为什么提醒。"
+            )
+            return self._short_task(task, max_tokens=120) or fallback
+        except Exception as e:
+            logger.debug("meal LLM failed, fallback: %s", e)
+            return fallback
 
     def greeting_message(self, slot: str) -> str:
         """个性化问候（8.7.5）：结合最近记忆；LLM 不可用时回退模板。"""

@@ -1,6 +1,6 @@
 """安卓 bridge tick 的行为级冒烟（2026-08-29 周期功能移植验收）。
 
-只测纯逻辑单元（_due_meal / OfflineThinkTimer 接线面）——tick 线程本身
+只测纯逻辑单元（OfflineThinkTimer 接线面）——tick 线程本身
 不可单测（无限循环），其消费链在 MuMu 实机验收。bridge 顶层 import 仅标准库，
 PC 可直接加载（veranima 段全是函数内延迟 import，正是为 APK/PC 双端可测）。
 """
@@ -58,38 +58,6 @@ class _FakeAgent:
 
     def record_proactive_message(self, text, channel=""):
         self.memory.store_message("assistant", text, 0.7, 0.2, channel=channel)
-
-
-def test_due_meal_sends_when_gate_allows(bridge):
-    """饭点命中 + gate 放行 → 文案返回、消息落库、feedback 记账三联动。"""
-    from veranima.core.proactive import MealReminderScheduler
-
-    sched = MealReminderScheduler({
-        "enabled": True,
-        "breakfast": {"hour": 8, "text": "早饭。"},
-    })
-    gate = _Gate(allow=True)
-    agent = _FakeAgent(gate)
-    # 直接构造 scheduler.due 命中（避开时间随机性）：
-    sched.due = lambda now, sent_ids: ("breakfast", "早饭。", "b1")
-    text = bridge._due_meal(agent, sched, time.time())
-    assert text == "早饭。"
-    assert agent.memory.messages == [("assistant", "早饭。", "im")]
-    assert gate.committed and len(gate.decided) == 1
-    assert agent.memory.fb["candidate_id"] == "b1"
-
-
-def test_due_meal_gate_deny_no_side_effects(bridge):
-    """gate 拒绝 → 空串返回且零落库/零记账（静默拒绝也要可断言）。"""
-    from veranima.core.proactive import MealReminderScheduler
-
-    sched = MealReminderScheduler({"enabled": True})
-    sched.due = lambda now, sent_ids: ("lunch", "午饭。", "l1")
-    gate = _Gate(allow=False)
-    agent = _FakeAgent(gate)
-    assert bridge._due_meal(agent, sched, time.time()) == ""
-    assert agent.memory.messages == []
-    assert not gate.committed
 
 
 def test_offline_think_timer_window_dedup(bridge):

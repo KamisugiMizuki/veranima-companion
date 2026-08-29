@@ -49,18 +49,26 @@ class GreetingScheduler:
 
     greeted: set[str] = field(default_factory=set)
 
-    def due_greeting(self, now=None) -> str | None:
-        """返回当前应发的问候类型（morning/noon/evening）或 None（已问候过/非窗口）。"""
+    @staticmethod
+    def slot_at(now=None) -> str | None:
+        """当前时刻落在哪个问候窗口（不判当日是否已发过）。"""
         import datetime
         now = now or datetime.datetime.now()
         h = now.hour
         if 6 <= h < 10:
-            slot = "morning"
-        elif 11 <= h < 14:
-            slot = "noon"
-        elif 18 <= h < 23:
-            slot = "evening"
-        else:
+            return "morning"
+        if 11 <= h < 14:
+            return "noon"
+        if 18 <= h < 23:
+            return "evening"
+        return None
+
+    def due_greeting(self, now=None) -> str | None:
+        """返回当前应发的问候类型（morning/noon/evening）或 None（已问候过/非窗口）。"""
+        import datetime
+        now = now or datetime.datetime.now()
+        slot = self.slot_at(now)
+        if slot is None:
             return None
         key = f"{now.date()}:{slot}"
         if key in self.greeted:
@@ -109,6 +117,9 @@ class MealReminderScheduler:
         return datetime.datetime.combine(day, datetime.time(hour=hour)) + datetime.timedelta(minutes=offset)
 
     def due(self, *, now=None, sent_ids: set[str] | None = None):
+        """命中到点的餐（同餐当日去重）。
+
+        """
         import datetime
         now = now or datetime.datetime.now()
         if now.tzinfo is not None:

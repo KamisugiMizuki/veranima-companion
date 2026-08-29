@@ -67,7 +67,8 @@ CREATE TABLE IF NOT EXISTS messages (
     channel    TEXT NOT NULL DEFAULT 'qq',
     created_at TEXT NOT NULL,
     energy_at  REAL,
-    mood_at    TEXT
+    mood_at    TEXT,
+    attachments TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
 
@@ -319,6 +320,9 @@ def init_db(db_path: str | Path, dim: int = EMBEDDING_DIM, provider=None) -> sql
         if "channel" not in message_cols:
             con.execute("ALTER TABLE messages ADD COLUMN channel TEXT NOT NULL DEFAULT 'qq'")
             logger.info("messages migration: added channel")
+        if "attachments" not in message_cols:
+            con.execute("ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT ''")
+            logger.info("messages migration: added attachments")
     except Exception as e:
         logger.warning("messages channel migration check failed: %s", e)
     con.commit()

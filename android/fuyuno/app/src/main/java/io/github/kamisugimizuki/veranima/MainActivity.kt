@@ -76,10 +76,11 @@ class MainActivity : ComponentActivity() {
                     if (uris.isEmpty()) return@rememberLauncherForActivityResult
                     scope.launch(Dispatchers.IO) {
                         val saved = uris.take(4).mapNotNull { uri ->
-                            try {  // 拷进 cacheDir：bridge 只认本地路径
+                            try {  // 存 filesDir/photos：cacheDir 随时被系统清，历史图会变黑块
                                 val bytes = applicationContext.contentResolver
                                     .openInputStream(uri)?.use { it.readBytes() } ?: return@mapNotNull null
-                                val f = java.io.File(applicationContext.cacheDir, "img_${System.nanoTime()}.bin")
+                                val dir = java.io.File(applicationContext.filesDir, "photos").apply { mkdirs() }
+                                val f = java.io.File(dir, "img_${System.nanoTime()}.bin")
                                 f.writeBytes(bytes); f.absolutePath
                             } catch (e: Exception) { null }
                         }
@@ -97,7 +98,9 @@ class MainActivity : ComponentActivity() {
                             msgs.clear()
                             for (i in 0 until arr.length()) {
                                 val m = arr.getJSONObject(i)
-                                msgs.add(Msg(m.getBoolean("me"), m.getString("text")))
+                                val imgs = mutableListOf<String>()
+                                m.optJSONArray("images")?.let { ia -> for (j in 0 until ia.length()) imgs.add(ia.getString(j)) }
+                                msgs.add(Msg(m.getBoolean("me"), m.getString("text"), imgs))
                             }
                         }
                     }

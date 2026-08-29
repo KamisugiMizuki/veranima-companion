@@ -368,11 +368,15 @@ class MemoryStore:
         return entry
 
     def store_message(self, role: str, content: str, energy: float | None = None,
-                      mood: str | None = None, channel: str = "qq") -> int:
-        """零开销摄入：原始消息立即入库（FTS5 触发器同步索引），不等待 LLM。"""
+                      mood: str | None = None, channel: str = "qq",
+                      attachments: str = "") -> int:
+        """零开销摄入：原始消息立即入库（FTS5 触发器同步索引），不等待 LLM。
+
+        attachments: JSON 数组字符串（图片等附件的稳定文件名，非路径非 base64）。
+        """
         cur = self.con.execute(
-            "INSERT INTO messages(role, content, channel, created_at, energy_at, mood_at) VALUES (?,?,?,?,?,?)",
-            (role, content, channel or "qq", _now(), energy, mood),
+            "INSERT INTO messages(role, content, channel, created_at, energy_at, mood_at, attachments) VALUES (?,?,?,?,?,?,?)",
+            (role, content, channel or "qq", _now(), energy, mood, attachments or ""),
         )
         self.con.commit()
         return int(cur.lastrowid)
@@ -740,13 +744,13 @@ class MemoryStore:
         from ..core.reply import is_internal_reply
         if channel:
             rows = self.con.execute(
-                "SELECT id, role, content, channel, created_at FROM messages WHERE channel=? ORDER BY id DESC LIMIT ?",
+                "SELECT id, role, content, channel, created_at, attachments FROM messages WHERE channel=? ORDER BY id DESC LIMIT ?",
                 (channel, limit),
             ).fetchall()
             return [dict(r) for r in reversed(rows)
                     if not (r["role"] == "assistant" and is_internal_reply(r["content"]))]
         rows = self.con.execute(
-            "SELECT id, role, content, channel, created_at FROM messages ORDER BY id DESC LIMIT ?",
+            "SELECT id, role, content, channel, created_at, attachments FROM messages ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()
         return [dict(r) for r in reversed(rows)
