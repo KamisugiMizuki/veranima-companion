@@ -965,7 +965,7 @@ function buildContextMenu() {
 }
 
 function createTray() {
-  tray = new Tray(path.join(__dirname, 'assets', 'idle.png'));
+  tray = new Tray(nativeImage.createFromPath(path.join(__dirname, 'assets', 'icon.png')).resize({ width: 16, height: 16 }));
   tray.setToolTip('Veranima 桌宠');
   tray.setContextMenu(buildContextMenu());
   tray.on('click', () => { win && win.isVisible() ? win.hide() : (win ? win.show() : createWindow()); });

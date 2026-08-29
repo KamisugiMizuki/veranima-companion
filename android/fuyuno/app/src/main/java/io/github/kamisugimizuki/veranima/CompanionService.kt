@@ -47,9 +47,9 @@ class CompanionService : Service() {
         val notif: Notification = NotificationCompat.Builder(this, CHANNEL_STATUS)
             .setSmallIcon(R.drawable.ic_stat_veranima)
             .setLargeIcon(bigIcon())
-            .setContentTitle("駒川 冬乃")
-            // 安卓政策：前台服务必须挂常驻通知，去不掉；占位压到最低（MIN 通道、空文本、不折叠）
-            .setContentText(" ")
+            // 安卓政策：前台服务必须挂常驻通知；ongoing 所以划不掉，文案写明用途免误会
+            .setContentTitle("冬乃正在运行（保活通知）")
+            .setContentText("用于维持主动发言与记忆后台，无法划除属正常；不用时退出应用即可")
             .setOngoing(true)
             .setContentIntent(pi)
             .build()

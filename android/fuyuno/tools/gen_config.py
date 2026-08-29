@@ -21,7 +21,7 @@ def main(root: Path, out: Path):
         keep = {k: v for k, v in prof.items() if k == str((a.get("llm") or {}).get("active_profile", "default"))}
         a["llm"]["profiles"] = keep or prof
     # 角色卡：设备上的相对路径
-    a["character_card"] = "characters/yuki/character.json"
+    a["character_card"] = "characters/lin/character.json"  # 默认卡（用户可在设置页切换）
     # embedding 保持 openai 远程（dashscope），专用 key 条目原样带走
     # search 段换成 bocha（安卓专用），key 也带走
     s = cfg.get("search", {})
@@ -37,10 +37,12 @@ def main(root: Path, out: Path):
     mem.pop("db_path", None)
     a["memory"] = mem
     # 主动发言：安卓端不设人为频率闸门（2026-08-29 用户拍板"随心发言"）。
-    # gate 语义：max_per_day<=0 / min_gap_minutes<=0 = 不限制；quiet_hours 等策略保留。
+    # gate 语义：max_per_day<=0 / min_gap_minutes<=0 / quiet_hours_enabled=false = 不限制。
+    # quiet hours 的睡眠模拟职责已由虚拟日程（blocks 睡眠段）承担，不重复设闸。
     p = dict(a.get("proactive") or {})
     p["max_per_day"] = 0
     p["min_gap_minutes"] = 0
+    p["quiet_hours_enabled"] = False
     ch = {k: {**v, "max_per_day": 0, "min_gap_minutes": 0}
           for k, v in (p.get("channels") or {}).items()}
     ch["im"] = {"enabled": True, "max_per_day": 0, "min_gap_minutes": 0}
