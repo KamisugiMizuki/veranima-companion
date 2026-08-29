@@ -1806,9 +1806,11 @@ class Agent:
     # ---------- MEMORY_BACKEND_EVAL M-C：夜间整理（kiwi-mem Dream 借鉴） ----------
 
     def maybe_nightly_digest(self, *, min_episodes: int = 3) -> dict:
-        """把近期情节片段整理成上层摘要；当日已生成则跳过。
+        """把当天新积累的情节片段整理成上层摘要；当日已生成则跳过。
 
-        - 素材：近 3 天 episodic current 记忆（含来源消息 ID）
+        - 素材：**当日新增**的 episodic current 记忆（含来源消息 ID），
+          且排除任何已被历史 digest 引用过的来源消息（防重复整理同批材料——
+          DESIGN 用户 2026-08-30 指出 0827/0826 整理内容完全一样）
         - 摘要走 ADD-only 候选校验入库（shared_meaning 层，带 digest_date + 来源）
         - 被摘要原始片段降权（strength×0.5），不删除
         - LLM 输出非 JSON/为空 → created=False，不写任何内容
@@ -1825,13 +1827,31 @@ class Agent:
         ).fetchone()[0]
         if already:
             return {"created": False, "reason": "already_digested_today"}
-        since = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=3)).isoformat(timespec="seconds")
+        # 当日 0 点（UTC）起的新增 episodic——夜间整理只整理当天的事
+        day_start = datetime.datetime.now(datetime.timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0).isoformat(timespec="seconds")
         episodes = [
-            e for e in self.memory.list_layer("episodic", limit=50)
-            if e.created_at >= since
+            e for e in self.memory.list_layer("episodic", limit=200)
+            if e.created_at >= day_start
         ]
         if len(episodes) < min_episodes:
             return {"created": False, "reason": "not_enough_material", "episodes": len(episodes)}
+        # 排除已被任何历史 digest 引用过的来源消息（防跨日重复整理同批片段）
+        used = {
+            int(sid)
+            for (row,) in self.memory.con.execute(
+                "SELECT json_each.value FROM memories, json_each(meta->'$.source_message_ids') "
+                "WHERE json_valid(meta) AND meta LIKE '%digest_date%'"
+            ).fetchall()
+            for sid in [row]
+        }
+        episodes = [
+            e for e in episodes
+            if not any(sid in used for sid in ((e.meta or {}).get("source_message_ids") or []))
+        ]
+        # 过滤后仍不足则视为无新素材（宁可跳过也不重复整理旧材料）
+        if len(episodes) < min_episodes:
+            return {"created": False, "reason": "no_new_material", "episodes": len(episodes)}
         lines = [f"- {e.content}（来源消息：{', '.join(map(str, (e.meta or {}).get('source_message_ids') or []))}）"
                  for e in episodes[:10]]
         task = (

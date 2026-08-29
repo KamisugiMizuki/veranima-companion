@@ -48,6 +48,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
@@ -215,6 +216,12 @@ private fun ImageThumb(path: String, maxW: androidx.compose.ui.unit.Dp, onClick:
         modifier = Modifier.padding(bottom = 4.dp).widthIn(max = maxW).heightIn(max = maxW)
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
     )
+}
+
+/** 双击返回提示。 */
+@android.annotation.SuppressLint("ShowToast")
+private fun toast(ctx: android.content.Context, msg: String) {
+    android.widget.Toast.makeText(ctx, msg, android.widget.Toast.LENGTH_SHORT).show()
 }
 
 /** 点击放大：全屏暗底，点任意处关闭 */
@@ -435,6 +442,20 @@ class MainActivity : ComponentActivity() {
                 val panelH by animateDpAsState(
                     if (expanded.value) (screenH * 0.70f).dp else (screenH * 0.40f).dp,
                     animationSpec = tween(260, easing = FastOutSlowInEasing), label = "panel")
+
+                // 返回键：设置页→回聊天；聊天页→3 秒内双击退出
+                val backAt = remember { mutableStateOf(0L) }
+                val ctx = LocalContext.current
+                BackHandler(enabled = showSettings.value) { showSettings.value = false }
+                BackHandler(enabled = !showSettings.value) {
+                    val now = System.currentTimeMillis()
+                    if (now - backAt.value < 3000) {
+                        finish()
+                    } else {
+                        backAt.value = now
+                        toast(ctx, "再按一次返回退出")
+                    }
+                }
 
                 if (showSettings.value) {
                     SettingsScreen(onBack = { showSettings.value = false })

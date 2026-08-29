@@ -209,12 +209,20 @@ fun SettingsScreen(onBack: () -> Unit) {
                     Spacer(Modifier.height(8.dp))
                     // 技能点（procedural 规则）
                     val skills = gd.optJSONArray("skills") ?: org.json.JSONArray()
+                    var skillShowAll by remember { mutableStateOf(false) }
                     Text("学会的规矩：${skills.length()} 条", style = MaterialTheme.typography.bodySmall, color = Muted)
-                    for (i in 0 until minOf(skills.length(), 3)) {
+                    val skillN = if (skillShowAll) skills.length() else minOf(skills.length(), 3)
+                    for (i in 0 until skillN) {
                         val sk = skills.getJSONObject(i)
                         Text("· ${sk.optString("kind")}：${sk.optString("content")}",
                             style = MaterialTheme.typography.labelSmall, color = MutedSoft,
                             maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                    }
+                    if (skills.length() > 3) {
+                        TextButton(onClick = { skillShowAll = !skillShowAll }, modifier = Modifier.padding(top = 2.dp)) {
+                            Text(if (skillShowAll) "收起" else "展开全部 ${skills.length()} 条", color = Coral,
+                                style = MaterialTheme.typography.labelSmall)
+                        }
                     }
                     val pr = gd.optJSONArray("promises") ?: org.json.JSONArray()
                     if (pr.length() > 0) {
@@ -228,10 +236,11 @@ fun SettingsScreen(onBack: () -> Unit) {
             SectionCard("记忆库（标签云选择分类；点删除移除不良记忆）") {
                 var mem by remember { mutableStateOf<JSONObject?>(null) }
                 var filter by remember { mutableStateOf("") }
+                var memShowAll by remember { mutableStateOf(false) }
                 fun loadMem() {
                     scope.launch {
                         mem = JSONObject(withContext(Dispatchers.IO) {
-                            bridge.callAttr("memories_list", filter).toString() })
+                            bridge.callAttr("memories_list", "", filter).toString() })
                     }
                 }
                 LaunchedEffect(Unit) { loadMem() }
@@ -266,7 +275,8 @@ fun SettingsScreen(onBack: () -> Unit) {
                     }
                     Spacer(Modifier.height(6.dp))
                     val arr = md.optJSONArray("memories") ?: org.json.JSONArray()
-                    val shown = (0 until minOf(arr.length(), 20)).map { arr.getJSONObject(it) }
+                    val shownN = if (memShowAll) arr.length() else minOf(arr.length(), 20)
+                    val shown = (0 until shownN).map { arr.getJSONObject(it) }
                     shown.forEach { m0 ->
                         Row(verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.padding(top = 4.dp)) {
@@ -286,8 +296,12 @@ fun SettingsScreen(onBack: () -> Unit) {
                             }) { Text("删除", color = Coral) }
                         }
                     }
-                    if (arr.length() > 20) Text("…共 ${arr.length()} 条，仅显示最近 20",
-                        style = MaterialTheme.typography.labelSmall, color = MutedSoft)
+                    if (arr.length() > 20) {
+                        TextButton(onClick = { memShowAll = !memShowAll }, modifier = Modifier.padding(top = 2.dp)) {
+                            Text(if (memShowAll) "收起" else "展开全部 ${arr.length()} 条", color = Coral,
+                                style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
                 }
             }
             TextButton(onClick = { openBatterySettings(ctx) }) { Text("电池优化白名单", color = Muted) }

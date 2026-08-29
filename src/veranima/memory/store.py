@@ -41,6 +41,34 @@ LAYER_R1_MAP = {
 }
 LAYER_R1_REVERSE = {v: k for k, v in LAYER_R1_MAP.items()}
 
+# 默认分类兜底（2026-08-30 用户反馈新记忆不分类）：显式 category 优先
+_DEFAULT_CATEGORY = {
+    "core_profile": "自我",
+    "semantic": "常识",
+    "episodic": "日常",
+    "procedural": "规矩",
+    "shared_meaning": "整理",
+    "session": "会话",
+}
+
+
+def backfill_categories(con) -> int:
+    """历史 NULL 分类按 layer 回填（2026-08-30 用户反馈新记忆不分类）。
+
+    幂等：仅更新 category IS NULL 的行；返回回填条数。
+    """
+    n = 0
+    for layer, cat in _DEFAULT_CATEGORY.items():
+        cur = con.execute(
+            "UPDATE memories SET category=?, updated_at=updated_at "
+            "WHERE layer=? AND (category IS NULL OR category='')",
+            (cat, layer),
+        )
+        n += cur.rowcount
+    if n:
+        con.commit()
+    return n
+
 # 候选记忆校验（R1_SPEC 1.2 / MEMORY_SPEC 5）：kind 白名单
 CANDIDATE_KINDS = (
     "user_fact", "shared_episode", "commitment", "session",
@@ -337,6 +365,10 @@ class MemoryStore:
         layer = LAYER_R1_MAP.get(layer, layer)  # R1 类型名 → 旧 layer（R1_SPEC 1.1）
         if layer not in LAYERS:
             raise ValueError(f"unknown layer: {layer}")
+        # 默认分类（2026-08-30 用户反馈新记忆不分类）：显式 category 优先，
+        # 否则按 layer 兜底，保证标签云/记忆库永远有分类
+        if not category:
+            category = _DEFAULT_CATEGORY.get(layer, "未分类")
         ts = _now()
         cur = self.con.execute(
             """INSERT INTO memories

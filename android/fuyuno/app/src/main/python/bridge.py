@@ -174,6 +174,14 @@ def boot(files_dir: str) -> str:
         imported = _pickup_backup(root, cfg, inbox)
 
         agent = create_agent(cfg)
+        # 历史 NULL 分类按 layer 回填（幂等；2026-08-30 用户反馈新记忆不分类）
+        try:
+            from veranima.memory.store import backfill_categories
+            _n = backfill_categories(agent.memory.con)
+            if _n:
+                log.info("backfill_categories: %d 条历史记忆已分类", _n)
+        except Exception as e:
+            log.warning("backfill_categories failed: %s", e)
         boot.agent = agent
         # 周期调度器（tick 线程消费）：离线思考用默认参数（静默30min/概率0.3/
         # 日上限2），调参需求出现再进配置。饭点提醒已收编进 core tick_proactive。
@@ -451,8 +459,8 @@ def derive_stage(model) -> str:
         return "初识"
 
 
-def memories_list(layer: str = "", limit: int = 200) -> str:
-    """记忆列表（DESIGN §11-B）：可选按层过滤，带 category 供标签云聚合。"""
+def memories_list(layer: str = "", category: str = "", limit: int = 200) -> str:
+    """记忆列表（DESIGN §11-B）：可选按层/分类过滤，带 category 供标签云聚合。"""
     agent = getattr(boot, "agent", None)
     if agent is None:
         return json.dumps({"ok": False, "error": "未初始化"})
@@ -464,6 +472,8 @@ def memories_list(layer: str = "", limit: int = 200) -> str:
             entries = []
             for lyr in LAYERS:
                 entries.extend(agent.memory.list_layer(lyr, limit=int(limit), include_superseded=False))
+        if category:
+            entries = [e for e in entries if (e.category or "未分类") == category]
         # 全量合并按 updated_at 倒序（最新在前）
         entries.sort(key=lambda e: e.updated_at or "", reverse=True)
         out = [{"id": e.id, "layer": e.layer, "category": e.category or "未分类",
