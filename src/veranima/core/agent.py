@@ -1164,6 +1164,7 @@ class Agent:
             )
             turn_reply = parsed
             if parsed.degraded:
+                logger.warning("reply parse degraded (tts): %s | raw[:120]=%s", parsed.degraded, reply[:120])
                 generation_failed = True
             reply = parsed.text or ("（我这边没拿到可显示的回复，再说一遍？）" if parsed.degraded else reply)
             tone = parsed.tone
@@ -1179,6 +1180,7 @@ class Agent:
             )
             turn_reply = parsed
             if parsed.degraded:
+                logger.warning("reply parse degraded (im): %s | raw[:120]=%s", parsed.degraded, reply[:120])
                 generation_failed = True
             reply = parsed.text or ("（我这边没拿到可显示的回复，再说一遍？）" if parsed.degraded else reply)
 

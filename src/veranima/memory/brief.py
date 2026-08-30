@@ -114,9 +114,17 @@ def build_brief(
 
 
 def format_brief(items: list[MemoryBriefItem]) -> str:
-    """渲染为 prompt 注入文本（按层分组，带来源标签）。"""
+    """渲染为 prompt 注入文本（按层分组，带来源标签）。
+
+    同层内 content 完全相同的条目只保留第一条（指令稀释：重复模板行占预算又降噪）。
+    """
     by_label: dict[str, list[MemoryBriefItem]] = {}
+    seen: dict[str, set[str]] = {}
     for it in items:
+        content = it.text.strip()
+        if content in seen.setdefault(it.label, set()):
+            continue
+        seen[it.label].add(content)
         by_label.setdefault(it.label, []).append(it)
     parts: list[str] = []
     for label, group in by_label.items():

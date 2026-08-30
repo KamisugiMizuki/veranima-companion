@@ -108,15 +108,18 @@ def build_system_prompt(
     parts.append(CHANNEL_CONTEXT.get(channel, CHANNEL_CONTEXT["im"]))
     parts.append(REALITY_BOUNDARY)
     # R2：tts 通道注入表情词表 + 结构化输出要求（R2_SPEC 2）
+    # 输出格式指令不在此处注入——它是最高优先级的可验证指令，统一压到 parts 末尾
+    # （prompt 中段是模型服从度最弱的位置；记忆/画像等数据留中段）。
+    format_block = ""
     if channel == "tts":
         expr_prompt = _expression_prompt(card)
         if expr_prompt:
             parts.append(expr_prompt)
         # R2 双语（角色卡 bilingual.enabled）：ja 送 TTS / zh 显示
         bilingual = bool(((card.veranima or {}).get("bilingual") or {}).get("enabled"))
-        parts.append(BILINGUAL_OUTPUT_INSTRUCTION if bilingual else SEGMENTED_OUTPUT_INSTRUCTION)
+        format_block = BILINGUAL_OUTPUT_INSTRUCTION if bilingual else SEGMENTED_OUTPUT_INSTRUCTION
     else:
-        parts.append(IM_STRUCTURED_OUTPUT_INSTRUCTION)
+        format_block = IM_STRUCTURED_OUTPUT_INSTRUCTION
 
     # E. 相关记忆（MEMORY_SPEC 10.4：Context Brief 统一预算，完整 item 截断）
     from ..memory.brief import build_brief, format_brief
@@ -168,6 +171,10 @@ def build_system_prompt(
     for block in (extra_blocks or []):
         if block:
             parts.append(block)
+
+    # 输出格式指令永远压尾（指令稀释：首尾服从度最高，最重要且可机器校验的指令放最后）
+    if format_block:
+        parts.append(format_block)
 
     return "\n".join(parts)
 

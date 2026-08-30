@@ -16,6 +16,14 @@ from veranima.memory.store import MemoryStore
 from veranima.core.attention import AttentionScheduler, AttentionEvent
 
 
+class FakeEmbed:
+    dim = 8
+
+    def embed(self, texts):
+        import hashlib
+        return [[b / 255 for b in hashlib.sha256(t.encode()).digest()[:8]] for t in texts]
+
+
 # ---------- R2_SPEC 1：Reply 契约字段 ----------
 
 def test_reply_contract_fields_present():
@@ -113,3 +121,46 @@ def test_scheduler_habituated_state(monkeypatch):
     events = att.tick()
     assert any(e.kind == "habituation" for e in events)
     assert att.state == "habituated"
+
+
+# ---------- 指令稀释防线（2026-08-30） ----------
+
+def test_output_format_instruction_is_last_block():
+    """输出格式指令必须压在 system prompt 末尾（首尾服从度最高，可机器校验的指令放最后）。"""
+    from veranima.core.prompts import (
+        build_system_prompt, IM_STRUCTURED_OUTPUT_INSTRUCTION,
+        SEGMENTED_OUTPUT_INSTRUCTION, BILINGUAL_OUTPUT_INSTRUCTION)
+    from veranima.core.state import AgentState
+
+    card = CharacterCard(name="小V", first_mes="你好")
+    mem = MemoryStore(db_path=":memory:", config={}, provider=FakeEmbed())
+    for ch, marker in (("im", IM_STRUCTURED_OUTPUT_INSTRUCTION), ("tts", SEGMENTED_OUTPUT_INSTRUCTION)):
+        sp = build_system_prompt(card, AgentState(), mem, channel=ch)
+        assert sp.rstrip().endswith(marker.rstrip()), f"{ch} 通道输出格式指令未压尾"
+
+
+def test_hard_directive_count_regression_line():
+    """硬指令（必须/不要/不得/只能）行数回归上限：新功能往 prompt 加规则时超线即红。
+
+    稀释是一次次各加一行累积出来的——这条线是刹车，不是设计目标。抬线需要有意识修改本测试。
+    """
+    from veranima.core.prompts import build_system_prompt
+    from veranima.core.state import AgentState
+    import pathlib
+    import re
+
+    card = CharacterCard.from_file(str(pathlib.Path(__file__).resolve().parents[1] / "characters/lin/character.json"))
+    mem = MemoryStore(db_path=":memory:", config={}, provider=FakeEmbed())
+    sp = build_system_prompt(card, AgentState(), mem, channel="im")
+    hard = [l for l in sp.splitlines() if re.search(r"必须|不要|不得|只能|禁止", l)]
+    assert len(hard) <= 15, f"硬指令 {len(hard)} 行，超回归线（现基线 12）：新规则先问能否进校验器而不是 prompt"
+
+
+def test_format_brief_dedups_identical_lines():
+    """同层重复注入的记忆行只保留一条（重复模板行占预算又稀释指令）。"""
+    from veranima.memory.brief import MemoryBriefItem, format_brief
+
+    dup = [MemoryBriefItem(memory_id=i, kind="k", text="未闭合问题", confidence_label="中",
+                           temporal_label="", score=0.5, label="共同回忆") for i in range(3)]
+    out = format_brief(dup)
+    assert out.count("未闭合问题") == 1
