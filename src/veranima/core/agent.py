@@ -356,6 +356,34 @@ class Agent:
         except (TypeError, ValueError, json.JSONDecodeError):
             return None
 
+    def _sleep_care_note(self) -> str:
+        """睡前牵挂（2026-08-31「不完结的牵挂」增量）：用户三餐锚点若落在角色
+        睡眠窗口内，该餐提醒届时不会被发出（角色睡着，gate 拦截）→ 睡前公告文案
+        替它带一句关怀。无错位返回空串（默认作息不触发）。只报一餐，不打包。"""
+        runtime = getattr(self, "schedule_runtime", None)
+        circ = runtime.outline.circadian if runtime is not None and runtime.outline else None
+        if not circ:
+            return ""
+
+        def _hour(value: str) -> float:
+            h, m = str(value).split(":", 1)
+            return int(h) + int(m) / 60
+
+        try:
+            sleep_start = _hour(circ.sleep_start)
+            wake_start = _hour(circ.wake_start)
+        except (AttributeError, ValueError):
+            return ""
+        cn = {"breakfast": "早饭", "lunch": "午饭", "dinner": "晚饭"}
+        # 三餐锚点已被 adjust_to_user_cycle 按用户作息平移；落在角色必睡区间
+        # [睡窗起点, 醒窗起点) 的餐届时无提醒 → 给睡前公告一条带指向的牵挂素材
+        for meal, (hour, _text) in self.meals.slots.items():
+            in_window = (hour >= sleep_start or hour < wake_start) if sleep_start > wake_start \
+                else sleep_start <= hour < wake_start
+            if in_window:
+                return f"用户的{cn.get(meal, '饭')}点落在你睡着的时段里，你睡了之后没办法提醒ta按时吃"
+        return ""
+
     def schedule_notice_text(self, notice: str) -> str:
         tasks = {
             "sleep_preparing": "自然告诉用户你有点困，准备睡了，接下来起床前不会回复。只说一句，不要提系统或日程。",
@@ -364,6 +392,11 @@ class Agent:
         task = tasks.get(str(notice))
         if not task or not getattr(self.llm, "is_model_loaded", lambda: False)():
             return ""
+        if notice == "sleep_preparing":
+            # 牵挂注入：有作息错位时，睡前这句自然带一句"我睡了之后你…"的前瞻
+            care = self._sleep_care_note()
+            if care:
+                task += f"睡前顺带想到：{care}。把这个意思自然地融进同一句话里，像随口一想，不要提醒口吻。"
         return self._short_task(task)
 
     def schedule_notice_candidate(self, notice: str, channel: str):

@@ -113,3 +113,42 @@ def test_agent_generates_schedule_notice_from_runtime_event(tmp_path):
     )
 
     assert agent.schedule_notice_text("unknown") == ""
+
+
+# ---------- 睡前牵挂（不完结的牵挂：作息错位注入 sleep_preparing 公告） ----------
+
+def _care_agent(tmp_path, name="Care"):
+    role_dir = tmp_path / "characters" / name.lower()
+    role_dir.mkdir(parents=True)
+    value = space_template_for_prompt()
+    # 角色 23:00-01:00 睡、07:00 起（sleep_window 模板块是 09-11 的 focus；circadian 单独）
+    (role_dir / "virtual_schedule.json").write_text(json.dumps(value), encoding="utf-8")
+    (role_dir / "character.json").write_text("{}", encoding="utf-8")
+    probe = ProbeLLM()
+    agent = Agent(
+        CharacterCard(name=name),
+        MemoryStore(str(tmp_path / f"{name}.sqlite"), config={}, provider=Embed()),
+        probe, AgentState(),
+        config={"root": str(tmp_path), "character_card": str(role_dir / "character.json")},
+    )
+    return agent, probe
+
+
+def test_sleep_care_note_absent_when_routines_align(tmp_path):
+    agent, probe = _care_agent(tmp_path)
+    # 模板角色 22 点睡、7 点起；三餐设 8/12/17 → 无错位，公告任务不带牵挂素材
+    agent.meals.slots["breakfast"] = (8, "早饭")
+    agent.schedule_notice_text("sleep_preparing")
+    task = probe.messages[-1]["content"]
+    assert "牵挂" not in task and "没办法提醒" not in task
+
+
+def test_sleep_care_note_injected_on_mismatch(tmp_path):
+    agent, probe = _care_agent(tmp_path, name="Late")
+    agent.meals.slots["dinner"] = (1, "晚饭")  # 用户夜宵作息：1 点仍在角色睡眠区间
+    agent.schedule_notice_text("sleep_preparing")
+    task = probe.messages[-1]["content"]
+    assert "晚饭" in task and "睡着" in task
+    # woke 公告不注入牵挂
+    agent.schedule_notice_text("woke")
+    assert "晚饭" not in probe.messages[-1]["content"]
