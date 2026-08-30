@@ -141,8 +141,9 @@ def is_internal_reply(text: str) -> bool:
         return True
     if _ANALYSIS_HEADING_RE.search(value):
         return True
-    if not _drop_monologue_paragraphs(value):
-        return True  # 整条都是思考独白（2026-08-31 真机泄漏事件）：不进历史/不回读
+    if not _drop_monologue_paragraphs(value) or _has_monologue_line(value):
+        return True  # 含任何独白行即内部消息（2026-08-31 真机 #549：混合独白混正常句，
+                     # 整条判定漏进历史=prompt 永久污染源）：不进历史/不回读
     if re.search(r"[\"']segments[\"']\s*:\s*\[", value):
         return True
     try:
@@ -213,6 +214,11 @@ def _looks_monologue(line: str) -> bool:
     if any(term.lower() in low for term in _INTERNAL_TERMS):
         return True
     return ("用户" in line or "ta" in low) and bool(_MONOLOGUE_RE.search(line))
+
+
+def _has_monologue_line(value: str) -> bool:
+    """任一行为思考独白（内部词命中，或 第三人称称用户+计划语气 组合命中）。"""
+    return any(_looks_monologue(ln.strip()) for ln in value.splitlines() if ln.strip())
 
 
 def _drop_monologue_paragraphs(value: str) -> str:

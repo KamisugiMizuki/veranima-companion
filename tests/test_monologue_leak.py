@@ -40,6 +40,11 @@ def test_leak_monologue_lines_stripped():
     assert strip_thinking_trace("他吐槽用户不可能这么早起——敬语刀，关心落在行为上。") == ""
 
 
+def test_leak_is_internal_reply_mixed_message():
+    # 混合消息（正常应答行+独白行）整条按内部消息处理：不进 prompt 历史、UI 不回读
+    assert is_internal_reply(LEAK_549) is True
+
+
 def test_leak_parse_reply_never_passes_monologue():
     parsed = parse_reply(LEAK_549, channel="im")
     assert "依恋度" not in parsed.text and "敬语刀" not in parsed.text
