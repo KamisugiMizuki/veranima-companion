@@ -552,8 +552,8 @@ veranima 将其翻译为 WorkOrder，Hermes 在独立工作会话和 worktree �
 
 | 文件 | 修改 | 状态 |
 |---|---|---|
-| `docs/HERMES_AGENT_INTEGRATION_SPEC.md` | 本方案 | 本次新增 |
-| `docs/R5_SPEC.md` | 实施时将 dsh bridge 更新为 Hermes bridge，并同步状态 | 待实施 |
+| `docs/hermes/HERMES_AGENT_INTEGRATION_SPEC.md` | 本方案 | 本次新增 |
+| `docs/roadmap/R5_SPEC.md` | 实施时将 dsh bridge 更新为 Hermes bridge，并同步状态 | 待实施 |
 | `src/veranima/tools/hermes_bridge.py` | `/v1/runs`、status、stop、approval 协议 | 待实施 |
 | `src/veranima/core/workorder.py` | 仅补必要执行元数据，不重写识别/校验 | 待实施 |
 | `src/veranima/memory/schema.py` | 增加独立 `task_runs` 执行审计表 | 待实施 |
@@ -647,10 +647,10 @@ veranima 将其翻译为 WorkOrder，Hermes 在独立工作会话和 worktree �
 
 ## 16. 本地依据
 
-- veranima 总纲：[`DESIGN.md`](DESIGN.md)
-- veranima R5：[`R5_SPEC.md`](R5_SPEC.md)
-- 人物记忆契约：[`MEMORY_SPEC.md`](MEMORY_SPEC.md)
-- 人格循环契约：[`PERSONA_LOOP_SPEC.md`](PERSONA_LOOP_SPEC.md)
+- veranima 总纲：[`DESIGN.md`](../roadmap/DESIGN.md)
+- veranima R5：[`R5_SPEC.md`](../roadmap/R5_SPEC.md)
+- 人物记忆契约：[`MEMORY_SPEC.md`](../memory/MEMORY_SPEC.md)
+- 人格循环契约：[`PERSONA_LOOP_SPEC.md`](../persona/PERSONA_LOOP_SPEC.md)
 
 ## Sources
 

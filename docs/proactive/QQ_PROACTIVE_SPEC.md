@@ -2,7 +2,7 @@
 
 > 状态：设计稿 v1.0；Phase 0–3 已按本规范落地，当前实现基线见提交记录。
 > 范围：**只适用于 QQ 文字聊天通道**。本文不把 QQ 的主动发言策略应用到桌宠，也不改变桌宠视觉注意力的内容策略。
-> 依据：`docs/newly_added/design_append.md`、`docs/R4_SPEC.md`、`docs/VISION_SPEC.md` 及当前生产调用链。
+> 依据：`docs/newly_added/design_append.md`、`docs/roadmap/R4_SPEC.md`、`docs/vision/VISION_SPEC.md` 及当前生产调用链。
 
 ## 1. 目标与边界
 

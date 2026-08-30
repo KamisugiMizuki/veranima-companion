@@ -267,16 +267,16 @@ unset PYTHONPATH
 
 ## 设计与状态文档
 
-- `docs/DESIGN.md`
-- `docs/VIRTUAL_SCHEDULE_SPEC.md`
-- `docs/VIRTUAL_SPACE_SPEC.md`
-- `docs/VIRTUAL_SCHEDULE_COMPLETION_AUDIT.md`
-- `docs/VIRTUAL_SCHEDULE_DESIGN_AUDIT_DEEPSEEK_ULTRA.md`
-- `docs/VIRTUAL_SCHEDULE_IMPL_AUDIT_DEEPSEEK_ULTRA.md`
-- `docs/MEMORY_SPEC.md`
-- `docs/PERSONA_LOOP_SPEC.md`
-- `docs/QQ_PROACTIVE_SPEC.md`
-- `docs/IMAGE_STICKER_LIFECYCLE_SPEC.md`
-- `docs/HERMES_AGENT_INTEGRATION_SPEC.md`
+- `docs/roadmap/DESIGN.md`
+- `docs/virtual_life/VIRTUAL_SCHEDULE_SPEC.md`
+- `docs/virtual_life/VIRTUAL_SPACE_SPEC.md`
+- `docs/virtual_life/audits/VIRTUAL_SCHEDULE_COMPLETION_AUDIT.md`
+- `docs/virtual_life/audits/VIRTUAL_SCHEDULE_DESIGN_AUDIT_DEEPSEEK_ULTRA.md`
+- `docs/virtual_life/audits/VIRTUAL_SCHEDULE_IMPL_AUDIT_DEEPSEEK_ULTRA.md`
+- `docs/memory/MEMORY_SPEC.md`
+- `docs/persona/PERSONA_LOOP_SPEC.md`
+- `docs/proactive/QQ_PROACTIVE_SPEC.md`
+- `docs/images/IMAGE_STICKER_LIFECYCLE_SPEC.md`
+- `docs/hermes/HERMES_AGENT_INTEGRATION_SPEC.md`
 
 README 的“已实现”只表示代码存在且有行为测试；Electron、NapCat、TTS、STT 和外部服务仍需各自的真实运行环境。

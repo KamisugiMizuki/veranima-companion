@@ -18,7 +18,7 @@ veranima 是一个具有稳定人格核心、可追溯自传、关系历史和�
 + Scene / Channel / Topic（情境化表达）
 ```
 
-人格形成与关系性循环的唯一契约见 `docs/PERSONA_LOOP_SPEC.md`：观察用户框架与共同事件 → 候选校验 → 整合为用户模型/共同意义/角色自传 → 在相关新情境中有边界地回用 → 根据反馈修正版本和关系解释。理解用户不等于同意用户；角色必须保留独立判断和分歧。
+人格形成与关系性循环的唯一契约见 `docs/persona/PERSONA_LOOP_SPEC.md`：观察用户框架与共同事件 → 候选校验 → 整合为用户模型/共同意义/角色自传 → 在相关新情境中有边界地回用 → 根据反馈修正版本和关系解释。理解用户不等于同意用户；角色必须保留独立判断和分歧。
 
 拟真表达由五维控制面协同：认知过程、情绪耦合、表层人格演化、关系动态和有因差异。认知过程只输出短结构 `ResponsePlan`，不生成或暴露私密思维链；情绪使用连续 PAD（愉悦度/唤醒度/支配度）并具有 cause、惯性和衰减；差异性必须来自状态、关系、注意力或可追溯联想，禁止无因随机反常。
 
@@ -32,8 +32,8 @@ veranima 是一个具有稳定人格核心、可追溯自传、关系历史和�
 |---|---|---|
 | 核心运行时 | Python 3.11 + `src/veranima` | 复用现有包结构 |
 | LLM | OpenAI 兼容 HTTP API，`httpx` | `llm/client.py`；thinking 模型输出预算由配置提供 |
-| 记忆/状态 | SQLite + FTS5 + memory_embedding blob（暴力余弦）；完整契约见 `docs/MEMORY_SPEC.md` | `memory/schema.py`, `memory/store.py`, `core/learning.py` |
-| 人格循环 | Character Core + User/Self/Relationship Model + Persona Brief + PAD/ResponsePlan；完整契约见 `docs/PERSONA_LOOP_SPEC.md` | 复用 `core/character.py`, `core/agent.py`, `core/state.py`, `memory/`；按 P-0~P-9 增量实现 |
+| 记忆/状态 | SQLite + FTS5 + memory_embedding blob（暴力余弦）；完整契约见 `docs/memory/MEMORY_SPEC.md` | `memory/schema.py`, `memory/store.py`, `core/learning.py` |
+| 人格循环 | Character Core + User/Self/Relationship Model + Persona Brief + PAD/ResponsePlan；完整契约见 `docs/persona/PERSONA_LOOP_SPEC.md` | 复用 `core/character.py`, `core/agent.py`, `core/state.py`, `memory/`；按 P-0~P-9 增量实现 |
 | Embedding | 本地 `sentence-transformers` / bge-m3 | `memory/embedding.py`；远程 API 不作为默认 embedding |
 | 角色卡 | Character Card V3 兼容 JSON + `extensions.veranima` | `core/character.py`, `core/roles.py` |
 | QQ | NapCatQQ OneBot v11 反向 WS | `adapters/qq.py` |
@@ -148,13 +148,13 @@ class ProactiveDecision:
 ```text
 R0 角色内核与 Reply 协议
  ↓
-P-0 角色核心扩展（人格循环见 docs/PERSONA_LOOP_SPEC.md）
+P-0 角色核心扩展（人格循环见 docs/persona/PERSONA_LOOP_SPEC.md）
  ↓
-R1 共同经历/状态连续性（记忆见 docs/MEMORY_SPEC.md；人格循环 P-1~P-4）
+R1 共同经历/状态连续性（记忆见 docs/memory/MEMORY_SPEC.md；人格循环 P-1~P-4）
  ↓
 R2 IM/TTS 表达与失败降级
  ↓
-R3 Electron 桌宠/独立聊天闭环（界面契约见 docs/GUI_SPEC.md）
+R3 Electron 桌宠/独立聊天闭环（界面契约见 docs/desktop/GUI_SPEC.md）
  ↓
 R4 Presence/Attention/主动性
  ↓
@@ -163,7 +163,7 @@ R5 dsh 可选任务协作
 
 R0-R3 未完成前不扩展 R4/R5。每阶段完成必须通过体验验收，而不是只看测试数量。
 
-GUI 实现以 `docs/GUI_SPEC.md` 为唯一界面契约：主窗突出角色存在，聊天/设置/日志采用安静的 Operate 界面。只借鉴 sakura/airi 已验证的组件职责，不迁移其 UI 框架和插件规模。
+GUI 实现以 `docs/desktop/GUI_SPEC.md` 为唯一界面契约：主窗突出角色存在，聊天/设置/日志采用安静的 Operate 界面。只借鉴 sakura/airi 已验证的组件职责，不迁移其 UI 框架和插件规模。
 
 ## 8. 总体验收
 
@@ -185,14 +185,14 @@ GUI 实现以 `docs/GUI_SPEC.md` 为唯一界面契约：主窗突出角色存�
 
 以下是围绕角色包、表达适配和共同经历的专项契约；核心状态以各文档头部为准：
 
-- [`COMPANION_CONTINUITY_DESIGN.md`](COMPANION_CONTINUITY_DESIGN.md)：伴侣连续性增强方案；统一关系上下文、未完事项跟进、共同意义回用、主动关怀和虚拟生活回顾。当前为方案稿，尚未进入实现。
-- [`CHARPKG_SPEC.md`](CHARPKG_SPEC.md)：在现有 `.char` ZIP 归档基础上升级 `.charpkg`，增加 manifest/schema、哈希清单、quarantine、原子安装、冲突和回滚；不允许执行代码、打包密钥或默认导出用户记忆。
-- [`STYLE_LEARNING_SPEC.md`](STYLE_LEARNING_SPEC.md)：未标注语料的自动处理、抽样复核、`StyleProfile → StyleBrief → ResponsePlan` 核心已实现；LoRA 仍暂缓，风格不得覆盖角色核心。
-- [`SHARED_CREATION_SPEC.md`](SHARED_CREATION_SPEC.md)：复用 `shared_episode/shared_meaning/commitment/relationship_event` 和现有关系模型，增加 Project/Arc/Scene/Decision/Artifact/OpenThread 的协作工作流；关系变化必须有证据和用户确认。
-- [`VIRTUAL_SCHEDULE_SPEC.md`](VIRTUAL_SCHEDULE_SPEC.md)：角色目录日程模板、昼夜节律、睡眠、偏移回正、活动上下文和有来源的生活主动性。
-- [`VIRTUAL_SPACE_SPEC.md`](VIRTUAL_SPACE_SPEC.md)：以有限生活范围、稳定场所池、路线和 CurrentScene 取代“角色永远固定在一个 scenario”；当前为设计稿，尚未实现。
+- [`COMPANION_CONTINUITY_DESIGN.md`](../persona/COMPANION_CONTINUITY_DESIGN.md)：伴侣连续性增强方案；统一关系上下文、未完事项跟进、共同意义回用、主动关怀和虚拟生活回顾。当前为方案稿，尚未进入实现。
+- [`CHARPKG_SPEC.md`](../character/CHARPKG_SPEC.md)：在现有 `.char` ZIP 归档基础上升级 `.charpkg`，增加 manifest/schema、哈希清单、quarantine、原子安装、冲突和回滚；不允许执行代码、打包密钥或默认导出用户记忆。
+- [`STYLE_LEARNING_SPEC.md`](../expression/STYLE_LEARNING_SPEC.md)：未标注语料的自动处理、抽样复核、`StyleProfile → StyleBrief → ResponsePlan` 核心已实现；LoRA 仍暂缓，风格不得覆盖角色核心。
+- [`SHARED_CREATION_SPEC.md`](../persona/SHARED_CREATION_SPEC.md)：复用 `shared_episode/shared_meaning/commitment/relationship_event` 和现有关系模型，增加 Project/Arc/Scene/Decision/Artifact/OpenThread 的协作工作流；关系变化必须有证据和用户确认。
+- [`VIRTUAL_SCHEDULE_SPEC.md`](../virtual_life/VIRTUAL_SCHEDULE_SPEC.md)：角色目录日程模板、昼夜节律、睡眠、偏移回正、活动上下文和有来源的生活主动性。
+- [`VIRTUAL_SPACE_SPEC.md`](../virtual_life/VIRTUAL_SPACE_SPEC.md)：以有限生活范围、稳定场所池、路线和 CurrentScene 取代“角色永远固定在一个 scenario”；当前为设计稿，尚未实现。
 
-Yuki 运行时卡位于 [`characters/yuki/character.json`](../characters/yuki/character.json)，说明文件 [`characters/yuki/card.md`](../characters/yuki/card.md) 区分公开人设参考、项目原创桌宠延展和明确排除的原作文本/剧透。
+Yuki 运行时卡位于 [`characters/yuki/character.json`](../../characters/yuki/character.json)，说明文件 [`characters/yuki/card.md`](../../characters/yuki/card.md) 区分公开人设参考、项目原创桌宠延展和明确排除的原作文本/剧透。
 
 ## 10. 主动交互增强（2026-08 design_append 裁决，已落码）
 

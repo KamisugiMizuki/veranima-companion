@@ -2,7 +2,7 @@
 
 > 状态：实现基线 v1.0；T0–T4 已按本规范落地，行为测试与最终门禁待本次提交前完成。
 > 目标：为 veranima 增加可解释、可恢复、不会惩罚用户的“不满值”机制。
-> 依据：`docs/newly_added/design_append.md`、`docs/PERSONA_LOOP_SPEC.md`、`docs/DESIGN.md`、现有 `AgentState`、`RelationshipModel`、PAD、冲突状态机和主动消息链。
+> 依据：`docs/newly_added/design_append.md`、`docs/persona/PERSONA_LOOP_SPEC.md`、`docs/roadmap/DESIGN.md`、现有 `AgentState`、`RelationshipModel`、PAD、冲突状态机和主动消息链。
 
 ## 1. 设计结论
 

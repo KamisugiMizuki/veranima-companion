@@ -3,7 +3,7 @@
 > 目标：Electron 只做身体与媒介，不持有 Agent 业务状态。
 > 现有复用：`pet/main.js`, `preload.js`, `renderer.js`, `chat.html`, `chat-renderer.js`, `pet_server.py`。
 > 参考：sakura 的角色包/历史/音频组织；airi 的可取消回复、异步历史批处理和运行时事件。
-> GUI 组件、视觉 token、窗口尺寸、动效、无障碍和分批实现以 `docs/GUI_SPEC.md` 为唯一真值；本文件只规定进程、协议和产品状态。
+> GUI 组件、视觉 token、窗口尺寸、动效、无障碍和分批实现以 `docs/desktop/GUI_SPEC.md` 为唯一真值；本文件只规定进程、协议和产品状态。
 
 ## 1. 进程与协议
 

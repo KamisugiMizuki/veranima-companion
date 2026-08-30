@@ -664,8 +664,8 @@ DOM id 存在
 
 ## 16. 设计依据（仓库内）
 
-- `docs/IMAGE_MESSAGE_SPEC.md`：统一 ImagePayload 与 Electron/QQ 图片边界。
-- `docs/QQ_STICKER_SPEC.md`：现有静态表情库、标注和发送契约。
+- `docs/images/IMAGE_MESSAGE_SPEC.md`：统一 ImagePayload 与 Electron/QQ 图片边界。
+- `docs/images/QQ_STICKER_SPEC.md`：现有静态表情库、标注和发送契约。
 - `src/veranima/adapters/qq.py`：真实接收、后台标注与回发调用链。
 - `src/veranima/core/image_payload.py`：MIME/magic/大小/像素安全边界。
 - `src/veranima/core/stickers.py`：dHash、SHA-256 文件、index 原子写入与删除实现。

@@ -2,7 +2,7 @@
 
 > R0 是所有实现的入口。没有 R0，后续记忆、TTS、视觉和主动性都会变成给一个空壳模型接功能。
 > 现有复用：`core/character.py`, `core/prompts.py`, `core/segments.py`, `core/agent.py`, `llm/client.py`。
-> 角色核心扩展、角色自我模型与人格循环见 `docs/PERSONA_LOOP_SPEC.md`；R0 只规定稳定角色真值和 Reply 协议。
+> 角色核心扩展、角色自我模型与人格循环见 `docs/persona/PERSONA_LOOP_SPEC.md`；R0 只规定稳定角色真值和 Reply 协议。
 
 ## 1. 角色卡真值
 

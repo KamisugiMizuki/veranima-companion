@@ -2,9 +2,9 @@
 
 > 状态：R1 记忆专项设计基线（2026-08-19）。
 > 产品目标：记忆不是“检索到更多文本”，而是让同一个人物拥有可追溯的过去、能纠正的认知和不会越界的熟悉感。
-> 技术约束：继续使用 SQLite + FTS5 + memory_embedding 归一化 blob 表（Python 暴力余弦；2026-08-29 起 vec0 退役，与 sqlite-vec 同为 exact KNN、结果逐位一致，换出的是安卓 Chaquopy 扩展加载兼容性）；不引入 Mem0、Memanto、MemPalace、图数据库或远程记忆服务作为运行时依赖。2026-08-26 选型评估结论：维持 SQLite 栈不变，吸收外部记忆库机制（热度衰减/双时间线/夜间整理/审核收件箱）以增量方式落地，评估与阶段见 `docs/MEMORY_BACKEND_EVAL.md`。
+> 技术约束：继续使用 SQLite + FTS5 + memory_embedding 归一化 blob 表（Python 暴力余弦；2026-08-29 起 vec0 退役，与 sqlite-vec 同为 exact KNN、结果逐位一致，换出的是安卓 Chaquopy 扩展加载兼容性）；不引入 Mem0、Memanto、MemPalace、图数据库或远程记忆服务作为运行时依赖。2026-08-26 选型评估结论：维持 SQLite 栈不变，吸收外部记忆库机制（热度衰减/双时间线/夜间整理/审核收件箱）以增量方式落地，评估与阶段见 `docs/memory/MEMORY_BACKEND_EVAL.md`。
 > 唯一实现入口：`src/veranima/memory/`；`Agent` 只编排，不直接写 SQL。
-> 人格形成与关系性回用的行为契约见 `docs/PERSONA_LOOP_SPEC.md`。本文只规定其证据、候选、版本、召回、删除和预算，不决定角色是否采纳用户观点。
+> 人格形成与关系性回用的行为契约见 `docs/persona/PERSONA_LOOP_SPEC.md`。本文只规定其证据、候选、版本、召回、删除和预算，不决定角色是否采纳用户观点。
 
 ## 1. 设计原点
 

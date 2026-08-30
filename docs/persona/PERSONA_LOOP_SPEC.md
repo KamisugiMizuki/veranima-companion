@@ -934,7 +934,7 @@ persona_candidate_to_memory(candidate, source_message_id) -> dict | None
 
 **目标**：用固定数据集验证人格循环，不能只跑结构 grep。
 
-- 目标文件：`tests/test_persona_bench.py`、`tests/fixtures/persona_cases.jsonl`、必要时 `docs/PERSONA_LOOP_SPEC.md`。
+- 目标文件：`tests/test_persona_bench.py`、`tests/fixtures/persona_cases.jsonl`、必要时 `docs/persona/PERSONA_LOOP_SPEC.md`。
 - 固定场景：定义形成、比喻迁移、观点冲突、关系修复、共同项目、诱导回声、公式化陷阱、删除/换卡隔离。
 - 每个 case 字段：`id/input/history/expected_candidates/expected_reuse_action/forbidden/expected_stage`。
 - 指标：framework precision/recall、role consistency、relationship event precision、reuse success、verbatim-copy-rate、unsupported-empathy-rate、brief chars。

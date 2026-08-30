@@ -1145,7 +1145,7 @@ responded / dismissed / interrupted
 
 ### Phase S0：契约和只读状态
 
-- 新建 `docs/VIRTUAL_SCHEDULE_SPEC.md`。
+- 新建 `docs/virtual_life/VIRTUAL_SCHEDULE_SPEC.md`。
 - 定义 `ScheduleOutline`、`DayContext`、`DayPlan`、`ScheduleContext`、`ProactiveIntent`。
 - 仅提供只读的当前活动计算，不影响发送。
 - 用合成角色卡测试，不读取生产日程或用户图片。
