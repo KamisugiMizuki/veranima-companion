@@ -70,6 +70,16 @@ fun SettingsScreen(onBack: () -> Unit) {
         if (o.has("memories")) o.put("detail", "memories=" + o.getInt("memories"))
         report(o, name)
     }
+    // 连通性测试：bridge.test_conn 真调一次远端（读 config.yaml 现值，保存后即可测）
+    val busy = remember { mutableStateOf("") }
+    fun testConn(which: String) = scope.launch {
+        busy.value = which
+        val o = try {
+            JSONObject(withContext(Dispatchers.IO) { bridge.callAttr("test_conn", which).toString() })
+        } catch (e: Exception) { JSONObject().put("ok", false).put("error", e.message ?: "bridge 异常") }
+        busy.value = ""
+        report(o, when (which) { "llm" -> "语言模型" "vision" -> "视觉模型" "embedding" -> "Embedding" else -> "搜索" })
+    }
     // SAF：导出=用户选完目标后，bridge 现场生成 inbox 文件再拷过去（顺序=选→生成→拷贝，无竞态）
     val cr = ctx.contentResolver
     var pendingRole by remember { mutableStateOf<String?>(null) }
@@ -146,6 +156,10 @@ fun SettingsScreen(onBack: () -> Unit) {
                     set("llm_model", k3.value)
                     set("llm_vision_model", k4.value)
                 }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TestButton("llm", "测语言模型", busy.value) { testConn(it) }
+                    TestButton("vision", "测视觉模型", busy.value) { testConn(it) }
+                }
             }
 
             SectionCard("Embedding（记忆召回的语义向量，安卓走远程 API，必填）") {
@@ -160,6 +174,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                     set("embedding_base_url", k2.value)
                     set("embedding_model", k3.value)
                 }
+                TestButton("embedding", "测 Embedding", busy.value) { testConn(it) }
             }
 
             SectionCard("联网搜索（博查 Bocha，安卓唯一后端）") {
@@ -171,6 +186,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                     set("search_api_key", k1.value)
                     set("search_base_url", k2.value)
                 }
+                TestButton("search", "测搜索", busy.value) { testConn(it) }
             }
 
             SectionCard("角色（点名字切换；导出=轻量 .char 不含立绘语音）") {
@@ -416,6 +432,20 @@ private fun SaveButton(label: String, onClick: () -> Unit) {
     Button(onClick = onClick, colors = ButtonDefaults.buttonColors(Coral),
         shape = MaterialTheme.shapes.small, modifier = Modifier.padding(top = 8.dp)) {
         Text(label, style = MaterialTheme.typography.labelMedium)
+    }
+}
+
+@Composable
+private fun TestButton(which: String, label: String, busy: String, onTest: (String) -> Unit) {
+    OutlinedButton(
+        onClick = { onTest(which) },
+        enabled = busy.isEmpty(),
+        shape = MaterialTheme.shapes.small,
+        modifier = Modifier.padding(top = 8.dp),
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = Coral),
+        // 该按钮恒在奶油分区卡上 → 文字固定用深色系的珊瑚；禁用态由 alpha 表达，不再手动换色
+        border = androidx.compose.foundation.BorderStroke(1.dp, if (busy.isEmpty()) Coral else Hairline)) {
+        Text(if (busy == which) "测试中…" else label, style = MaterialTheme.typography.labelMedium)
     }
 }
 

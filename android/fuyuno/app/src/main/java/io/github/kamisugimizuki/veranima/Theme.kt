@@ -78,6 +78,8 @@ private val Scheme = lightColorScheme(
     surfaceVariant = SurfaceCard, onSurfaceVariant = Muted,
     outline = Hairline, outlineVariant = Hairline,
     secondary = CoralActive,
+    // snackbar 等"反色面"必须显式配对，否则 M3 默认值在本色板下浅字浅底
+    inverseSurface = SurfaceDark, inverseOnSurface = OnDark,
 )
 
 private val SchemeDark = darkColorScheme(
@@ -87,6 +89,7 @@ private val SchemeDark = darkColorScheme(
     surfaceVariant = SurfaceCardDark, onSurfaceVariant = MutedDark,
     outline = HairlineDark, outlineVariant = HairlineDark,
     secondary = CoralActive,
+    inverseSurface = InkDark, inverseOnSurface = CanvasDark,  // 夜间反色=浅底深字
 )
 
 private val Type = Typography(

@@ -187,8 +187,13 @@ def boot(files_dir: str) -> str:
 
         import yaml
         from veranima.app import create_agent
+        from veranima.config import normalize_llm_profiles
 
         cfg = yaml.safe_load((root / "config.yaml").read_text(encoding="utf-8"))
+        # 根因修复（2026-08-31）：设置页写 llm.profiles.default.*，而 create_agent
+        # 消费 llm 顶层字段；PC 端靠 load_config 里的 normalize 合并，bridge 之前
+        # 裸 safe_load 跳过了这步 → 用户保存的模型名/视觉模型名永远不生效。
+        normalize_llm_profiles(cfg)
         cfg["root"] = str(root)
         boot.root = root  # 设置页后端锚点
         # 路径全部锚定到应用私有目录
@@ -295,6 +300,62 @@ def _save_cfg(root: Path, cfg: dict) -> None:
 def _mask(v: str) -> str:
     v = str(v or "")
     return (v[:4] + "…" + v[-4:]) if len(v) > 12 else ("已设置" if v else "")
+
+
+def test_conn(which: str) -> str:
+    """连通性测试（llm/vision/embedding/search 四类）。读 config.yaml 现值，
+    保存后立即可测不依赖重启；失败信息带 HTTP 状态与响应片段，让 UI 能显示原因。"""
+    import time
+    which = str(which or "").strip().lower()
+    root = Path(getattr(boot, "root", "."))
+    try:
+        cfg = _load_cfg(root)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": f"配置读取失败: {e}"})
+    llm_cfg = dict(cfg.get("llm") or {})
+    prof = (llm_cfg.get("profiles") or {}).get(str(llm_cfg.get("active_profile") or "default")) or {}
+    llm_cfg = {**llm_cfg, **prof}  # bridge 的 _load_cfg 不走 normalize，手动合成生效字段
+    t0 = time.time()
+    try:
+        if which == "llm":
+            from veranima.llm.client import LLMClient
+            out = LLMClient(llm_cfg).chat(
+                [{"role": "user", "content": "回复这两个字即可：连通"}], max_tokens=64)
+            return json.dumps({"ok": True,
+                               "detail": f"{llm_cfg.get('model','')} {round(time.time()-t0,1)}s：{str(out)[:20]}"})
+        if which == "vision":
+            if not str(llm_cfg.get("vision_model") or "").strip():
+                return json.dumps({"ok": False, "error": "视觉模型名未配置（发图不可用）"})
+            from veranima.llm.client import LLMClient
+            pixel = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+            out = LLMClient(llm_cfg).observe_image(pixel, prompt="图中是什么颜色？只答词。")
+            if not out:
+                return json.dumps({"ok": False, "error": "空响应（看 logs/core.log）"})
+            return json.dumps({"ok": True,
+                               "detail": f"{llm_cfg.get('vision_model','')} {round(time.time()-t0,1)}s：{out[:20]}"})
+        if which == "embedding":
+            from veranima.memory.embedding import make_provider
+            mem_cfg = dict(cfg.get("memory") or {})
+            vec = make_provider(mem_cfg, llm_cfg).embed(["连通性测试"])[0]
+            return json.dumps({"ok": bool(vec),
+                               "detail": f"{mem_cfg.get('embedding_model','')} dim={len(vec)} {round(time.time()-t0,1)}s"})
+        if which == "search":
+            from veranima.tools.bocha import BochaClient
+            s_cfg = dict(cfg.get("search") or {})
+            client = BochaClient(str(s_cfg.get("api_key") or ""),
+                                 base_url=s_cfg.get("base_url") or None)
+            if not client.api_key:
+                return json.dumps({"ok": False, "error": "搜索 API Key 未配置"})
+            results = client.search("今天的日期", force_refresh=True)
+            ok = bool(results)
+            return json.dumps({"ok": ok,
+                               "detail": f"博查 {round(time.time()-t0,1)}s 返回 {len(results)} 条"
+                                         + ("" if ok else "（key/额度/网络见 logs）"),
+                               **({} if ok else {"error": "搜索无结果"})})
+        return json.dumps({"ok": False, "error": f"未知测试项: {which}"})
+    except Exception as e:
+        log.exception("test_conn %s failed", which)
+        return json.dumps({"ok": False, "error": f"{type(e).__name__}: {str(e)[:180]}"})
 
 
 def get_settings() -> str:
