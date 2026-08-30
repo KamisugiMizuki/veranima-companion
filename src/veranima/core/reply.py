@@ -141,9 +141,8 @@ def is_internal_reply(text: str) -> bool:
         return True
     if _ANALYSIS_HEADING_RE.search(value):
         return True
-    if not _drop_monologue_paragraphs(value) or _has_monologue_line(value):
-        return True  # 含任何独白行即内部消息（2026-08-31 真机 #549：混合独白混正常句，
-                     # 整条判定漏进历史=prompt 永久污染源）：不进历史/不回读
+    if not _drop_monologue_paragraphs(value):
+        return True  # 整条被规则层判为独白（无正常幸存行）：不进历史/不回读
     if re.search(r"[\"']segments[\"']\s*:\s*\[", value):
         return True
     try:
@@ -196,39 +195,59 @@ def strip_thinking_trace(text: str) -> str:
 
 
 _INTERNAL_TERMS = ("依恋度", "attachment", "PersonaBrief", "回用动作", "表达意图",
-                   "记忆候选", "候选池", "relational_tension", "tension 值", "TV 值",
-                   # 人设元词汇：台词永远不会自称风格标签（2026-08-31 #549 实锤）
-                   "敬语刀", "人设", "口癖", "角色卡")
-# 计划/自评语气（第三人称称用户 + 把自己当执行者讨论）
-_MONOLOGUE_RE = re.compile(
-    r"(可以|应该|最好|适合|不妨)(比之前|更|再|稍微|亲切|亲一些|长一些|短一些)|"
-    r"我(虽然|其实|这边)?(得|要|应该|计划|打算)|"
-    r"(敬语刀|人设|角色卡|口癖).{0,6}(落在|体现|保持|风格)"
+                   "记忆候选", "候选池", "relational_tension", "tension 值", "TV 值")
+# ^ 封闭词表=我们自己注入 system prompt 的字段名：模型只能从上下文复读，台词
+#   永远不会合法使用 → 确定性硬杀（不是面向样例，是杀自己漏出去的词源）。
+# 角色卡派生的开放元词（风格标签/人设描述）不进硬杀——台词可能合法出现，
+# 交给出口 LLM 判定（agent._sanitize_monologue）。
+_MONOLOGUE_RULE_RE = re.compile(
+    r"(?:用户|ta|TA)"                                  # 第三人称把用户当对象谈
+    r".{0,40}(可以|应该|最好|适合|不妨|得|要|计划|打算)"  # + 计划/评价语气
+    r"|"
+    r"(?:可以|应该|最好|适合|不妨)(?:比之前|再|稍微|亲一些|亲切|长一些|短一些)"
 )
+# 送 LLM 判定的"可疑"结构：同句里第三人称指用户 + 第一人称自我叙述（台词罕见形态）
+_SUSPECT_THIRD = ("用户", "ta", "TA", "他", "她")
+_SUSPECT_META = ("敬语刀", "人设", "口癖", "角色卡", "吐槽", "问候", "台词")
 
 
 def _looks_monologue(line: str) -> bool:
-    """单行内心独白判定：内部机制词出现即杀；或第三人称称用户+计划语气同时命中。
-    注意：普通台词「我应该去看看你」不含「用户」也不含比较级自评结构，不会误杀。"""
+    """规则硬杀：封闭内部词命中，或 第三人称对象化+计划语气 的强组合。"""
     low = line.lower()
     if any(term.lower() in low for term in _INTERNAL_TERMS):
         return True
-    return ("用户" in line or "ta" in low) and bool(_MONOLOGUE_RE.search(line))
+    return bool(_MONOLOGUE_RULE_RE.search(line))
 
 
-def _has_monologue_line(value: str) -> bool:
-    """任一行为思考独白（内部词命中，或 第三人称称用户+计划语气 组合命中）。"""
-    return any(_looks_monologue(ln.strip()) for ln in value.splitlines() if ln.strip())
+def _is_monologue_suspect(line: str) -> bool:
+    """灰色地带（预筛，不代表杀）：第三人称指用户与第一人称同现，或含人设元词。
+    交给一次 LLM 语义判定裁决（agent._sanitize_monologue）。"""
+    if _looks_monologue(line):
+        return False  # 已被规则杀，不必再判
+    has_third = any(t in line for t in _SUSPECT_THIRD)
+    has_self = any(t in line for t in ("我", "自己"))
+    has_meta = any(t in line for t in _SUSPECT_META)
+    return (has_third and has_self) or has_meta
+
+
+def monologue_suspect_lines(value: str) -> list[str]:
+    """当前文本里需要 LLM 裁决的行（原样字符串，调用方按内容匹配回删）。"""
+    return [ln.strip() for ln in str(value or "").splitlines()
+            if ln.strip() and _is_monologue_suspect(ln.strip())]
+
+
+def drop_lines(value: str, doomed: set[str]) -> str:
+    """删除指定内容行（strip 后精确匹配）；全删光返回空串。"""
+    kept = [ln for ln in value.splitlines()
+            if ln.strip() and ln.strip() not in doomed]
+    return "\n".join(kept).strip()
 
 
 def _drop_monologue_paragraphs(value: str) -> str:
-    """剥离思考独白（2026-08-31 真机实锤：'好的，这就来。/依恋度快到顶了…/敬语刀，
-    关心落在行为上' 三段裸独白整条发出——标题级检测只认"思考过程"字样，绕不过
-    无标题独白）。逐段拆行：独白行删，正常行留。
-
-    ponytail: 规则杀非语义杀（判断点上 LLM 太贵且此处有兜底空串=不发即可）；
-    若误杀正常台词再升级为 LLM 判定。"""
-    kept: list[str] = []
+    """剥离思考独白（规则层——2026-08-31 真机 #549 实锤裸独白绕过标题检测）。
+    只杀确定性部分（封闭词+强组合）；灰色地带由出口 LLM 判定兜住，
+    本函数同时作为无 LLM 环境（历史过滤/纯函数调用方）的降级防线。"""
+    kept = []
     for block in re.split(r"\n{2,}", value):
         lines = [ln for ln in block.splitlines() if ln.strip()]
         survivors = [ln for ln in lines if not _looks_monologue(ln.strip())]

@@ -1045,7 +1045,8 @@ class Agent:
         # 首次会话：初遇开场白
         msgs = self.memory.recent_messages(limit=2)
         if not msgs:
-            opening = self.card.first_mes or f"你好，我是{self.card.name}。今天想聊点什么？"
+            opening = self._sanitize_monologue(
+                self.card.first_mes or f"你好，我是{self.card.name}。今天想聊点什么？")
             self.memory.store_message("assistant", opening, self.state.energy, self.state.mood)
             self._append_history_message("assistant", opening)
             self._persist_state()
@@ -1054,6 +1055,37 @@ class Agent:
         greeting = self._time_greeting()
         self._persist_state()
         return greeting
+
+    def _sanitize_monologue(self, text: str) -> str:
+        """出口独白裁决（2026-08-31 两层防线的语义层）：规则层已杀封闭内部词，
+        灰色行（第三人称+第一人称同现/人设元词）送一次小 LLM 判定。
+
+        判断点原则（用户拍板）：关键词只做预筛与降级兜底，语义裁决归 LLM。
+        失败 fail-open（保留规则层结果，绝不误删正常台词）。"""
+        from .reply import drop_lines, monologue_suspect_lines
+        text = str(text or "")
+        suspects = monologue_suspect_lines(text)
+        if not suspects or not getattr(self.llm, "is_model_loaded", lambda: False)():
+            return text
+        try:
+            numbered = "\n".join(f"{i}. {ln}" for i, ln in enumerate(suspects))
+            raw = self.llm.chat_structured(
+                [{"role": "user", "content": (
+                    "下面编号行来自聊天输出。判定每行：是角色对用户说的话，"
+                    "还是角色在分析/计划/评价（把对方称为第三人称、谈论'问候/关心'这类"
+                    "行为本身、自称风格、提到系统数值）？"
+                    "判定是行为不是猜话题——正常聊天里也可以提到人设或吐槽。"
+                    "只输出 JSON：{\"monologue_lines\":[被判定为分析行的编号]}"
+                )}, {"role": "user", "content": numbered}],
+                max_tokens=512, temperature=0.1,
+            )
+            data = json.loads(str(raw).strip().strip("`").removeprefix("json").strip())
+            doomed = {suspects[i].strip() for i in data.get("monologue_lines", [])
+                      if isinstance(i, int) and 0 <= i < len(suspects)}
+            return drop_lines(text, doomed) if doomed else text
+        except Exception as e:
+            logger.debug("monologue judge failed (fail-open): %s", e)
+            return text
 
     def handle(self, user_text: str, images: list[str] | None = None, channel: str = "im",
                attachments: str = "", now: datetime.datetime | None = None) -> TurnResult:
@@ -1478,6 +1510,15 @@ class Agent:
             portrait = ""
             tone = ""
             ja_text = ""
+
+        # 独白裁决（两层防线语义层）：规则层杀不掉的灰色行送一次 LLM 判定；
+        # 在入库/入历史/发送之前执行，泄漏止步于出口
+        if not generation_failed and reply:
+            reply = self._sanitize_monologue(reply)
+            if not reply:
+                generation_failed = True
+                reply = "（我这边暂时没拿到回复，再说一遍？）"
+                turn_reply = None
 
         if generation_failed:
             self._history.append(self._history_entry("user", store_text, self._message_time_for_id(user_msg_id)))
@@ -2618,7 +2659,10 @@ class Agent:
         if not bilingual:
             parsed = parse_reply(reply, channel="im", card=self.card, max_chars=max_chars)
             text = parsed.text if parsed.segments else ""
-            return "" if is_failure_fallback_reply(text) else text
+            text = "" if is_failure_fallback_reply(text) else text
+            # 主动文案共享出口（问候/饭点/追问/心跳/公告）：同样过独白裁决，
+            # 无灰色行时零成本直通
+            return self._sanitize_monologue(text)
         parsed = parse_reply(
             reply,
             channel="tts",
