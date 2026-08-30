@@ -141,6 +141,8 @@ def is_internal_reply(text: str) -> bool:
         return True
     if _ANALYSIS_HEADING_RE.search(value):
         return True
+    if not _drop_monologue_paragraphs(value):
+        return True  # 整条都是思考独白（2026-08-31 真机泄漏事件）：不进历史/不回读
     if re.search(r"[\"']segments[\"']\s*:\s*\[", value):
         return True
     try:
@@ -176,6 +178,9 @@ def strip_thinking_trace(text: str) -> str:
     """Keep the explicit final answer; analysis-only output is not user-visible."""
     value = str(text or "").strip()
     value = re.sub(r"<think>.*?</think>\s*", "", value, flags=re.S | re.I)
+    value = _drop_monologue_paragraphs(value)
+    if not value:
+        return ""
     if not _ANALYSIS_HEADING_RE.search(value) and not _FINAL_HEADING_RE.search(value):
         return value
     matches = list(_FINAL_HEADING_RE.finditer(value))
@@ -187,6 +192,43 @@ def strip_thinking_trace(text: str) -> str:
     if len(paragraphs) >= 2 and paragraphs[-1] == paragraphs[-2]:
         paragraphs.pop()
     return "\n\n".join(paragraphs).strip()
+
+
+_INTERNAL_TERMS = ("依恋度", "attachment", "PersonaBrief", "回用动作", "表达意图",
+                   "记忆候选", "候选池", "relational_tension", "tension 值", "TV 值",
+                   # 人设元词汇：台词永远不会自称风格标签（2026-08-31 #549 实锤）
+                   "敬语刀", "人设", "口癖", "角色卡")
+# 计划/自评语气（第三人称称用户 + 把自己当执行者讨论）
+_MONOLOGUE_RE = re.compile(
+    r"(可以|应该|最好|适合|不妨)(比之前|更|再|稍微|亲切|亲一些|长一些|短一些)|"
+    r"我(虽然|其实|这边)?(得|要|应该|计划|打算)|"
+    r"(敬语刀|人设|角色卡|口癖).{0,6}(落在|体现|保持|风格)"
+)
+
+
+def _looks_monologue(line: str) -> bool:
+    """单行内心独白判定：内部机制词出现即杀；或第三人称称用户+计划语气同时命中。
+    注意：普通台词「我应该去看看你」不含「用户」也不含比较级自评结构，不会误杀。"""
+    low = line.lower()
+    if any(term.lower() in low for term in _INTERNAL_TERMS):
+        return True
+    return ("用户" in line or "ta" in low) and bool(_MONOLOGUE_RE.search(line))
+
+
+def _drop_monologue_paragraphs(value: str) -> str:
+    """剥离思考独白（2026-08-31 真机实锤：'好的，这就来。/依恋度快到顶了…/敬语刀，
+    关心落在行为上' 三段裸独白整条发出——标题级检测只认"思考过程"字样，绕不过
+    无标题独白）。逐段拆行：独白行删，正常行留。
+
+    ponytail: 规则杀非语义杀（判断点上 LLM 太贵且此处有兜底空串=不发即可）；
+    若误杀正常台词再升级为 LLM 判定。"""
+    kept: list[str] = []
+    for block in re.split(r"\n{2,}", value):
+        lines = [ln for ln in block.splitlines() if ln.strip()]
+        survivors = [ln for ln in lines if not _looks_monologue(ln.strip())]
+        if survivors:
+            kept.append("\n".join(survivors))
+    return "\n\n".join(kept).strip()
 
 
 def _valid_tone(tone: str, card_tones: list[str] | None) -> str:
