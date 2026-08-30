@@ -48,7 +48,9 @@ def test_agent_sleep_boundary_does_not_call_llm(tmp_path):
     agent.schedule_runtime.begin_sleep_preparation(start)
     agent.schedule_runtime.extend_wakefulness(start)
 
-    result = agent.handle("还在吗")
+    # now 注入与睡眠周期同时刻：真实时钟会把角色按醒（睡眠目标时长已过），
+    # 断言的是 sleeping 态行为，测试必须固定时钟
+    result = agent.handle("还在吗", now=start)
 
     assert result.reply == ""
     assert llm.calls == 0
@@ -83,7 +85,7 @@ def test_sleeping_agent_archives_message_metadata(tmp_path):
     agent.schedule_runtime.begin_sleep_preparation(start)
     agent.schedule_runtime.extend_wakefulness(start)
 
-    agent.handle("睡眠消息")
+    agent.handle("睡眠消息", now=start)
 
     rows = memory.sleep_messages("sleep-boundary", "qq:default", agent.schedule_runtime.state.sleep_cycle_id)
     assert rows and rows[0]["message_id"]

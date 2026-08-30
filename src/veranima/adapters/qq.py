@@ -697,8 +697,14 @@ class QQAdapter:
         if not due:
             return False
         meal, text, candidate_id = due
-        candidate = self._qq_candidate_from_text(text, source="ritual")
-        candidate = candidate.__class__(
+        # 关系阶段解锁（自检缺口④，与 core tick 同阈值）+ 文案走 core 去模板化
+        # 路径（LLM 口吻改写；原 QQ 独立路径直发模板是闹钟感来源）。
+        # LLM 调用在锁外（与 schedule_notice_text 同模式），发送段才持锁。
+        if self.agent.state.attachment < 0.4:
+            return False
+        text = await asyncio.to_thread(self.agent._meal_message, meal, text) or text
+        from ..core.ambient import ProactiveCandidate
+        candidate = ProactiveCandidate(
             source="ritual", reason=f"{meal} meal reminder",
             relevance=1.0, urgency=0.6, intent="remind",
             context={"calendar_source": "meal", "meal": meal}, channel="qq",

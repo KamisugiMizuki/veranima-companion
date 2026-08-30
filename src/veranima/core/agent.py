@@ -375,6 +375,9 @@ class Agent:
         except (AttributeError, ValueError):
             return ""
         cn = {"breakfast": "早饭", "lunch": "午饭", "dinner": "晚饭"}
+        # 关系阶段解锁（2026-08-31 自检缺口④）：牵挂是亲密行为，初识阶段发=越界
+        if self.state.attachment < 0.5:
+            return ""
         # 三餐锚点已被 adjust_to_user_cycle 按用户作息平移；落在角色必睡区间
         # [睡窗起点, 醒窗起点) 的餐届时无提醒 → 给睡前公告一条带指向的牵挂素材
         for meal, (hour, _text) in self.meals.slots.items():
@@ -1053,7 +1056,7 @@ class Agent:
         return greeting
 
     def handle(self, user_text: str, images: list[str] | None = None, channel: str = "im",
-               attachments: str = "") -> TurnResult:
+               attachments: str = "", now: datetime.datetime | None = None) -> TurnResult:
         """处理一条用户消息，返回回复。
 
         images: 图片 data URL 列表（如 data:image/png;base64,...），
@@ -1061,6 +1064,7 @@ class Agent:
         图片会以 OpenAI 多模态 content 数组形式进当前轮 LLM 请求；
         记忆/历史用 [图片] 占位（避免 base64 撑爆上下文与 FTS5）。
         channel: 通道标识（im/tts，DESIGN 4.8 通道感知），注入 system prompt 的通道语境。
+        now: 注入交互时间（测试用固定时钟；生产 None=真实当前时间）。
         """
         user_text = user_text.strip()
         images = [str(x) for x in (images or []) if isinstance(x, str)][:4]
@@ -1076,7 +1080,7 @@ class Agent:
         if not user_text and not images:
             return TurnResult(reply="", energy=self.state.energy, mood=self.state.mood)
 
-        interaction_now = datetime.datetime.now(datetime.timezone.utc)
+        interaction_now = now or datetime.datetime.now(datetime.timezone.utc)
         if channel == "im" and any(token in user_text for token in ("你在哪", "你现在在哪里", "你在什么地方")):
             answer = self.current_space_answer(interaction_now)
             self.memory.store_message("assistant", answer, self.state.energy, self.state.mood, channel="qq")
@@ -1263,6 +1267,20 @@ class Agent:
                 detail = "；".join(excerpts) if excerpts else f"共收到 {len(pending)} 条消息"
                 extra_blocks.append(f"【醒后衔接】角色睡眠期间用户发过消息：{detail}。自然合并回应，不要说已读或编造内容。")
                 sleep_archive_ids_to_process = [row["id"] for row in pending]
+        # 困倦渗透（2026-08-31 自检清单缺口①）：睡眠债务是算出来的，此前从未
+        # 到达表达层。债务小时数 → 回复形式约束（短句、省略、反应慢半拍）。
+        if schedule_runtime is not None:
+            debt_h = schedule_runtime.state.sleep_debt_minutes / 60
+            if schedule_runtime.state.state == "sleep_preparing" and schedule_runtime.state.sleep_reason == "late_sleep":
+                extra_blocks.append(
+                    "【强撑】你早该睡了，一直拖着没睡。回复带明显困意：句子变短、"
+                    "偶尔用省略号、对复杂问题坦率说撑不住了想先睡。不要提系统或日程。"
+                )
+            elif debt_h >= 1 and schedule_runtime.state.sleep_reason == "woke":
+                extra_blocks.append(
+                    f"【欠睡】你没睡够，还差大约 {int(debt_h)} 小时的觉，现在很困。"
+                    "回复变短、反应慢半拍、可以用省略号，用户不问就不提困。不要提系统或日程。"
+                )
         if scene == "busy":
             extra_blocks.append(
                 "【场景偏好·忙碌】用户正在学习或处理事情。回复尽量简短，优先直接回应当前输入；"
@@ -2269,7 +2287,9 @@ class Agent:
         # 问候窗口内（早6-10/午11-14/晚18-23）饭点整体让位：锚点 8/12 点天然在
         # 窗口里 → 实际只有 17 点晚餐作为独立提醒存活。这正是「饭点纳入问候」的效果。
         in_greeting_slot = self.greeter.slot_at(now) is not None
-        due_meal = None if (msgs or in_greeting_slot) else self.meals.due(now=now, sent_ids=meal_sent_ids)
+        # 关系阶段解锁（自检缺口④）：提醒吃饭是"自己人"行为，依恋 <0.4 不发
+        meal_gate_open = self.state.attachment >= 0.4
+        due_meal = None if (msgs or in_greeting_slot or not meal_gate_open) else self.meals.due(now=now, sent_ids=meal_sent_ids)
         if due_meal:
             meal_name, meal_text, meal_cid = due_meal
             # 用户睡眠中不发三餐提醒（2026-08-30 用户拍板：作息优先级低于角色作息，
@@ -2423,8 +2443,10 @@ class Agent:
                 ctx = ("最近的对话：\n" + "\n".join(
                     self._message_context_line(m)[:120] for m in recent[-4:]
                 )) if recent else ""
-                # 翻旧账接线（_dig_old_memory 原为孤儿函数）：给 LLM 一条旧事素材
-                dig = self._dig_old_memory()
+                # 翻旧账接线（_dig_old_memory 原为孤儿函数）：给 LLM 一条旧事素材；
+                # 以最后一条用户消息为话题线索做弱关联挖掘（缺口②）
+                last_user_text = next((m["content"] for m in reversed(recent) if m["role"] == "user"), "")
+                dig = self._dig_old_memory(topic_hint=last_user_text)
                 dig_hint = f"\n（你刚想起一条旧事：{dig}）" if dig else ""
                 task = (
                     f"{ctx}{dig_hint}\n\n你刚在整理聊天记录（离线成长），想跟用户说点什么破冰。"
@@ -2627,6 +2649,37 @@ class Agent:
         return msg
 
 
+    @staticmethod
+    def _bigram_sim(a: str, b: str) -> float:
+        """字符 bigram 重合率（取双向较小值）——中文短句的廉价相似度。"""
+        def grams(s):
+            s = "".join(str(s).split())
+            return {s[i:i+2] for i in range(len(s) - 1)} if len(s) > 1 else {s} if s else set()
+        ga, gb = grams(a), grams(b)
+        if not ga or not gb:
+            return 0.0
+        inter = len(ga & gb)
+        return min(inter / len(ga), inter / len(gb))
+
+    def _relearn_or_store(self, layer: str, text: str, *, importance: float, category: str,
+                          meta: dict | None = None) -> None:
+        """遗忘后重新学习（2026-08-31 自检缺口③）：用户再次告知同一件事时，
+        不插新条目，而是沿版本链更新旧记忆并把置信度拉回高段——
+        表达层由此自动从"我记得好像…"（_fuzzy_ify 只作用于低确信档）
+        恢复为肯定引用，等效于"啊对，我想起来了"。无相似旧事则照旧新增。
+        """
+        try:
+            for hit in self.memory.recall(text[:100], top_k=3, layer=layer):
+                if self._bigram_sim(hit.content, text) >= 0.5:
+                    self.memory.update_latest(hit.id, text[:100], confidence=0.95,
+                                              meta={"relearned": True})
+                    logger.info("memory relearned (version bump): #%s", hit.id)
+                    return
+        except Exception as e:
+            logger.debug("relearn lookup failed, fall through to store: %s", e)
+        self.memory.store(layer, text[:100], importance=importance, confidence=0.6,
+                          provenance="auto-extract", category=category, meta=meta)
+
     def _maybe_extract_events(self, user_text: str) -> None:
         """规则提取记忆（MVP1 简化，每条消息检查；MVP2 替换为 LLM 事件卡片提取）。
 
@@ -2649,16 +2702,11 @@ class Agent:
             )
             logger.info("episodic extracted: #%s", entry.id)
         elif any(s in user_text for s in prefer):
-            entry = self.memory.store(
-                "semantic",
-                user_text[:100],
-                importance=0.7,
-                confidence=0.6,
-                provenance="auto-extract",
-                category="preference",
-                meta={"emotion": emotion} if emotion else None,
-            )
-            logger.info("semantic extracted: #%s", entry.id)
+            # 偏好类走重学路径：同一件事再说一遍 → 版本链刷新+置信拉回，
+            # 而非堆重复条目（缺口③"遗忘后重新学习"的写侧落点）
+            self._relearn_or_store("semantic", user_text, importance=0.7,
+                                   category="preference",
+                                   meta={"emotion": emotion} if emotion else None)
 
     @staticmethod
     def _detect_emotion(user_text: str) -> str | None:
@@ -2671,10 +2719,12 @@ class Agent:
             return "有点低落"
         return None
 
-    def _dig_old_memory(self) -> str | None:
-        """主动考古（8.7.1）：从 episodic/semantic 随机挖一条旧事。
+    def _dig_old_memory(self, topic_hint: str = "") -> str | None:
+        """主动考古（8.7.1）：从 episodic/semantic 挖一条旧事。
 
-        排除最近 24 小时内的提取（避免考古"最近事"显得假）；无旧事返回 None。
+        排除最近 24 小时内的提取（避免考古"最近事"显得假）。topic_hint 非空时
+        优先挖与之语义相关的旧事（2026-08-31 自检缺口②：随机挖容易刻意，
+        真人"突然想起"是被眼前话题勾起来的弱关联）；无相关命中退回随机挖。
         """
         import datetime
         try:
@@ -2683,6 +2733,14 @@ class Agent:
             pool = [e for e in (eps + sems) if e.id % 3 != 0]  # 简易分散
             if not pool:
                 return None
+            if topic_hint:
+                try:
+                    related = {e.id for e in self.memory.recall(topic_hint, top_k=10)}
+                    biased = [e for e in pool if e.id in related]
+                    if biased:
+                        return random.choice(biased).content[:60]
+                except Exception:
+                    pass  # recall 失败退回随机，不阻塞破冰
             entry = random.choice(pool)
             return entry.content[:60]
         except Exception as e:
@@ -2695,9 +2753,15 @@ class Agent:
             return fallback
         cn = {"breakfast": "早饭", "lunch": "午饭", "dinner": "晚饭"}.get(meal_name, "饭")
         try:
+            # 上下文相关（自检缺口⑤）：带上用户最近说了什么，让提醒显得"因为在意"
+            # 而不是"因为到点"——用户说过忙/没吃/在减肥，口吻就该接得住。
+            recent_user = [self._message_context_line(m)[:80] for m in reversed(
+                self.memory.recent_messages(limit=10)) if m["role"] == "user"][:3]
+            ctx = ("\n用户最近说过：" + "；".join(recent_user)) if recent_user else ""
             task = (
                 f"到了该吃{cn}的时间点。用你自己的口吻提醒用户去吃饭，一句话，"
-                f"不要说「到饭点了」这种模板话，别解释为什么提醒。"
+                f"不要说「到饭点了」这种模板话，别解释为什么提醒。{ctx}\n"
+                "如果这些话里能自然接上（比如 ta 之前说忙/没吃/睡过头），就顺着提，别硬扯。"
             )
             return self._short_task(task, max_tokens=120) or fallback
         except Exception as e:
