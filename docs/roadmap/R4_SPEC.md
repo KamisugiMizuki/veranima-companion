@@ -76,7 +76,7 @@ proactive:
   enabled: true
   max_per_day: 2
   min_gap_minutes: 30
-  quiet_hours: [23, 8]
+  quiet_hours: [23, 8]      # 已退役（2026-08-30：睡眠模拟由虚拟日程承担），quiet_hours_enabled=false 时整段仅兼容保留
   visual_candidates: true
 ```
 

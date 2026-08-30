@@ -190,7 +190,7 @@ GUI 实现以 `docs/desktop/GUI_SPEC.md` 为唯一界面契约：主窗突出角
 - [`STYLE_LEARNING_SPEC.md`](../expression/STYLE_LEARNING_SPEC.md)：未标注语料的自动处理、抽样复核、`StyleProfile → StyleBrief → ResponsePlan` 核心已实现；LoRA 仍暂缓，风格不得覆盖角色核心。
 - [`SHARED_CREATION_SPEC.md`](../persona/SHARED_CREATION_SPEC.md)：复用 `shared_episode/shared_meaning/commitment/relationship_event` 和现有关系模型，增加 Project/Arc/Scene/Decision/Artifact/OpenThread 的协作工作流；关系变化必须有证据和用户确认。
 - [`VIRTUAL_SCHEDULE_SPEC.md`](../virtual_life/VIRTUAL_SCHEDULE_SPEC.md)：角色目录日程模板、昼夜节律、睡眠、偏移回正、活动上下文和有来源的生活主动性。
-- [`VIRTUAL_SPACE_SPEC.md`](../virtual_life/VIRTUAL_SPACE_SPEC.md)：以有限生活范围、稳定场所池、路线和 CurrentScene 取代“角色永远固定在一个 scenario”；当前为设计稿，尚未实现。
+- [`VIRTUAL_SPACE_SPEC.md`](../virtual_life/VIRTUAL_SPACE_SPEC.md)：以有限生活范围、稳定场所池、路线和 CurrentScene 取代“角色永远固定在一个 scenario”；已实现并接入日程运行时（空间状态机、路线转换、场景事件落库均有行为测试覆盖）。
 
 Yuki 运行时卡位于 [`characters/yuki/character.json`](../../characters/yuki/character.json)，说明文件 [`characters/yuki/card.md`](../../characters/yuki/card.md) 区分公开人设参考、项目原创桌宠延展和明确排除的原作文本/剧透。
 

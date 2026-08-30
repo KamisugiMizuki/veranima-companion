@@ -270,9 +270,6 @@ unset PYTHONPATH
 - `docs/roadmap/DESIGN.md`
 - `docs/virtual_life/VIRTUAL_SCHEDULE_SPEC.md`
 - `docs/virtual_life/VIRTUAL_SPACE_SPEC.md`
-- `docs/virtual_life/audits/VIRTUAL_SCHEDULE_COMPLETION_AUDIT.md`
-- `docs/virtual_life/audits/VIRTUAL_SCHEDULE_DESIGN_AUDIT_DEEPSEEK_ULTRA.md`
-- `docs/virtual_life/audits/VIRTUAL_SCHEDULE_IMPL_AUDIT_DEEPSEEK_ULTRA.md`
 - `docs/memory/MEMORY_SPEC.md`
 - `docs/persona/PERSONA_LOOP_SPEC.md`
 - `docs/proactive/QQ_PROACTIVE_SPEC.md`

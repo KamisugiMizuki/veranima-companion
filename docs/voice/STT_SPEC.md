@@ -1,6 +1,7 @@
 # STT_SPEC：桌宠语音输入设计与实现
 
-> 状态：实现版 v1.2。
+> 状态：实现版 v1.3（2026-08-31 回写按需启停定案）。
+> **语音生命周期（2026-08-29 用户拍板，桌宠壳实现）**：TTS/STT 不随启动常驻（GPT-SoVITS 常驻吃 ~3.2GB 显存，与游戏共存不可接受）；聊天活动/语音使用信号 → `touchVoice()` 拉起 + 重置空闲计时，空闲 5 分钟 `stopVoice()` 整体释放。冷启动实测：TTS 端口就绪 10.1s + 首句 7.5s 热身；STT health 1.2s 但模型首请求才加载（首条 5.9s）→ STT 与 TTS 同生命周期，不单独懒加载。QQ 通道 chat 消息=用户在场信号，提前预热出声端。
 > 运行时：复用 `tts/gpt-sovits/runtime/python.exe` 的 Python 3.9/torch；STT 依赖使用隔离覆盖层 `data/stt-runtime/site`（FunASR 1.4.2），共享 TTS runtime 仍保持 FunASR 1.0.27。
 > 主模型：ModelScope `iic/SenseVoiceSmall`，本地路径 `data/models/sensevoice-small`。
 > 分段模型：本地 FSMN-VAD，路径 `tts/gpt-sovits/tools/asr/models/speech_fsmn_vad_zh-cn-16k-common-pytorch`。

@@ -2,17 +2,17 @@
 
 > 生成：2026-08-31（docs/ 按模块重构时逐条核对）。
 > 每条 = 文档位置 → 文档说法 → 代码实况 → 建议。均为本次实际检索/读码核实，非推测。
-> 处理状态列留空，由你逐条拍板。
+> 全部条目已按用户逐条拍板处理完毕（见「处理」列）。
 
-| # | 严重度 | 文档位置 | 文档说法 | 代码实况 | 建议 |
+| # | 严重度 | 文档位置 | 文档说法 | 代码实况 | 处理 |
 |---|---|---|---|---|---|
-| 1 | 高 | docs/roadmap/DESIGN.md §9 近期设计扩展（VIRTUAL_SPACE 行） | 「当前为设计稿，尚未实现」 | CurrentScene/SpaceProfile/地点路线/路由转换已在虚拟日程运行时内实现，且行为测试覆盖 8 份空间测试文件（安卓与桌宠端都在消费）；虚拟空间审计文档两份也已确认落地修复 | 把 DESIGN.md §9 该行改为「已实现」并同步核对空间 SPEC 各节状态标注 |
-| 2 | 中 | docs/hermes/HERMES_AGENT_INTEGRATION_SPEC.md | 「文档状态：架构修改方案，尚未实施」 | Hermes/dsh 桥接、任务会话、工件生成、审批流转均已在生产链路（QQ 适配与 CLI 都装配了任务管理器和桥） | 更新为已实施，或注明哪几节仍未做 |
-| 3 | 中 | docs/android/ANDROID_SCOPE_SPEC.md（C1） | 「删除 core/attention/*（视觉注意力六件套）」 | 该六件套仍在仓库且被桌宠服务与安卓桥消费（安卓端 visual_note→proactive_from_visual 链路 08-30 刚上线）；gradle 打包层也没有做排除 | 裁决记录已过时：要么撤掉 C1 删除令（承认桌面/安卓感知保留），要么真正执行删除并接线替代 |
-| 4 | 低 | docs/roadmap/R4_SPEC.md §5 配置示例 | `quiet_hours: [23, 8]` 作为常规配置展示 | 静默时段已裁决退役（由虚拟日程睡眠块承担），运行配置中显式关闭 | 示例加注释「已退役，仅兼容保留」 |
-| 5 | 低 | docs/memory/… 与 docs/android/ANDROID_SCOPE_SPEC.md | 安卓范围内提及 sqlite-vec/vec0（SCOPE 的「交付面」一行） | vec0 已整体退役为 blob 表 + numpy KNN（同文档下方裁决也写了，前后两行自相矛盾） | 删掉「交付面」行里的 sqlite-vec 字样 |
-| 6 | 低 | docs/voice/STT_SPEC.md、docs/roadmap/DESIGN.md（语音相关行） | 只描述常驻式运行链 | 08-29 语音端裁决为「按需启动/释放以释放显存」+ 冷启动实测数据，该决策未回写任何文档 | 把按需启动定案并入语音文档（或新建 TTS_SPEC） |
-| 7 | 低 | docs/proactive/PROACTIVE_DESIGN_REVIEW.md、docs/virtual_life/audits/* | 各测试基线数字（919/930/967/970 passed） | 当前实测 1024 passed / 4 failed（4 红均为存量：睡眠边界×2、vec0 迁移、electron 启动契约） | 历史快照数字可不改，但审计文档头部应加一行「快照日期」说明 |
+| 1 | 高 | docs/roadmap/DESIGN.md §9 近期设计扩展（VIRTUAL_SPACE 行） | 「当前为设计稿，尚未实现」 | CurrentScene/SpaceProfile/地点路线/路由转换已在虚拟日程运行时内实现，且行为测试覆盖 8 份空间测试文件（安卓与桌宠端都在消费）；虚拟空间审计文档两份也已确认落地修复 | ✅ DESIGN.md §9 已改为「已实现并接入日程运行时」 |
+| 2 | 中 | docs/hermes/HERMES_AGENT_INTEGRATION_SPEC.md | 「文档状态：架构修改方案，尚未实施」 | Hermes/dsh 桥接、任务会话、工件生成、审批流转均已在生产链路（QQ 适配与 CLI 都装配了任务管理器和桥） | ✅ 文档头已改为「已实施」并注明个别项以各节内联状态为准 |
+| 3 | 中 | docs/android/ANDROID_SCOPE_SPEC.md（C1） | 「删除 core/attention/*（视觉注意力六件套）」 | 该六件套仍在仓库且被桌宠服务与安卓桥消费（安卓端 visual_note→proactive_from_visual 链路 08-30 刚上线）；gradle 打包层也没有做排除 | ✅ 按实际改写：处置列改「安卓不接线」，注明安卓感知链路（前台包名→联想）与本模块无关、bridge 零 import、gradle 物理排除未执行=APK 内死代码；Windows 侧不在范围 |
+| 4 | 低 | docs/roadmap/R4_SPEC.md §5 配置示例 | `quiet_hours: [23, 8]` 作为常规配置展示 | 静默时段已裁决退役（由虚拟日程睡眠块承担），运行配置中显式关闭 | ✅ R4_SPEC §5 示例已加退役注释 |
+| 5 | 低 | docs/memory/… 与 docs/android/ANDROID_SCOPE_SPEC.md | 安卓范围内提及 sqlite-vec/vec0（SCOPE 的「交付面」一行） | vec0 已整体退役为 blob 表 + numpy KNN（同文档下方裁决也写了，前后两行自相矛盾） | ✅ 交付面行已改为与 gradle pip 清单一致的实际依赖 |
+| 6 | 低 | docs/voice/STT_SPEC.md、docs/roadmap/DESIGN.md（语音相关行） | 只描述常驻式运行链 | 08-29 语音端裁决为「按需启动/释放以释放显存」+ 冷启动实测数据，该决策未回写任何文档 | ✅ STT_SPEC 升 v1.3，回写按需启停+冷启动实测数据 |
+| 7 | 低 | docs/proactive/PROACTIVE_DESIGN_REVIEW.md、docs/virtual_life/audits/* | 各测试基线数字（919/930/967/970 passed） | 当前实测 1024 passed / 4 failed（4 红均为存量：睡眠边界×2、vec0 迁移、electron 启动契约） | ✅ 用户拍板：6 份 virtual_life 审计 + PROACTIVE_DESIGN_REVIEW 全部删除；README/空间 SPEC 引用已清 |
 
 ## 核对过、确认一致的重点项（不用动）
 

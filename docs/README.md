@@ -9,8 +9,8 @@
 | `roadmap/` | 总纲与分期 | DESIGN.md（人物中心四变量公式 + 拟真五维 + R0–R5 总序）+ R0~R5 各期契约 + DISTRIBUTION_SPEC（发行/打包） |
 | `memory/` | 记忆系统 | MEMORY_SPEC（M1–M8 契约：分层/召回/衰减/双时间线）+ MEMORY_BACKEND_EVAL（选型评估结论，sqlite-vec 退役史） |
 | `persona/` | 人格循环 | PERSONA_LOOP_SPEC（P-0~P-9）+ COMPANION_CONTINUITY_DESIGN（多端连续性）+ RELATIONAL_TENSION_SPEC（关系张力 TV）+ SHARED_CREATION_SPEC（共同创作） |
-| `proactive/` | 主动发言 | QQ_PROACTIVE_SPEC（QQ 时机引擎）+ PROACTIVE_DESIGN_REVIEW（评审记录） |
-| `virtual_life/` | 虚拟日程与空间 | VIRTUAL_SCHEDULE_SPEC（作息/睡眠/日程）+ VIRTUAL_SPACE_SPEC（CurrentScene/地点）+ `audits/`（历次审计与修复状态记录） |
+| `proactive/` | 主动发言 | QQ_PROACTIVE_SPEC（QQ 时机引擎） |
+| `virtual_life/` | 虚拟日程与空间 | VIRTUAL_SCHEDULE_SPEC（作息/睡眠/日程）+ VIRTUAL_SPACE_SPEC（CurrentScene/地点） |
 | `expression/` | 表达层 | STYLE_LEARNING_SPEC（文风学习）+ EXPRESSION_GENE_TRANSFER_SPEC（表达基因迁移） |
 | `vision/` | 视觉注意力 | VISION_SPEC（截屏观察→联想→主动） |
 | `search/` | 联网搜索 | WEB_SEARCH_SPEC（SearXNG/博查双后端、语义定位、EvidencePack） |

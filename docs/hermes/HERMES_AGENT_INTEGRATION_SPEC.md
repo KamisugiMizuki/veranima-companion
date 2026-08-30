@@ -1,6 +1,6 @@
 # Hermes Agent 集成修改说明
 
-> 文档状态：架构修改方案，尚未实施。
+> 文档状态：已实施（`tools/hermes_bridge.py` 为 veranima 侧唯一 /v1/runs 接触点；审批流转、workspace 写边界与 changed_files 审计已接入任务链路并有行为测试）。§13 文件级清单中若有个别项未做，以各节内联状态为准。
 > 适用基线：veranima `main`，设计总纲 v2.2，R5 当前使用 `tools/dsh_bridge.py`。
 > 目标：让 Hermes Agent 承担通用 Agent 运行时与工作执行能力，veranima 继续承担人物、关系、陪伴和媒介表达。
 > 非目标：把 veranima 改造成 Hermes 角色卡、把普通陪伴对话全部转给 Hermes、用 Hermes 内置记忆替换人物记忆。

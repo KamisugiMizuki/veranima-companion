@@ -962,7 +962,7 @@ ScheduleRuntime.current_place_id / target_place_id /
 
 | 能力 | 状态 |
 |---|---|
-| 时间日程、睡眠、offset、effective span | 已有实现，见 `VIRTUAL_SCHEDULE_COMPLETION_AUDIT.md` |
+| 时间日程、睡眠、offset、effective span | 已有实现，见 `VIRTUAL_SCHEDULE_SPEC.md` 对应章节 |
 | `AmbientContext` 概念 | 已在日程规范定义，空间消费未实现 |
 | 角色固定 `scenario` | 已存在，但尚未迁移为世界范围 + 空间锚点 |
 | VirtualWorldScope / PlaceRegistry | 已实现最小加载与校验；稳定地点由角色模板提供 |
