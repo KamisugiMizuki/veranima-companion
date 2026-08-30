@@ -2,151 +2,107 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<title>Veranima 现状结构图</title>
+<title>Veranima 现状思维导图</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/mind-elixir@6.0.0-next.4/dist/MindElixir.css">
 <style>
-  html { background: #FAF9F5; }
-  body { font-family: "Segoe UI", "Noto Sans SC", sans-serif; color: #141413;
-         margin: 24px 32px; max-width: 1100px; }
-  /* 字号 = 概括程度：L0 项目 → L1 大模块 → L2 子系统 → L3 条目 */
-  .l0 { font-size: 30px; font-weight: 700; margin-bottom: 6px; }
-  .l0sub { font-size: 14px; color: #6C6A64; margin-bottom: 18px; }
-  details { margin: 2px 0 2px 0; }
-  summary { cursor: pointer; list-style: none; }
-  summary::before { content: "▸ "; color: #CC785C; font-size: 0.8em; }
-  details[open] > summary::before { content: "▾ "; }
-  .l1 { font-size: 21px; font-weight: 600; color: #A9583E; }
-  .l2 { font-size: 16px; font-weight: 500; color: #3D3D3A; }
-  .l3 { font-size: 13.5px; color: #6C6A64; margin: 1px 0; }
-  ul { list-style: none; margin: 2px 0 6px 22px; padding: 0; }
-  li { margin: 1px 0; }
-  .c { color: #8E8B82; font-size: 0.92em; }   /* 行数/注释 */
-  .warn { background: #F5E4DC; border-left: 3px solid #CC785C;
-          padding: 10px 14px; margin: 20px 0; font-size: 15px; }
-  .warn .l2 { color: #A9583E; }
-  .bar { border-top: 1px solid #E6DFD8; margin: 14px 0; }
-  #ctl { font-size: 13px; color: #6C6A64; margin-bottom: 10px; }
-  #ctl a { color: #CC785C; cursor: pointer; margin-right: 14px; }
+  html, body { margin: 0; height: 100%; background: #FAF9F5; }
+  #map { width: 100%; height: 100%; }
+  #hint { position: fixed; top: 10px; left: 14px; font: 13px sans-serif;
+          color: #8E8B82; background: #EFE9DEd0; padding: 5px 10px; border-radius: 8px; z-index: 9; }
 </style>
 </head>
 <body>
-<div id="ctl"><a onclick="sw(1)">全部展开</a><a onclick="sw(0)">全部收起</a><a onclick="sw(2)">只展到子系统</a></div>
-<div class="l0">Veranima</div>
-<div class="l0sub">陪伴角色应用：Python 核心 + 安卓 APK（主）+ Electron 桌宠壳（辅）。字号越大＝越概括；点 ▸ 下钻。</div>
+<div id="hint">字号 = 概括层级 · 滚轮缩放 · 空白处拖拽平移 · 点节点圆圈折叠展开</div>
+<div id="map"></div>
+<script type="module">
+import MindElixir from "https://cdn.jsdelivr.net/npm/mind-elixir@6.0.0-next.4/+esm";
 
-<details><summary class="l1">Python 核心 src/veranima/</summary><ul>
-  <li><details open><summary class="l2">core/agent.py <span class="c">中枢，约 2800 行</span></summary><ul>
-    <li class="l3">handle()：一条消息全链——睡眠报告识别 → 状态推进 → 召回注入 → LLM 生成 → 解析落库</li>
-    <li class="l3">tick_proactive()：统一仪式引擎，问候 &gt; 节庆 &gt; 饭点（同轮互斥）</li>
-    <li class="l3">睡眠周期：入睡/苏醒报告 → 记录 → 苏醒总结 → 未报告吐槽 → 三餐随作息 → 角色作息适应</li>
-    <li class="l3">追问闭环（问句记期待/过期结算/轻追问一次）、翻旧账、被看穿（prompt 级）</li>
-  </ul></details></li>
-  <li><details><summary class="l2">人格与关系 core/persona · tension · state · learning · reflection</summary><ul>
-    <li class="l3">persona：关系七维+五阶段、PAD 情绪向量、冲突检测 P-7</li>
-    <li class="l3">tension / tension_events：关系张力与事件分类</li>
-    <li class="l3">state：能量/情绪/依恋/user_asleep，快照持久化</li>
-    <li class="l3">learning + style_corpus：文风学习（语料管道，本地私有）</li>
-    <li class="l3">promises / review / roles / character_archive：承诺·复盘·角色卡管理</li>
-  </ul></details></li>
-  <li><details><summary class="l2">虚拟生活 core/virtual_schedule · presence · ambient</summary><ul>
-    <li class="l3">日程模板：角色自身作息（睡眠块/晨型）、前一日生成次日计划</li>
-    <li class="l3">作息偏移与昼夜节律回正；场景锁（忙碌/睡眠限制交互）</li>
-    <li class="l3">有限生活范围 + 稳定地点锚点 + CurrentScene</li>
-  </ul></details></li>
-  <li><details><summary class="l2">表达 core/reply · render · segments · prompts</summary><ul>
-    <li class="l3">reply：输出解析、内部泄漏防护（render_im 红线）</li>
-    <li class="l3">segments：双语（ja→TTS / zh→显示）；prompts：system 组装</li>
-    <li class="l3">tone 分类（每条回复一次轻量 LLM 调用，失败回退 mood）</li>
-  </ul></details></li>
-  <li><details><summary class="l2">执行后端 R5 core/workorder · task_session · shared_creation + tools/hermes_bridge</summary><ul>
-    <li class="l3">Hermes agent 委托：veranima 管人物语义 / Hermes 管任务执行</li>
-    <li class="l3">审批（关键词硬匹配+超时 deny）、workspace 写边界、changed_files 审计</li>
-    <li class="l3">shared_creation / artifact_generation：共同创作物（设计阶段）</li>
-  </ul></details></li>
-  <li><details><summary class="l2">主动调度 core/proactive · qq_proactive · qq_advisor · attention/</summary><ul>
-    <li class="l3">proactive：Greeting/Meal/Occasion 调度器（被 tick_proactive 统一消费）</li>
-    <li class="l3">qq_proactive / qq_advisor：QQ 独立主动路径 <span class="c">——QQ 已退役，代码保留</span></li>
-    <li class="l3">attention/：视觉注意力 observer/scheduler（桌宠端在用）</li>
-  </ul></details></li>
-</ul></details>
+// MindElixir nodeData.style 直接应用到节点 DOM（源码 ge() 实测）
+const STY = [
+  { fontSize: "30px", fontWeight: 700, color: "#fff", background: "#CC785C", padding: "10px 18px", borderRadius: "14px" },
+  { fontSize: "20px", fontWeight: 600, color: "#A9583E", background: "#EFE9DE", padding: "5px 10px", borderRadius: "9px" },
+  { fontSize: "15px", fontWeight: 500, color: "#3D3D3A", background: "#F5F1EA", padding: "3px 8px", borderRadius: "7px" },
+  { fontSize: "12.5px", color: "#6C6A64" },
+];
+let c = 0;
+// v6 源码：init 里 this.nodeData=e.nodeData（根包一层），子节点是裸对象 {id,topic,style,children}
+const t = (topic) => ({ id: "k" + c++, topic, style: { ...STY[3] }, children: [] });
+const nd = (topic, L, children) => ({ id: "k" + c++, topic, style: { ...STY[Math.min(L, 3)] }, expanded: false, children });
 
-<details><summary class="l1">记忆层 memory/</summary><ul>
-  <li class="l3"><b>store.py</b>（1400 行）：ADD-only 写入、版本链修正、混合 recall（向量+全文+新近+强度加权，降级不报错）、decay、erase 三清</li>
-  <li class="l3"><b>schema.py</b>：11 张表 + 启动迁移链（tone_at / sleep_cycles / user_asleep 等补列）</li>
-  <li class="l3"><b>embedding.py</b>：向量提供方（安卓=dashscope 远程，本地可选）；向量存归一化 float32 blob，numpy 点积召回</li>
-  <li class="l3"><b>brief.py</b>：召回结果 → system prompt 注入的预算裁剪</li>
-  <li class="l3">五层记忆：core_profile（豁免衰减）/ semantic / episodic / procedural / session</li>
-</ul></details>
+const data = {
+  nodeData: {
+    id: "root", topic: "Veranima 陪伴角色应用", style: { ...STY[0] }, children: [
+      nd("① Python 核心", 1, [
+        nd("agent 中枢", 2, [
+          t("handle 对话全链"), t("tick 仪式引擎 问候>节庆>饭点"),
+          t("睡眠周期 报告→记录→总结→适应"), t("追问闭环 / 翻旧账 / 被看穿"),
+        ]),
+        nd("人格与关系", 2, [
+          t("persona 七维+五阶段+PAD"), t("tension 关系张力"),
+          t("state 能量/情绪/依恋/睡中"), t("learning 文风学习"),
+        ]),
+        nd("虚拟生活", 2, [
+          t("日程模板/角色作息"), t("次日计划生成"), t("场景锁 忙/睡限交互"),
+        ]),
+        nd("表达解析", 2, [
+          t("reply 泄漏防护 红线"), t("segments 双语音频/显示"), t("tone 情绪分类"),
+        ]),
+        nd("执行后端 R5", 2, [
+          t("workorder / task_session"), t("hermes_bridge 委托"), t("审批+写边界+审计"),
+        ]),
+        nd("主动与感知", 2, [
+          t("proactive 问候/三餐/节庆"), t("attention 视觉注意力"), t("UsageStats 前台感知"),
+        ]),
+      ]),
+      nd("② 记忆层", 1, [
+        t("store ADD-only+版本链"), t("recall 向量+全文+新近"),
+        t("decay 衰减 核心豁免"), t("erase 删除三清"),
+        t("schema 11 表+迁移"), t("embedding 远程/本地"), t("brief 注入预算裁剪"),
+      ]),
+      nd("③ 模型与媒体", 1, [
+        t("llm DeepSeek 远程"), t("vision 按图自动切换"),
+        t("tts GPT-SoVITS yuki"), t("stt SenseVoice"), t("search 博查 / SearXNG"),
+      ]),
+      nd("④ 安卓 APK 主形态", 1, [
+        nd("Kotlin Compose UI", 2, [
+          t("视觉小说舞台 立绘+毛玻璃"), t("面板两态 拖拽跟手"),
+          t("相册选择器/时间戳/情绪标签"), t("设置页 API分组/成长树/记忆库/睡眠记录"),
+          t("CompanionService 保活+横幅↔气泡"),
+        ]),
+        nd("bridge.py 同进程桥", 2, [
+          t("boot / chat / tick / drain"), t("growth / memories / sleep_cycles"),
+        ]),
+        t("Chaquopy 打包 复用核心"),
+      ]),
+      nd("⑤ 桌宠壳 Electron", 1, [
+        t("main.js 进程编排"), t("透明置顶窗 立绘+气泡"), t("聊天/设置/日志窗"),
+      ]),
+      nd("⑥ 角色", 1, [t("凛 lin 默认"), t("由岐 yuki +voice"), t("zima 旧卡")]),
+      nd("⑦ 数据 单SQLite", 1, [
+        t("memories + FTS + 向量"), t("messages 原始对话"),
+        t("sleep_cycles / virtual_life"), t("proactive_feedback"),
+      ]),
+      nd("⑧ 入口", 1, [t("app 工厂"), t("cli 调试"), t("pet_server WS核心")]),
+      nd("⚠ 结构矛盾候选", 1, [
+        t("QQ退役 但60K代码在"), t("stickers 安卓砍 桌宠留"), t("桌宠定位悬空"),
+        t("双主动路径并存"), t("测试基线3红"), t("quiet_hours 残留"),
+      ]),
+    ],
+  },
+};
 
-<details><summary class="l1">模型与媒体</summary><ul>
-  <li class="l3"><b>llm/client.py</b>：DeepSeek 远程 API；含图片块自动切 vision 模型；空 content 降级重试</li>
-  <li class="l3"><b>tts/</b>：GPT-SoVITS 客户端/服务（yuki 微调 v4 权重；桌宠端，按需启停释放显存）</li>
-  <li class="l3"><b>stt/</b>：SenseVoice 纯 CPU（桌宠端）</li>
-  <li class="l3"><b>tools/</b>：search.py 双后端（安卓博查 / 本地 SearXNG）· bocha.py · dsh_bridge（DeepSeek Harness）</li>
-  <li class="l3"><b>image_payload.py</b>：图片校验压缩进多模态请求</li>
-</ul></details>
-
-<details><summary class="l1">入口与通道</summary><ul>
-  <li class="l3">app.py：create_agent 工厂（配置→角色卡→记忆→LLM→Agent）</li>
-  <li class="l3">cli.py：命令行调试入口（CLI 先行原则）</li>
-  <li class="l3">pet_server.py（62K）：桌宠 WebSocket 核心服务</li>
-  <li class="l3">adapters/qq.py（60K）：OneBot v11 <span class="c">——QQ 已退役，保留未删</span></li>
-</ul></details>
-
-<details><summary class="l1">安卓 android/fuyuno/（主形态）</summary><ul>
-  <li><details><summary class="l2">Kotlin UI（Compose，奶油视觉小说风）</summary><ul>
-    <li class="l3">MainActivity：立绘舞台+毛玻璃面板两态（拖拽 1:1 跟手）、打字机、情绪标签、思考粒子、相册选择器、拍立得预览、时间戳、双击返回</li>
-    <li class="l3">Settings：LLM/Embedding/搜索 三组独立保存、角色管理、备份、成长树、记忆库（标签云+删除）、睡眠记录</li>
-    <li class="l3">CompanionService：前台保活+通知、横幅↔气泡同步（广播）、UsageStats 前台感知</li>
-    <li class="l3">Theme：色板单一源、环境光表（tone/mood/夜间）</li>
-  </ul></details></li>
-  <li><details><summary class="l2">Python 桥 bridge.py（722 行，Chaquopy 同进程）</summary><ul>
-    <li class="l3">boot/chat/tick/drain_pending：核心生命周期 + 主动消息出口</li>
-    <li class="l3">growth_report / memories_list / memories_erase / sleep_cycles：设置页数据面</li>
-    <li class="l3">visual_note（LLM 判前台动作）· sleep_summary_pending · 分类回填</li>
-  </ul></details></li>
-  <li class="l3">打包：Chaquopy 单体 APK；SQLite 私有目录；立绘 assets 入包（sync_assets.py）；无 TTS/STT</li>
-</ul></details>
-
-<details><summary class="l1">桌宠壳 pet/（Electron，辅助具身）</summary><ul>
-  <li class="l3">main.js：进程编排（spawn 核心+TTS，windowsHide）；run_pet.py 单入口全服务</li>
-  <li class="l3">透明置顶窗：立绘+气泡+拖拽；聊天窗（QQ 风格）；设置窗；日志窗</li>
-  <li class="l3">通讯以 QQ 为主的历史定位已过期——现状=只亮立绘，QQ 退役后角色待重估 <span class="c">（矛盾候选）</span></li>
-</ul></details>
-
-<details><summary class="l1">角色 characters/</summary><ul>
-  <li class="l3">lin 凛（默认）：敬语刀女仆 · character.json + virtual_schedule.json + portraits</li>
-  <li class="l3">yuki 由岐（旧）：+ voice/ GPT-SoVITS 微调权重</li>
-  <li class="l3">zima：最早期卡</li>
-</ul></details>
-
-<details><summary class="l1">数据（单 SQLite 文件，11 表）</summary><ul>
-  <li class="l3">规范记忆：memories + memories_fts（全文）+ memory_embedding（向量 blob）</li>
-  <li class="l3">记录：messages（原始对话，永不随记忆删）· sleep_cycles · virtual_life_events · proactive_feedback（期待/追问状态机）· self_model_chapters · agent_state（单行快照）· task_runs · memory_review_inbox · user_info_gaps</li>
-</ul></details>
-
-<details><summary class="l1">文档 docs/（25+ 份）</summary><ul>
-  <li class="l3">总纲 DESIGN.md（v2.2）＋ R0-R5_SPEC（实现顺序）＋ MEMORY/PERSONA_LOOP/VISION/GUI_SPEC</li>
-  <li class="l3">平台：ANDROID_SCOPE / ANDROID_UI_VISUAL_NOVEL / HERMES_AGENT_INTEGRATION / DISTRIBUTION / CHARGPKG…</li>
-  <li class="l3">newly_added/：点子粘贴区（design_append 常驻模板）；for_users/：人读向文档实验（记忆模块三档）</li>
-</ul></details>
-
-<div class="warn"><div class="l2">已知冗余 / 结构矛盾候选（改哪个先问哪个该死）</div><ul>
-  <li class="l3">1. QQ 通道整体退役但 adapters/qq.py + qq_proactive 60K+ 代码保留</li>
-  <li class="l3">2. 表情包 stickers 子系统：安卓已裁决砍掉，桌宠端与文档仍在</li>
-  <li class="l3">3. 桌宠壳定位：当初「QQ 为主、桌宠具身」，QQ 退役后桌宠只剩辅助，职责待重划</li>
-  <li class="l3">4. 双主动路径遗留：core.tick_proactive 与 QQ adapter 独立逻辑并存（用户规矩：合并修，不打补丁）</li>
-  <li class="l3">5. 测试基线 3 红：睡眠归档×2 + 桌宠壳契约（预存在，未修）</li>
-  <li class="l3">6. quiet_hours 已退役，config 示例字段残留</li>
-</ul></div>
-
-<script>
-function sw(mode) {
-  document.querySelectorAll('details').forEach(d => {
-    const lvl = d.querySelector(':scope > summary').className;  // l1 | l2
-    if (mode === 2) d.open = (lvl === 'l1');
-    else d.open = !!mode;
-  });
-}
+const ME = new MindElixir({
+  el: "#map",
+  direction: MindElixir.RIGHT,
+  editable: false,
+  draggable: true,
+  contextmenu: false,
+  toolBar: false,
+  keypress: false,
+  allowUndo: false,
+  scaleSensitivity: 10,
+});
+ME.init(data);
 </script>
 </body>
 </html>
