@@ -87,6 +87,18 @@ CREATE TABLE IF NOT EXISTS sleep_message_archive (
 );
 CREATE INDEX IF NOT EXISTS idx_sleep_archive_cycle ON sleep_message_archive(role_id, user_scope, sleep_cycle_id);
 
+-- 用户睡眠周期（2026-08-30 用户拍板）：用户明确报告入睡/苏醒时记录时间点。
+-- 每次长睡眠苏醒后 LLM 生成睡眠状况总结（角色口吻）。
+CREATE TABLE IF NOT EXISTS sleep_cycles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fell_asleep_at TEXT NOT NULL,          -- 入睡时刻（UTC ISO）
+    woke_at TEXT,                          -- 苏醒时刻（UTC ISO，未苏醒=NULL）
+    source TEXT NOT NULL DEFAULT 'report', -- 报告来源（report=用户明说）
+    summary TEXT NOT NULL DEFAULT '',      -- 苏醒后 LLM 生成的总结（角色口吻）
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sleep_cycles_fell ON sleep_cycles(fell_asleep_at DESC);
+
 CREATE TABLE IF NOT EXISTS virtual_life_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     role_id TEXT NOT NULL,
@@ -293,6 +305,9 @@ def init_db(db_path: str | Path, dim: int = EMBEDDING_DIM, provider=None) -> sql
             ("arousal", "REAL NOT NULL DEFAULT 0.5"),
             ("dominance", "REAL NOT NULL DEFAULT 0.5"),
             ("relationship", "TEXT NOT NULL DEFAULT '{}'"),
+            # 用户睡眠周期（2026-08-30 用户拍板）：user_asleep=用户当前是否在睡
+            ("user_asleep", "INTEGER NOT NULL DEFAULT 0"),
+            ("last_sleep_report_at", "TEXT NOT NULL DEFAULT ''"),
         ):
             if name not in cols:
                 con.execute(f"ALTER TABLE agent_state ADD COLUMN {name} {ddl}")

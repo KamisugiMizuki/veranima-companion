@@ -636,18 +636,20 @@ class MemoryStore:
             """INSERT INTO agent_state (id, energy, mood, attachment, mood_score, total_messages,
                     social_appetite, attention_topic, attention_scene,
                     last_interaction_channel, last_cause,
-                    valence, arousal, dominance, relationship, updated_at)
-              VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    valence, arousal, dominance, relationship,
+                    user_asleep, last_sleep_report_at, updated_at)
+              VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
               ON CONFLICT(id) DO UPDATE SET
-               energy=excluded.energy, mood=excluded.mood, attachment=excluded.attachment,
-               mood_score=excluded.mood_score, total_messages=excluded.total_messages,
-               social_appetite=excluded.social_appetite, attention_topic=excluded.attention_topic,
-               attention_scene=excluded.attention_scene,
-               last_interaction_channel=excluded.last_interaction_channel,
-               last_cause=excluded.last_cause,
-               valence=excluded.valence, arousal=excluded.arousal, dominance=excluded.dominance,
-               relationship=excluded.relationship,
-               updated_at=excluded.updated_at""",
+              energy=excluded.energy, mood=excluded.mood, attachment=excluded.attachment,
+              mood_score=excluded.mood_score, total_messages=excluded.total_messages,
+              social_appetite=excluded.social_appetite, attention_topic=excluded.attention_topic,
+              attention_scene=excluded.attention_scene,
+              last_interaction_channel=excluded.last_interaction_channel,
+              last_cause=excluded.last_cause,
+              valence=excluded.valence, arousal=excluded.arousal, dominance=excluded.dominance,
+              relationship=excluded.relationship,
+              user_asleep=excluded.user_asleep, last_sleep_report_at=excluded.last_sleep_report_at,
+              updated_at=excluded.updated_at""",
             (snapshot.get("energy", 100.0), snapshot.get("mood", "平静"),
              snapshot.get("attachment", 0.5), snapshot.get("mood_score", 0.0),
              snapshot.get("total_messages", 0),
@@ -656,6 +658,8 @@ class MemoryStore:
              snapshot.get("last_interaction_channel", ""), snapshot.get("last_cause", "startup"),
              snapshot.get("valence", 0.5), snapshot.get("arousal", 0.5), snapshot.get("dominance", 0.5),
              _json.dumps(snapshot.get("relationship") or {}, ensure_ascii=False),
+             int(bool(snapshot.get("user_asleep", False))),
+             snapshot.get("last_sleep_report_at", "") or "",
              _now()),
         )
         self.con.commit()
@@ -667,7 +671,8 @@ class MemoryStore:
             "SELECT energy, mood, attachment, mood_score, total_messages,"
             " social_appetite, attention_topic, attention_scene,"
             " last_interaction_channel, last_cause,"
-            " valence, arousal, dominance, relationship"
+            " valence, arousal, dominance, relationship,"
+            " user_asleep, last_sleep_report_at"
             " FROM agent_state WHERE id=1"
         ).fetchone()
         if not row:
@@ -1134,6 +1139,59 @@ class MemoryStore:
         return {"updated": updated, "faded": faded}
 
     # ---------- 删除 ----------
+
+    # ---------- 用户睡眠周期（2026-08-30 用户拍板） ----------
+
+    def open_sleep_cycle(self, fell_asleep_at: str) -> int:
+        """用户报告入睡：若无未闭合周期则新建，返回周期 id。"""
+        row = self.con.execute(
+            "SELECT id FROM sleep_cycles WHERE woke_at IS NULL ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if row:
+            return row["id"]
+        cur = self.con.execute(
+            "INSERT INTO sleep_cycles (fell_asleep_at, source, created_at) VALUES (?, 'report', ?)",
+            (fell_asleep_at, _now()),
+        )
+        self.con.commit()
+        return cur.lastrowid
+
+    def close_sleep_cycle(self, woke_at: str, *, summary: str = "") -> dict | None:
+        """用户报告苏醒：闭合最近未闭合周期，返回该周期（无则 None）。"""
+        row = self.con.execute(
+            "SELECT * FROM sleep_cycles WHERE woke_at IS NULL ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if not row:
+            return None
+        self.con.execute(
+            "UPDATE sleep_cycles SET woke_at=?, summary=? WHERE id=?",
+            (woke_at, summary, row["id"]),
+        )
+        self.con.commit()
+        d = dict(row)
+        d["woke_at"] = woke_at
+        d["summary"] = summary
+        return d
+
+    def recent_sleep_cycles(self, limit: int = 20) -> list[dict]:
+        """最近 N 个睡眠周期（按入睡时刻倒序）。"""
+        rows = self.con.execute(
+            "SELECT * FROM sleep_cycles ORDER BY fell_asleep_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_sleep_summary(self, cycle_id: int, summary: str) -> None:
+        """苏醒总结写入指定周期（close 后补写，避免二次 close 找不到 open cycle）。"""
+        self.con.execute(
+            "UPDATE sleep_cycles SET summary=? WHERE id=?", (summary, cycle_id))
+        self.con.commit()
+
+    def latest_closed_cycle(self) -> dict | None:
+        """最近一个已闭合周期（苏醒总结用）。"""
+        row = self.con.execute(
+            "SELECT * FROM sleep_cycles WHERE woke_at IS NOT NULL ORDER BY woke_at DESC LIMIT 1"
+        ).fetchone()
+        return dict(row) if row else None
 
     def erase(self, memory_id: int | None = None, *, content_contains: str | None = None, layer: str | None = None) -> int:
         """删除记忆：整条版本链（记忆 + 向量），原始 messages 保留（MEMORY_SPEC 14.2：

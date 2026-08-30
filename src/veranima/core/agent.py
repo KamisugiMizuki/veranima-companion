@@ -689,6 +689,236 @@ class Agent:
         except Exception as e:
             logger.debug("state persist failed: %s", e)
 
+    # ---------- 用户睡眠周期（2026-08-30 用户拍板） ----------
+
+    _SLEEP_KEYWORDS = ("睡了", "晚安", "睡觉", "入睡", "困了", "躺下", "去睡", "要睡", "眯一会", "睡着了", "上床")
+    _WAKE_KEYWORDS = ("醒了", "起来了", "起床", "睡醒", "睡不着", "没睡", "醒着", "起来", "睁眼")
+
+    def _note_sleep_report(self, user_text: str, now) -> str:
+        """识别用户「入睡/苏醒」报告并记录 sleep_cycles。
+
+        判断点哲学（用户 2026-08 拍板）：关键词预筛（低成本）→ LLM 确认
+        （max_tokens≤128 / timeout≤8s / 单 JSON），LLM 失败回退关键词规则。
+        返回 ''（无报告）/'sleep'/'wake'。
+        """
+        text = str(user_text or "").strip()
+        if not text:
+            return ""
+        hit_sleep = any(k in text for k in self._SLEEP_KEYWORDS)
+        hit_wake = any(k in text for k in self._WAKE_KEYWORDS)
+        if not (hit_sleep or hit_wake):
+            return ""
+        action = self._confirm_sleep_report(text, hit_sleep, hit_wake)
+        if action == "sleep" and not self.state.user_asleep:
+            self.state.user_asleep = True
+            self.state.last_sleep_report_at = now.isoformat(timespec="seconds")
+            self.memory.open_sleep_cycle(now.isoformat(timespec="seconds"))
+            logger.info("user sleep reported at %s", now.isoformat(timespec="seconds"))
+            self._persist_state()
+            return "sleep"
+        if action == "wake" and self.state.user_asleep:
+            self.state.user_asleep = False
+            self.state.last_sleep_report_at = now.isoformat(timespec="seconds")
+            cycle = self.memory.close_sleep_cycle(now.isoformat(timespec="seconds"))
+            logger.info("user wake reported at %s", now.isoformat(timespec="seconds"))
+            self._persist_state()
+            if cycle:
+                # 长睡眠（≥4h）苏醒 → 角色口吻睡眠总结（LLM；失败静默，不影响主回复）
+                try:
+                    summary = self._sleep_cycle_summary(cycle)
+                    if summary:
+                        self.memory.update_sleep_summary(cycle["id"], summary)
+                        logger.info("sleep summary: %s", summary[:60])
+                except Exception as e:
+                    logger.debug("sleep summary failed: %s", e)
+            return "wake"
+        return ""
+
+    def _confirm_sleep_report(self, text: str, hit_sleep: bool, hit_wake: bool) -> str:
+        """LLM 确认消息是否真是入睡/苏醒报告；失败回退关键词规则。"""
+        if self.llm is not None and getattr(self.llm, "base_url", ""):
+            try:
+                task = (
+                    f"用户消息：「{text[:120]}」\n"
+                    "判断用户是否在报告自己入睡或苏醒（不是问对方睡没睡、不是描述别人、"
+                    "不是『别睡太晚』这类叮嘱）。只输出 JSON：{\"action\":\"sleep\"|\"wake\"|\"none\"}"
+                )
+                raw = self.llm.chat(
+                    [{"role": "user", "content": task}], max_tokens=128, temperature=0.2)
+                import json as _json
+                data = _json.loads((raw or "").strip())
+                action = str(data.get("action") or "").strip()
+                if action in ("sleep", "wake"):
+                    return action
+            except Exception as e:
+                logger.debug("sleep report LLM failed: %s", e)
+        # 回退：睡/醒关键词同时命中（「睡不着」「没睡醒」）→ 不判定；单一命中按关键词
+        if hit_sleep and hit_wake:
+            return "sleep" if any(k in text for k in ("睡了", "晚安", "睡觉", "去睡", "上床", "困了")) else "wake"
+        return "sleep" if hit_sleep else "wake"
+
+    def _sleep_cycle_summary(self, cycle: dict) -> str:
+        """长睡眠苏醒总结（角色口吻）：概括自上次苏醒到本次苏醒的作息+评价。
+
+        LLM 不可用/失败 → 返回空串（调用方静默）。
+        """
+        if self.llm is None or not getattr(self.llm, "base_url", ""):
+            return ""
+        prev = self.memory.latest_closed_cycle()
+        fell = cycle.get("fell_asleep_at", "")
+        woke = cycle.get("woke_at", "")
+        try:
+            from datetime import datetime
+            f = datetime.fromisoformat(fell).astimezone().strftime("%m-%d %H:%M") if fell else "?"
+            w = datetime.fromisoformat(woke).astimezone().strftime("%m-%d %H:%M") if woke else "?"
+            dur_h = ""
+            if fell and woke:
+                dur_min = int((datetime.fromisoformat(woke) - datetime.fromisoformat(fell)).total_seconds() / 60)
+                if dur_min < 0:
+                    dur_min += 24 * 60  # 跨天（22:00 → 次日 07:00）
+                dur_h = f"{dur_min // 60}小时{dur_min % 60}分"
+            # 清醒时长=自上次苏醒到本次入睡（跨周期）
+            awake = ""
+            if prev and prev.get("woke_at") and fell:
+                am = int((datetime.fromisoformat(fell) - datetime.fromisoformat(prev["woke_at"])).total_seconds() / 60)
+                awake = f"；清醒时长：{am // 60}小时{am % 60}分" if am > 0 else ""
+            task = (
+                f"用户刚睡醒。入睡时刻：{f}；睡眠时长：{dur_h}{awake}。\n"
+                "用你的口吻发一条简短的起床问候+睡眠状况总结（两三句话），"
+                "可以轻松评价一下他的作息（规律/熬夜/睡得不错），别说教，像朋友刚睡醒时说话。"
+            )
+            return (self._short_task(task, max_tokens=256) or "").strip()
+        except Exception as e:
+            logger.debug("sleep summary compute failed: %s", e)
+            return ""
+
+    def _missing_sleep_report_hint(self, now=None) -> str:
+        """用户有睡眠报告史但最近 26h 无任何睡眠/苏醒报告 → 一句轻提示/吐槽。
+
+        每日一次（按 hint 日期去重 proactive_feedback）；无史/不满足条件返回 ''。
+        """
+        import datetime
+        now = now or datetime.datetime.now(datetime.timezone.utc)
+        if isinstance(now, datetime.datetime) and now.tzinfo is None:
+            now = now.replace(tzinfo=datetime.timezone.utc)
+        cycles = self.memory.recent_sleep_cycles(limit=5)
+        if not cycles:
+            return ""  # 无睡眠史，不提示
+        # 最近一次报告时刻（入睡或苏醒）距今 >26h 才触发
+        last_report = ""
+        for c in cycles:
+            last_report = c.get("woke_at") or c.get("fell_asleep_at") or ""
+            if last_report:
+                break
+        if not last_report:
+            return ""
+        try:
+            last_dt = datetime.datetime.fromisoformat(last_report)
+            if last_dt.tzinfo is None:
+                last_dt = last_dt.replace(tzinfo=datetime.timezone.utc)
+            if (now - last_dt).total_seconds() < 26 * 3600:
+                return ""
+        except Exception:
+            return ""
+        # 每日去重
+        day_key = f"sleep_hint:{now.date().isoformat()}"
+        feedback = self.memory.recent_proactive_feedback(source="sleep_hint", limit=30)
+        if any(str(r.get("candidate_id") or "") == day_key for r in feedback):
+            return ""
+        if self.llm is not None and getattr(self.llm, "base_url", ""):
+            try:
+                task = (
+                    "用户平时会跟你报告睡觉/起床，但这两天完全没动静。"
+                    "用你的口吻发一句话轻吐槽或关心（别严肃，两三句内），"
+                    "比如问他是不是又熬夜了。"
+                )
+                text = (self._short_task(task, max_tokens=128) or "").strip()
+                if text:
+                    self.memory.record_proactive_feedback(
+                        source="sleep_hint", channel="qq", candidate_id=day_key)
+                    return text
+            except Exception as e:
+                logger.debug("sleep hint LLM failed: %s", e)
+        return ""
+
+    def _user_wake_hour(self) -> float | None:
+        """从最近睡眠周期推导用户起床时间（本地时区小时，含分钟小数）。
+
+        取最近 3 个闭合周期 woke_at 的中位数；数据不足返回 None（保持默认三餐）。
+        """
+        import datetime
+        hours = []
+        for c in self.memory.recent_sleep_cycles(limit=3):
+            woke = c.get("woke_at") or ""
+            if not woke:
+                continue
+            try:
+                dt = datetime.datetime.fromisoformat(woke).astimezone()
+                hours.append(dt.hour + dt.minute / 60.0)
+            except Exception:
+                continue
+        if not hours:
+            return None
+        hours.sort()
+        return hours[len(hours) // 2]
+
+    def _adapt_schedule_to_user(self, wake_hour: float | None, now, msgs: list[str]) -> None:
+        """角色作息向用户作息偏移（每日一次，去重）。
+
+        比较用户起床中位数与角色 circadian.sleep_end（角色起床时刻）；
+        差 ≥2h 时把角色作息向用户方向偏移差值的 1/4（渐进、最多 ±4h），
+        并生成一条角色口吻的理由消息（LLM 失败静默）。
+        """
+        if wake_hour is None or not self.schedule_runtime:
+            return
+        import datetime
+        outline = self.schedule_runtime.outline
+        circ = getattr(outline, "circadian", None)
+        if circ is None:
+            return
+        try:
+            hh, mm = (int(x) for x in str(circ.sleep_end).split(":"))
+            role_wake = hh + mm / 60.0
+        except Exception:
+            return
+        diff = wake_hour - role_wake  # 用户相对角色晚起为正
+        if abs(diff) < 2.0:
+            return  # 作息接近，不动
+        now = now or datetime.datetime.now(datetime.timezone.utc)
+        day_key = f"adapt:{now.date().isoformat()}"
+        feedback = self.memory.recent_proactive_feedback(source="schedule_adapt", limit=30)
+        if any(str(r.get("candidate_id") or "") == day_key for r in feedback):
+            return
+        shift = int(max(-240, min(240, diff * 60 * 0.25)))  # 差值的 1/4，限 ±4h/天
+        if shift == 0:
+            return
+        try:
+            self.schedule_runtime.apply_offset(
+                self.schedule_runtime.schedule_offset_minutes + shift,
+                f"适应用户作息（用户起床 {wake_hour:.1f}h vs 角色 {role_wake:.1f}h）",
+                now,
+            )
+            self._persist_state()
+            logger.info("schedule adapted to user: +%d min (user wake %.1f, role %.1f)",
+                        shift, wake_hour, role_wake)
+        except Exception as e:
+            logger.debug("schedule adapt apply failed: %s", e)
+            return
+        self.memory.record_proactive_feedback(
+            source="schedule_adapt", channel="qq", candidate_id=day_key)
+        if self.llm is not None and getattr(self.llm, "base_url", ""):
+            try:
+                task = (
+                    "你注意到用户最近作息和你差得挺多（你早上起床的时候他往往还没睡，"
+                    "或者你睡了很久他才睡）。你决定把自己的作息也往他的时间靠一靠。"
+                    "用你的口吻发一句话说明这个决定，自然点，像随口提起，别解释系统机制。"
+                )
+                text = (self._short_task(task, max_tokens=128) or "").strip()
+                if text:
+                    msgs.append(text)
+            except Exception as e:
+                logger.debug("schedule adapt message failed: %s", e)
+
     def _apply_tension_event(self, **kwargs):
         result = self.tension.apply_event(**kwargs)
         if result.applied and result.event is not None:
@@ -826,6 +1056,10 @@ class Agent:
         resolved_scope = getattr(self, "_current_user_scope", None) or ("pet:default" if channel == "tts" else "qq:default")
         if schedule_runtime is not None and channel == "im" and schedule_runtime.reconcile_from_user(user_text, interaction_now):
             self._persist_state()
+
+        # 用户睡眠周期（2026-08-30 用户拍板）：识别「入睡/苏醒」报告 → sleep_cycles
+        # 表 + state.user_asleep。判断点哲学：关键词预筛 → LLM 确认（失败回退关键词）。
+        self._note_sleep_report(user_text, interaction_now)
 
         if schedule_runtime is not None:
             schedule_runtime.advance(interaction_now)
@@ -1951,9 +2185,18 @@ class Agent:
         # P-7：未闭合冲突时禁止 ritual 主动（不加重关系压力）
         if self.persona_proactive_blocked("ritual"):
             return []
+        msgs: list[str] = []
+        # 三餐锚点按用户作息调整（2026-08-30 用户拍板）：从最近睡眠周期推导起床时间
+        try:
+            wake_hour = self._user_wake_hour()
+            self.meals.adjust_to_user_cycle(wake_hour)
+            # 角色作息适应用户（2026-08-30 用户拍板「比较好玩」）：用户起床与角色
+            # 起床差 ≥2h → 向用户偏移一半（渐进），并给一条理由消息（每日一次）
+            self._adapt_schedule_to_user(wake_hour, now, msgs)
+        except Exception as e:
+            logger.debug("meal anchor adjust failed: %s", e)
         # gate.decide 需要 epoch 秒（now 可能是 datetime 注入，转 timestamp）
         now_ts = now.timestamp() if isinstance(now, datetime.datetime) else now
-        msgs: list[str] = []
         cand = ProactiveCandidate(
             source="ritual", reason="定时问候/节庆纪念",
             relevance=0.9, urgency=0.5, intent="share",
@@ -1971,6 +2214,14 @@ class Agent:
             # 8.7.5 个性化问候（结合最近记忆；LLM 不可用回退模板）
             msg = self.greeting_message(slot)
             msgs.append(msg)
+        # 未报告睡眠提示（2026-08-30 用户拍板）：有睡眠史但最近 26h 无任何
+        # 睡眠/苏醒报告 → 每日一次轻吐槽（LLM 生成，失败回退模板）
+        try:
+            hint = self._missing_sleep_report_hint(now)
+            if hint:
+                msgs.append(hint)
+        except Exception as e:
+            logger.debug("missing sleep hint failed: %s", e)
         occasion = self.occasion.due_occasion(self.memory, now=now)
         if occasion:
             msg = self.occasion.occasion_reaction(occasion, self.card.name)
@@ -1988,11 +2239,16 @@ class Agent:
         due_meal = None if (msgs or in_greeting_slot) else self.meals.due(now=now, sent_ids=meal_sent_ids)
         if due_meal:
             meal_name, meal_text, meal_cid = due_meal
-            meal_msg = self._meal_message(meal_name, meal_text)
-            if meal_msg:
-                msgs.append(meal_msg)
-                self.memory.record_proactive_feedback(
-                    source="meal", channel="qq", candidate_id=meal_cid)
+            # 用户睡眠中不发三餐提醒（2026-08-30 用户拍板：作息优先级低于角色作息，
+            # 角色睡眠由 gate.character_sleeping_check 拦截，这里补用户睡眠侧）
+            if self.state.user_asleep:
+                due_meal = None
+            else:
+                meal_msg = self._meal_message(meal_name, meal_text)
+                if meal_msg:
+                    msgs.append(meal_msg)
+                    self.memory.record_proactive_feedback(
+                        source="meal", channel="qq", candidate_id=meal_cid)
         if not (persist is False) and msgs:
             for msg in msgs:
                 self.record_proactive_message(msg, channel="qq")
@@ -2408,19 +2664,27 @@ class Agent:
             return fallback
 
     def greeting_message(self, slot: str) -> str:
-        """个性化问候（8.7.5）：结合最近记忆；LLM 不可用时回退模板。"""
+        """个性化问候（8.7.5）：结合最近记忆；LLM 不可用时回退模板。
+
+        2026-08-30 用户拍板：用户入睡后问候仍按原时间窗口发，但文案要
+        模拟用户睡眠中（轻声打招呼，不期待回复）。
+        """
         base = GreetingScheduler.greeting_text(slot)
         if not (getattr(self.llm, "is_model_loaded", None) is not None and self.llm.is_model_loaded()):
-            return base
+            return base if not self.state.user_asleep else "（轻声）还在睡吗？醒了记得跟我说一声。"
         try:
             recent = self.memory.recent_messages(limit=8)
             user_msgs = [self._message_context_line(m)[:90] for m in reversed(recent) if m["role"] == "user"]
             if not user_msgs:
                 return base
             ctx = "\n".join(user_msgs[:3])
+            asleep = self.state.user_asleep
             task = (
                 f"现在是{'早晨' if slot == 'morning' else '中午' if slot == 'noon' else '晚上'}。"
-                f"用户最近说过：\n{ctx}\n\n"
+                + (f"用户此刻在睡觉（他昨晚说去睡了），发一条轻的、不期待回复的问候，"
+                   f"像对睡着的人说话：小声、简短、带点暖意，别长篇大论。\n"
+                   if asleep else "")
+                + f"用户最近说过：\n{ctx}\n\n"
                 "给用户发一条简短的问候，如果能自然提到他最近说过的一件事（关心/跟进）最好；"
                 "想不起来就不提，保持简单。"
             )

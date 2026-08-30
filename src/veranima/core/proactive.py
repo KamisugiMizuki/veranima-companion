@@ -107,6 +107,29 @@ class MealReminderScheduler:
                 hour, text = default
             self.slots[meal] = (max(0, min(23, hour)), text)
 
+    def adjust_to_user_cycle(self, wake_hour: float | None) -> None:
+        """2026-08-30 用户拍板：用户作息明显偏离 6/12/17 时按用户作息推三餐锚点。
+
+        早餐=起床+2h、午餐=起床+6h、晚餐=起床+11h（近似常规间隔）；
+        用户起床时间与默认 6 点差 <1h 则不动（等于常规作息）。
+        """
+        if wake_hour is None:
+            return
+        try:
+            wake_hour = float(wake_hour)
+        except (TypeError, ValueError):
+            return
+        if not (0 <= wake_hour < 24) or abs(wake_hour - 6.0) < 1.0:
+            return  # 常规作息，保持默认 6/12/17
+        anchors = (
+            ("breakfast", (wake_hour + 2.0) % 24),
+            ("lunch", (wake_hour + 6.0) % 24),
+            ("dinner", (wake_hour + 11.0) % 24),
+        )
+        for meal, hour in anchors:
+            _text = self.slots.get(meal, ("", ""))[1]
+            self.slots[meal] = (int(hour) % 24, _text)
+
     def scheduled_at(self, day, meal: str):
         import datetime
         hour, _text = self.slots[meal]

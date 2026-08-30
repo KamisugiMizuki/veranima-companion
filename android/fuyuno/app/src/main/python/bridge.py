@@ -119,6 +119,29 @@ def start_ticks() -> str:
     return json.dumps({"ok": True})
 
 
+def sleep_summary_pending() -> str:
+    """最近闭合周期若带未发送的苏醒总结 → 返回文本并标记已发（proactive_feedback 去重）。
+
+    由 drain_pending 消费：用户报告「醒了」后，总结作为独立主动消息推送。
+    """
+    agent = getattr(boot, "agent", None)
+    if agent is None:
+        return ""
+    try:
+        cycle = agent.memory.latest_closed_cycle()
+        if not cycle or not cycle.get("summary"):
+            return ""
+        cid = f"sleep_summary:{cycle['id']}"
+        sent = agent.memory.recent_proactive_feedback(source="sleep_summary", limit=30)
+        if any(str(r.get("candidate_id") or "") == cid for r in sent):
+            return ""
+        agent.memory.record_proactive_feedback(source="sleep_summary", channel="qq", candidate_id=cid)
+        return str(cycle["summary"])
+    except Exception as e:
+        log.debug("sleep_summary_pending failed: %s", e)
+        return ""
+
+
 def drain_pending() -> str:
     """取走全部待发主动消息（Kotlin 侧发通知）。"""
     out = list(_pending)
@@ -491,6 +514,44 @@ def memories_list(layer: str = "", category: str = "", limit: int = 200) -> str:
     except Exception as e:
         tb = traceback.format_exc(limit=4)
         log.error("memories_list failed:\n%s", tb)
+        return json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"}, ensure_ascii=False)
+
+
+def sleep_cycles() -> str:
+    """用户睡眠周期列表（DESIGN 2026-08-30 用户拍板）：入睡/苏醒/时长/总结。
+
+    返回 [{fell_asleep_at, woke_at, sleep_minutes, awake_minutes, summary}]，
+    按入睡时刻倒序。时间显示用本地时区 MM-dd HH:mm。
+    """
+    agent = getattr(boot, "agent", None)
+    if agent is None:
+        return json.dumps({"ok": False, "error": "未初始化"})
+    try:
+        import datetime
+        out = []
+        prev_woke = None
+        for c in agent.memory.recent_sleep_cycles(limit=30):
+            fell = c.get("fell_asleep_at") or ""
+            woke = c.get("woke_at") or ""
+            entry = {
+                "fell_asleep_at": fell, "woke_at": woke,
+                "sleep_minutes": 0, "awake_minutes": 0,
+                "summary": c.get("summary") or "",
+            }
+            try:
+                f = datetime.datetime.fromisoformat(fell)
+                if woke:
+                    w = datetime.datetime.fromisoformat(woke)
+                    entry["sleep_minutes"] = int((w - f).total_seconds() / 60)
+                if prev_woke:
+                    entry["awake_minutes"] = int((f - prev_woke).total_seconds() / 60)
+            except Exception:
+                pass
+            out.append(entry)
+            if woke:
+                prev_woke = datetime.datetime.fromisoformat(woke)
+        return json.dumps({"ok": True, "cycles": out}, ensure_ascii=False)
+    except Exception as e:
         return json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"}, ensure_ascii=False)
 
 

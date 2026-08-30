@@ -33,6 +33,9 @@ class CompanionService : Service() {
                     val r = JSONObject(bridge.callAttr("drain_pending").toString())
                     val msgs = r.getJSONArray("messages")
                     for (i in 0 until msgs.length()) notifyProactive(msgs.getString(i))
+                    // 苏醒总结（用户报告「醒了」后角色口吻睡眠总结）走同一条主动通知
+                    val summary = bridge.callAttr("sleep_summary_pending").toString()
+                    if (summary.isNotEmpty() && summary != "None") notifyProactive(summary)
                     // 前台应用感知（UsageStats→包名+app名→LLM 判断动作）：仅授权后生效，内部有冷却
                     foregroundApp()?.let { (pkg, label) ->
                         bridge.callAttr("visual_note", pkg, label)

@@ -36,6 +36,9 @@ class AgentState:
     dominance: float = 0.5
     # P-3：RelationshipModel 快照（重启恢复；普通消息不改变）
     relationship: dict = field(default_factory=dict)
+    # 用户睡眠周期（2026-08-30 用户拍板）：user_asleep=用户当前是否在睡
+    user_asleep: bool = False
+    last_sleep_report_at: str = ""  # 最近一次睡眠/苏醒报告时刻（UTC ISO）
     # 内部
     _last_tick: float = field(default=0.0, repr=False)
     _mood_score: float = field(default=0.0, repr=False)   # 近期互动累积
@@ -178,6 +181,9 @@ class AgentState:
             "arousal": round(self.arousal, 4),
             "dominance": round(self.dominance, 4),
             "relationship": self.relationship,
+            # 用户睡眠周期（2026-08-30 用户拍板）
+            "user_asleep": int(bool(self.user_asleep)),
+            "last_sleep_report_at": self.last_sleep_report_at,
         }
 
     @classmethod
@@ -204,6 +210,8 @@ class AgentState:
         st.dominance = max(0.0, min(1.0, float(data.get("dominance", st.dominance))))
         rel = data.get("relationship")
         st.relationship = dict(rel) if isinstance(rel, dict) else {}
+        st.user_asleep = bool(data.get("user_asleep", st.user_asleep))
+        st.last_sleep_report_at = str(data.get("last_sleep_report_at", st.last_sleep_report_at) or "")
         return st
 
     @property

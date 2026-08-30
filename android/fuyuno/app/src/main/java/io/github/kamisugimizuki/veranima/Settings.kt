@@ -339,6 +339,44 @@ fun SettingsScreen(onBack: () -> Unit) {
                     }
                 }
             }
+            // ---- 用户睡眠周期（2026-08-30 用户拍板：入睡/苏醒/时长记录 + 总结） ----
+            SectionCard("睡眠记录（向我报告「睡了/醒了」自动记录；长睡眠苏醒有总结）") {
+                var sc by remember { mutableStateOf<JSONObject?>(null) }
+                LaunchedEffect(Unit) {
+                    sc = JSONObject(withContext(Dispatchers.IO) { bridge.callAttr("sleep_cycles").toString() })
+                }
+                val scd = sc
+                if (scd == null || !scd.optBoolean("ok")) {
+                    Text("读取中…", style = MaterialTheme.typography.bodySmall, color = Muted)
+                } else {
+                    val arr = scd.optJSONArray("cycles") ?: org.json.JSONArray()
+                    if (arr.length() == 0) {
+                        Text("还没有睡眠记录——对我说「我睡了」「醒了」就会开始记录。",
+                            style = MaterialTheme.typography.bodySmall, color = Muted)
+                    }
+                    fun fmtHm(iso: String): String = runCatching {
+                        java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault()).format(
+                            java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX",
+                                java.util.Locale.US).parse(iso))
+                    }.getOrDefault(iso.take(16))
+                    fun fmtDur(min: Int): String = if (min <= 0) "—" else "${min / 60}小时${min % 60}分"
+                    for (i in 0 until minOf(arr.length(), 6)) {
+                        val c = arr.getJSONObject(i)
+                        Column(Modifier.padding(top = 6.dp)) {
+                            Text("入睡时刻：${fmtHm(c.optString("fell_asleep_at"))}；睡眠时长：${fmtDur(c.optInt("sleep_minutes"))}；" +
+                                    "苏醒时刻：${if (c.optString("woke_at").isNotEmpty()) fmtHm(c.optString("woke_at")) else "（未报告）"}；" +
+                                    "清醒时长：${fmtDur(c.optInt("awake_minutes"))}",
+                                style = MaterialTheme.typography.labelSmall, color = MutedSoft)
+                            if (c.optString("summary").isNotEmpty()) {
+                                Text(c.optString("summary"), style = MaterialTheme.typography.bodySmall,
+                                    color = Ink, modifier = Modifier.padding(top = 2.dp))
+                            }
+                        }
+                    }
+                    if (arr.length() > 6) Text("…共 ${arr.length()} 个周期，仅显示最近 6",
+                        style = MaterialTheme.typography.labelSmall, color = MutedSoft)
+                }
+            }
             TextButton(onClick = { openBatterySettings(ctx) }) { Text("电池优化白名单", color = Muted) }
             TextButton(onClick = { openUsageAccess(ctx) }) { Text("使用情况访问（前台感知联想用；需手动授权）", color = Muted) }
             Spacer(Modifier.height(24.dp))
