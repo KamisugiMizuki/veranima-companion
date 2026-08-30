@@ -191,6 +191,8 @@ def test_qq_meal_reminder_uses_gate_and_persists_after_send(adapter, monkeypatch
     monkeypatch.setattr(adapter.meal_scheduler, "due", lambda **kwargs: (
         "lunch", "到饭点了，先去吃午饭。", "meal:2026-08-24:lunch",
     ))
+    # 本测试断言闸门+持久化链路；文案的 LLM 改写属 core 路径（test_humanity_gaps 覆盖）
+    monkeypatch.setattr(adapter.agent, "_meal_message", lambda meal, text: text)
     assert run(adapter._send_due_meal_reminder_async(now)) is True
     assert adapter.bot.sent[-1][1]["message"] == "到饭点了，先去吃午饭。"
     feedback = adapter.agent.memory.recent_proactive_feedback(source="meal", channel="qq", limit=1)
