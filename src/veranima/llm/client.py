@@ -33,6 +33,15 @@ class LLMTimeoutError(LLMError):
     """LLM 请求超时：服务状态未知，不等同于模型未启动。"""
 
 
+class LLMTruncatedError(LLMError):
+    """输出被 max_tokens 腰斩（finish_reason=length/content_filter）。
+
+    2026-08-31 实锤教训：截断的半截 JSON 会被容错解析器抠出残句直发
+    （MuMu 上「……您晚饭，吃」）。调用方把此异常与超时同等对待（重试/
+    回退），而非消费残破内容——半句话不是话。
+    """
+
+
 class LLMClient:
     def __init__(self, config: dict):
         self.config = config
@@ -67,10 +76,18 @@ class LLMClient:
         空 content 也抛 LLMError（Qwen3 thinking 模型：短任务预算可能全被 reasoning 吃掉，
         返回空串会让调用方发出空回复；统一由调用方兜底）。
         未配置 base_url：logger 提示并返回缺省提示文案（不报错，调用方可直接发出）。
+
+        max_tokens 预算下限（2026-08-31）：小预算被 reasoning 烧空/腰斩是
+        反复实锤的坑（MuMu 残句事件、R0_SPEC 6），一律抬到
+        llm.short_task_max_tokens——DeepSeek 按实际生成 token 计费，
+        max_tokens 只是上限，抬预算不涨价。
         """
         if not self.base_url:
             logger.info("LLM 未配置（config.yaml llm.base_url 留空）——返回缺省提示")
             return "（模型连接尚未配置：请在 config.yaml 填写 llm.base_url / llm.api_key）"
+        floor = int(self.config.get("short_task_max_tokens", 512) or 512)
+        if max_tokens is not None:
+            max_tokens = max(int(max_tokens), floor)
         msg = self.chat_raw(messages, max_tokens=max_tokens, temperature=temperature)
         content = (msg.get("content") or "").strip()
         if not content:
@@ -181,7 +198,8 @@ class LLMClient:
                     {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}},
                 ],
             }],
-            "max_tokens": 200,
+            # 200 预算会被推理烧空/腰斩（2026-08-31 同类坑统一）：抬到下限，上限不涨价
+            "max_tokens": max(200, int(self.config.get("short_task_max_tokens", 512) or 512)),
         }
         try:
             with httpx.Client(timeout=60.0) as client:
@@ -224,6 +242,10 @@ class LLMClient:
                         finish_reason,
                         len(str(message.get("content") or "")),
                     )
+                if finish_reason in ("length", "content_filter", "sensitive"):
+                    # 截断/审查的内容禁止外流：宁可让调用方走回退，不发半句
+                    raise LLMTruncatedError(
+                        f"completion truncated (finish_reason={finish_reason})")
                 return message
             except LLMUnavailableError:
                 raise
@@ -258,6 +280,8 @@ class LLMClient:
                     raise LLMUnavailableError(f"model not loaded: {e.response.status_code}") from e
                 logger.error("LLM server error: %s", e.response.text[:200])
                 raise LLMError(str(e)) from e
+            except LLMTruncatedError:
+                raise  # 裸 Exception 会把它重包成父类丢掉子类型（调用方无法区分）
             except Exception as e:
                 logger.error("LLM chat failed: %s", e)
                 raise LLMError(str(e)) from e

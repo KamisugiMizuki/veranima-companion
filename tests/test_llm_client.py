@@ -227,3 +227,54 @@ def test_chat_structured_accepts_plain_content_for_text_fallback(monkeypatch):
     monkeypatch.setattr(httpx, "Client", lambda **kw: Transport())
     client = LLMClient({"base_url": "https://api.example.com/v1", "model": "qwen3-8b"})
     assert client.chat_structured([{"role": "user", "content": "hi"}], max_tokens=256) == "plain fallback"
+
+
+# ---------- 2026-08-31 截断治理（残句事件回归） ----------
+
+def _stub_finish(monkeypatch, captured, finish_reason, content="半截"):
+    class T:
+        def __enter__(self): return self
+        def __exit__(self, *exc): return False
+        def post(self, *a, **kw):
+            captured.update(kw.get("json") or {})
+            req = httpx.Request("POST", "https://api.example.com/v1/chat/completions")
+            return httpx.Response(200, json={"choices": [{
+                "message": {"content": content}, "finish_reason": finish_reason}]}, request=req)
+    monkeypatch.setattr(httpx, "Client", lambda **kw: T())
+
+
+def test_truncated_completion_raises_not_returns_fragment(client, monkeypatch):
+    from veranima.llm.client import LLMTruncatedError
+    _stub_finish(monkeypatch, {}, "length")
+    with pytest.raises(LLMTruncatedError):
+        client.chat_raw([{"role": "user", "content": "hi"}], max_tokens=120)
+
+
+def test_content_filter_also_treated_as_truncation(client, monkeypatch):
+    from veranima.llm.client import LLMTruncatedError
+    _stub_finish(monkeypatch, {}, "content_filter")
+    with pytest.raises(LLMTruncatedError):
+        client.chat_raw([{"role": "user", "content": "hi"}])
+
+
+def test_chat_budget_floor_applied(client, monkeypatch):
+    """小 max_tokens 抬到 short_task_max_tokens；None 不抬（走全局 max_tokens）。"""
+    cap = {}
+    _stub_finish(monkeypatch, cap, "stop", content="好")
+    client.config["short_task_max_tokens"] = 512
+    client.chat([{"role": "user", "content": "hi"}], max_tokens=120)
+    assert cap["max_tokens"] == 512
+    client.chat([{"role": "user", "content": "hi"}], max_tokens=2048)
+    assert cap["max_tokens"] == 2048
+    cap.clear()
+    client.chat([{"role": "user", "content": "hi"}])
+    assert cap["max_tokens"] == client.max_tokens  # 未显式传=默认全局
+
+
+def test_observe_image_budget_floor(monkeypatch):
+    c = LLMClient({"base_url": "https://api.example.com/v1", "model": "v",
+                   "short_task_max_tokens": 640})
+    cap = {}
+    _stub_finish(monkeypatch, cap, "stop", content="{}")
+    c.observe_image("ZmFrZQ==")
+    assert cap["max_tokens"] == 640  # 原硬编码 200 已抬
