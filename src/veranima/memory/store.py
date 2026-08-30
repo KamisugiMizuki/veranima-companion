@@ -887,9 +887,9 @@ class MemoryStore:
     def recall(self, query: str, *, top_k: int = 5, layer: str | None = None) -> list[MemoryEntry]:
         """混合检索（R1_SPEC 4 排序公式）。
 
-        score = 0.45*semantic_sim + 0.20*FTS_relevance + 0.15*freshness
-                + 0.10*importance + 0.10*confidence
-        某项不可得时归一化剩余权重，不补随机分。
+        score = 0.35*semantic_sim + 0.20*FTS + 0.15*temporal + 0.10*subject
+                + 0.05*(freshness + importance + confidence + strength)
+        （权重以 _score_entry 为准；某项不可得时归一化剩余权重，不补随机分。）
         """
         layer = LAYER_R1_MAP.get(layer, layer) if layer else None  # R1 类型名 → 旧 layer
         # (entry, sim|None) 候选池；fts 命中 id 集合
