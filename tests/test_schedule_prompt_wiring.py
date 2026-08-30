@@ -115,6 +115,27 @@ def test_agent_generates_schedule_notice_from_runtime_event(tmp_path):
     assert agent.schedule_notice_text("unknown") == ""
 
 
+def test_short_task_small_budget_raised_to_floor(tmp_path):
+    """2026-08-31 截断实锤回归：followup 传 120 → reasoning 烧空预算发残句。
+    _short_task 必须把小预算抬到 short_task_max_tokens 下限再发请求。"""
+    class BudgetProbe(ProbeLLM):
+        def chat(self, messages, **kwargs):
+            self.sent_max_tokens = kwargs.get("max_tokens")
+            return super().chat(messages, **kwargs)
+
+    probe = BudgetProbe()
+    agent = Agent(
+        CharacterCard(name="Budget"),
+        MemoryStore(str(tmp_path / "b.sqlite"), config={}, provider=Embed()),
+        probe, AgentState(),
+        config={"root": str(tmp_path), "llm": {"short_task_max_tokens": 1024}},
+    )
+    agent._short_task("说一句", max_tokens=120)
+    assert probe.sent_max_tokens == 1024
+    agent._short_task("说一句", max_tokens=2048)
+    assert probe.sent_max_tokens == 2048  # 高于下限时尊重原值
+
+
 # ---------- 睡前牵挂（不完结的牵挂：作息错位注入 sleep_preparing 公告） ----------
 
 def _care_agent(tmp_path, name="Care"):

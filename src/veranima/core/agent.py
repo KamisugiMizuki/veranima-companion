@@ -2561,11 +2561,19 @@ class Agent:
 
         max_tokens=None → 读配置 llm.short_task_max_tokens（默认 1024）；
         不得传 120/200 这类小预算（R0_SPEC 6：思考模型预算不足只剩残留）。
+        2026-08-31 实测教训：followup 传 120 → reasoning 烧空预算，29 字符半截
+        JSON 被容错解析抠出残句直接发出（"……您晚饭，吃"）。小预算一律抬到下限。
         bilingual=True：任务要求输出双语 JSON（ja 台词/zh 翻译），返回
         (zh, ja)；非双语返回纯文本字符串。
         """
+        floor = int((self.config.get("llm", {}) or {}).get("short_task_max_tokens", 1024))
         if max_tokens is None:
-            max_tokens = int((self.config.get("llm", {}) or {}).get("short_task_max_tokens", 1024))
+            max_tokens = floor
+        else:
+            try:
+                max_tokens = max(int(max_tokens), floor)
+            except (TypeError, ValueError):
+                max_tokens = floor
         if bilingual:
             task = (
                 task
