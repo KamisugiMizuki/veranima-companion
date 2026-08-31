@@ -12,7 +12,6 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -72,8 +71,8 @@ private val PhotoIcon: androidx.compose.ui.graphics.vector.ImageVector by lazy {
     androidx.compose.ui.graphics.vector.ImageVector.Builder(
         defaultWidth = 24.dp, defaultHeight = 24.dp, viewportWidth = 24f, viewportHeight = 24f
     ).apply {
-        // 相框（圆角矩形描边→用 fill 加内框）
-        path(fill = androidx.compose.ui.graphics.SolidColor(Muted)) {
+        // 相框（圆角矩形描边→用 fill 加内框）；Galaxy：静态 vector 用中性灰原语（GxDayMutedSoft）
+        path(fill = androidx.compose.ui.graphics.SolidColor(GxDayMutedSoft)) {
             moveTo(4f, 5.5f)
             curveTo(4f, 4.67f, 4.67f, 4f, 5.5f, 4f)
             horizontalLineTo(18.5f)
@@ -84,7 +83,7 @@ private val PhotoIcon: androidx.compose.ui.graphics.vector.ImageVector by lazy {
             curveTo(4.67f, 20f, 4f, 19.33f, 4f, 18.5f)
             close()
         }
-        path(fill = androidx.compose.ui.graphics.SolidColor(Canvas)) {
+        path(fill = androidx.compose.ui.graphics.SolidColor(GxWhite)) {
             moveTo(6.5f, 7.5f)
             curveTo(6.5f, 6.95f, 6.95f, 6.5f, 7.5f, 6.5f)
             horizontalLineTo(16.5f)
@@ -96,7 +95,7 @@ private val PhotoIcon: androidx.compose.ui.graphics.vector.ImageVector by lazy {
             close()
         }
         // 山+太阳
-        path(fill = androidx.compose.ui.graphics.SolidColor(Muted)) {
+        path(fill = androidx.compose.ui.graphics.SolidColor(GxDayMutedSoft)) {
             moveTo(9f, 9f)
             arcTo(1.6f, 1.6f, 0f, true, false, 12.2f, 9f)
             arcTo(1.6f, 1.6f, 0f, true, false, 9f, 9f)
@@ -113,47 +112,15 @@ private val PhotoIcon: androidx.compose.ui.graphics.vector.ImageVector by lazy {
 
 // ---------- 舞台部件 ----------
 
-/** P2 图片主色：16×16 降采样求平均色（纯 SDK，无 Palette 依赖；失败→null 不参与混合） */
-private fun averageColor(path: String): Color? {
-    return try {
-        val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeFile(path, opts)
-        var ss = 1
-        while (opts.outWidth / (ss * 2) > 16 && opts.outHeight / (ss * 2) > 16) ss *= 2
-        val bmp = BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = ss })
-            ?: return null
-        val w = bmp.width; val h = bmp.height
-        var r = 0L; var g = 0L; var b = 0L
-        for (y in 0 until h step 2) for (x in 0 until w step 2) {
-            val c = bmp.getPixel(x, y)
-            r += (c shr 16) and 0xFF; g += (c shr 8) and 0xFF; b += c and 0xFF
-        }
-        val n = (((w + 1) / 2) * ((h + 1) / 2)).toLong().coerceAtLeast(1)
-        bmp.recycle()
-        Color(android.graphics.Color.rgb((r / n).toInt(), (g / n).toInt(), (b / n).toInt()))
-    } catch (e: Exception) {
-        null
-    }
-}
-
-/** P2 情绪→环境光边缘色：tone 优先（19 词表→6 组），回退 mood 三档，再回退米白 */
-private fun ambientEdge(tone: String, mood: String, dark: Boolean, image: Color?): Color {
-    var c = ToneAmbient[tone] ?: MoodAmbient[mood] ?: Color(0xFFE8E4DC)
-    if (dark) {
-        // 夜间：整体降明度（混合藏青 55%）
-        c = androidx.compose.ui.graphics.lerp(c, NightAmbient, 0.55f)
-    }
-    if (image != null) c = androidx.compose.ui.graphics.lerp(c, image, 0.3f)  // 图片主色混入 30%
-    return c
-}
-
-/** P2 情绪标签文案：tone 词表原样显示；回退 mood 三档图标+词 */
+/** P2 情绪标签文案：tone 词表原样显示；回退 mood 三档图标+词。
+ *  Galaxy 配色（2026-09-01）：tone 一律雾霾蓝/暖灰褐两档语义（暖组→褐、冷组→蓝），
+ *  不再维护 19 词色表——黑白极简下情绪靠词本身，不靠彩虹。 */
 private fun emotionLabel(tone: String, mood: String): Pair<String, Color> {
-    if (tone.isNotEmpty()) return tone to (ToneLabelColor[tone] ?: Muted)
+    if (tone.isNotEmpty()) return tone to AccentBlue
     return when (mood) {
-        "开心" -> "✨ 心情不错" to Color(0xFFC77B4A)
-        "低落" -> "🌧 有点闷" to Color(0xFF7A87A8)
-        else -> "💭 平静" to Muted
+        "开心" -> "✨ 心情不错" to AccentTaupe
+        "低落" -> "🌧 有点闷" to AccentBlue
+        else -> "💭 平静" to GxDayMutedSoft
     }
 }
 
@@ -186,10 +153,10 @@ private fun ThinkingParticles() {
                     tween(800, delayMillis = i * 250, easing = FastOutSlowInEasing),
                     RepeatMode.Reverse))
             Box(Modifier.size(5.dp).offset(y = y.dp).graphicsLayer { alpha = 0.6f - i * 0.15f }
-                .background(Coral, RoundedCornerShape(50)))
+                .background(PrimaryInk(), RoundedCornerShape(50)))
             Spacer(Modifier.width(5.dp))
         }
-        Text("正在酝酿…", style = MaterialTheme.typography.bodySmall, color = MutedSoft)
+        Text("正在酝酿…", style = MaterialTheme.typography.bodySmall, color = MutedSoft())
     }
 }
 
@@ -280,8 +247,6 @@ class MainActivity : ComponentActivity() {
                 // P2 情绪：最新一条回复的 tone/mood（驱动情绪标签+环境光；空→默认平静）
                 val lastTone = remember { mutableStateOf("") }
                 val lastMood = remember { mutableStateOf("") }
-                // P3 图片主色：用户最近发图的平均色（16×16 降采样），混入环境光 30%
-                val imageAmbient = remember { mutableStateOf<Color?>(null) }
                 val pendingImages = remember { mutableStateOf(listOf<String>()) }
                 val showSettings = remember { mutableStateOf(false) }
                 val expanded = remember { mutableStateOf(false) }  // 面板两态：收起=最新一轮 / 展开=全历史
@@ -408,12 +373,6 @@ class MainActivity : ComponentActivity() {
                     busy.value = true
                     // P3 触感：发送成功一次轻震
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    // P2 图片主色：首图 16×16 降采样求均值（纯 SDK，无 Palette 依赖）
-                    imgs.firstOrNull()?.let { p ->
-                        scope.launch(Dispatchers.IO) {
-                            imageAmbient.value = averageColor(p)
-                        }
-                    }
                     scope.launch {
                         val r = withContext(Dispatchers.IO) {
                             bridge.callAttr("chat", q, org.json.JSONArray(imgs).toString()).toString()
@@ -474,29 +433,18 @@ class MainActivity : ComponentActivity() {
                     val panelShape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
                     @OptIn(ExperimentalHazeApi::class)
                     fun Modifier.stageHaze() = this.haze(hazeState)
+                    val panelTint = CardBg().copy(alpha = 0.92f)  // Composable 上下文预取（日夜自适应）
                     @OptIn(ExperimentalHazeApi::class)
                     fun Modifier.panelHaze() = this.hazeChild(
                         state = hazeState,
                         shape = panelShape,
                         style = dev.chrisbanes.haze.HazeStyle(
-                            backgroundColor = SurfaceCard.copy(alpha = 0.92f),
+                            backgroundColor = panelTint,
                             tints = emptyList(),
                             blurRadius = 24.dp))
-                    val dark = androidx.compose.foundation.isSystemInDarkTheme()
-                    // P2 环境光：中心固定白（立绘背后白不变，用户裁决），边缘色随
-                    // 最新回复情绪 tone/mood + 用户图片主色；夜间整体降明度
-                    val ambient by animateColorAsState(
-                        ambientEdge(lastTone.value, lastMood.value, dark, imageAmbient.value),
-                        animationSpec = tween(1200), label = "ambient")
-                    Box(Modifier.fillMaxSize().background(Canvas)) {
-                        // L0 环境光背景：径向渐变（中心=立绘区白，矩形边界不可见；边缘=情绪氛围色）
-                        // 立绘显示层背景固定白（用户裁决）：渐变中心白覆盖立绘背后，氛围色只露在四周
-                        Box(Modifier.fillMaxSize().background(Brush.radialGradient(
-                            colors = listOf(Color.White, Color.White, ambient),
-                            center = Offset(screenW / 2f, screenH * 0.30f),
-                            radius = screenH * 0.62f)))
-                        // ---- L1 立绘舞台（宽适配+顶对齐：任意长宽比不裁脸；无图则整层消失=纯色舞台） ----
-                        // haze 挂这里：hazeChild（面板）是兄弟层级，不能是子孙（Haze 硬约束）
+                    Box(Modifier.fillMaxSize().background(PageBg())) {
+                        // ---- L1 立绘舞台（Galaxy：环境光层已按 2026-09-01 裁决砍除，纯色画布） ----
+                        // 立绘背后固定白（旧裁决延续）：白底图消除矩形边界；夜间以灯箱质感成立
                         Column(Modifier.fillMaxSize().stageHaze(), horizontalAlignment = Alignment.CenterHorizontally) {
                             if (portraitBmp != null) {
                                 val imgW = (screenW * 0.86f).dp
@@ -507,9 +455,9 @@ class MainActivity : ComponentActivity() {
                                     Box(Modifier.width(imgW).offset(y = breathDp.dp)) {
                                         Image(portraitBmp!!.asImageBitmap(), charName.value,
                                             Modifier.fillMaxWidth().fillMaxHeight(), contentScale = ContentScale.Fit)
-                                        // 脚部渐变遮罩：立绘融入背景/面板，消除悬浮感
+                                        // 脚部渐变遮罩：立绘融入画布，消除悬浮感
                                         Box(Modifier.fillMaxWidth().height(90.dp).align(Alignment.BottomCenter)
-                                            .background(Brush.verticalGradient(listOf(Color.Transparent, Canvas))))
+                                            .background(Brush.verticalGradient(listOf(Color.Transparent, Color.White))))
                                     }
                                 }
                             } else {
@@ -518,7 +466,7 @@ class MainActivity : ComponentActivity() {
                         }
                         // boot 诊断浮层（仅异常时显示；正常启动为空，不占舞台高度）
                         if (status.value.isNotEmpty()) {
-                            Text(status.value, style = MaterialTheme.typography.bodySmall, color = MutedSoft,
+                            Text(status.value, style = MaterialTheme.typography.bodySmall, color = MutedSoft(),
                                 modifier = Modifier.align(Alignment.TopStart).padding(start = 12.dp, top = 4.dp))
                         }
                         // ---- L3 毛玻璃对话面板（两态；面板高度即立绘可见区，天然适配长宽比） ----
@@ -555,8 +503,8 @@ class MainActivity : ComponentActivity() {
                                     verticalAlignment = Alignment.CenterVertically) {
                                     Text(charName.value, style = MaterialTheme.typography.headlineSmall)
                                     Box(Modifier.width(36.dp).height(4.dp)
-                                        .background(Hairline, RoundedCornerShape(2.dp)))
-                                    TextButton(onClick = { showSettings.value = true }) { Text("设置", color = Muted) }
+                                        .background(Hairline(), RoundedCornerShape(2.dp)))
+                                    TextButton(onClick = { showSettings.value = true }) { Text("设置", color = Muted()) }
                                 }
                                 if (expanded.value) {
                                     // 展开态=现有 IM 历史（不可回退项：图片渲染/持久化行为原样）
@@ -566,8 +514,10 @@ class MainActivity : ComponentActivity() {
                                         items(msgs) { m ->
                                             Box(if (m.me) Modifier.fillMaxWidth() else Modifier,
                                                 contentAlignment = if (m.me) Alignment.CenterEnd else Alignment.CenterStart) {
-                                                Surface(color = if (m.me) SurfaceDark else Canvas,
-                                                        contentColor = if (m.me) OnDark else Ink,
+                                                Surface(color = if (m.me) SurfaceDark() else PageBg(),
+                                                        contentColor = if (m.me) OnDark() else Body(),
+                                                        border = androidx.compose.foundation.BorderStroke(
+                                                            1.dp, if (m.me) Color.Transparent else CardBorder()),
                                                         shape = RoundedCornerShape(
                                                             topStart = 12.dp, topEnd = 12.dp,
                                                             bottomStart = if (m.me) 12.dp else 4.dp,
@@ -578,7 +528,7 @@ class MainActivity : ComponentActivity() {
                                                         m.images.forEach { p -> ImageThumb(p, (screenW * 0.6f).dp) { zoom.value = p } }
                                                         if (m.text.isNotEmpty()) Text(m.text,
                                                             style = MaterialTheme.typography.bodyMedium,
-                                                            color = if (m.me) OnDark else Ink)
+                                                            color = if (m.me) OnDark() else Body())
                                                         // 展开态=IM 历史原样（spec 3.2）：不挂逐条情绪徽章，
                                                         // 标签只属于收起态最新一轮——历史 mood_at 是全局静态值，逐条显示全是同一标签=噪音
                                                         // 时间戳（ISO→本地 HH:mm；解析失败静默不显示）
@@ -592,7 +542,7 @@ class MainActivity : ComponentActivity() {
                                                             }
                                                             if (hhmm.isNotEmpty()) Text(hhmm,
                                                                 style = MaterialTheme.typography.labelSmall,
-                                                                color = if (m.me) OnDarkSoft else MutedSoft,
+                                                                color = if (m.me) OnDarkSoft() else MutedSoft(),
                                                                 modifier = Modifier.align(
                                                                     if (m.me) Alignment.End else Alignment.Start))
                                                         }
@@ -615,12 +565,12 @@ class MainActivity : ComponentActivity() {
                                                 animScale = animScale,
                                                 style = MaterialTheme.typography.bodyLarge)
                                         } else {
-                                            Text("……", style = MaterialTheme.typography.bodyLarge, color = MutedSoft)
+                                            Text("……", style = MaterialTheme.typography.bodyLarge, color = MutedSoft())
                                         }
                                         if (lastMe != null) {
                                             Text("你：" + lastMe.text.ifEmpty { "[图片]" },
                                                 style = MaterialTheme.typography.bodySmall,
-                                                color = MutedSoft, maxLines = 1,
+                                                color = MutedSoft(), maxLines = 1,
                                                 modifier = Modifier.padding(top = 6.dp))
                                         }
                                     }
@@ -668,16 +618,16 @@ class MainActivity : ComponentActivity() {
                                         input.value, { input.value = it },
                                         Modifier.weight(1f), singleLine = true,
                                         colors = OutlinedTextFieldDefaults.colors(
-                                            focusedBorderColor = Coral,
-                                            unfocusedBorderColor = Hairline,
-                                            cursorColor = Coral),
+                                            focusedBorderColor = PrimaryInk(),
+                                            unfocusedBorderColor = Hairline(),
+                                            cursorColor = PrimaryInk()),
                                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                                         keyboardActions = KeyboardActions(onSend = { send() })
                                     )
                                     Spacer(Modifier.width(8.dp))
-                                    if (busy.value) CircularProgressIndicator(Modifier.size(28.dp), color = Coral)
+                                    if (busy.value) CircularProgressIndicator(Modifier.size(28.dp), color = PrimaryInk())
                                     else Button(onClick = { send() },
-                                            colors = ButtonDefaults.buttonColors(Coral),
+                                            colors = ButtonDefaults.buttonColors(InvertSurface(), OnInvert()),
                                             shape = MaterialTheme.shapes.small) { Text("发送") }
                                 }
                             }

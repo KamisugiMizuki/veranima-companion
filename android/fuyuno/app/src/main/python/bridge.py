@@ -549,6 +549,170 @@ def derive_stage(model) -> str:
         return "初识"
 
 
+# ---------- UI 重构（Galaxy 详情页）数据面：memory_stats / memory_full /
+# relationship_trend / sleep_status。只读打包现有 core 数据，不改写路径。 ----------
+
+# 关系七维每日快照表（趋势数据的唯一来源；bridge 自管，core 不感知）
+def _ensure_rel_snapshot_table(con) -> None:
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS relationship_snapshots ("
+        " day TEXT PRIMARY KEY, dims_json TEXT NOT NULL, updated_at TEXT NOT NULL)")
+    con.commit()
+
+
+def _note_relationship_snapshot(agent) -> None:
+    """把当日关系七维写快照表（同日覆盖=始终保存最新值；每天至多一行）。"""
+    import datetime
+    con = agent.memory.con
+    _ensure_rel_snapshot_table(con)
+    dims = {k: round(float(v), 4) for k, v in agent.relationship.to_dict().items()
+            if isinstance(v, (int, float))}
+    con.execute(
+        "INSERT INTO relationship_snapshots(day, dims_json, updated_at) VALUES (?,?,?) "
+        "ON CONFLICT(day) DO UPDATE SET dims_json=excluded.dims_json, updated_at=excluded.updated_at",
+        (datetime.date.today().isoformat(),
+         json.dumps(dims, ensure_ascii=False),
+         datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")))
+    con.commit()
+
+
+def memory_stats() -> str:
+    """记忆库总览（Memory Vault 顶部卡+环形图）：总数/向量维度/最后更新/分层分布。
+
+    分布映射（数据真实存在，命名对齐用户设计稿三档）：
+    - 长期 = core_profile + semantic（沉淀事实/自我画像）
+    - 短期 = episodic + procedural + session（近期情节/规矩/会话）
+    - 待归档 = memory_review_inbox status=pending（夜间 digest 送审队列）+ 已过期未清条目
+    """
+    agent = getattr(boot, "agent", None)
+    if agent is None:
+        return json.dumps({"ok": False, "error": "未初始化"})
+    try:
+        con = agent.memory.con
+        per_layer = {}
+        last_updated = ""
+        for lyr in ("core_profile", "semantic", "episodic", "procedural", "session"):
+            row = con.execute(
+                "SELECT count(*) n, max(updated_at) t FROM memories WHERE layer=?", (lyr,)).fetchone()
+            per_layer[lyr] = int(row["n"] or 0)
+            if (row["t"] or "") > last_updated:
+                last_updated = str(row["t"])
+        total = sum(per_layer.values())
+        review_pending = 0
+        try:
+            review_pending = int(con.execute(
+                "SELECT count(*) FROM memory_review_inbox WHERE status='pending'").fetchone()[0] or 0)
+        except Exception:
+            pass  # 表缺失=0
+        long_term = per_layer["core_profile"] + per_layer["semantic"]
+        short_term = per_layer["episodic"] + per_layer["procedural"] + per_layer["session"]
+        dim = int(getattr(agent.memory.provider, "dim", 0) or 0)
+        return json.dumps({"ok": True, "total": total, "dim": dim,
+                           "last_updated": last_updated, "long_term": long_term,
+                           "short_term": short_term, "pending_archive": review_pending},
+                          ensure_ascii=False)
+    except Exception as e:
+        log.error("memory_stats failed: %s", e)
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+def memory_full(memory_id: int) -> str:
+    """单条记忆完整文本+元数据（时间轴条目点击弹窗；memories_list 的 content 截断 120）。"""
+    agent = getattr(boot, "agent", None)
+    if agent is None:
+        return json.dumps({"ok": False, "error": "未初始化"})
+    try:
+        row = agent.memory.con.execute(
+            "SELECT id, layer, content, category, strength, importance, created_at, updated_at"
+            " FROM memories WHERE id=?", (int(memory_id),)).fetchone()
+        if row is None:
+            return json.dumps({"ok": False, "error": "记忆不存在"})
+        return json.dumps({"ok": True, **{k: row[k] for k in row.keys()}}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+def relationship_trend() -> str:
+    """羁绊图谱数据（Relationship Metrics）：当前七维 + 最近 10 天快照序列。
+
+    首调=把今天值落快照；返回按日排序 [{day, dims}]，Kotlin 侧据此算「较昨日」
+    与 7 日折线。无历史=快照只有一条，趋势显示「—」（不编造）。
+    """
+    agent = getattr(boot, "agent", None)
+    if agent is None:
+        return json.dumps({"ok": False, "error": "未初始化"})
+    try:
+        _note_relationship_snapshot(agent)
+        rows = agent.memory.con.execute(
+            "SELECT day, dims_json FROM relationship_snapshots ORDER BY day DESC LIMIT 10").fetchall()
+        series = [{"day": r["day"], "dims": json.loads(r["dims_json"])} for r in reversed(rows)]
+        rel = agent.relationship.to_dict()
+        from veranima.core.persona import derive_relationship_stage
+        return json.dumps({"ok": True, "relationship": rel,
+                           "stage": derive_relationship_stage(agent.relationship),
+                           "role": agent.card.name, "series": series}, ensure_ascii=False)
+    except Exception as e:
+        log.error("relationship_trend failed: %s", e)
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+def sleep_status() -> str:
+    """睡眠报告数据（Sleep Monitor）：实时状态 + 最近周期 + 清醒中时长。
+
+    质量分=显示端确定性估算（时长偏差 + 入睡时刻），非 core 概念，文案已注明。
+    """
+    agent = getattr(boot, "agent", None)
+    if agent is None:
+        return json.dumps({"ok": False, "error": "未初始化"})
+    try:
+        import datetime
+        asleep = bool(getattr(agent.state, "user_asleep", False))
+        last_report = str(getattr(agent.state, "last_sleep_report_at", "") or "")
+        cycles = agent.memory.recent_sleep_cycles(limit=15)
+        closed = [c for c in cycles if c.get("woke_at")]
+        cur_minutes = -1
+        if asleep and last_report:
+            try:
+                start = datetime.datetime.fromisoformat(last_report)
+                if start.tzinfo is None:
+                    start = start.replace(tzinfo=datetime.timezone.utc)
+                cur_minutes = int((datetime.datetime.now(
+                    datetime.timezone.utc) - start).total_seconds() / 60)
+            except Exception:
+                pass
+        est = None
+        if closed:
+            c = closed[0]
+            sm = None
+            try:
+                f = datetime.datetime.fromisoformat(c["fell_asleep_at"])
+                w = datetime.datetime.fromisoformat(c["woke_at"])
+                sm = int((w - f).total_seconds() / 60)
+                if sm < 0:
+                    sm += 24 * 60
+                # 质量分：8h 基准偏差 + 入睡时刻（23:00-01:00 为佳，逐时递减）
+                score = 100 - abs(sm - 480) // 60 * 8
+                local_f = f.astimezone()
+                h = local_f.hour
+                late = h if h >= 21 else h - 24   # 21→-3, 23→-1, 0→0, 2→2
+                if late > 1 or late < -3:
+                    score -= 5 * min(abs(late), 6)
+                est = {"sleep_minutes": sm, "score": max(1, min(100, score)),
+                       "fell_asleep_at": c["fell_asleep_at"], "woke_at": c["woke_at"],
+                       "summary": c.get("summary") or ""}
+            except Exception:
+                est = None
+        return json.dumps({"ok": True, "asleep": asleep, "current_minutes": cur_minutes,
+                           "last": est, "cycles": [
+                {"id": c["id"], "fell_asleep_at": c.get("fell_asleep_at") or "",
+                 "woke_at": c.get("woke_at") or "",
+                 "summary": c.get("summary") or ""} for c in cycles]},
+            ensure_ascii=False)
+    except Exception as e:
+        log.error("sleep_status failed: %s", e)
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
 def memories_list(layer: str = "", category: str = "", limit: int = 200) -> str:
     """记忆列表（DESIGN §11-B）：可选按层/分类过滤，带 category 供标签云聚合。"""
     agent = getattr(boot, "agent", None)

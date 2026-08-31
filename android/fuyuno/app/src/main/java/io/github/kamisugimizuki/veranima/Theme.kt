@@ -13,106 +13,138 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-// Claude.com 色板（UI 设计说明）：奶油画布 + 暖墨 + 珊瑚，深色面板 #181715
-internal val Canvas = Color(0xFFFAF9F5)        // 页面底（非纯白，暖）
-internal val SurfaceCard = Color(0xFFEFE9DE)   // 桌面气泡底（比画布深一档）
-internal val SurfaceDark = Color(0xFF181715)   // 我的气泡底（深色面板）
-internal val Ink = Color(0xFF141413)           // 标题/主文本
-internal val Body = Color(0xFF3D3D3A)          // 正文
-internal val Muted = Color(0xFF6C6A64)         // 次级
-internal val MutedSoft = Color(0xFF8E8B82)     // 状态行
-internal val OnDark = Color(0xFFFAF9F5)        // 深色面上的奶油白
-internal val OnDarkSoft = Color(0xFFA09D96)    // 深色面上的次级
-internal val Coral = Color(0xFFCC785C)         // 品牌珊瑚（仅主 CTA）
-internal val CoralActive = Color(0xFFA9583E)   // 按压态
-internal val Hairline = Color(0xFFE6DFD8)      // 1px 发丝边
+/**
+ * Galaxy（Uiverse.io）黑白极简 · 全应用色板唯一源（2026-09-01 UI 重构指令）。
+ *
+ * 规范：主色黑白 #000/#FFF；点缀色仅低饱和三色——雾霾蓝 #7B8FA1 / 鼠尾草绿 #9CAF88 /
+ * 暖灰褐 #C4A882。日间=纯白画布，夜间自动反色（近黑画布+白字）。
+ * 语义色一律走 @Composable fun 访问器（调用点 `color = Canvas()` 形态、日夜自适应）。
+ *
+ * 历史：旧 Claude 奶油色板（2026-08-29 定）整体替换；情绪环境光层（radialGradient）
+ * 按用户裁决砍除；立绘显示层背景仍固定纯白（旧裁决延续：白底消除立绘矩形边界，
+ * 夜间以灯箱质感成立）。
+ */
 
-// 夜间模式（跟随系统，ANDROID_UI_VISUAL_NOVEL_SPEC 3.5）：画布藏青，面板提不透明度
-internal val CanvasDark = Color(0xFF16161D)
-internal val SurfaceCardDark = Color(0xFF1F1F27)
-internal val SurfaceDarkNight = Color(0xFF0E0E13)
-internal val InkDark = Color(0xFFE8E6E0)
-internal val BodyDark = Color(0xFFC9C7C0)
-internal val MutedDark = Color(0xFF9A988F)
-internal val MutedSoftDark = Color(0xFF75736C)
-internal val HairlineDark = Color(0xFF2E2E36)
+// ---- 基础原语（静态；日夜分支见下方访问器） ----
+internal val GxWhite = Color(0xFFFFFFFF)
+internal val GxBlack = Color(0xFF000000)
+internal val GxDeepGray = Color(0xFF1A1A1A)      // 睡眠中胶囊底/夜间卡片
+internal val GxNightCanvas = Color(0xFF121212)   // 夜间画布（纯中性黑，无蓝调）
+internal val GxNightHairline = Color(0xFF3A3A3A) // 夜间次级描边
+internal val GxDayHairline = Color(0xFFE5E5E5)   // 日间次级分隔线（比卡片黑边低一级）
+internal val GxDayMuted = Color(0xFF666666)
+internal val GxNightMuted = Color(0xFFB8B8B8)
+internal val GxDayMutedSoft = Color(0xFF8A8A8A)
+internal val GxNightMutedSoft = Color(0xFF8E8E8E)
 
-// P2 情绪→环境光表（ANDROID_UI_VISUAL_NOVEL_SPEC 3.4）：中心白/奶油 → 边缘氛围色
-// 夜（23:00-6:00 叠加）由 Kotlin 侧取 NightAmbient 降明度混合
-internal val MoodAmbient = mapOf(
-    "开心" to Color(0xFFF3E2C7),  // 香槟金
-    "平静" to Color(0xFFE8E4DC),  // 米白→暖灰
-    "低落" to Color(0xFFC9CDD6),  // 雾蓝灰
-)
-internal val ToneAmbient = mapOf(
-    "喜悦" to Color(0xFFF0D3C0), "微笑" to Color(0xFFF0D3C0), "温柔" to Color(0xFFF2D8CC), "暧昧" to Color(0xFFEBC8C0),   // 暖
-    "闲置" to Color(0xFFE8E4DC), "安静" to Color(0xFFE8E4DC), "认真" to Color(0xFFE8E4DC), "恭敬" to Color(0xFFE8E4DC),   // 静
-    "毒舌" to Color(0xFFE6C3B8), "戏谑" to Color(0xFFE6C3B8), "调侃" to Color(0xFFE6C3B8), "不屑" to Color(0xFFE6C3B8),   // 锐
-    "失落" to Color(0xFFC3C8DA), "悲伤" to Color(0xFFC3C8DA),                                                             // 沉
-    "好奇" to Color(0xFFE8E4DC), "惊讶" to Color(0xFFE8E4DC), "愤怒" to Color(0xFFE0C0B8), "严肃" to Color(0xFFE8E4DC),   // 动
-)
-internal val NightAmbient = Color(0xFF1B1E2B)  // 夜间叠加：藏青→深紫灰
-internal val ToneLabelColor = mapOf(
-    // 暖：暖橙字；静：墨色；锐：珊瑚；沉：雾蓝；动：墨色
-    "喜悦" to Color(0xFFC77B4A), "微笑" to Color(0xFFC77B4A), "温柔" to Color(0xFFC77B4A), "暧昧" to Color(0xFFC77B4A),
-    "毒舌" to Coral, "戏谑" to Coral, "调侃" to Coral, "不屑" to Coral,
-    "失落" to Color(0xFF7A87A8), "悲伤" to Color(0xFF7A87A8),
-    "愤怒" to Coral,
-)
+// ---- 点缀三色（低饱和；日夜同值——两种底面都可辨） ----
+internal val AccentBlue = Color(0xFF7B8FA1)      // 雾霾蓝
+internal val AccentSage = Color(0xFF9CAF88)      // 鼠尾草绿
+internal val AccentTaupe = Color(0xFFC4A882)     // 暖灰褐
 
-// 显示衬线：CJK 标题（駒川/凛）用平台 Noto Serif 明朝体——Cormorant 无汉字字形会回退成黑体
-internal val DisplayFont: FontFamily = FontFamily.Serif
+// ---- 语义色访问器（@Composable：跟随系统日/夜） ----
+
+/** 页面画布：日间纯白 #FFFFFF / 夜间 #121212 */
+@Composable internal fun PageBg(): Color =
+    if (androidx.compose.foundation.isSystemInDarkTheme()) GxNightCanvas else GxWhite
+
+/** 卡片/气泡底：日间纯白（配 1dp 黑描边成卡）/ 夜间近黑 #1A1A1A */
+@Composable internal fun CardBg(): Color =
+    if (androidx.compose.foundation.isSystemInDarkTheme()) GxDeepGray else GxWhite
+
+/** 反色面（我的气泡/主 CTA 底）：日间黑 / 夜间白（黑白关系整体翻转） */
+@Composable internal fun InvertSurface(): Color =
+    if (androidx.compose.foundation.isSystemInDarkTheme()) GxWhite else GxBlack
+
+/** 反色面上的文字 */
+@Composable internal fun OnInvert(): Color =
+    if (androidx.compose.foundation.isSystemInDarkTheme()) GxBlack else GxWhite
+
+/** 主文本/标题/主强调色：黑（夜间白）——原 Coral（珊瑚）的角色位由黑白接管 */
+@Composable internal fun PrimaryInk(): Color =
+    if (androidx.compose.foundation.isSystemInDarkTheme()) GxWhite else GxBlack
+
+/** 正文：纯黑保证无障碍对比（夜间纯白） */
+@Composable internal fun Body(): Color = PrimaryInk()
+
+/** 次级文字 */
+@Composable internal fun Muted(): Color =
+    if (androidx.compose.foundation.isSystemInDarkTheme()) GxNightMuted else GxDayMuted
+
+/** 三级（状态行/时间戳） */
+@Composable internal fun MutedSoft(): Color =
+    if (androidx.compose.foundation.isSystemInDarkTheme()) GxNightMutedSoft else GxDayMutedSoft
+
+/** 反色面底（旧 SurfaceDark 语义：我的气泡底） */
+@Composable internal fun SurfaceDark(): Color = InvertSurface()
+@Composable internal fun OnDark(): Color = OnInvert()
+
+/** 反色面上的次级文字（时间戳等） */
+@Composable internal fun OnDarkSoft(): Color =
+    if (androidx.compose.foundation.isSystemInDarkTheme()) Color(0xFF666666) else Color(0xFFBBBBBB)
+
+/** 分隔线/输入框常态描边 */
+@Composable internal fun Hairline(): Color =
+    if (androidx.compose.foundation.isSystemInDarkTheme()) GxNightHairline else GxDayHairline
+
+/** 卡片描边：设计稿=黑色细边框 1dp（夜间转白维持边界可读） */
+@Composable internal fun CardBorder(): Color = PrimaryInk()
+
+/** 环形/条形的底轨色（比 Hairline 更中性的填充感） */
+@Composable internal fun TrackBg(): Color =
+    if (androidx.compose.foundation.isSystemInDarkTheme()) GxNightHairline else Color(0xFFEFEFEF)
+
+// 显示字体：Galaxy 标准全站无衬线（用户裁决 2026-09-01：衬线换无衬线）
+internal val DisplayFont: FontFamily = FontFamily.SansSerif
+
+@Composable
+private fun Scheme() = if (androidx.compose.foundation.isSystemInDarkTheme()) {
+    darkColorScheme(
+        primary = PrimaryInk(), onPrimary = OnInvert(),
+        background = PageBg(), onBackground = Body(),
+        surface = PageBg(), onSurface = Body(),
+        surfaceVariant = CardBg(), onSurfaceVariant = Muted(),
+        outline = Hairline(), outlineVariant = Hairline(),
+        secondary = MutedSoft(),
+        inverseSurface = InvertSurface(), inverseOnSurface = OnInvert(),
+    )
+} else {
+    lightColorScheme(
+        primary = PrimaryInk(), onPrimary = OnInvert(),
+        background = PageBg(), onBackground = Body(),
+        surface = PageBg(), onSurface = Body(),
+        surfaceVariant = CardBg(), onSurfaceVariant = Muted(),
+        outline = Hairline(), outlineVariant = Hairline(),
+        secondary = MutedSoft(),
+        inverseSurface = InvertSurface(), inverseOnSurface = OnInvert(),
+    )
+}
+
+// M3 组件（Button/Surface 等）内部吃 colorScheme 的静态场景：主题包装时预取一份
+private val Type = Typography(
+    headlineSmall = TextStyle(fontFamily = DisplayFont, fontSize = 24.sp,
+        fontWeight = FontWeight.SemiBold, letterSpacing = (-0.2).sp),
+    titleLarge = TextStyle(fontFamily = DisplayFont, fontSize = 20.sp,
+        fontWeight = FontWeight.SemiBold),
+    titleMedium = TextStyle(fontWeight = FontWeight.Medium, fontSize = 18.sp),
+    titleSmall = TextStyle(fontWeight = FontWeight.Medium, fontSize = 16.sp),
+    bodyLarge = TextStyle(fontSize = 16.sp, lineHeight = 24.sp),
+    bodyMedium = TextStyle(fontSize = 15.sp, lineHeight = 23.sp),
+    bodySmall = TextStyle(fontSize = 13.sp),
+    labelLarge = TextStyle(fontWeight = FontWeight.Medium, fontSize = 14.sp),
+)
 
 private val Shapes = androidx.compose.material3.Shapes(
     extraSmall = RoundedCornerShape(6.dp),
     small = RoundedCornerShape(8.dp),      // 按钮/输入框 rounded.md
-    medium = RoundedCornerShape(12.dp),    // 卡片/气泡 rounded.lg
+    medium = RoundedCornerShape(12.dp),    // 卡片/气泡 rounded.lg（设计稿统计卡=12dp）
     large = RoundedCornerShape(16.dp),
     extraLarge = RoundedCornerShape(24.dp),
 )
 
-private val Scheme = lightColorScheme(
-    primary = Coral, onPrimary = Color.White,
-    background = Canvas, onBackground = Ink,
-    surface = Canvas, onSurface = Ink,
-    surfaceVariant = SurfaceCard, onSurfaceVariant = Muted,
-    outline = Hairline, outlineVariant = Hairline,
-    secondary = CoralActive,
-    // snackbar 等"反色面"必须显式配对，否则 M3 默认值在本色板下浅字浅底
-    inverseSurface = SurfaceDark, inverseOnSurface = OnDark,
-)
-
-private val SchemeDark = darkColorScheme(
-    primary = Coral, onPrimary = Color.White,
-    background = CanvasDark, onBackground = InkDark,
-    surface = CanvasDark, onSurface = InkDark,
-    surfaceVariant = SurfaceCardDark, onSurfaceVariant = MutedDark,
-    outline = HairlineDark, outlineVariant = HairlineDark,
-    secondary = CoralActive,
-    inverseSurface = InkDark, inverseOnSurface = CanvasDark,  // 夜间反色=浅底深字
-)
-
-private val Type = Typography(
-    headlineSmall = TextStyle(fontFamily = DisplayFont, fontSize = 28.sp,
-        fontWeight = FontWeight.Normal, letterSpacing = (-0.3).sp, color = Ink),
-    titleLarge = TextStyle(fontFamily = DisplayFont, fontSize = 22.sp,
-        fontWeight = FontWeight.Normal, letterSpacing = (-0.2).sp, color = Ink),
-    titleMedium = TextStyle(fontWeight = FontWeight.Medium, fontSize = 18.sp, color = Ink),
-    titleSmall = TextStyle(fontWeight = FontWeight.Medium, fontSize = 16.sp, color = Ink),
-    bodyLarge = TextStyle(fontSize = 16.sp, lineHeight = 24.sp, color = Body),
-    bodyMedium = TextStyle(fontSize = 15.sp, lineHeight = 23.sp, color = Body),
-    bodySmall = TextStyle(fontSize = 13.sp, color = Muted),
-    labelLarge = TextStyle(fontWeight = FontWeight.Medium, fontSize = 14.sp),
-)
-
 @Composable
-fun VeranimaTheme(dark: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit) {
+fun VeranimaTheme(content: @Composable () -> Unit) {
     MaterialTheme(
-        colorScheme = if (dark) SchemeDark else Scheme,
+        colorScheme = Scheme(),
         typography = Type, shapes = Shapes, content = content)
 }
-
-@Composable
-private fun isSystemInDarkTheme(): Boolean =
-    androidx.compose.foundation.isSystemInDarkTheme()
-

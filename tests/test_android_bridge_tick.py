@@ -84,3 +84,74 @@ def test_offline_think_timer_window_dedup(bridge):
     assert t.due(t0 + 31 * 60, t0) is True     # 静默满窗口 → 命中
     assert t.due(t0 + 32 * 60, t0) is False    # 同窗口内再来 → 去重
     assert t.due(t0 + 62 * 60, t0) is True     # 新窗口 → 可再触发
+
+
+# ---------- Galaxy 详情页数据面（2026-09-01 UI 重构） ----------
+
+import json as _json
+
+
+def _detail_agent(tmp_path):
+    from veranima.core.agent import Agent
+    from veranima.core.character import CharacterCard
+    from veranima.core.state import AgentState
+    from veranima.memory.store import MemoryStore
+
+    class _Emb:
+        dim = 8
+
+        def embed(self, texts):
+            import hashlib
+            return [[b / 255 for b in hashlib.sha256(t.encode()).digest()[:8]] for t in texts]
+
+    class _LLM:
+        def chat(self, m, **k): return ""
+        def is_model_loaded(self): return False
+
+    memory = MemoryStore(db_path=str(tmp_path / "d.db"), config={}, provider=_Emb())
+    a = Agent(card=CharacterCard(name="凛", first_mes=""), memory=memory,
+              llm=_LLM(), state=AgentState(), config={})
+    return a
+
+
+def test_memory_stats_layers_and_dim(bridge, tmp_path):
+    """memory_stats：分层计数/向量维度/长期短期待归档拆分正确。"""
+    a = _detail_agent(tmp_path)
+    a.memory.store("core_profile", "自我画像", importance=0.9)
+    a.memory.store("semantic", "事实A", importance=0.7)
+    a.memory.store("episodic", "事件B", importance=0.6)
+    bridge.boot = type("B", (), {"agent": a})()
+    out = _json.loads(bridge.memory_stats())
+    assert out["ok"] and out["total"] == 3 and out["dim"] == 8
+    assert out["long_term"] == 2 and out["short_term"] == 1
+
+
+def test_relationship_trend_snapshots(bridge, tmp_path):
+    """relationship_trend：首调落当日快照；同日重复调用覆盖不叠行；series 可读。"""
+    a = _detail_agent(tmp_path)
+    bridge.boot = type("B", (), {"agent": a})()
+    out = _json.loads(bridge.relationship_trend())
+    assert out["ok"] and out["role"] == "凛" and len(out["series"]) == 1
+    out2 = _json.loads(bridge.relationship_trend())
+    assert len(out2["series"]) == 1  # 同日覆盖（趋势表每天至多一行）
+    dims = out2["series"][0]["dims"]
+    assert "intimacy" in dims and "trust" in dims
+
+
+def test_sleep_status_live_state(bridge, tmp_path):
+    """sleep_status：asleep 实时态 + 已闭合周期估算（时长非负、评分 1..100）。"""
+    import datetime
+    a = _detail_agent(tmp_path)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    a.memory.open_sleep_cycle((now - datetime.timedelta(hours=8)).isoformat(timespec="seconds"))
+    a.memory.close_sleep_cycle(now.isoformat(timespec="seconds"))
+    bridge.boot = type("B", (), {"agent": a})()
+    out = _json.loads(bridge.sleep_status())
+    assert out["ok"] and out["asleep"] is False
+    assert out["last"]["sleep_minutes"] >= 470
+    assert 1 <= out["last"]["score"] <= 100
+    # 入睡报告后 → asleep=True、当前累计分钟存在
+    a.state.user_asleep = True
+    a.state.last_sleep_report_at = (now - datetime.timedelta(minutes=42)).isoformat(timespec="seconds")
+    out2 = _json.loads(bridge.sleep_status())
+    assert out2["asleep"] is True and 40 <= out2["current_minutes"] <= 45

@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 奶油画布 #FAF9F5（冷启动/状态栏底色跟 Compose 主题一致，别闪白） -->
+    <!-- Galaxy 日间画布=纯白 #FFFFFF（冷启动/状态栏跟 Compose 主题一致，别闪奶油色） -->
     <style name="Theme.Fuyuno" parent="@android:style/Theme.Material.Light.NoActionBar">
-        <item name="android:windowBackground">#FAF9F5</item>
-        <item name="android:statusBarColor">#FAF9F5</item>
+        <item name="android:windowBackground">#FFFFFF</item>
+        <item name="android:statusBarColor">#FFFFFF</item>
         <item name="android:windowLightStatusBar">true</item>
     </style>
 </resources>

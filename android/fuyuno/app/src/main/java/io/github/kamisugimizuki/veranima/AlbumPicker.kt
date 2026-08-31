@@ -53,29 +53,29 @@ fun AlbumPicker(maxPick: Int = 4, onPick: (List<Uri>) -> Unit, onDismiss: () -> 
 
     Dialog(onDismissRequest = onDismiss,
            properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Box(Modifier.fillMaxSize().background(Canvas)) {
+        Box(Modifier.fillMaxSize().background(PageBg())) {
             Column(Modifier.fillMaxSize()) {
-                // 顶栏：取消 | 相册 | 发送(N)
+                // 顶栏：取消 | 相册 | 发送(N)（Galaxy 黑白：CTA=黑底白字，夜间反色）
                 Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = onDismiss) { Text("取消", color = Muted) }
+                    TextButton(onClick = onDismiss) { Text("取消", color = Muted()) }
                     Text("相册", style = MaterialTheme.typography.headlineSmall)
                     Spacer(Modifier.weight(1f))
                     if (selected.isNotEmpty()) {
                         Button(onClick = {
                             val ordered = selected.entries.sortedBy { it.value }.map { it.key }
                             onPick(ordered)
-                        }, colors = ButtonDefaults.buttonColors(Coral),
+                        }, colors = ButtonDefaults.buttonColors(InvertSurface(), OnInvert()),
                             shape = MaterialTheme.shapes.small) { Text("发送(${selected.size})") }
                     }
                 }
                 if (!loaded) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(color = Coral)
+                        CircularProgressIndicator(color = PrimaryInk())
                     }
                 } else if (uris.isEmpty()) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("相册是空的", color = Muted)
+                        Text("相册是空的", color = Muted())
                     }
                 } else {
                     LazyVerticalGrid(GridCells.Fixed(3), Modifier.fillMaxSize(),
@@ -100,13 +100,13 @@ fun AlbumPicker(maxPick: Int = 4, onPick: (List<Uri>) -> Unit, onDismiss: () -> 
                                     contentDescription = null,
                                     contentScale = ContentScale.Crop,
                                     modifier = Modifier.fillMaxSize()
-                                        .then(if (order != null) Modifier.border(3.dp, Coral) else Modifier)
+                                        .then(if (order != null) Modifier.border(3.dp, PrimaryInk()) else Modifier)
                                 )
                                 if (order != null) {
                                     Box(Modifier.align(Alignment.TopEnd).padding(4.dp)
-                                        .size(22.dp).background(Coral, CircleShape),
+                                        .size(22.dp).background(InvertSurface(), CircleShape),
                                         contentAlignment = Alignment.Center) {
-                                        Text("$order", color = Color.White,
+                                        Text("$order", color = OnInvert(),
                                             style = MaterialTheme.typography.bodySmall)
                                     }
                                 }

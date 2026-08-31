@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Galaxy 夜间画布 #121212（设计稿检查清单：夜间自动切深色；状态栏图标转白） -->
+    <style name="Theme.Fuyuno" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#121212</item>
+        <item name="android:statusBarColor">#121212</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>
