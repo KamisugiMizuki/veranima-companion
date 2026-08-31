@@ -733,18 +733,42 @@ class Agent:
     def _note_sleep_report(self, user_text: str, now) -> str:
         """识别用户「入睡/苏醒」报告并记录 sleep_cycles。
 
-        判断点哲学（用户 2026-08 拍板）：关键词预筛（低成本）→ LLM 确认
-        （max_tokens≤128 / timeout≤8s / 单 JSON），LLM 失败回退关键词规则。
+        判断点哲学（用户 2026-08 拍板；2026-08-31 并入统一判断点）：
+        统一判断的 sleep_report 字段优先（"准备睡觉/堂堂起床"变体词表漏、
+        "别熬夜"类误伤由裁决挡）；判断点未在场（LLM 挂/短消息未送判）
+        才退回 关键词预筛→_confirm_sleep_report 旧链。一条消息最多一次判断。
         返回 ''（无报告）/'sleep'/'wake'。
         """
         text = str(user_text or "").strip()
         if not text:
             return ""
-        hit_sleep = any(k in text for k in self._SLEEP_KEYWORDS)
-        hit_wake = any(k in text for k in self._WAKE_KEYWORDS)
-        if not (hit_sleep or hit_wake):
+        action = ""
+        judgment = self.turn_judgment(text)
+        if judgment is not None:
+            # 判断点在场即全权：none=明说不是作息报告（关键词命中也不采信）
+            if judgment.sleep_report == "sleeping":
+                action = "sleep"
+            elif judgment.sleep_report == "waking":
+                action = "wake"
+        else:
+            hit_sleep = any(k in text for k in self._SLEEP_KEYWORDS)
+            hit_wake = any(k in text for k in self._WAKE_KEYWORDS)
+            if not (hit_sleep or hit_wake):
+                return ""
+            action = self._confirm_sleep_report(text, hit_sleep, hit_wake)
+        if not action:
             return ""
-        action = self._confirm_sleep_report(text, hit_sleep, hit_wake)
+        # 作息报告=用户在分享生活节律：每次记录轻推 familiarity（关系事件表
+        # 走既有上限/去重通道；同日同动作 event_id 幂等，一昼夜最多各一次）
+        from .persona import apply_relationship_event
+        day = now.date().isoformat() if hasattr(now, "date") else str(now)[:10]
+        self.relationship = apply_relationship_event(
+            self.relationship,
+            {"type": "user_confirm", "cause": "用户报告作息（分享生活节律）",
+             "event_id": f"sleep-report:{action}:{day}",
+             "delta": {"familiarity": 0.02}},
+        )
+        self._persist_state()
         if action == "sleep" and not self.state.user_asleep:
             self.state.user_asleep = True
             self.state.last_sleep_report_at = now.isoformat(timespec="seconds")
@@ -2481,7 +2505,10 @@ class Agent:
             task = (
                 f"你在 {row.get('sent_at')} 说过：「{(row.get('direct_question') or '')[:80]}」，"
                 f"已经过了大约 {overdue_h} 小时用户没回应。发一句非常短的追问/试探，"
-                "≤15 字，符合当前心情，别责备别阴阳，像自言自语想起对方那样自然。"
+                "≤15 字，符合当前心情，别责备别阴阳。"
+                "要半显式地让人听出来你在等上一条回复（口语里自然带出"
+                "「刚才那句」「你还没答我」这层意思即可，不点破具体问了什么），"
+                "像顺口招呼一声，不是催债。"
             )
             text = self._short_task(task, max_tokens=120) or ""
         except Exception as e:

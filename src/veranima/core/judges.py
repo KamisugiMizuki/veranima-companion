@@ -21,6 +21,7 @@ _VALID_MEMORIES = {"none", "event", "preference", "commitment"}
 _VALID_EMOTIONS = {"none", "happy", "sad", "angry", "anxious"}
 _VALID_TENSION = {"none", "answered", "skipped", "low_investment"}
 _VALID_CONFLICT = {"none", "apology", "violation"}
+_VALID_SLEEP = {"none", "sleeping", "waking"}
 
 
 @dataclass
@@ -35,6 +36,7 @@ class MessageJudgment:
     clarification: bool | None = None     # 追问细节（R1 精确值开关）
     is_task: bool | None = None           # 委托任务意图（R5 工单入口）
     wants_remember: bool | None = None    # 主动回溯共同往事（P-6 remember）
+    sleep_report: str = "none"            # 用户作息报告：sleeping/waking/none
     feedback_like: bool | None = None     # 对上一条回复正向（喜欢/认可）
     feedback_dislike: bool | None = None  # 对上一条回复负向（嫌弃/纠正风格内容）
     investment_note: str = ""             # 判定理由（日志/调试，不出口）
@@ -70,6 +72,9 @@ def build_judge_prompt(text: str, prev_assistant: str) -> str:
         '  "emotion": 用户情绪："happy"/"sad"/"angry"/"anxious"焦虑压力/"none",\n'
         '  "clarification": 用户是否在对助手刚才的模糊/错误回答追问精确细节,\n'
         '  "wants_remember": 用户是否想和助手共同回忆往事（"还记得…"类，含变体）,\n'
+        '  "sleep_report": 用户是否在自己要睡了/刚睡醒——"sleeping"要去睡、准备睡、'
+        '躺下了（含"晚安""困了先歇"变体）/"waking"刚醒、起床（含"堂堂起床"式变体）；'
+        '叮嘱助手别熬夜、问对方睡没睡、描述昨晚的事都算 none,\n'
         '  "is_task": 是否委托助手做一件需要动手执行的事（查文件/写东西/整理/下载'
         '，含不带"帮我"字样的说法）,\n'
         '  "feedback_like": 若有上一条助手消息且用户这句在认可/喜欢它；'
@@ -99,6 +104,8 @@ def _coerce(raw: dict) -> MessageJudgment:
         j.clarification = raw["clarification"]
     if isinstance(raw.get("wants_remember"), bool):
         j.wants_remember = raw["wants_remember"]
+    sr = str(raw.get("sleep_report") or "")
+    j.sleep_report = sr if sr in _VALID_SLEEP else "none"
     if isinstance(raw.get("is_task"), bool):
         j.is_task = raw["is_task"]
     if isinstance(raw.get("feedback_like"), bool):
@@ -116,11 +123,14 @@ def judge_message(llm, text: str, prev_assistant: str = "",
     例外——这类消息正是闸门信号，等词表兜底会留语义空窗。
     """
     from .ambient import SCENE_KEYWORDS
+    from .agent_keywords import REPORT_HINT_KEYWORDS
     cfg = config or {}
     key = str(text or "").strip()
     if not cfg.get("enabled", True) or not key:
         return None
-    if len(key) < 6 and not any(kw in key for group in SCENE_KEYWORDS.values() for kw in group):
+    short_hit = (any(kw in key for group in SCENE_KEYWORDS.values() for kw in group)
+                 or any(kw in key for kw in REPORT_HINT_KEYWORDS))
+    if len(key) < 6 and not short_hit:
         return None
     if llm is None or not getattr(llm, "is_model_loaded", lambda: False)():
         return None

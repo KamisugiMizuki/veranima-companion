@@ -136,6 +136,12 @@ def sleep_summary_pending() -> str:
         if any(str(r.get("candidate_id") or "") == cid for r in sent):
             return ""
         agent.memory.record_proactive_feedback(source="sleep_summary", channel="qq", candidate_id=cid)
+        # 落库为 assistant 消息：通知栏与 App 内聊天页同步可见（2026-08-31 用户反馈
+        # 只有通知有、应用内没有——此前纯旁路文本，消息表零记录）
+        try:
+            agent.record_proactive_message(str(cycle["summary"]), channel="im")
+        except Exception:
+            log.exception("sleep summary store_message failed (notification still sent)")
         return str(cycle["summary"])
     except Exception as e:
         log.debug("sleep_summary_pending failed: %s", e)
@@ -589,14 +595,16 @@ def sleep_cycles() -> str:
         return json.dumps({"ok": False, "error": "未初始化"})
     try:
         import datetime
+        cycles = agent.memory.recent_sleep_cycles(limit=30)  # 按入睡时刻倒序
+        # 清醒时长=当次苏醒→下一次入睡（倒序列表里 idx-1 就是更新的周期）：
+        # 原实现正向推 prev_woke，倒序输入永远推不出（bug）→ 全部显示 —
         out = []
-        prev_woke = None
-        for c in agent.memory.recent_sleep_cycles(limit=30):
+        for idx, c in enumerate(cycles):
             fell = c.get("fell_asleep_at") or ""
             woke = c.get("woke_at") or ""
             entry = {
                 "fell_asleep_at": fell, "woke_at": woke,
-                "sleep_minutes": 0, "awake_minutes": 0,
+                "sleep_minutes": -1, "awake_minutes": -1,  # -1=未知（未闭合/尚无下一周期）
                 "summary": c.get("summary") or "",
             }
             try:
@@ -604,13 +612,14 @@ def sleep_cycles() -> str:
                 if woke:
                     w = datetime.datetime.fromisoformat(woke)
                     entry["sleep_minutes"] = int((w - f).total_seconds() / 60)
-                if prev_woke:
-                    entry["awake_minutes"] = int((f - prev_woke).total_seconds() / 60)
+                    if idx > 0:  # 存在更新的周期 → 其入睡时刻即本次清醒的终点
+                        newer_fell = cycles[idx - 1].get("fell_asleep_at") or ""
+                        if newer_fell:
+                            entry["awake_minutes"] = int(
+                                (datetime.datetime.fromisoformat(newer_fell) - w).total_seconds() / 60)
             except Exception:
                 pass
             out.append(entry)
-            if woke:
-                prev_woke = datetime.datetime.fromisoformat(woke)
         return json.dumps({"ok": True, "cycles": out}, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"}, ensure_ascii=False)

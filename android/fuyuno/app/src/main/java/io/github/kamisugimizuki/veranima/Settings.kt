@@ -375,7 +375,11 @@ fun SettingsScreen(onBack: () -> Unit) {
                             java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX",
                                 java.util.Locale.US).parse(iso))
                     }.getOrDefault(iso.take(16))
-                    fun fmtDur(min: Int): String = if (min <= 0) "—" else "${min / 60}小时${min % 60}分"
+                    fun fmtDur(min: Int): String = when {
+                        min < 0 -> "—"                       // 未闭合/尚无下一周期确认
+                        min == 0 -> "不足1分"                 // 算出来了但不到一分钟（真睡眠16秒验证过）
+                        else -> "${min / 60}小时${min % 60}分"
+                    }
                     for (i in 0 until minOf(arr.length(), 6)) {
                         val c = arr.getJSONObject(i)
                         Column(Modifier.padding(top = 6.dp)) {

@@ -26,15 +26,16 @@ def bridge():
 class _FakeStore:
     def __init__(self):
         self.messages = []
+        self.feedback = []
 
     def store_message(self, role, content, energy, mood, channel=""):
         self.messages.append((role, content, channel))
 
     def recent_proactive_feedback(self, source=None, limit=10, **kw):
-        return []
+        return list(self.feedback)
 
     def record_proactive_feedback(self, **kw):
-        self.fb = kw
+        self.feedback.append(kw)
 
 
 class _Gate:
@@ -58,6 +59,20 @@ class _FakeAgent:
 
     def record_proactive_message(self, text, channel=""):
         self.memory.store_message("assistant", text, 0.7, 0.2, channel=channel)
+
+
+def test_sleep_summary_pending_stores_and_dedups(bridge):
+    """苏醒总结=通知栏 + App 内双通道（2026-08-31 用户反馈只有通知没有应用内）：
+    首次调用返回文本且落库 assistant 消息+认领去重；再次调用零输出。"""
+    agent = _FakeAgent(_Gate())
+    cycle = {"id": 7, "summary": "早，昨晚睡得还行嘛。"}
+    agent.memory.latest_closed_cycle = lambda: cycle
+    bridge.boot = type("B", (), {"agent": agent})()
+    assert bridge.sleep_summary_pending() == "早，昨晚睡得还行嘛。"
+    assert ("assistant", "早，昨晚睡得还行嘛。", "im") in agent.memory.messages
+    assert agent.memory.feedback and agent.memory.feedback[0]["candidate_id"] == "sleep_summary:7"
+    assert bridge.sleep_summary_pending() == ""              # 去重：不重发
+    assert len(agent.memory.messages) == 1                   # 不重存
 
 
 def test_offline_think_timer_window_dedup(bridge):
