@@ -606,7 +606,11 @@ class ReuseCooldown:
         return False
 
 
-def choose_reuse_action(brief: PersonaBrief, query: str, state) -> str:
+_REMEMBER_QUERY_HINTS = ("记得", "那晚", "上次", "那次", "当时")  # 兜底（judgment 不可用时）
+
+
+def choose_reuse_action(brief: PersonaBrief, query: str, state,
+                        *, wants_remember: bool | None = None) -> str:
     """P-6：从注入的人格上下文中选回用动作（默认 apply，绝不为 repeat）。
 
     - 无相关框架/共同意义 → none
@@ -619,7 +623,10 @@ def choose_reuse_action(brief: PersonaBrief, query: str, state) -> str:
     has_sm = bool(brief.shared_meanings)
     if not has_fw and not has_sm:
         return "none"
-    if has_sm and query and any(k in query for k in ("记得", "那晚", "上次", "那次", "当时")):
+    # wants_remember=统一判断点裁决（回溯共同往事的意愿）；None=退回关键词兜底
+    if has_sm and query and (
+            wants_remember if wants_remember is not None
+            else any(k in query for k in _REMEMBER_QUERY_HINTS)):
         return "remember"
     if has_fw and not has_sm:
         valence = float(getattr(state, "valence", 0.5))
@@ -706,21 +713,27 @@ APOLOGY_PATTERNS = ("对不起", "抱歉", "不是那个意思", "开玩笑的",
 VIOLATION_PATTERNS = ("你太过分", "你越界", "你烦不烦", "你让我不舒服", "别这样", "停一下")
 
 
-def note_conflict_from_user_text(tracker: ConflictTracker, text: str) -> str | None:
+def note_conflict_from_user_text(tracker: ConflictTracker, text: str,
+                                 judgment: str | None = None) -> str | None:
     """P-7：从用户消息检测冲突信号。
 
     - 道歉/澄清 → 把所有 open 冲突推进到 clarifying（不自动 closed）
     - 越界反馈 → 新开冲突（id 用时间戳）
+    judgment=统一判断点的 conflict 字段（apology/violation/None=未裁决）：
+    有裁决以语义为准，关键词表退回兜底（2026-08-31 判断点清算——
+    "话说重了/适可而止"这类变体词表永远追不完）。
     返回触发的动作（"clarify"/"violation"/None）。
     """
     if not text:
         return None
-    if any(p in text for p in APOLOGY_PATTERNS):
+    if judgment not in ("apology", "violation"):
+        judgment = None
+    if judgment == "apology" or (judgment is None and any(p in text for p in APOLOGY_PATTERNS)):
         for c in tracker.open_conflicts():
             if c["status"] in ("open", "acknowledged"):
                 tracker.clarify(c["id"])
         return "clarify"
-    if any(p in text for p in VIOLATION_PATTERNS):
+    if judgment == "violation" or (judgment is None and any(p in text for p in VIOLATION_PATTERNS)):
         import time as _time
         cid = f"violation-{int(_time.time() * 1000)}"
         tracker.open(cid, cause=text[:40], evidence_ids=[])

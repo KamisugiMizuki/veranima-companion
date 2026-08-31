@@ -96,11 +96,12 @@ class QQTaskSessionManager:
 
     # ---------- 入口分流 ----------
 
-    def route(self, uid: str, text: str) -> dict | None:
+    def route(self, uid: str, text: str, *, is_task: bool | None = None) -> dict | None:
         """返回需要特殊处理的任务动作；None = 交给普通对话链。
 
         优先级：审批硬匹配 > 确认流 > 任务指令 > 状态查询。
-        """
+        is_task=统一判断点的语义裁决（"把那份报告转成 PDF"不带"帮我"也算
+        任务）；None=未裁决，退回 _TASK_TRIGGERS 词表兜底。"""
         t = (text or "").strip()
         # 1. 审批硬匹配（SPEC §15.5）：只在 awaiting_approval 时生效
         ctx = self.awaiting_approval.get(uid)
@@ -122,7 +123,8 @@ class QQTaskSessionManager:
             # 其他回复视为补充信息 → 重新构建工单
             return {"action": "rebuild", "text": t}
         # 3. 任务指令
-        if self.enabled and is_task_request(t):
+        task_hit = is_task if is_task is not None else is_task_request(t)
+        if self.enabled and task_hit:
             return {"action": "new_task", "text": t}
         # 4. 状态查询
         if self.enabled and re.fullmatch(r"(任务|task)(状态|怎么样了|进度)[?？]?", t):

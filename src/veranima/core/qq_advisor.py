@@ -49,8 +49,9 @@ class QQProactiveAdvisor:
         rows = [row for row in self._messages(60) if row.get("role") == "user"]
         return str(rows[-1].get("content") or "") if rows else ""
 
-    def note_user_message(self, text: str, *, at: str | None = None) -> None:
-        self.engine.note_user_message(self.state, text, at=at)
+    def note_user_message(self, text: str, *, at: str | None = None,
+                          user_state_signal: str | None = None) -> None:
+        self.engine.note_user_message(self.state, text, at=at, user_state_signal=user_state_signal)
 
     def momentum(self) -> float:
         rows = [r for r in self._messages(8) if r.get("role") == "user"][-3:]

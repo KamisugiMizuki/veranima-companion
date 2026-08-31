@@ -81,9 +81,20 @@ class QQProactiveEngine:
                 return state
         return QQUserState.NORMAL
 
-    def note_user_message(self, state: QQProactiveState, text: str, *, at: str | None = None) -> None:
+    def note_user_message(self, state: QQProactiveState, text: str, *, at: str | None = None,
+                          user_state_signal: str | None = None) -> None:
+        """记录用户消息并更新状态机。
+
+        user_state_signal=统一判断点的 user_state 字段（语义裁决，2026-08-31
+        面向样例清算：「emo 了/不想理人」等词表变体不再漏判）；
+        None=未裁决，退回 _STATE_PATTERNS 词面兜底。
+        免打扰开关（"别主动找我"）是用户指令闭集，永远走词面。"""
         state.last_user_message_at = at or datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
-        detected = self.detect_state(text)
+        detected = None
+        if user_state_signal in {s.value for s in QQUserState}:
+            detected = QQUserState(user_state_signal)
+        else:
+            detected = self.detect_state(text)
         if any(token in text for token in ("别主动找我", "不要主动找我", "不要打扰", "别打扰我")):
             state.proactive_paused = True
         elif any(token in text for token in ("可以主动找我", "恢复主动", "解除免打扰")):

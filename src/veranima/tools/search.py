@@ -83,7 +83,12 @@ class SearchTrigger:
 
     def determine(self, text: str, *, allow_implicit: bool = False,
                   allow_explicit: bool = True, known_entities: set[str] | None = None,
-                  today: dt.date | None = None) -> SearchDecision:
+                  today: dt.date | None = None,
+                  wants_search: bool | None = None) -> SearchDecision:
+        """搜索决策。wants_search=统一判断点的语义裁决（用户是否希望查外部
+        信息才答得好）：True→按显式请求处理；False→否决隐式触发（隐私
+        词表 _disable_words 永远高于裁决）；None→未裁决，纯规则行为不变。
+        「宁可多搜一次」由此闭环：新梗/时事不必等时效词进表。"""
         text = (text or "").strip()
         if any(word in text for word in self._disable_words):
             return SearchDecision(False, "privacy_blocked")
@@ -128,6 +133,11 @@ class SearchTrigger:
         implicit = unknown_entity or (
             implicit_freshness
         )
+        # 判断点介入：语义裁决优先于隐式启发（explicit 字面请求永远作数）
+        if wants_search is True:
+            explicit = True if allow_explicit else explicit
+        elif wants_search is False:
+            implicit = False
         if not explicit and not implicit:
             return SearchDecision(False, "no_explicit_request")
         if implicit and not explicit and any(word in text for word in self._casual_words) and not uncertainty["needs_factual_answer"]:

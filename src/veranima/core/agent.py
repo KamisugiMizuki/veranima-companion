@@ -1003,6 +1003,30 @@ class Agent:
         self._persist_state()
         return True
 
+    def turn_judgment(self, user_text: str) -> "MessageJudgment | None":
+        """本轮统一消息判断点（judges.py）：一条消息只判一次，消费方读缓存。
+
+        同一文本幂等；LLM 不可用返回 None → 各消费方全量回退关键词规则。
+        判断点原则（用户拍板）：关键词只做预筛/兜底，语义裁决归一次低成本
+        LLM 调用（512 预算/单 JSON/fail-open）。
+
+        预筛（控制成本，不是裁决）：消息 ≥6 字 且（含疑问/人称/时态等任何
+        一类语义信号）才送判；极短确认词与纯表情不触发。
+        """
+        cached = getattr(self, "_judgment", None)
+        key = str(user_text or "").replace(" [图片]", "").strip()
+        if cached is not None and getattr(self, "_judgment_for", "") == key:
+            return cached
+        from .judges import judge_message  # 预筛（短消息/场景词例外）在 judge_message 内
+        prev_assistant = next(
+            (str(e.get("content") or "") for e in reversed(self._history)
+             if e.get("role") == "assistant"), "")
+        j = judge_message(self.llm, key, prev_assistant,
+                          config=self.config.get("judgment", {}) or {})
+        self._judgment = j
+        self._judgment_for = key
+        return j
+
     def _process_tension_user_message(self, text: str, *, channel: str, message_id: int) -> None:
         """把用户本轮的明确关系信号送入 TV；普通短消息不产生负向事件。"""
         normalized_channel = "pet" if channel == "tts" else "qq"
@@ -1017,11 +1041,15 @@ class Agent:
         previous = next((entry for entry in reversed(self._history) if entry.get("role") == "assistant"), None)
         previous_text = str(previous.get("content") or "") if previous else ""
         direct_question = extract_direct_question(previous_text)
-        new_conversation = any(token in text for token in ("我回来了", "我回来啦", "继续聊", "刚回来", "现在有空"))
+        judgment = self.turn_judgment(text)  # 幂等：handle 主链已生成则直接命中缓存
+        new_conversation = judgment is None and any(
+            token in text for token in ("我回来了", "我回来啦", "继续聊", "刚回来", "现在有空"))
         candidate = classify_user_tension_event(
             text, new_conversation=new_conversation, direct_question=direct_question,
+            judgment=getattr(judgment, "tension", None) if judgment else None,
         )
-        if candidate is None:
+        if candidate is None and judgment is None:
+            # 判断点在场时 tension 字段已含敷衍裁决；仅未裁决时走词面兜底
             candidate = classify_low_investment_streak(self._history, text)
         if candidate is None:
             return
@@ -1176,15 +1204,20 @@ class Agent:
         except Exception as e:
             logger.debug("close expectation on reply failed: %s", e)
 
+        # 0. 统一判断点：本轮全部语义裁决一次生成，各消费方读缓存
+        judgment = self.turn_judgment(user_text)
+
         # 1.5 R4 场景锁：用户消息进来时更新场景（进入/退出 busy/away）
-        scene = self.scene_lock.note(user_text)
+        scene = self.scene_lock.note(user_text, getattr(judgment, "scene", None) if judgment else None)
         if scene != "normal":
             logger.info("scene active: %s", scene)
 
         # 1.5.1 P-7 冲突信号检测（澄清推进/越界新开 + 关系事件联动）
         try:
             from .persona import apply_relationship_event, note_conflict_from_user_text
-            action = note_conflict_from_user_text(self._conflicts, user_text)
+            action = note_conflict_from_user_text(
+                self._conflicts, user_text,
+                getattr(judgment, "conflict", None) if judgment else None)
             if action == "violation":
                 self.relationship = apply_relationship_event(
                     self.relationship, {"type": "user_violation", "cause": "用户表达越界反感", "event_id": "violation"}
@@ -1250,7 +1283,9 @@ class Agent:
             # conflict_tension 真值在 relationship）
             self.state.conflict_tension = self.relationship.conflict_tension
             pre_brief = build_persona_brief(query_hint, self.card, self.relationship, self.state, self.memory)
-            action = choose_reuse_action(pre_brief, user_text, self.state)
+            action = choose_reuse_action(
+                pre_brief, user_text, self.state,
+                wants_remember=getattr(judgment, "wants_remember", None) if judgment else None)
             if action != "none" and pre_brief.relevant_user_frameworks:
                 key = pre_brief.relevant_user_frameworks[0]["content"][:20]
                 if self._reuse_cd.allow(key, self._turn_n):
@@ -1356,6 +1391,7 @@ class Agent:
                     if item.get("role") in {"user", "assistant"}
                 )},
                 allow_explicit=bool(self.search_config.get("allow_user_explicit_request", True)),
+                wants_search=getattr(judgment, "wants_search", None) if judgment else None,
             )
             if bare_retry and decision.should_search:
                 decision = replace(decision, reason="retry_previous_search", force_refresh=True)
@@ -1404,7 +1440,7 @@ class Agent:
             section_budget=self.config.get("memory", {}).get("section_budget", 2400),
             session_budget=self.config.get("memory", {}).get("session_budget", 600),
             channel=channel,
-            clarification=is_clarification(user_text),  # R1 可逆性：追问 → 精确值（R1_SPEC 3）
+            clarification=is_clarification(user_text, getattr(judgment, "clarification", None) if judgment else None),  # R1 可逆性：追问 → 精确值（R1_SPEC 3）
             extra_blocks=extra_blocks,
             relationship=self.relationship,  # P-4：PersonaBrief 接入口
             reuse_action=reuse_action,       # P-6：本轮回用动作
@@ -1553,13 +1589,20 @@ class Agent:
             result = self.memory.decay()
             logger.info("memory decay applied: updated=%s faded=%s", result.get("updated", 0), result.get("faded", 0))
 
-        # 8. 事件记忆提取（延迟整理简化版：每 4 轮提取一次情节记忆）
-        self._maybe_extract_events(user_text)
+        # 8. 事件记忆提取（判断点 memory_kind 优先，词表兜底）
+        self._maybe_extract_events(user_text, judgment)
 
         # 8.5 MVP2 学习：隐式反馈 → 风格参数 + 语言镜像 + 承诺识别
         prev_reply = self._history[-3]["content"] if len(self._history) >= 3 else ""
         delay = (time.time() - self._last_reply_ts) if self._last_reply_ts else 0.0
         sig = extract_feedback(user_text, reply, prev_reply, delay=delay)
+        if judgment is not None:
+            # 语义裁决优先（词表 "别"=负向 这类误伤由判断点纠偏）；未裁决保持规则
+            if judgment.feedback_like is not None or judgment.feedback_dislike is not None:
+                sig.positive = bool(judgment.feedback_like)
+                sig.negative = bool(judgment.feedback_dislike)
+                sig.correction = bool(judgment.feedback_dislike) and any(
+                    w in user_text for w in ("不对", "错了", "不是", "理解错", "没听懂"))
         self._last_reply_ts = time.time()
         self.style.observe(sig, user_text)   # M-6：feedback 快变量 + 文风画像慢变量
         self.mirror.observe(user_text)
@@ -2724,28 +2767,33 @@ class Agent:
         self.memory.store(layer, text[:100], importance=importance, confidence=0.6,
                           provenance="auto-extract", category=category, meta=meta)
 
-    def _maybe_extract_events(self, user_text: str) -> None:
-        """规则提取记忆（MVP1 简化，每条消息检查；MVP2 替换为 LLM 事件卡片提取）。
+    def _maybe_extract_events(self, user_text: str, judgment=None) -> None:
+        """事件/偏好记忆提取（2026-08-31 判断点清算：memory_kind 有裁决
+        以语义为准，"无辣不欢/下周去复查"这类变体不再依赖词表；
+        未裁决退回 MVP1 关键词规则）。
 
         - 强信号（记住/生日/纪念/重要…）→ episodic（情节，0.8）
         - 偏好事实（我喜欢/我是/我的…）→ semantic（长期事实，0.7）
         """
+        kind = getattr(judgment, "memory_kind", "none") if judgment is not None else "none"
+        if kind not in ("event", "preference", "commitment"):
+            kind = "none"
+        emotion = self._detect_emotion(user_text, getattr(judgment, "emotion", "none") if judgment else "none")
         strong = ["记住", "生日", "纪念", "重要", "考试", "辞职", "生病", "难忘"]
         prefer = ["我特别喜欢", "我很喜欢", "我特别", "我最爱", "我最喜欢", "我喜欢", "我讨厌", "我害怕",
                   "我是", "我的", "我住在", "我在", "我养", "我爱"]
-        emotion = self._detect_emotion(user_text)
-        if any(s in user_text for s in strong):
+        if kind in ("event", "commitment") or (kind == "none" and any(s in user_text for s in strong)):
             entry = self.memory.store(
                 "episodic",
                 user_text[:100],
                 importance=0.8,
-                confidence=0.6,
+                confidence=0.8 if kind != "none" else 0.6,  # 语义裁决比词表命中更可信
                 provenance="auto-extract",
-                category="event",
+                category="event" if kind != "commitment" else "commitment",
                 meta={"emotion": emotion} if emotion else None,
             )
-            logger.info("episodic extracted: #%s", entry.id)
-        elif any(s in user_text for s in prefer):
+            logger.info("episodic extracted: #%s (kind=%s)", entry.id, kind or "rule")
+        elif kind == "preference" or (kind == "none" and any(s in user_text for s in prefer)):
             # 偏好类走重学路径：同一件事再说一遍 → 版本链刷新+置信拉回，
             # 而非堆重复条目（缺口③"遗忘后重新学习"的写侧落点）
             self._relearn_or_store("semantic", user_text, importance=0.7,
@@ -2753,8 +2801,12 @@ class Agent:
                                    meta={"emotion": emotion} if emotion else None)
 
     @staticmethod
-    def _detect_emotion(user_text: str) -> str | None:
-        """从用户消息粗略检测情绪（8.7.2 情感色彩；规则信号词）。"""
+    def _detect_emotion(user_text: str, judgment: str = "none") -> str | None:
+        """情绪着色：判断点 emotion 字段优先（happy/sad/angry/anxious），
+        未裁决退回规则信号词。"""
+        mapping = {"happy": "很开心", "sad": "有点低落", "angry": "有点火大", "anxious": "有点焦虑"}
+        if judgment in mapping:
+            return mapping[judgment]
         happy = ("哈哈", "开心", "高兴", "太好了", "耶", "棒", "爽", "嘻嘻", "嘿嘿")
         sad = ("难过", "伤心", "哭", "委屈", "烦", "累死", "压力", "焦虑", "崩溃", "emo")
         if any(w in user_text for w in happy):

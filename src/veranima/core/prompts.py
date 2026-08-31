@@ -30,8 +30,14 @@ CLARIFY_PATTERNS = (
 )
 
 
-def is_clarification(user_text: str) -> bool:
-    """用户是否在追问记忆细节（触发精确值重检索）。"""
+def is_clarification(user_text: str, judgment: bool | None = None) -> bool:
+    """用户是否在追问记忆细节（触发精确值重检索）。
+
+    judgment=统一判断点的 clarification 字段（True/False 以语义裁决为准；
+    None=未裁决退回关键词表——"你确定？""再说一遍重点"这类变体词表杀不完）。
+    """
+    if judgment is not None:
+        return bool(judgment)
     return any(p in user_text for p in CLARIFY_PATTERNS)
 
 # 现实行动边界（DESIGN 4.8 修正版，sakura DESKTOP_PET_CONTEXT 借鉴）：

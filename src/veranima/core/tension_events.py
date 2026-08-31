@@ -54,10 +54,26 @@ def classify_user_tension_event(
     *,
     new_conversation: bool = False,
     direct_question: str | None = None,
+    judgment: str | None = None,
 ) -> TensionEventCandidate | None:
+    """TV 事件分类。judgment=统一判断点的 tension 字段
+    （answered/skipped/low_investment/none；None=未裁决退回词面+重合度规则）。
+    裁决为 None（模型明说"没回应问题/不算敷衍"）→ 直接不产生事件，
+    堵住原规则"回复≥2字且重合度低就 +5"的误伤。"""
     text = str(text or "").strip()
     if not text:
         return None
+    if judgment not in ("answered", "skipped", "low_investment", "none"):
+        judgment = None
+    if judgment == "none":
+        return None
+    if judgment == "answered":
+        return TensionEventCandidate("answered_question", -8.0, "用户认真回应了直接问题（判断点）", 0.85)
+    if judgment == "skipped":
+        return TensionEventCandidate("question_skipped", 5.0, "用户回复但没有回应直接问题（判断点）", 0.8)
+    if judgment == "low_investment":
+        return TensionEventCandidate("terse_streak", 3.0, "明显敷衍且上文需要展开（判断点）", 0.75)
+    # judgment is None → 原规则兜底
     if any(token in text for token in ("别主动找我", "不要主动找我", "不要打扰", "别打扰我")):
         return TensionEventCandidate("explicit_pause", 0.0, "用户明确要求不要主动联系", 0.99)
     if any(token in text for token in ("可以主动找我", "恢复主动", "解除免打扰")):

@@ -48,35 +48,69 @@ class SceneLock:
     def _t(self) -> float:
         return self._now if self._now is not None else time.time()
 
-    def note(self, user_text: str) -> str:
-        """用户消息进来时更新场景。返回当前场景类型。"""
+    def note(self, user_text: str, judgment: str | None = None) -> str:
+        """用户消息进来时更新场景。返回当前场景类型。
+
+        judgment=统一判断点的 scene 字段（normal/busy/away 或 None）：
+        有裁决时以语义为准（关键词表当兜底——2026-08-31 面向样例清算）；
+        无裁决时行为与旧版完全一致。
+        """
         t = self._t()
+        if judgment not in (None, "normal", "busy", "away"):
+            judgment = None
         if self.scene.active and self.scene.type == "busy":
-            # busy 中：检测「结束」信号（用户主动回来/说看完了）
-            if any(k in user_text for k in ("看完了", "结束了", "回来了", "忙完", "下班", "上线了")):
+            # busy 中：判断点说 normal/away=用户回来或转场；否则旧关键词兜底
+            if judgment == "normal":
+                self.scene = Scene(type="normal", started_at=t, last_touch_at=t)
+                logger.info("scene: busy -> normal (judgment)")
+                return "normal"
+            if judgment in ("away", "busy"):
+                if judgment == "away":
+                    self.scene = Scene(type="away", started_at=t, last_touch_at=t)
+                    logger.info("scene: busy -> away (judgment)")
+                    return "away"
+                self.scene.last_touch_at = t
+                return "busy"
+            if judgment is None and any(k in user_text for k in ("看完了", "结束了", "回来了", "忙完", "下班", "上线了")):
                 self.scene = Scene(type="normal", started_at=t, last_touch_at=t)
                 logger.info("scene: busy -> normal (user returned)")
                 return "normal"
             self.scene.last_touch_at = t
             return "busy"
         if self.scene.active and self.scene.type == "away":
-            if any(k in user_text for k in ("回来了", "醒了", "起了", "出门回来了", "在吗")):
+            if judgment == "normal":
+                self.scene = Scene(type="normal", started_at=t, last_touch_at=t)
+                logger.info("scene: away -> normal (judgment)")
+                return "normal"
+            if judgment in ("away", "busy"):
+                if judgment == "busy":
+                    self.scene = Scene(type="busy", started_at=t, last_touch_at=t)
+                    logger.info("scene: away -> busy (judgment)")
+                    return "busy"
+                self.scene.last_touch_at = t
+                return "away"
+            if judgment is None and any(k in user_text for k in ("回来了", "醒了", "起了", "出门回来了", "在吗")):
                 self.scene = Scene(type="normal", started_at=t, last_touch_at=t)
                 logger.info("scene: away -> normal (user returned)")
                 return "normal"
             self.scene.last_touch_at = t
             return "away"
-        # normal：检测进入场景
-        for kw in SCENE_KEYWORDS["busy"]:
-            if kw in user_text:
-                self.scene = Scene(type="busy", started_at=t, last_touch_at=t)
-                logger.info("scene: normal -> busy (kw=%s)", kw)
-                return "busy"
-        for kw in SCENE_KEYWORDS["away"]:
-            if kw in user_text:
-                self.scene = Scene(type="away", started_at=t, last_touch_at=t)
-                logger.info("scene: normal -> away (kw=%s)", kw)
-                return "away"
+        # normal：进入场景——判断点优先，关键词兜底
+        if judgment in ("busy", "away"):
+            self.scene = Scene(type=judgment, started_at=t, last_touch_at=t)
+            logger.info("scene: normal -> %s (judgment)", judgment)
+            return judgment
+        if judgment is None:
+            for kw in SCENE_KEYWORDS["busy"]:
+                if kw in user_text:
+                    self.scene = Scene(type="busy", started_at=t, last_touch_at=t)
+                    logger.info("scene: normal -> busy (kw=%s)", kw)
+                    return "busy"
+            for kw in SCENE_KEYWORDS["away"]:
+                if kw in user_text:
+                    self.scene = Scene(type="away", started_at=t, last_touch_at=t)
+                    logger.info("scene: normal -> away (kw=%s)", kw)
+                    return "away"
         return "normal"
 
     def current(self) -> str:

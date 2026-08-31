@@ -161,9 +161,16 @@ class QQAdapter:
             logger.info("ignored private message from non-whitelist qq=%s", uid)
             return
         text = self._plain_text(event)
-        self.qq_advisor.note_user_message(text)
+        # 统一判断点提前到任务分流之前：is_task 语义裁决喂给 route（词表只做兜底），
+        # user_state 喂给状态机；handle 主链内同文本重入=命中缓存，不再调用。
+        # getattr 容错：测试/嵌入方注入的鸭子 agent 可无此方法（=未裁决走词表）
+        turn_judgment = getattr(self.agent, "turn_judgment", None)
+        judgment = await asyncio.to_thread(turn_judgment, text) if callable(turn_judgment) else None
+        self.qq_advisor.note_user_message(
+            text, user_state_signal=getattr(judgment, "user_state", None) if judgment else None)
         # 阶段 4 任务分流：命中任务动作时不进陪伴对话链
-        task_action = self.tasks.route(uid, text)
+        task_action = self.tasks.route(uid, text,
+                                       is_task=getattr(judgment, "is_task", None) if judgment else None)
         if task_action is not None:
             await self._handle_task_action(uid, task_action, event)
             return
