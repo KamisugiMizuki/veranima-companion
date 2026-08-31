@@ -704,6 +704,9 @@ class QQAdapter:
         if not due:
             return False
         meal, text, candidate_id = due
+        if self.agent.state.user_asleep:
+            # 用户睡眠中不发饭点（与 core tick_proactive 同守卫；QQ 独立路径同款缺陷）
+            return False
         # 关系阶段解锁（自检缺口④，与 core tick 同阈值）+ 文案走 core 去模板化
         # 路径（LLM 口吻改写；原 QQ 独立路径直发模板是闹钟感来源）。
         # LLM 调用在锁外（与 schedule_notice_text 同模式），发送段才持锁。

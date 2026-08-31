@@ -48,6 +48,9 @@ def main(root: Path, out: Path):
     ch["im"] = {"enabled": True, "max_per_day": 0, "min_gap_minutes": 0}
     p["channels"] = ch
     a["proactive"] = p
+    # 落库通道标签（2026-08-31 用户裁决）：安卓无 QQ，messages/feedback 的
+    # channel 列写 "im" 而非 core 默认的 "qq"（仅显示标签，闸门分桶不变）
+    a["channel_tag"] = "im"
     out.write_text(yaml.safe_dump(a, allow_unicode=True, sort_keys=False), encoding="utf-8")
     print(f"生成 {out}（llm={a['llm'].get('model')} emb={mem.get('embedding_model')} "
           f"search={a['search']['provider']}）")

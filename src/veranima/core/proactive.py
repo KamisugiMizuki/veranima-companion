@@ -45,9 +45,23 @@ DATE_PATTERNS = [
 
 @dataclass
 class GreetingScheduler:
-    """时间段问候：早(6-10)/午(11-14)/晚(18-23)，每日去重。"""
+    """时间段问候：早(6-10)/午(11-14)/晚(18-23)，每日去重。
+
+    greeted 持久化进 agent_state 快照（2026-08-31 用户反馈：问候轰炸——
+    每次重启进程内 set 清零，同一天同一窗口反复重发早安）。
+    """
 
     greeted: set[str] = field(default_factory=set)
+
+    def to_state(self) -> list[str]:
+        return sorted(self.greeted)
+
+    def restore_state(self, keys) -> None:
+        # 只回灌当日键（键格式 "YYYY-MM-DD:slot"）——历史键留在库里也无害，
+        # 但没必要让 set 无限膨胀
+        import datetime
+        today = datetime.date.today().isoformat()
+        self.greeted.update(str(k) for k in (keys or ()) if str(k).startswith(today + ":"))
 
     @staticmethod
     def slot_at(now=None) -> str | None:

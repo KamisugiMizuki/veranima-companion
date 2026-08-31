@@ -134,6 +134,10 @@ class Agent:
         self.llm = llm
         self.state = state or AgentState()
         self.config = config or {}
+        # 落库通道标签（2026-08-31 用户裁决）：core 主动/回复消息写 messages.channel 的
+        # 值。PC（QQ/桌宠）=默认 "qq" 不变；安卓 device-config 置 "im"——历史导出/
+        # 排查不再被误导成 QQ 链路。仅显示/查询标签，gate 分桶走各自 config。
+        self.message_channel = str(self.config.get("channel_tag") or "qq")
         self._history: list[dict] = []
         self._last_reply_ts: float | None = None  # 上一条回复时间（延迟信号用）
         self._last_search_request: dict[str, str] | None = None
@@ -249,6 +253,13 @@ class Agent:
         # 主动触发（定时问候 + 节庆纪念 + 饭点兜底；CLI/QQ/安卓共用 tick_proactive）
         self.greeter = GreetingScheduler()
         self.occasion = OccasionChecker()
+        # 当日去重键从状态快照恢复（在 _persist_state 里随关系快照落库）
+        _rel_snap = self.state.relationship or {}
+        self.greeter.restore_state(_rel_snap.get("greeted") or [])
+        _today_key = datetime.date.today().isoformat()
+        self.occasion.triggered.update(
+            str(k) for k in (_rel_snap.get("occasions") or [])
+            if str(k).startswith(_today_key + ":"))
         from .proactive import MealReminderScheduler
         self.meals = MealReminderScheduler(
             (self.config.get("proactive") or {}).get("meal_reminders", {}))
@@ -602,7 +613,7 @@ class Agent:
         """仅为紧邻主动消息的澄清追问提供上一条主动原文。"""
         if channel != "im" or not is_clarification(user_text):
             return ""
-        rows = self.memory.recent_messages(limit=8, channel="qq")
+        rows = self.memory.recent_messages(limit=8, channel=self.message_channel)
         if len(rows) < 2 or rows[-1].get("role") != "user":
             return ""
         previous = rows[-2]
@@ -616,7 +627,7 @@ class Agent:
                 previous_at = previous_at.replace(tzinfo=datetime.timezone.utc)
         except (TypeError, ValueError):
             return ""
-        for feedback in self.memory.recent_proactive_feedback(channel="qq", limit=20):
+        for feedback in self.memory.recent_proactive_feedback(channel=self.message_channel, limit=20):
             try:
                 sent_at = datetime.datetime.fromisoformat(
                     str(feedback.get("sent_at")).replace("Z", "+00:00")
@@ -720,6 +731,10 @@ class Agent:
                     rel["virtual_schedule_archived_cycle"] = cycle
                     self.schedule_runtime.activity_spans.clear()
                     self.schedule_runtime.current_item_id = ""
+            # 问候/节庆当日去重持久化（2026-08-31 用户反馈：每次重启内存 set 清零，
+            # 同一天反复重发早安/中午好）——随关系快照落库，重启读回
+            rel["greeted"] = self.greeter.to_state()
+            rel["occasions"] = sorted(self.occasion.triggered)
             self.state.relationship = rel
             self.memory.save_state(self.state.to_snapshot())
         except Exception as e:
@@ -788,6 +803,14 @@ class Agent:
                     summary = self._sleep_cycle_summary(cycle)
                     if summary:
                         self.memory.update_sleep_summary(cycle["id"], summary)
+                        # 合并进本轮回复（2026-08-31 用户反馈：「醒了」触发三连发——
+                        # 起床问候/作息调整通知/睡眠总结各一条）。总结交 handle() 注入
+                        # 当轮 prompt 融合成一条；同时标记 sleep_summary 已消费，
+                        # 阻断 adapter 旁路重发。
+                        self._wake_summary_for_turn = summary
+                        self.memory.record_proactive_feedback(
+                            source="sleep_summary", channel=self.message_channel,
+                            candidate_id=f"sleep_summary:{cycle['id']}")
                         logger.info("sleep summary: %s", summary[:60])
                 except Exception as e:
                     logger.debug("sleep summary failed: %s", e)
@@ -843,9 +866,10 @@ class Agent:
                 am = int((datetime.fromisoformat(fell) - datetime.fromisoformat(prev["woke_at"])).total_seconds() / 60)
                 awake = f"；清醒时长：{am // 60}小时{am % 60}分" if am > 0 else ""
             task = (
-                f"用户刚睡醒。入睡时刻：{f}；睡眠时长：{dur_h}{awake}。\n"
+                f"用户刚睡醒（现在当地时间 {w}）。入睡时刻：{f}；睡眠时长：{dur_h}{awake}。\n"
                 "用你的口吻发一条简短的起床问候+睡眠状况总结（两三句话），"
                 "可以轻松评价一下他的作息（规律/熬夜/睡得不错），别说教，像朋友刚睡醒时说话。"
+                f"提到吃饭/活动安排时按「现在={w}」这个时刻选对的餐点（早上=早饭/晚上=晚饭），别串时段。"
             )
             return (self._short_task(task, max_tokens=256) or "").strip()
         except Exception as e:
@@ -895,7 +919,7 @@ class Agent:
                 text = (self._short_task(task, max_tokens=128) or "").strip()
                 if text:
                     self.memory.record_proactive_feedback(
-                        source="sleep_hint", channel="qq", candidate_id=day_key)
+                        source="sleep_hint", channel=self.message_channel, candidate_id=day_key)
                     return text
             except Exception as e:
                 logger.debug("sleep hint LLM failed: %s", e)
@@ -965,7 +989,7 @@ class Agent:
             logger.debug("schedule adapt apply failed: %s", e)
             return
         self.memory.record_proactive_feedback(
-            source="schedule_adapt", channel="qq", candidate_id=day_key)
+            source="schedule_adapt", channel=self.message_channel, candidate_id=day_key)
         if self.llm is not None and getattr(self.llm, "base_url", ""):
             try:
                 task = (
@@ -1053,7 +1077,7 @@ class Agent:
 
     def _process_tension_user_message(self, text: str, *, channel: str, message_id: int) -> None:
         """把用户本轮的明确关系信号送入 TV；普通短消息不产生负向事件。"""
-        normalized_channel = "pet" if channel == "tts" else "qq"
+        normalized_channel = "pet" if channel == "tts" else self.message_channel
         if any(token in text for token in ("别主动找我", "不要主动找我", "不要打扰", "别打扰我")):
             self.tension.set_explicit_pause(True, reason="用户明确要求不要主动联系")
             self._persist_state()
@@ -1167,7 +1191,7 @@ class Agent:
         interaction_now = now or datetime.datetime.now(datetime.timezone.utc)
         if channel == "im" and any(token in user_text for token in ("你在哪", "你现在在哪里", "你在什么地方")):
             answer = self.current_space_answer(interaction_now)
-            self.memory.store_message("assistant", answer, self.state.energy, self.state.mood, channel="qq")
+            self.memory.store_message("assistant", answer, self.state.energy, self.state.mood, channel=self.message_channel)
             self._history.append(self._history_entry("user", user_text))
             self._history.append(self._history_entry("assistant", answer))
             self._persist_state()
@@ -1181,6 +1205,9 @@ class Agent:
         # 用户睡眠周期（2026-08-30 用户拍板）：识别「入睡/苏醒」报告 → sleep_cycles
         # 表 + state.user_asleep。判断点哲学：关键词预筛 → LLM 确认（失败回退关键词）。
         self._note_sleep_report(user_text, interaction_now)
+        # 苏醒总结一次性取出（提前 return 的路径也要清残留，防串到下一轮）
+        wake_summary = getattr(self, "_wake_summary_for_turn", "")
+        self._wake_summary_for_turn = ""
 
         if schedule_runtime is not None:
             schedule_runtime.advance(interaction_now)
@@ -1193,7 +1220,7 @@ class Agent:
             message_id = self.memory.store_message(
                 "user", user_text + (" [图片]" * len(images) if images else ""),
                 self.state.energy, self.state.mood,
-                channel="pet" if channel == "tts" else "qq",
+                channel="pet" if channel == "tts" else self.message_channel,
                 attachments=attachments,
             )
             scope = resolved_scope
@@ -1279,7 +1306,7 @@ class Agent:
         # 2. 零开销摄入：消息立即入库（FTS5 同步索引）
         user_msg_id = self.memory.store_message(
             "user", store_text, self.state.energy, self.state.mood,
-            channel="pet" if channel == "tts" else "qq", attachments=attachments,
+            channel="pet" if channel == "tts" else self.message_channel, attachments=attachments,
         )
         self._process_tension_user_message(store_text, channel=channel, message_id=user_msg_id)
         self._capture_user_info_gap(user_text, user_msg_id, channel, resolved_scope)
@@ -1342,6 +1369,14 @@ class Agent:
         proactive_context = self._adjacent_proactive_context(user_text, channel)
         if proactive_context:
             extra_blocks.append(proactive_context)
+        # 苏醒总结融合（2026-08-31 用户反馈「醒了」三连发）：wake_summary 在
+        # handle 开头一次性取出（见 _note_sleep_report 后），融进本轮回复不旁路推送
+        if wake_summary:
+            extra_blocks.append(
+                f"【苏醒总结融合】用户刚报告睡醒。你观察到的一段睡眠情况素材：{wake_summary}\n"
+                "把这份睡眠情况自然融进你这句回复里（问候+总结一条说完），"
+                "像顺嘴提起，不要复述素材原句，不要分条列点。"
+            )
         sleep_archive_ids_to_process: list[int] = []
         if schedule_runtime is not None and schedule_runtime.state.sleep_reason == "woke":
             archive = self.memory.sleep_messages(
@@ -1600,7 +1635,7 @@ class Agent:
             # P2：im 通道追加轻量情绪分类（失败/关闭→空，UI 回退 mood）
             tone = self._classify_tone(reply)
         self.memory.store_message("assistant", reply, self.state.energy, self.state.mood,
-                                  channel="pet" if channel == "tts" else "qq", tone=tone)
+                                  channel="pet" if channel == "tts" else self.message_channel, tone=tone)
         if sleep_archive_ids_to_process:
             self.memory.mark_sleep_messages_processed(sleep_archive_ids_to_process)
             schedule_runtime.state = replace(schedule_runtime.state, sleep_reason="awake_reconciled")
@@ -2345,29 +2380,46 @@ class Agent:
         if self.persona_proactive_blocked("ritual"):
             return []
         msgs: list[str] = []
-        # 三餐锚点按用户作息调整（2026-08-30 用户拍板）：从最近睡眠周期推导起床时间
-        try:
-            wake_hour = self._user_wake_hour()
-            self.meals.adjust_to_user_cycle(wake_hour)
-            # 角色作息适应用户（2026-08-30 用户拍板「比较好玩」）：用户起床与角色
-            # 起床差 ≥2h → 向用户偏移一半（渐进），并给一条理由消息（每日一次）
-            self._adapt_schedule_to_user(wake_hour, now, msgs)
-        except Exception as e:
-            logger.debug("meal anchor adjust failed: %s", e)
         # gate.decide 需要 epoch 秒（now 可能是 datetime 注入，转 timestamp）
         now_ts = now.timestamp() if isinstance(now, datetime.datetime) else now
         cand = ProactiveCandidate(
             source="ritual", reason="定时问候/节庆纪念",
             relevance=0.9, urgency=0.5, intent="share",
             context={"calendar_source": "greeter/occasion"},
-            channel="qq",
+            channel="qq",  # 闸门分桶路由（PC 与安卓都走 qq 桶，安卓该桶已 gen_config 归零）；落库标签见下
         )
+        # 闸门先行（2026-08-31 用户反馈「醒了」三连发修复）：原顺序里作息适应
+        # 消息在 gate 之前生成，decision 不放行也照样 return msgs 漏发。
         decision = self.gate.decide(
             cand, scene=self.scene_lock.current(),
             now=now_ts,  # 测试注入；生产传真实时间
         )
         if not decision.allow:
-            return msgs
+            return []
+        # 用户活跃静默期（2026-08-31 用户反馈「醒了」三连发）：刚回过用户话，
+        # 13 秒后又蹦出作息通知/睡眠总结 = 闹钟行为。最近 5 分钟有用户消息则本轮
+        # ritual 整体让位（问候/提醒都等下一轮，去重键未消耗，不丢当日额度）。
+        try:
+            for row in reversed(self.memory.recent_messages(limit=5)):
+                if row.get("role") == "user":
+                    import datetime as _dt
+                    seen = _dt.datetime.fromisoformat(str(row.get("created_at")).replace("Z", "+00:00"))
+                    if seen.tzinfo is None:
+                        seen = seen.replace(tzinfo=_dt.timezone.utc)
+                    ref = now if isinstance(now, datetime.datetime) else datetime.datetime.now(datetime.timezone.utc)
+                    if ref.tzinfo is None:
+                        ref = ref.replace(tzinfo=_dt.timezone.utc)
+                    if abs((ref - seen).total_seconds()) < 5 * 60:
+                        return []
+                    break
+        except Exception as e:
+            logger.debug("ritual user-active check failed: %s", e)
+        # 三餐锚点按用户作息调整（2026-08-30 用户拍板）：从最近睡眠周期推导起床时间
+        try:
+            wake_hour = self._user_wake_hour()
+            self.meals.adjust_to_user_cycle(wake_hour)
+        except Exception as e:
+            logger.debug("meal anchor adjust failed: %s", e)
         slot = self.greeter.due_greeting(now=now)
         if slot:
             # 8.7.5 个性化问候（结合最近记忆；LLM 不可用回退模板）
@@ -2375,16 +2427,25 @@ class Agent:
             msgs.append(msg)
         # 未报告睡眠提示（2026-08-30 用户拍板）：有睡眠史但最近 26h 无任何
         # 睡眠/苏醒报告 → 每日一次轻吐槽（LLM 生成，失败回退模板）
-        try:
-            hint = self._missing_sleep_report_hint(now)
-            if hint:
-                msgs.append(hint)
-        except Exception as e:
-            logger.debug("missing sleep hint failed: %s", e)
-        occasion = self.occasion.due_occasion(self.memory, now=now)
-        if occasion:
-            msg = self.occasion.occasion_reaction(occasion, self.card.name)
-            msgs.append(msg)
+        if not msgs:
+            try:
+                hint = self._missing_sleep_report_hint(now)
+                if hint:
+                    msgs.append(hint)
+            except Exception as e:
+                logger.debug("missing sleep hint failed: %s", e)
+        if not msgs:
+            occasion = self.occasion.due_occasion(self.memory, now=now)
+            if occasion:
+                msg = self.occasion.occasion_reaction(occasion, self.card.name)
+                msgs.append(msg)
+        # 角色作息适应用户（2026-08-30 用户拍板「比较好玩」）：作息偏移照常执行，
+        # 但理由消息让位给问候/节庆（2026-08-31 三连发修复：一个 tick 只出一条）。
+        if not msgs:
+            try:
+                self._adapt_schedule_to_user(wake_hour, now, msgs)
+            except Exception as e:
+                logger.debug("schedule adapt failed: %s", e)
         # 饭点兜底（2026-08 收编进问候引擎）：仅当本轮问候/节庆都没发时才轮到，
         # 且 meal.due 内部对问候窗口互斥——「中午好吃过饭了吗」与「到饭点了」不叠发。
         # 文案走 LLM 口语化（角色口吻），失败回退模板。
@@ -2409,21 +2470,27 @@ class Agent:
                 if meal_msg:
                     msgs.append(meal_msg)
                     self.memory.record_proactive_feedback(
-                        source="meal", channel="qq", candidate_id=meal_cid)
+                        source="meal", channel=self.message_channel, candidate_id=meal_cid)
         if not (persist is False) and msgs:
             for msg in msgs:
-                self.record_proactive_message(msg, channel="qq")
+                self.record_proactive_message(msg, channel=self.message_channel)
                 # 问句记期待（追问闭环的燃料；QQ 路径走自己的 _record_qq_expectation）
                 try:
-                    self.record_proactive_expectation(msg, source="ritual", channel="qq")
+                    self.record_proactive_expectation(msg, source="ritual", channel=self.message_channel)
                 except Exception as e:
                     logger.debug("record expectation failed: %s", e)
+            # 问候/节庆去重键随状态落库（2026-08-31 修复：不落库=重启清零重发）
+            self._persist_state()
         if msgs and commit:
             self.gate.commit(cand)
         return msgs
 
-    def record_proactive_message(self, text: str, *, channel: str = "qq") -> None:
-        """发送成功后写入主动 assistant 消息，避免发送失败污染历史。"""
+    def record_proactive_message(self, text: str, *, channel: str | None = None) -> None:
+        """发送成功后写入主动 assistant 消息，避免发送失败污染历史。
+
+        channel=None → 用 self.message_channel（安卓 device-config 标 im）。
+        """
+        channel = channel or self.message_channel
         self.memory.store_message("assistant", text, self.state.energy, self.state.mood, channel=channel)
         self._append_history_message("assistant", text)
 
@@ -2568,7 +2635,7 @@ class Agent:
                 reply = self._short_task(task, max_tokens=1024)
                 if reply:
                     self.memory.store_message("assistant", reply, self.state.energy, self.state.mood,
-                                              channel="qq")
+                                              channel=self.message_channel)
                     self._append_history_message("assistant", reply)
                     if commit:
                         self.gate.commit(cand)
@@ -2582,7 +2649,7 @@ class Agent:
             "（离线整理完毕）我突然想起你上次说的那个计划，后来怎么样了？",
         ]
         reply = pool[0]
-        self.memory.store_message("assistant", reply, self.state.energy, self.state.mood, channel="qq")
+        self.memory.store_message("assistant", reply, self.state.energy, self.state.mood, channel=self.message_channel)
         self._append_history_message("assistant", reply)
         if commit:
             self.gate.commit(cand)
@@ -2629,7 +2696,7 @@ class Agent:
                     )
                     reply = self._short_task(task, max_tokens=1024)
                     if reply:
-                        self.memory.store_message("assistant", reply, self.state.energy, self.state.mood, channel="qq")
+                        self.memory.store_message("assistant", reply, self.state.energy, self.state.mood, channel=self.message_channel)
                         self._append_history_message("assistant", reply)
                         if commit:
                             self.gate.commit(cand)
@@ -2648,7 +2715,7 @@ class Agent:
         if not candidates:
             return ""
         msg = random.choice(candidates)
-        self.memory.store_message("assistant", msg, self.state.energy, self.state.mood, channel="qq")
+        self.memory.store_message("assistant", msg, self.state.energy, self.state.mood, channel=self.message_channel)
         self._append_history_message("assistant", msg)
         if commit:
             self.gate.commit(cand)
@@ -2853,7 +2920,8 @@ class Agent:
         try:
             eps = self.memory.list_layer("episodic", limit=30)
             sems = self.memory.list_layer("semantic", limit=30)
-            pool = [e for e in (eps + sems) if e.id % 3 != 0]  # 简易分散
+            used = set(getattr(self, "_dug_memory_ids", []))
+            pool = [e for e in (eps + sems) if e.id % 3 != 0 and e.id not in used]  # 分散+已挖排除
             if not pool:
                 return None
             if topic_hint:
@@ -2861,11 +2929,14 @@ class Agent:
                     related = {e.id for e in self.memory.recall(topic_hint, top_k=10)}
                     biased = [e for e in pool if e.id in related]
                     if biased:
-                        return random.choice(biased).content[:60]
+                        pick = random.choice(biased)
+                        self._dug_memory_ids = (list(used) + [pick.id])[-12:]
+                        return pick.content[:60]
                 except Exception:
                     pass  # recall 失败退回随机，不阻塞破冰
-            entry = random.choice(pool)
-            return entry.content[:60]
+            pick = random.choice(pool)
+            self._dug_memory_ids = (list(used) + [pick.id])[-12:]
+            return pick.content[:60]
         except Exception as e:
             logger.debug("dig old memory failed: %s", e)
             return None

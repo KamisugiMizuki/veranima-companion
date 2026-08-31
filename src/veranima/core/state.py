@@ -135,11 +135,17 @@ class AgentState:
         )
         # 关系阶段（依恋度驱动）：初识→熟悉→亲密→稳定，说话方式不同
         stage, stage_desc = self.relationship_stage()
-        return (
+        block = (
             f"【当前状态】情绪：{self.mood}；{energy_desc}。"
             f"依恋度：{self.attachment:.2f}（0=初识，1=亲密）。"
             f"【关系阶段】{stage}：{stage_desc}"
         )
+        if self.user_asleep:
+            # 2026-08-31 用户反馈（12:50 睡前道晚安却收到「早安」）：主对话 prompt
+            # 里从未声明用户睡眠状态，模型只能从历史自己猜，作息异常时猜错时段
+            block += ("。【作息】用户已报告要去睡了，这一句按睡前/晚安语境回应；"
+                      "不要用早安/午安/晚上好这类时段问候，也不要端早餐/催促吃饭")
+        return block
 
     def relationship_stage(self) -> tuple[str, str]:
         """依恋度 → 关系阶段与语气指导（DESIGN.md 第 6 节）。"""

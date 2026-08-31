@@ -82,8 +82,17 @@ def _strip_fence(raw: str) -> str:
     return _FENCE_RE.sub("", raw).strip()
 
 
+def strip_wrapping_quotes(text: str) -> str:
+    """裸引号守卫（2026-08-31 用户反馈 07:25 整条消息带首尾英文引号=模型把
+    台词字符串直接吐出来了）：仅当首尾成对时剥。"""
+    if len(text) > 1 and text[0] in '"“' and text[-1] in '”"':
+        return text[1:-1].strip()
+    return text
+
+
 def _clean_text(value: Any, max_chars: int) -> str:
-    text = strip_thinking_trace(strip_internal_prompt_leak(strip_echoed_time_prefixes(str(value or "").strip())))
+    text = strip_wrapping_quotes(strip_thinking_trace(strip_internal_prompt_leak(
+        strip_echoed_time_prefixes(str(value or "").strip()))))
     if len(text) > max_chars:
         text = text[:max_chars]
     return text
@@ -484,7 +493,8 @@ def parse_reply(raw: str, *, channel: str = "im", card: Any = None,
             return Reply(degraded="invalid_structured_output")
         if _is_json_object(raw):
             return Reply(degraded="invalid_structured_output")
-        cleaned = strip_thinking_trace(strip_internal_prompt_leak(strip_echoed_time_prefixes(raw)))[:max_chars]
+        cleaned = strip_wrapping_quotes(strip_thinking_trace(strip_internal_prompt_leak(
+            strip_echoed_time_prefixes(raw))))[:max_chars]
         if not cleaned and _ANALYSIS_HEADING_RE.search(raw):
             return Reply(degraded="analysis_without_final_answer")
         return Reply(segments=[ReplySegment(text=cleaned)])
