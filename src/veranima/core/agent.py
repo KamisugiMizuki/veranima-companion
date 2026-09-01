@@ -398,12 +398,23 @@ class Agent:
             return ""
         # 三餐锚点已被 adjust_to_user_cycle 按用户作息平移；落在角色必睡区间
         # [睡窗起点, 醒窗起点) 的餐届时无提醒 → 给睡前公告一条带指向的牵挂素材
+        cares = []
         for meal, (hour, _text) in self.meals.slots.items():
             in_window = (hour >= sleep_start or hour < wake_start) if sleep_start > wake_start \
                 else sleep_start <= hour < wake_start
             if in_window:
-                return f"用户的{cn.get(meal, '饭')}点落在你睡着的时段里，你睡了之后没办法提醒ta按时吃"
-        return ""
+                cares.append(f"用户的{cn.get(meal, '饭')}点落在你睡着的时段里，你睡了之后没办法提醒ta按时吃")
+                break  # 只报一餐，不打包
+        # 联想 A 类补全（2026-09-01 设计）：未完成事项=开放承诺；睡前顺带记挂一件
+        if len(cares) < 2:
+            try:
+                open_p = self.promises.open_promises(limit=1)
+                if open_p:
+                    cares.append(f"你想起用户还挂着件事没办完：「{open_p[0].content[:40]}」，"
+                                 "你睡着的时候ta要是想起来找你，你没法当场回应")
+            except Exception:
+                pass
+        return "；".join(cares)
 
     def schedule_notice_text(self, notice: str, now=None) -> str:
         tasks = {
@@ -889,6 +900,92 @@ class Agent:
         except Exception as e:
             logger.debug("sleep summary compute failed: %s", e)
             return ""
+
+    def _context_probe(self, now=None) -> str:
+        """当下情境推测（联想 B 类）：距用户最后消息 2-6h 且白天时段 →
+        一句带不确定感的猜测（"这个点你该忙完了吧？"）。
+
+        防刻意：每日 ≤2 次、同时段（早/午/晚/夜）不重复、用户报告在睡不发、
+        依恋 <0.3 不发（初识就盯着人家行程像监视）。数据=消息时间戳+最近
+        话题（用户作息画像的雏形，无独立统计——时间戳本身就是作息）。
+        """
+        import datetime
+        now = now or datetime.datetime.now()
+        if self.state.user_asleep or self.state.attachment < 0.3:
+            return ""
+        # 距末条用户消息的间隔
+        try:
+            ref = self._naive_local(now if isinstance(now, datetime.datetime)
+                                    else datetime.datetime.fromtimestamp(now))
+            last_user = None
+            for row in reversed(self.memory.recent_messages(limit=10)):
+                if row.get("role") == "user":
+                    last_user = self._naive_local(datetime.datetime.fromisoformat(
+                        str(row.get("created_at")).replace("Z", "+00:00")))
+                    break
+            if last_user is None:
+                return ""
+            gap_h = (ref - last_user).total_seconds() / 3600
+            if not (2.0 <= gap_h <= 6.0):
+                return ""
+        except Exception:
+            return ""
+        # 时段桶 + 当日次数（≤2）
+        bucket = ("morning" if 6 <= ref.hour < 11 else "noon" if ref.hour < 15
+                  else "evening" if 15 <= ref.hour < 23 else "night")
+        if bucket == "night":
+            return ""  # 深夜推测=打扰
+        day = ref.date().isoformat()
+        cid = f"probe:{day}:{bucket}"
+        rows = self.memory.recent_proactive_feedback(source="context_probe", limit=30)
+        today = [r for r in rows if str(r.get("candidate_id") or "").startswith(f"probe:{day}")]
+        if len(today) >= 2 or any(str(r.get("candidate_id") or "") == cid for r in today):
+            return ""
+        last_text = ""
+        for row in reversed(self.memory.recent_messages(limit=10)):
+            if row.get("role") == "user":
+                last_text = str(row.get("content") or "")[:60]
+                break
+        fallback = {
+            "morning": "这个点你应该已经忙起来了，昨晚那事儿还压着吗？",
+            "noon": "到下午了，你上午那摊子事收尾没？",
+            "evening": "这个点该消停了，今天累不累？",
+        }[bucket]
+        if not (getattr(self.llm, "is_model_loaded", None) and self.llm.is_model_loaded()):
+            self.memory.record_proactive_feedback(
+                source="context_probe", channel=self.message_channel, candidate_id=cid)
+            return fallback
+        try:
+            # 联想 D 类顺路（环境巧合）：把你此刻真实的日程活动带入，
+            # "我这边刚煮上粥，你那边…"——自发对比，不单独占触发器
+            my_side = ""
+            rt = getattr(self, "schedule_runtime", None)
+            if rt is not None and not rt.sleeping:
+                ctx = rt.current_context(ref)
+                act = str(getattr(ctx, "activity_key", "") or "")
+                place = str(getattr(ctx, "place_label", "") or "")
+                if act in {"wake_routine", "focused_practice", "personal_interest_a",
+                           "personal_interest_b", "quiet_rest"} or place:
+                    my_side = f"你这边正在{({'wake_routine':'梳洗准备一天','focused_practice':'忙自己的事','personal_interest_a':'摸自己的爱好','personal_interest_b':'摸自己的爱好','quiet_rest':'歇着'}.get(act, '做着手头的东西'))}" \
+                              + (f"（在{place}）" if place else "") + "。"
+            task = (
+                f"已经 {gap_h:.0f} 小时没收到用户消息了，现在是{('上午' if bucket == 'morning' else '中午前后' if bucket == 'noon' else '傍晚')}。"
+                + (f"TA 上次说过：「{last_text}」。" if last_text else "")
+                + my_side
+                + "猜一猜 TA 此刻大概在做什么/状态怎么样，用你的口吻发一条消息："
+                  "要带不确定感（'该…了吧''不会还在…吧'这种），可关心可调侃，"
+                  + ("可以自然带上你自己这边在做的事做对比。" if my_side else "")
+                  + "猜错了也没关系，别写成查岗。只发消息本身。"
+            )
+            text = (self._short_task(task) or "").strip()
+        except Exception as e:
+            logger.debug("context probe llm failed: %s", e)
+            text = ""
+        if not text:
+            return ""
+        self.memory.record_proactive_feedback(
+            source="context_probe", channel=self.message_channel, candidate_id=cid)
+        return text
 
     def _missing_sleep_report_hint(self, now=None) -> str:
         """用户有睡眠报告史但最近 26h 无任何睡眠/苏醒报告 → 一句轻提示/吐槽。
@@ -2428,6 +2525,13 @@ class Agent:
             slot = self.greeter.due_greeting(now=now)
             return [{"source": "greeting", "text": self.greeting_message(slot)}] if slot else []
 
+        def _collect_context_probe():
+            # 联想 B 类（2026-09-01 设计）：角色闲着、用户 2-6 小时没动静 →
+            # 基于时间/最近话题推测 TA 此刻在干嘛。素材进待织池：单独到点是
+            # 完整一条，撞上别的素材则被织进同一条消息（天然不刻意）。
+            probe = self._context_probe(now)
+            return [{"source": "context_probe", "text": probe}] if probe else []
+
         def _collect_sleep_hint():
             hint = self._missing_sleep_report_hint(now)  # 26h 无作息报告轻提示（日一次）
             return [{"source": "sleep_hint", "text": hint}] if hint else []
@@ -2466,6 +2570,7 @@ class Agent:
 
         collectors = {
             "greeting": _collect_greeting,
+            "context_probe": _collect_context_probe,
             "sleep_hint": _collect_sleep_hint,
             "occasion": _collect_occasion,
             "schedule_adapt": _collect_schedule_adapt,
@@ -2738,8 +2843,12 @@ class Agent:
                 # 翻旧账接线（_dig_old_memory 原为孤儿函数）：给 LLM 一条旧事素材；
                 # 以最后一条用户消息为话题线索做弱关联挖掘（缺口②）
                 last_user_text = next((m["content"] for m in reversed(recent) if m["role"] == "user"), "")
-                dig = self._dig_old_memory(topic_hint=last_user_text)
-                dig_hint = f"\n（你刚想起一条旧事：{dig}）" if dig else ""
+                dug = self._dig_old_memory(topic_hint=last_user_text)
+                dig_hint = ""
+                if dug:
+                    dig_text, dig_conf = dug
+                    hedge = "（你有点记不太清了，可以带点不确定的口气）" if dig_conf < 0.7 else ""
+                    dig_hint = f"\n（你刚想起一条旧事：{dig_text}）{hedge}"
                 task = (
                     f"{ctx}{dig_hint}\n\n你刚在整理聊天记录（离线成长），想跟用户说点什么破冰。"
                     "自然带出一点整理时的发现（他之前提过的事/你记住的细节；"
@@ -3018,7 +3127,7 @@ class Agent:
             return "有点低落"
         return None
 
-    def _dig_old_memory(self, topic_hint: str = "") -> str | None:
+    def _dig_old_memory(self, topic_hint: str = "") -> tuple[str, float] | None:
         """主动考古（8.7.1）：从 episodic/semantic 挖一条旧事。
 
         排除最近 24 小时内的提取（避免考古"最近事"显得假）。topic_hint 非空时
@@ -3040,12 +3149,12 @@ class Agent:
                     if biased:
                         pick = random.choice(biased)
                         self._dug_memory_ids = (list(used) + [pick.id])[-12:]
-                        return pick.content[:60]
+                        return pick.content[:60], float(pick.confidence or 0.8)
                 except Exception:
                     pass  # recall 失败退回随机，不阻塞破冰
             pick = random.choice(pool)
             self._dug_memory_ids = (list(used) + [pick.id])[-12:]
-            return pick.content[:60]
+            return pick.content[:60], float(pick.confidence or 0.8)
         except Exception as e:
             logger.debug("dig old memory failed: %s", e)
             return None

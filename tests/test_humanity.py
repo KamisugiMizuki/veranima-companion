@@ -56,7 +56,7 @@ def test_dig_old_memory_returns_old_event(agent):
     agent.memory.store("episodic", "用户说想学吉他，还买了一把", importance=0.8, confidence=0.6)
     old = agent._dig_old_memory()
     assert old is not None
-    assert "吉他" in old
+    assert "吉他" in old[0]
 
 
 def test_dig_old_memory_none_when_empty(agent):

@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 #  proactive.merge_window_minutes 合并窗口错峰，窗口内素材不销毁、下轮并入。）
 RITUAL_SOURCES = (
     "greeting",        # 时段问候（早/午/晚，每日每时段去重）
+    "context_probe",   # 当下情境推测（联想 B 类：TA 此刻在干嘛；日 ≤2）
     "sleep_hint",      # 26h 无作息报告轻提示（每日一次）
     "occasion",        # 节庆/纪念日（每日一次）
     "schedule_adapt",  # 角色作息向用户偏移的理由消息（每日一次）

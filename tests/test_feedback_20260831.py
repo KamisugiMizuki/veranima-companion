@@ -281,3 +281,87 @@ def test_weave_falls_back_to_concat(tmp_path, monkeypatch):
     out = a._weave_ritual(["第一件事A", "第二件事B"])
     assert "第一件事A" in out and "第二件事B" in out
     assert a._weave_ritual(["只有一件"]) == "只有一件"
+
+
+# ---------- 11. 联想四型（2026-09-01 设计文档落地） ----------
+
+def _probe_agent(tmp_path, gap_hours=3.0):
+    """构造「用户 gap_hours 小时前发过消息」的 agent（本地时间轴自洽）。"""
+    import datetime as _dt
+    card, memory = _agent(tmp_path)
+    a = Agent(card=card, memory=memory, llm=FakeLLM(), state=AgentState(), config={})
+    a.state.attachment = 0.8  # 解锁 B 类门槛
+    then = _dt.datetime.now().replace(tzinfo=None) - _dt.timedelta(hours=gap_hours)
+    memory.con.execute(
+        "INSERT INTO messages(role, content, channel, created_at) VALUES (?,?,?,?)",
+        ("user", "今天开始减肥", "qq", then.isoformat()))
+    memory.con.commit()
+    return a, memory
+
+
+def test_context_probe_gates(tmp_path):
+    """B 类：2-6h 窗口/日≤2/同桶不重复/依恋门槛。"""
+    a, mem = _probe_agent(tmp_path)
+    now = __import__("datetime").datetime.now().replace(tzinfo=None)
+    bucket = ("morning" if 6 <= now.hour < 11 else "noon" if now.hour < 15
+              else "evening" if 15 <= now.hour < 23 else "night")
+    out = a._context_probe(now)
+    if bucket == "night":
+        assert out == ""            # 深夜不推测（打扰）
+        return
+    assert out  # FakeLLM「好的。」
+    assert a._context_probe(now) == ""  # 同桶去重
+    a.state.attachment = 0.2
+    now2 = now + __import__("datetime").timedelta(hours=5)
+    assert a._context_probe(now2) == ""  # 依恋 <0.3 不发
+
+
+def test_context_probe_gap_bounds(tmp_path):
+    a, _ = _probe_agent(tmp_path, gap_hours=1.0)
+    import datetime as _dt
+    assert a._context_probe(_dt.datetime.now().replace(tzinfo=None)) == ""  # <2h 不触发
+    a2, _ = _probe_agent(tmp_path / "b", gap_hours=8.0)
+    assert a2._context_probe(_dt.datetime.now().replace(tzinfo=None)) == ""  # >6h 不触发
+
+
+def test_context_probe_flows_into_pool(tmp_path):
+    """B 类素材进待织池：与问候一起被 _weave_ritual 合并。"""
+    import datetime as _dt
+    a, _ = _probe_agent(tmp_path)
+    woven = {}
+    # 直接调 tick：morning/noon/evening 当前真实小时的桶 + probe 都在意
+    a._weave_ritual = lambda texts: (woven.__setitem__("t", texts), "｜".join(texts))[1]
+    now = _dt.datetime.now().replace(tzinfo=None, second=0, microsecond=0)
+    msgs = a.tick_proactive(now=now)
+    if woven.get("t"):
+        assert len(msgs) <= 1 and len(woven["t"]) >= 1  # 多素材同轮 → 一条产物
+
+
+def test_sleep_care_includes_open_promise(tmp_path):
+    """A 类扩展：睡前牵挂带上未兑现承诺（PromiseBook 识别的句式）。"""
+    card, memory = _agent(tmp_path)
+    a = Agent(card=card, memory=memory, llm=FakeLLM(), state=AgentState(), config={})
+    a.state.attachment = 0.8
+    assert a.promises.record("我明天要去看牙，记得提醒我")  # 命中承诺句式
+    # 造作息错位：角色睡眠窗覆盖全部三餐锚点（8/12/17 点全在 20:00→07:00 之外→
+    # 反过来：角色 20 点睡 7 点起，餐点 8-17 落醒时=不错位；这里让角色 09 睡 18 醒）
+    class _C:
+        sleep_start, wake_start = "09:00", "18:00"
+    class _O:
+        circadian = _C()
+    class _R:
+        outline = _O()
+    a.schedule_runtime = _R()
+    care = a._sleep_care_note()
+    assert "午饭" in care      # 饭点错位（12 点在角色睡眠窗 09-18 内）
+    assert "看牙" in care or "牙" in care  # 牵挂叠加未完成事项
+
+
+def test_dig_old_memory_returns_confidence(tmp_path):
+    """C 类：挖旧事带置信度（<0.7 心跳注入"记不清"语气）。"""
+    card, memory = _agent(tmp_path)
+    a = Agent(card=card, memory=memory, llm=FakeLLM(), state=AgentState(), config={})
+    for i in range(10):
+        memory.store("episodic", f"旧事{i}", importance=0.6, confidence=0.5)
+    got = a._dig_old_memory()
+    assert got and isinstance(got, tuple) and got[1] == 0.5

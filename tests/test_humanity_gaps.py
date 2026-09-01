@@ -109,7 +109,7 @@ def test_dig_prefers_related_but_never_breaks(tmp_path):
     agent.memory.store("episodic", "用户说过喜欢下雨天", importance=0.8, confidence=0.8,
                        provenance="auto-extract", category="event")
     result = agent._dig_old_memory(topic_hint="天气和心情")
-    assert result is None or isinstance(result, str)
+    assert result is None or (isinstance(result, tuple) and isinstance(result[0], str))
 
 
 def test_sleep_care_requires_intimacy(tmp_path):
