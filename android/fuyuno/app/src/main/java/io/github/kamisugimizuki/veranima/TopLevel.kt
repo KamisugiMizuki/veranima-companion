@@ -191,22 +191,20 @@ fun RoleListScreen(onOpenRole: (String) -> Unit) {
     }
 }
 
-/** 圆角正方形头像（裁决 UI-3）：用户提供 characters/<id>/portrait.jpg；缺=首字母几何块。 */
+/** 圆角正方形头像（裁决 UI-3）：用户提供 characters/<id>/portrait.jpg；缺=首字母几何块。
+ *  真图无边框（2026-09-01 用户裁决）；回退块保留黑底白字。 */
 @Composable
 fun RoleAvatar(name: String, avatarPath: String, size: Int = 52) {
     val shape = RoundedCornerShape(12.dp)
-    Box(Modifier.size(size.dp).clip(shape).border(1.dp, CardBorder(), shape)
-        .background(PageBg())) {
-        if (avatarPath.isNotEmpty()) {
-            coil.compose.AsyncImage(model = java.io.File(avatarPath), contentDescription = name,
-                contentScale = androidx.compose.ui.layout.ContentScale.Crop,
-                modifier = Modifier.fillMaxSize())
-        } else {
-            Box(Modifier.fillMaxSize().background(InvertSurface()),
-                contentAlignment = Alignment.Center) {
-                Text(name.take(1), color = OnInvert(), fontSize = (size * 0.42f).sp,
-                    fontWeight = FontWeight.Bold)
-            }
+    if (avatarPath.isNotEmpty()) {
+        coil.compose.AsyncImage(model = java.io.File(avatarPath), contentDescription = name,
+            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+            modifier = Modifier.size(size.dp).clip(shape))
+    } else {
+        Box(Modifier.size(size.dp).clip(shape).background(InvertSurface()),
+            contentAlignment = Alignment.Center) {
+            Text(name.take(1), color = OnInvert(), fontSize = (size * 0.42f).sp,
+                fontWeight = FontWeight.Bold)
         }
     }
 }
