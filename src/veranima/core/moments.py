@@ -20,8 +20,12 @@ logger = logging.getLogger(__name__)
 
 # 角色设置默认值（P2 最小集；P3/P4 组随实现扩，merge 语义=浅合并顶层键）
 DEFAULT_SETTINGS = {
-    "moments": {"enabled": True, "frequency": "medium", "mention_user": "indirect"},
-    "proactive": {"enabled": True, "frequency": "medium"},
+    "moments": {"enabled": True, "frequency": "medium", "mention_user": "indirect",
+                "allowed_types": ["D01", "D02", "D03", "D04", "D05", "D06", "D07"]},
+    "proactive": {"enabled": True, "frequency": "medium",
+                  "allowed_types": []},   # 空=全放行；非空=RITUAL_SOURCES 白名单
+    "interaction": {"comment_response_style": "character", "dm_after_like": False},
+    "expression": {"fixed_nickname": "", "sensitive_topics_extra": [], "expressiveness": "natural"},
 }
 _FREQ_DAILY = {"low": 1, "medium": 1, "high": 2}  # low=每2-3天1条（靠 6h 闸自然拉长→14h 起步）
 
@@ -39,6 +43,33 @@ def merge_settings(raw: dict | None) -> dict:
 
 
 _KINDS = {"D01", "D03", "D05", "D06", "D02", "D04", "D07"}
+
+# 虚拟天气（裁决 Q5）：纯函数哈希，同城同天全消费者一致；档=体感可说的朴素词
+_WEATHERS = ("晴", "多云", "阴", "雨", "降温", "大风")
+_WEEK = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+
+
+def virtual_weather(city: str, day: dt.date) -> str:
+    """确定性伪随机天气：季节微调（冬=降温/雨多，夏=晴多）+ 城市日哈希。"""
+    seed = int(hashlib.sha1(f"{city}|{day.isoformat()}".encode()).hexdigest()[:8], 16)
+    weights = {12: [2, 3, 3, 3, 5, 3], 1: [2, 3, 3, 3, 5, 3], 2: [2, 3, 3, 3, 4, 3],
+               3: [3, 3, 3, 3, 2, 3], 4: [4, 3, 2, 2, 1, 2], 5: [4, 3, 2, 2, 1, 2],
+               6: [4, 2, 2, 3, 0, 1], 7: [4, 2, 1, 4, 0, 1], 8: [4, 2, 1, 4, 0, 1],
+               9: [4, 3, 2, 2, 1, 2], 10: [3, 3, 3, 2, 2, 3], 11: [2, 3, 3, 3, 4, 4]}.get(day.month, [3] * 6)
+    pool = []
+    for w_, name in zip(weights, _WEATHERS):
+        pool.extend([name] * w_)
+    return pool[seed % len(pool)] if pool else "晴"
+
+
+# 活动键→人话（喂 LLM 素材用；未收录原样——英文键 LLM 也懂，UI 那份 actMap 是显示用）
+_ACT_LABELS = {
+    "wake_routine": "起床收拾", "focused_practice": "专注做自己的事", "reset": "在路上",
+    "personal_interest_a": "待在自己的爱好里", "personal_interest_b": "待在自己的爱好里",
+    "quiet_rest": "歇着", "sleep": "睡着", "commute_transit": "挤通勤",
+    "model_training_work": "盯着训练跑", "late_takeout_dinner": "吃夜宵外卖",
+    "meme_archiving": "收藏表情包", "video_with_you": "等你一起看片", "blog_browsing": "刷博客",
+}
 _TAIL_PAT = re.compile(r"(你在吗|你知道吗|你在干嘛呢.*发出来|@你)")  # 喊话检查（重生成一次即止损）
 
 
@@ -58,18 +89,25 @@ class MomentsEngine:
             raw = None
         return merge_settings(raw)
 
-    # ---------- 素材收集（今日事件池；返回 [(kind, text, source_ref)]） ----------
+    # ---------- 素材收集（今日事件池） ----------
+    # 四元组=(kind, 给 LLM 的素材指令, 溯源键, 织文失败时的可发布降级文本)。
+    # 降级文本必须第一人称且不含内部数值——素材指令是给机器的（"精力86%"），
+    # 直接入库就是把统计报表发到朋友圈。None=该素材不可降级，宁缺毋滥。
 
-    def _materials(self, now: dt.datetime) -> list[tuple[str, str, str]]:
+    def _materials(self, now: dt.datetime) -> list[tuple[str, str, str, str | None]]:
         a = self.agent
-        mats: list[tuple[str, str, str]] = []
+        mats: list[tuple[str, str, str, str | None]] = []
         role = a.schedule_runtime.outline.role_id if a.schedule_runtime else a.role_key
-        # D01 日程衍生：昨日/最近日终摘要未成动态的（dedupe=event id）
+        # D01 日程衍生：最近**日终摘要**未成动态的（dedupe=event id）。
+        # 表里混着空间事件（"当前虚拟地点：…"）——只要 day_close_summary，
+        # 那是"今天有效活动 X 分钟/中断/睡眠债务"的生活流水，能织出真动态。
         try:
-            for ev in a.memory.virtual_life_events(role, limit=2):
+            for ev in a.memory.virtual_life_events(role, limit=8):
+                if str(ev.get("event_kind") or "") != "day_close_summary":
+                    continue
                 summary = str(ev.get("summary") or "")
                 if summary:
-                    mats.append(("D01", summary, f"event:{ev.get('id')}"))
+                    mats.append(("D01", summary, f"event:{ev.get('id')}", None))
                     break
         except Exception:
             logger.debug("D01 collect failed", exc_info=True)
@@ -78,7 +116,11 @@ class MomentsEngine:
             mood = str(a.state.mood or "")
             energy = float(a.state.energy)
             if mood in ("低落", "开心", "期待") and not a.state.user_asleep:
-                mats.append(("D03", f"你现在情绪是「{mood}」，精力 {int(energy)}%", f"mood:{mood}:{now.date().isoformat()}"))
+                _fb = {"开心": "今天心情挺好，说不上为什么。",
+                       "低落": "有点闷，不太想说话。",
+                       "期待": "有件事在前面等着，挺好的。"}[mood]
+                mats.append(("D03", f"你现在情绪是「{mood}」，精力 {int(energy)}%",
+                             f"mood:{mood}:{now.date().isoformat()}", _fb))
         except Exception:
             logger.debug("D03 collect failed", exc_info=True)
         # D05 碎碎念：当前日程活动（此刻在做什么，真实活动名）
@@ -89,7 +131,10 @@ class MomentsEngine:
                 act = str(getattr(ctx, "activity_key", "") or "")
                 place = str(getattr(ctx, "place_label", "") or "")
                 if act:
-                    mats.append(("D05", f"你此刻正在「{act}」（{place}），随手记一笔", f"act:{act}:{now.strftime('%Y%m%d%H')}"))
+                    lab = _ACT_LABELS.get(act, act)
+                    mats.append(("D05", f"你此刻正在「{lab}」（{place}），随手记一笔",
+                                 f"act:{act}:{now.strftime('%Y%m%d%H')}",
+                                 (f"此刻在{lab}。" if act != "sleep" else None)))
         except Exception:
             logger.debug("D05 collect failed", exc_info=True)
         # D06 未来预告：明日计划里的前两项活动（计划是今晚生成的=真实待发生）
@@ -99,11 +144,46 @@ class MomentsEngine:
             if plan is not None and getattr(plan, "items", None):
                 nxt = plan.items[0]
                 label = str(getattr(nxt, "activity_key", "") or getattr(nxt, "block_id", ""))
-                mats.append(("D06", f"明天（{plan.local_date}）你安排的第一件事是「{label}」，可以期待或紧张一下",
-                             f"plan:{plan.plan_id}:{label}"))
+                lab = _ACT_LABELS.get(label, label)
+                mats.append(("D06", f"明天（{plan.local_date}）你安排的第一件事是「{lab}」，可以期待或紧张一下",
+                             f"plan:{plan.plan_id}:{label}", f"明天安排了「{lab}」。"))
         except Exception:
             logger.debug("D06 collect failed", exc_info=True)
-        return [(k, t, r) for (k, t, r) in mats if k in _KINDS]
+        # D02 环境感知：虚拟天气。种子=角色名（卡内城市多为无名设定，
+        # 角色即"那座城市"；确定性不依赖城市名）。dedupe 含日期=每日至多一条。
+        try:
+            day_key = now.astimezone().date() if now.tzinfo else now.date()
+            wx = virtual_weather(a.card.name, day_key)
+            mats.append(("D02", f"你那里今天{wx}，有感而发一句", f"w:{a.card.name}:{day_key}",
+                         f"今天{wx}。"))
+        except Exception:
+            logger.debug("D02 collect failed", exc_info=True)
+        # D04 记忆闪回：低置信旧事（复用联想 C 类挖掘器，无话题线索=纯随机翻）
+        try:
+            dug = a._dig_old_memory()
+            if dug:
+                text, conf = dug
+                hedge = "你有点记不清细节了，可以带糊" if conf < 0.7 else ""
+                mats.append(("D04", f"你突然想起ta以前说过：「{text[:60]}」。{hedge}",
+                             f"dig:{a.role_key}:{now.strftime('%Y%m%d%H')}",
+                             "突然想起以前的一件事，不知道ta现在怎么样了。"))
+        except Exception:
+            logger.debug("D04 collect failed", exc_info=True)
+        # D07 关系表达：里程碑（消息数台阶/在一起的日子）——只对亲密期开放
+        try:
+            from .persona import derive_relationship_stage
+            stage = derive_relationship_stage(a.relationship)
+            # 计数=该角色会话行数（消息级共享=和凛说过 500 条≠许眠的里程碑）
+            total = a.memory.role_message_count(a.role_key)
+            for step_ in (100, 500, 1000, 2000, 5000):
+                if step_ <= total < step_ + 30:
+                    mats.append(("D07", f"你们已经说过 {total} 多条话了，{stage}阶段的你有感",
+                                 f"mile:{step_}", "我们已经聊过好多话了。"))
+                    break
+        except Exception:
+            logger.debug("D07 collect failed", exc_info=True)
+        # 类型轮换权重：D01/D03 高，D05 中，D02/D04/D06 点缀，D07 稀有（排序稳定=按源优先级）
+        return [x for x in mats if x[0] in _KINDS]
 
     # ---------- 发送闸 ----------
 
@@ -149,15 +229,19 @@ class MomentsEngine:
         if blocked in ("off", "daily", "gap"):
             return 0  # 追补也不越过硬闸（catch_up 只豁免 repeat）
         mats = self._materials(now)
+        allowed = (cfg.get("moments") or {}).get("allowed_types") or list(_KINDS)
+        mats = [m for m in mats if m[0] in allowed]
         if not mats:
             return 0
         # 选素材：优先与最近两条不同类型（repeat 豁免路径同样受益）
         recent_kinds = set(self.agent.memory.moments_recent_kinds(role, limit=2))
-        mats.sort(key=lambda m: (m[0] in recent_kinds,))
-        kind, text, ref = mats[0]
+        # 稀有度权重（设计稿：D07 关系表达最稀有；D01/D03 优先）
+        prio = {"D01": 0, "D03": 1, "D05": 2, "D02": 3, "D06": 4, "D04": 5, "D07": 6}
+        mats.sort(key=lambda m: (m[0] in recent_kinds, prio.get(m[0], 9)))
+        kind, text, ref, fallback = mats[0]
         dedupe = f"{role}|{ref}"
         mention = str((cfg.get("moments") or {}).get("mention_user", "indirect"))
-        content = self._compose(kind, text, mention)
+        content = self._compose(kind, text, mention, fallback)
         if not content:
             return 0
         pub = self.agent.memory.moment_publish(role, content, kind=kind,
@@ -166,7 +250,7 @@ class MomentsEngine:
             logger.info("moment published %s/%s: %s", role, kind, content[:40])
         return 1 if pub else 0
 
-    def _compose(self, kind: str, material: str, mention: str) -> str:
+    def _compose(self, kind: str, material: str, mention: str, fallback: str | None = None) -> str:
         """LLM 织文（≤100字口语碎片，注入最近动态防重复）；失败降级素材直录。"""
         a = self.agent
         hist = a.memory.moments_recent_texts(a.role_key, limit=5)
@@ -180,32 +264,47 @@ class MomentsEngine:
             + (f"你最近发过的动态（别重复这些主题和句式）：{' / '.join(hist)}\n" if hist else "")
             + "只输出动态正文。"
         )
-        try:
-            text = (a._short_task(task) or "").strip()
-        except Exception:
-            text = ""
+        # 与 _weave_ritual 同款预算教训（2026-09 实测）：思考模型 512 常烧空返回
+        # length 截断——首试默认、空则加倍 2048 重试一次，再败走降级骨架。
+        text = ""
+        for budget in (None, 2048):
+            try:
+                text = (a._short_task(task, max_tokens=budget) or "").strip()
+            except Exception:
+                text = ""
+            if text:
+                break
         if text and _TAIL_PAT.search(text):  # 喊话体：重生成一次止损
             try:
                 text = (a._short_task(task + "\n（上次写成了隔空喊话，这次改成自言自语。）") or "").strip()
             except Exception:
                 pass
         if not text:
-            # 降级：素材直录截断（零丢失优先于文采）；D01 摘要是机器文本→转第一人称骨架
-            text = material[:100]
+            # 降级=可发布的第一人称骨架；机器统计类素材无骨架则本轮放弃
+            # （素材不销毁，下一 tick 还在池里——幂等键保证不重复）
+            text = (fallback or "").strip()
         return text[:140]
 
     # ---------- 评论响应（bridge.comment_moment 调；P2 固定 character 风格） ----------
+
+    def interaction_cfg(self) -> dict:
+        return self.settings().get("interaction") or {}
 
     def reply_comment(self, moment_id: int, user_text: str) -> str:
         a = self.agent
         mom = a.memory.moment_get(moment_id)
         if not mom:
             return ""
+        style = str(self.interaction_cfg().get("comment_response_style", "character"))
+        if style == "none":
+            return ""
+        line = ("以你的语气回一句，不超过30字，像评论区互动（可以反问/自嘲/接梗），"
+                "不要展开成长篇对话。只输出回复正文。" if style == "character" else
+                "回一句极短的话（不超过6个字，像'嗯''谢谢''来了'），只输出回复正文。")
         task = (
             f"你是{a.card.name}。你发过这条动态：「{mom['content']}」\n"
-            f"用户在下面评论：「{user_text[:120]}」\n"
-            "以你的语气回一句，不超过30字，像评论区互动（可以反问/自嘲/接梗），"
-            "不要展开成长篇对话。只输出回复正文。"
+            + f"用户在下面评论：「{user_text[:120]}」\n"
+            + line
         )
         try:
             return (a._short_task(task) or "").strip()[:60]

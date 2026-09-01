@@ -655,3 +655,89 @@ def test_moment_interactions_store(tmp_path):
     d = [x for x in feed if x["id"] == mid][0]
     assert d["likes"] == 1 and d["liked_by_me"] is True
     assert [c["actor"] for c in d["comments"]] == ["user", "xumian"]
+
+def test_d01_ignores_space_events(tmp_path):
+    """素材过滤：虚拟生活表混着空间事件——D01 只吃日终摘要。"""
+    a, mem = _moment_agent(tmp_path / "d01")
+    mem.store_virtual_life_event(role_id="xumian", event_kind="space_move",
+                                 summary="当前虚拟地点：公司工位", source={})
+    mem.store_virtual_life_event(role_id="xumian", event_kind="day_close_summary",
+                                 summary="本周期有效活动 300 分钟，中断 10 分钟。", source={})
+    mats = a.moments._materials(__import__("datetime").datetime.now(__import__("datetime").timezone.utc))
+    kinds = [x[0] for x in mats if x[0] == "D01"]
+    assert kinds == ["D01"]
+    refs = [x[2] for x in mats if x[2].startswith("event:")]
+    assert refs, "日终摘要应入选"
+    ev_id = refs[0].split(":")[1]
+    row = mem.con.execute("SELECT event_kind FROM virtual_life_events WHERE id=?", (ev_id,)).fetchone()
+    assert row["event_kind"] == "day_close_summary"
+
+
+# ---------- 18. D02 虚拟天气 / D07 角色级里程碑（P3 素材源） ----------
+
+def test_virtual_weather_deterministic():
+    """纯函数：同城同天=同结果（全源一致）；跨天/跨城会变（覆盖≠恒定）。"""
+    from veranima.core.moments import virtual_weather
+    import datetime as _dt
+    d1, d2 = _dt.date(2026, 9, 1), _dt.date(2026, 9, 2)
+    assert virtual_weather("成都", d1) == virtual_weather("成都", d1)
+    seq = {virtual_weather("成都", d1 + _dt.timedelta(days=i)) for i in range(30)}
+    assert len(seq) >= 3                       # 30 天里至少出过 3 种天气（不是死值）
+    assert virtual_weather("成都", d1) in ("晴", "多云", "阴", "雨", "降温", "大风")
+
+def test_d07_uses_role_scoped_count(tmp_path):
+    """里程碑计数=该角色会话行数，非共享全局 total_messages。"""
+    a, mem = _moment_agent(tmp_path / "d07")
+    # 全局计数造假 999，但该角色会话只有 3 条 → 不得命中 500/1000 里程碑
+    a.state._total_messages = 999
+    mats = a.moments._materials(__import__("datetime").datetime.now(__import__("datetime").timezone.utc))
+    assert not [x for x in mats if x[0] == "D07"]
+    for i in range(505):
+        mem.store_message("user", f"m{i}", role_id="xumian")
+    mats = a.moments._materials(__import__("datetime").datetime.now(__import__("datetime").timezone.utc))
+    d07 = [x for x in mats if x[0] == "D07"]
+    assert d07 and d07[0][2] == "mile:500"     # 500 台阶，按角色会话数
+
+
+# ---------- 19. P3 设置消费链（类型过滤/评论风格/称呼锁定/屏蔽话题） ----------
+
+def test_moment_allowed_types_filter(tmp_path):
+    """allowed_types 白名单外素材一律不发（只留 D02 → D03 情绪素材被滤光）。"""
+    a, mem = _moment_agent(tmp_path / "at")
+    mem.role_settings_set("xumian", {"moments": {"allowed_types": ["D02"]}})
+    now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+    # 素材池默认含 D03（mood=开心）+D02；若 D02 被排除日已发过则空池 → 只验发布类型
+    n = a.moments.tick(now=now)
+    if n:
+        kinds = mem.moments_recent_kinds("xumian", limit=1)
+        assert kinds == ["D02"]
+
+def test_comment_style_none_and_minimal(tmp_path):
+    """comment_response_style: none=不回复；minimal=短模板路径（走 LLM 但提示词换）。"""
+    a, mem = _moment_agent(tmp_path / "cs")
+    mid = mem.moment_publish("xumian", "测试动态", kind="D05", source_ref="x", dedupe_key="cs1")
+    mem.role_settings_set("xumian", {"interaction": {"comment_response_style": "none"}})
+    assert a.moments.reply_comment(mid, "哈哈哈") == ""
+
+def test_profile_block_expression_prefs(tmp_path):
+    """expression 组进 prompt：固定称呼压制池演化、追加屏蔽、表达强度行。"""
+    a, mem = _moment_agent(tmp_path / "ex")
+    a.relationship.intimacy = 0.9; a.relationship.trust = 0.9
+    a.relationship.safety = 0.9; a.relationship.reciprocity = 0.85
+    mem.role_settings_set("xumian", {"expression": {
+        "fixed_nickname": "Kamisugi", "sensitive_topics_extra": ["体检"],
+        "expressiveness": "cold"}})
+    # 画像非空才会出块（expression 挂在画像块尾部）
+    mem.profile_set("city", "杭州", source="user", confidence=1.0)
+    block = a._profile_block()
+    assert "固定用「Kamisugi」" in block and "体检" in block and "偏冷淡" in block
+
+def test_moment_fallback_no_machine_text(tmp_path):
+    """织文失败降级：发布的是第一人称骨架，绝不把素材指令（精力86%类）直录。"""
+    a, mem = _moment_agent(tmp_path / "fb2")
+    a._short_task = lambda *a_, **k_: ""     # 模拟 LLM 空返回（非异常）
+    now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+    assert a.moments.tick(now=now) == 1
+    row = mem.moments_recent_texts("xumian", limit=1)[0]
+    assert "精力" not in row and "情绪" not in row   # 机器口径零泄漏
+    assert row in ("今天心情挺好，说不上为什么。",)     # D03 开心骨架

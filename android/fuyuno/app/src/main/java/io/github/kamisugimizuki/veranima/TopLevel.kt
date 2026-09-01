@@ -78,7 +78,7 @@ fun MainShell(onOpenRole: (String) -> Unit) {
         Box(Modifier.padding(pad)) {
             when (tab.value) {
                 "chat" -> RoleListScreen(onOpenRole)
-                "feed" -> MomentsPlaceholder()
+                "feed" -> MomentsFeed()
                 else -> SettingsTab()
             }
         }
@@ -262,25 +262,154 @@ private fun shortTime(iso: String): String = try {
     }
 } catch (e: Exception) { "" }
 
-// ---------- 好友动态 tab（P2 接 moments 引擎，P1 诚实占位） ----------
+// ---------- 好友动态 tab（P2：真信息流，bridge.moments_feed） ----------
+
+data class MomentRow(val id: Long, val role: String, val name: String, val content: String,
+                     val kind: String, val time: String, val likes: Int, val likedByMe: Boolean,
+                     val comments: List<Triple<String, String, String>>)  // actor/content/time
 
 @Composable
-private fun MomentsPlaceholder() {
-    Column(Modifier.fillMaxSize().background(PageBg()).statusBarsPadding()
-            .padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Text("好友动态", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = PrimaryInk(),
-            modifier = Modifier.fillMaxWidth())
-        Spacer(Modifier.height(80.dp))
-        Box(Modifier.size(72.dp).border(1.dp, CardBorder(), CircleShape),
-            contentAlignment = Alignment.Center) {
-            Icon(Icons.Filled.DateRange, contentDescription = null, tint = Muted(),
-                modifier = Modifier.size(30.dp))
+private fun MomentsFeed() {
+    val bridge = remember { Python.getInstance().getModule("bridge") }
+    val scope = rememberCoroutineScope()
+    var rows by remember { mutableStateOf<List<MomentRow>?>(null) }
+    var tick by remember { mutableStateOf(0) }
+    var openComment by remember { mutableStateOf<Long?>(null) }
+    var avatars by remember { mutableStateOf(mapOf<String, String>()) }
+    fun load() = scope.launch {
+        val o = JSONObject(withContext(Dispatchers.IO) { bridge.callAttr("moments_feed", 60).toString() })
+        val arr = o.optJSONArray("moments") ?: org.json.JSONArray()
+        rows = (0 until arr.length()).map { i ->
+            val m = arr.getJSONObject(i)
+            val cs = m.optJSONArray("comments") ?: org.json.JSONArray()
+            MomentRow(m.getLong("id"), m.getString("role_id"), m.optString("name"),
+                m.getString("content"), m.optString("kind"), m.optString("created_at"),
+                m.optInt("likes"), m.optBoolean("liked_by_me"),
+                (0 until cs.length()).map { j ->
+                    val c = cs.getJSONObject(j)
+                    Triple(c.optString("actor"), c.getString("content"), c.optString("created_at"))
+                })
         }
-        Spacer(Modifier.height(16.dp))
-        Text("她们还没发过动态", fontSize = 14.sp, color = Muted())
-        Text("动态来自角色的虚拟生活——日程、心情、碎碎念，攒够了自然会有",
-            fontSize = 12.sp, color = MutedSoft())
+        val rl = JSONObject(withContext(Dispatchers.IO) { bridge.callAttr("roles_list").toString() })
+        rl.optJSONArray("roles")?.let { a ->
+            avatars = (0 until a.length()).associate { i ->
+                val r = a.getJSONObject(i); r.getString("id") to r.optString("avatar") } }
     }
+    LaunchedEffect(tick) { load() }
+    LaunchedEffect(openComment) { if (openComment != null) load() }
+    Column(Modifier.fillMaxSize().background(PageBg()).statusBarsPadding()) {
+        Text("好友动态", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = PrimaryInk(),
+            modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp))
+        val list = rows
+        when {
+            list == null -> Text("加载中…", color = Muted(), modifier = Modifier.padding(20.dp))
+            list.isEmpty() -> Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
+                Spacer(Modifier.height(90.dp))
+                Text("还没有动态", fontSize = 14.sp, color = Muted())
+                Text("动态来自她们的虚拟生活——日程、心情、碎碎念，攒够了自然会有",
+                    fontSize = 12.sp, color = MutedSoft())
+            }
+            else -> LazyColumn(Modifier.fillMaxSize()) {
+                // 按日分组（本地日期）
+                val grouped = list.groupBy { shortDate(it.time) }
+                grouped.forEach { (day, ms) ->
+                    item(key = "h_$day") {
+                        Text(day, fontSize = 11.sp, color = MutedSoft(),
+                            modifier = Modifier.padding(start = 20.dp, top = 14.dp, bottom = 4.dp))
+                    }
+                        items(ms, key = { "m_${it.id}" }) { m ->
+                            MomentCard(m, avatars[m.role] ?: "",
+                                onLike = {
+                                    scope.launch {
+                                        withContext(Dispatchers.IO) { bridge.callAttr("moment_like", m.id) }
+                                        tick++
+                                    }
+                                },
+                                onComment = { openComment = m.id })
+                        }
+                }
+            }
+        }
+    }
+    openComment?.let { mid ->
+        MomentCommentDialog(mid, avatars,
+            onSend = { text ->
+                scope.launch {
+                    withContext(Dispatchers.IO) { bridge.callAttr("moment_comment", mid, text) }
+                    openComment = null; tick++
+                }
+            },
+            onDismiss = { openComment = null })
+    }
+}
+
+private fun shortDate(iso: String): String = try {
+    val t = java.time.OffsetDateTime.parse(iso).atZoneSameInstant(java.time.ZoneId.systemDefault())
+    val d = t.toLocalDate(); val now = java.time.LocalDate.now()
+    when (d) { now -> "今天"; now.minusDays(1) -> "昨天"; else -> t.format(java.time.format.DateTimeFormatter.ofPattern("MM月dd日")) }
+} catch (e: Exception) { "更早" }
+
+@Composable
+private fun MomentCard(m: MomentRow, avatar: String, onLike: () -> Unit, onComment: () -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            RoleAvatar(m.name, avatar, size = 40)
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(m.name, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = PrimaryInk())
+                Text(shortTime(m.time), fontSize = 10.sp, color = MutedSoft())
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(m.content, fontSize = 15.sp, color = Body(), lineHeight = 22.sp,
+            modifier = Modifier.padding(start = 50.dp))
+        Spacer(Modifier.height(8.dp))
+        // 互动行：[♡ n][评论] 两枚描边胶囊（Galaxy）
+        Row(Modifier.padding(start = 50.dp), horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.clip(RoundedCornerShape(999.dp)).border(1.dp, CardBorder(), RoundedCornerShape(999.dp))
+                    .background(if (m.likedByMe) InvertSurface() else Color.Transparent)
+                    .clickable(onClick = onLike).padding(horizontal = 12.dp, vertical = 5.dp)) {
+                Text((if (m.likedByMe) "♥ " else "♡ ") + (if (m.likes > 0) m.likes.toString() else "赞"),
+                    fontSize = 12.sp, color = if (m.likedByMe) OnInvert() else Muted())
+            }
+            Box(Modifier.clip(RoundedCornerShape(999.dp)).border(1.dp, CardBorder(), RoundedCornerShape(999.dp))
+                    .clickable(onClick = onComment).padding(horizontal = 12.dp, vertical = 5.dp)) {
+                Text(if (m.comments.isEmpty()) "评论" else "评论 ${m.comments.size}",
+                    fontSize = 12.sp, color = Muted())
+            }
+        }
+        // 评论区（有则展开；她的回复=黑底反色小泡）
+        if (m.comments.isNotEmpty()) {
+            Column(Modifier.padding(start = 50.dp, top = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                m.comments.forEach { (actor, content, _) ->
+                    val mine = actor == "user"
+                    Text((if (mine) "我" else m.name) + "：" + content, fontSize = 12.sp,
+                        color = if (mine) Body() else OnInvert(),
+                        modifier = Modifier.background(if (mine) PageBg() else InvertSurface(),
+                            RoundedCornerShape(8.dp)).padding(horizontal = 8.dp, vertical = 4.dp))
+                }
+            }
+        }
+    }
+    HorizontalDivider(color = Hairline(), thickness = 0.5.dp, modifier = Modifier.padding(start = 66.dp))
+}
+
+@Composable
+private fun MomentCommentDialog(momentId: Long, avatars: Map<String, String>,
+                                onSend: (String) -> Unit, onDismiss: () -> Unit) {
+    var text by remember { mutableStateOf("") }
+    AlertDialog(onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = { if (text.isNotBlank()) onSend(text.trim()) }, enabled = text.isNotBlank()) {
+                Text("发送", color = PrimaryInk()) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("关闭", color = Muted()) } },
+        title = { Text("评论", color = PrimaryInk(), fontSize = 16.sp) },
+        text = { OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth(), singleLine = true,
+            placeholder = { Text("说点什么…", color = MutedSoft()) },
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = PrimaryInk(), unfocusedBorderColor = Hairline())) },
+        containerColor = CardBg())
 }
 
 // ---------- 设置 tab（内嵌 NavHost；UI-4 收纳：主页纯一列，API 表单进二级页） ----------
@@ -319,8 +448,11 @@ fun RoleSpaceScreen(role: String, onBack: () -> Unit) {
     var avatar by remember { mutableStateOf("") }
     var rhythm by remember { mutableStateOf<JSONObject?>(null) }
     var confirm by remember { mutableStateOf<String?>(null) }   // "intimacy"/"messages"
+    var settings by remember { mutableStateOf<org.json.JSONObject?>(null) }
     LaunchedEffect(role) {
         name = withContext(Dispatchers.IO) { bridge.callAttr("role_label", role).toString() }
+        settings = JSONObject(withContext(Dispatchers.IO) {
+            bridge.callAttr("moment_settings", role).toString() }).optJSONObject("settings")
         val rr = JSONObject(withContext(Dispatchers.IO) { bridge.callAttr("rhythm_status", role).toString() })
         rhythm = rr.optJSONObject("role_rhythm")
         val rl = JSONObject(withContext(Dispatchers.IO) { bridge.callAttr("roles_list").toString() })
@@ -358,6 +490,116 @@ fun RoleSpaceScreen(role: String, onBack: () -> Unit) {
             // 角色当前作息卡（自用户睡眠报告页迁入，裁决 UI-1）
             RoleRhythmCard(rhythm, name)
             Spacer(Modifier.height(8.dp))
+            // ---- 行为设置（P2 最小集：主动/动态开关，写 role_settings） ----
+            Text("行为", fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                color = MutedSoft(), modifier = Modifier.padding(bottom = 6.dp))
+            val st = settings
+            if (st != null) {
+                val mo = st.optJSONObject("moments") ?: JSONObject()
+                val pa = st.optJSONObject("proactive") ?: JSONObject()
+                SettingSwitch("主动发消息", pa.optBoolean("enabled", true)) { on ->
+                    scope.launch {
+                        withContext(Dispatchers.IO) {
+                            bridge.callAttr("moment_set", role, "proactive", "enabled", if (on) "1" else "0")
+                            settings = JSONObject(bridge.callAttr("moment_settings", role).toString())
+                                .optJSONObject("settings")
+                        }
+                    }
+                }
+                SettingSeg("动态发布", listOf("关", "低", "中", "高"),
+                    when {
+                        !mo.optBoolean("enabled", true) -> 0
+                        mo.optString("frequency", "medium") == "low" -> 1
+                        mo.optString("frequency", "medium") == "high" -> 3
+                        else -> 2
+                    }) { idx ->
+                    scope.launch {
+                        withContext(Dispatchers.IO) {
+                            if (idx == 0) bridge.callAttr("moment_set", role, "moments", "enabled", "0")
+                            else {
+                                bridge.callAttr("moment_set", role, "moments", "enabled", "1")
+                                bridge.callAttr("moment_set", role, "moments", "frequency",
+                                    listOf("", "low", "medium", "high")[idx])
+                            }
+                        }
+                        settings = JSONObject(withContext(Dispatchers.IO) {
+                            bridge.callAttr("moment_settings", role).toString() }).optJSONObject("settings")
+                    }
+                }
+                SettingSeg("动态中提及你", listOf("不提", "仅间接", "可以"),
+                    when (mo.optString("mention_user", "indirect")) {
+                        "no" -> 0; "yes" -> 2; else -> 1
+                    }) { idx ->
+                    scope.launch {
+                        withContext(Dispatchers.IO) {
+                            bridge.callAttr("moment_set", role, "moments", "mention_user",
+                                listOf("no", "indirect", "yes")[idx]) }
+                        settings = JSONObject(withContext(Dispatchers.IO) {
+                            bridge.callAttr("moment_settings", role).toString() }).optJSONObject("settings")
+                    }
+                }
+                // 动态类型过滤（P3：七型 chip 多选）
+                val allowed = mo.optJSONArray("allowed_types")?.let { ta ->
+                    (0 until ta.length()).map { ta.getString(it) } } ?:
+                    listOf("D01", "D02", "D03", "D04", "D05", "D06", "D07")
+                TypeChips(allowed) { next ->
+                    scope.launch {
+                        withContext(Dispatchers.IO) {
+                            bridge.callAttr("moment_set", role, "moments", "allowed_types",
+                                org.json.JSONArray(next as Collection<*>).toString()) }
+                        settings = JSONObject(withContext(Dispatchers.IO) {
+                            bridge.callAttr("moment_settings", role).toString() }).optJSONObject("settings")
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                Text("互动", fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                    color = MutedSoft(), modifier = Modifier.padding(bottom = 4.dp))
+                val ic = st.optJSONObject("interaction") ?: JSONObject()
+                SettingSeg("评论回复风格", listOf("按人设", "极简", "不回复"),
+                    when (ic.optString("comment_response_style", "character")) {
+                        "minimal" -> 1; "none" -> 2; else -> 0
+                    }) { idx ->
+                    scope.launch {
+                        withContext(Dispatchers.IO) {
+                            bridge.callAttr("moment_set", role, "interaction", "comment_response_style",
+                                listOf("character", "minimal", "none")[idx]) }
+                        settings = JSONObject(withContext(Dispatchers.IO) {
+                            bridge.callAttr("moment_settings", role).toString() }).optJSONObject("settings")
+                    }
+                }
+                SettingSwitch("你点赞后私聊回应", ic.optBoolean("dm_after_like", false)) { on ->
+                    scope.launch {
+                        withContext(Dispatchers.IO) {
+                            bridge.callAttr("moment_set", role, "interaction", "dm_after_like", if (on) "1" else "0") }
+                        settings = JSONObject(withContext(Dispatchers.IO) {
+                            bridge.callAttr("moment_settings", role).toString() }).optJSONObject("settings")
+                    }
+                }
+                // 称呼与表达（P3）：固定称呼 + 表达强度
+                Spacer(Modifier.height(10.dp))
+                Text("称呼与表达", fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                    color = MutedSoft(), modifier = Modifier.padding(bottom = 4.dp))
+                val ex = st.optJSONObject("expression") ?: JSONObject()
+                NickField(ex.optString("fixed_nickname", "")) { v ->
+                    scope.launch {
+                        withContext(Dispatchers.IO) {
+                            bridge.callAttr("moment_set", role, "expression", "fixed_nickname", v) }
+                    }
+                }
+                SettingSeg("表达强度", listOf("偏冷淡", "自然", "偏热情"),
+                    when (ex.optString("expressiveness", "natural")) {
+                        "cold" -> 0; "warm" -> 2; else -> 1
+                    }) { idx ->
+                    scope.launch {
+                        withContext(Dispatchers.IO) {
+                            bridge.callAttr("moment_set", role, "expression", "expressiveness",
+                                listOf("cold", "natural", "warm")[idx]) }
+                        settings = JSONObject(withContext(Dispatchers.IO) {
+                            bridge.callAttr("moment_settings", role).toString() }).optJSONObject("settings")
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+            }
             GalaxyNavRow(icon = IconMoon, title = "导出此角色",
                 subtitle = "轻量 .char 包（不含立绘语音）",
                 onClick = {
@@ -428,6 +670,87 @@ fun RoleSpaceScreen(role: String, onBack: () -> Unit) {
                 }
             },
             containerColor = CardBg())
+    }
+}
+
+/** 动态类型多选 chip 组（D01-D07 中文标签） */
+@Composable
+private fun TypeChips(allowed: List<String>, onChange: (List<String>) -> Unit) {
+    val all = listOf(
+        "D01" to "日程", "D02" to "天气", "D03" to "心情", "D04" to "闪回",
+        "D05" to "碎碎念", "D06" to "预告", "D07" to "关系")
+    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+        Text("动态类型", fontSize = 14.sp, color = PrimaryInk())
+        Spacer(Modifier.height(6.dp))
+        // 两行 flex
+        all.chunked(4).forEach { rowItems ->
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(bottom = 6.dp)) {
+                rowItems.forEach { (code, label) ->
+                    val on = code in allowed
+                    Box(Modifier.clip(RoundedCornerShape(999.dp))
+                            .border(1.dp, if (on) InvertSurface() else CardBorder(), RoundedCornerShape(999.dp))
+                            .background(if (on) InvertSurface() else Color.Transparent)
+                            .clickable {
+                                onChange(if (on) allowed - code else allowed + code)
+                            }
+                            .padding(horizontal = 12.dp, vertical = 5.dp)) {
+                        Text(label, fontSize = 12.sp, color = if (on) OnInvert() else Muted())
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 固定称呼输入（失焦即存；留空=恢复自动演化） */
+@Composable
+private fun NickField(initial: String, onSave: (String) -> Unit) {
+    var text by remember(initial) { mutableStateOf(initial) }
+    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+        Text("固定称呼（留空=随关系自动演化）", fontSize = 14.sp, color = PrimaryInk())
+        Spacer(Modifier.height(6.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(text, { text = it }, Modifier.weight(1f), singleLine = true,
+                placeholder = { Text("自动", color = MutedSoft()) },
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = PrimaryInk(), unfocusedBorderColor = Hairline()))
+            Spacer(Modifier.width(8.dp))
+            TextButton(onClick = { onSave(text.trim()) }) { Text("存", color = PrimaryInk()) }
+        }
+    }
+}
+
+/** 行为设置行：标题+副题左，开关右（Galaxy 黑白：选中=反色） */
+@Composable
+private fun SettingSwitch(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, fontSize = 14.sp, color = PrimaryInk(), modifier = Modifier.weight(1f))
+        Switch(checked, onCheckedChange = onChange,
+            colors = SwitchDefaults.colors(
+                checkedTrackColor = InvertSurface(), checkedThumbColor = OnInvert(),
+                uncheckedTrackColor = CardBg(), uncheckedThumbColor = Muted(),
+                uncheckedBorderColor = CardBorder()))
+    }
+}
+
+/** 分段单选行：一段胶囊组（选中=黑底白字） */
+@Composable
+private fun SettingSeg(label: String, options: List<String>, selected: Int, onSelect: (Int) -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+        Text(label, fontSize = 14.sp, color = PrimaryInk())
+        Spacer(Modifier.height(6.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            options.forEachIndexed { i, t ->
+                val sel = i == selected
+                Box(Modifier.clip(RoundedCornerShape(999.dp))
+                        .border(1.dp, if (sel) InvertSurface() else CardBorder(), RoundedCornerShape(999.dp))
+                        .background(if (sel) InvertSurface() else Color.Transparent)
+                        .clickable { onSelect(i) }
+                        .padding(horizontal = 14.dp, vertical = 6.dp)) {
+                    Text(t, fontSize = 12.sp, color = if (sel) OnInvert() else Muted())
+                }
+            }
+        }
     }
 }
 

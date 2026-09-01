@@ -71,8 +71,15 @@ def _tick_loop(interval: float = 60.0) -> None:
         try:
             now = _t.time()
             sent = False  # 本轮已放行一条主动
+            # 角色主动开关（P2 设置最小集）：关=只回应不发起——问候/牵挂/追问/
+            # 睡醒公告全哑（公告也算"主动开口"，语义一致优先；动态管线独立不受影响）
+            proactive_on = True
+            try:
+                proactive_on = bool((agent.moments.settings().get("proactive") or {}).get("enabled", True))
+            except Exception:
+                pass
             notice = _advance_schedule(agent)
-            if notice:
+            if notice and proactive_on:
                 cand = agent.schedule_notice_candidate(notice, "im")
                 decision = agent.gate.decide(
                     cand, scene=agent.scene_lock.current(),
@@ -85,19 +92,19 @@ def _tick_loop(interval: float = 60.0) -> None:
                     _pending.append({"role": agent.role_key, "name": agent.card.name, "text": _render(agent, text)})
                     sent = True
                     log.info("schedule notice queued: %s", text[:60])
-            if not sent:
+            if proactive_on and not sent:
                 for msg in agent.tick_proactive():
                     _pending.append({"role": agent.role_key, "name": agent.card.name, "text": _render(agent, msg)})
                     sent = True
                     log.info("proactive queued: %s", msg[:60])
             off = getattr(boot, "offline", None)
-            if off is not None and not sent and off.due(now, getattr(boot, "_last_user_activity", None)):
+            if off is not None and proactive_on and not sent and off.due(now, getattr(boot, "_last_user_activity", None)):
                 # late_reply/heartbeat 内部已落库（store_message），不再 record
                 msg = agent.late_reply() or agent.heartbeat()
                 if msg:
                     _pending.append({"role": agent.role_key, "name": agent.card.name, "text": _render(agent, msg)})
                     log.info("offline think queued: %s", msg[:60])
-            if not sent:
+            if proactive_on and not sent:
                 # 无人应答追问（期待过期后一句轻追问；每期待至多一次）
                 fu = agent.followup_message()
                 if fu:
@@ -1075,7 +1082,23 @@ def moment_like(moment_id: int) -> str:
     if agent is None:
         return json.dumps({"ok": False})
     try:
+        mom = agent.memory.moment_get(int(moment_id))
         liked = agent.memory.moment_toggle_like(int(moment_id), "user")
+        # dm_after_like（P3 默认关）：开=角色私聊回应一句（进通知管线）
+        if liked and mom and str(mom.get("role_id") or ""):
+            try:
+                icfg = _agent_for(str(mom["role_id"])).moments.interaction_cfg()
+                if bool(icfg.get("dm_after_like", False)):
+                    dm = _agent_for(str(mom["role_id"]))._short_task(
+                        ("你是" + str(mom.get("role_id")) + "。用户刚点赞了你这条动态：「"
+                         + str(mom["content"])[:60] + "」"
+                         + chr(10) + "私聊ta一句反应（可以得意/不好意思/顺势找话），不超过25字，只输出正文。")) or ""
+                    if dm:
+                        _agent_for(str(mom["role_id"])).record_proactive_message(dm, channel="im")
+                        _pending.append({"role": str(mom["role_id"]),
+                                         "name": _agent_for(str(mom["role_id"])).card.name, "text": dm})
+            except Exception:
+                log.debug("dm_after_like failed", exc_info=True)
         return json.dumps({"ok": True, "liked": liked})
     except Exception as e:
         return json.dumps({"ok": False, "error": str(e)})
@@ -1117,7 +1140,13 @@ def moment_set(role: str, group: str, key: str, value: str) -> str:
     try:
         cfg = dict(agent.moments.settings())
         g = dict(cfg.get(group) or {})
-        g[key] = (value in ("1", "true")) if value in ("0", "1", "true", "false") else value
+        if value.startswith(("[", "{")):
+            try:
+                g[key] = json.loads(value)
+            except Exception:
+                g[key] = value
+        else:
+            g[key] = (value in ("1", "true")) if value in ("0", "1", "true", "false") else value
         cfg[group] = g
         agent.memory.role_settings_set(agent.role_key, cfg)
         if agent.role_key != str(role or agent.role_key):

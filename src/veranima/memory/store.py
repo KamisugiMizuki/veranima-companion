@@ -973,6 +973,12 @@ class MemoryStore:
         return int(self.con.execute(
             "SELECT COUNT(*) FROM messages WHERE role_id=''").fetchone()[0])
 
+    def role_message_count(self, role_id: str) -> int:
+        """该角色会话的消息总数（角色里程碑的唯一真源——agent_state 的
+        total_messages 是共享单行的全局值，不能拿来当两人关系的台阶数）。"""
+        return int(self.con.execute(
+            "SELECT COUNT(*) FROM messages WHERE role_id=?", (role_id,)).fetchone()[0])
+
     def unread_counts(self) -> dict[str, int]:
         """各角色未读数：assistant 消息（主动/回复都算 TA 发来的）id 超已读指针。"""
         rows = self.con.execute(

@@ -2649,6 +2649,12 @@ class Agent:
         ref_ts = (now if isinstance(now, datetime.datetime)
                   else datetime.datetime.fromtimestamp(now or time.time())).timestamp()
         pending[:] = [m for m in pending if ref_ts - m["ts"] < 180 * 60]  # TTL：早招呼不拖到午后
+        # 角色主动消息类型白名单（P3 设置：空=全放行；非空=RITUAL_SOURCES 子集）
+        _allow = ((getattr(self, "moments", None) and
+                   self.moments.settings().get("proactive") or {}).get("allowed_types")
+                  if hasattr(self, "moments") else None) or []
+        if _allow:
+            materials = [m for m in materials if m.get("source") in _allow]
         pending.extend({**m, "ts": ref_ts} for m in materials)
         if pending and self._ritual_send_open(now):
             pool, self._ritual_pending[:] = list(pending), []
@@ -3202,6 +3208,22 @@ class Agent:
         if pools.get(stage):
             lines.append(f"- 现阶段（{stage}）你可以用的称呼：{pools[stage]}")
             lines.append("  （首次采用新称呼时自然带出，别突兀；用户拒绝过的一律避开）")
+        # 角色偏好（P3 设置，role_settings.expression 组）：称呼锁定/追加屏蔽/表达强度
+        try:
+            exp = (self.moments.settings().get("expression") or {}) if hasattr(self, "moments") else {}
+        except Exception:
+            exp = {}
+        fixed = str(exp.get("fixed_nickname") or "").strip()
+        if fixed:
+            lines.append(f"- 用户对称呼做了指定：从此你固定用「{fixed}」称呼ta，池子里的其他叫法不再演化。")
+        extra_taboo = [str(x) for x in (exp.get("sensitive_topics_extra") or []) if str(x).strip()]
+        if extra_taboo:
+            lines.append("- 本角色追加的屏蔽话题（谁提都不接）：" + "、".join(extra_taboo))
+        style = str(exp.get("expressiveness") or "natural")
+        if style == "cold":
+            lines.append("- 当前表达强度=偏冷淡：句子更短，情感词减半，关心收着说。")
+        elif style == "warm":
+            lines.append("- 当前表达强度=偏热情：更舍得表达想念和在意，主动分享频率略升。")
         return "\n".join(lines)
 
     def _maybe_extract_events(self, user_text: str, judgment=None) -> None:
