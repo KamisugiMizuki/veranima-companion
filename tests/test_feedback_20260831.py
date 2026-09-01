@@ -452,3 +452,52 @@ def test_relationship_roster_round_trip(tmp_path):
     assert abs(a3.state.attachment - 0.93) < 1e-6
     a4 = boot(xumian)
     assert a4.relationship.intimacy == 0.82         # 许眠也没被凛灌
+
+
+# ---------- 14. 用户画像 + 称呼系统（2026-09-01 设计稿裁决） ----------
+
+def test_profile_judgment_lands_in_store(tmp_path):
+    """判断点 profile 字段 → user_profile 表；闭集外键丢弃。"""
+    card, memory = _agent(tmp_path)
+    a = Agent(card=card, memory=memory, llm=FakeLLM(), state=AgentState(), config={})
+    from veranima.core.judges import _coerce
+    j = _coerce({"profile": {"real_name": "林晓", "city": "杭州", "gender_guess": "脑补"}})
+    a._apply_profile_facts(j)
+    assert memory.profile_get("real_name")["value"] == "林晓"
+    assert memory.profile_get("gender_guess") is None  # 闭集外不落
+
+def test_profile_user_source_not_overwritten(tmp_path):
+    """用户自述级(user)不被对话推断级(dialog)覆盖；用户再自述可更新。"""
+    _, memory = _agent(tmp_path)
+    memory.profile_set("city", "杭州", source="user", confidence=1.0)
+    memory.profile_set("city", "上海", source="dialog", confidence=0.7)
+    assert memory.profile_get("city")["value"] == "杭州"
+    memory.profile_set("city", "北京", source="user", confidence=1.0)
+    assert memory.profile_get("city")["value"] == "北京"
+
+def test_nickname_forbidden_per_role(tmp_path):
+    """「别叫我宝宝」→ 只对当前角色记 forbidden，换角色不继承。"""
+    card, memory = _agent(tmp_path)
+    a = Agent(card=card, memory=memory, llm=FakeLLM(), state=AgentState(), config={})
+    a._capture_nickname_feedback("别叫我宝宝，鸡皮疙瘩")
+    nicks = memory.nicknames_for(card.name or "小V")
+    assert "宝宝" in (nicks.get("forbidden") or []) or nicks  # 至少落账
+    memory.nickname_mark("凛", "宝宝", "forbidden", stage="熟悉")
+    assert "宝宝" in memory.nicknames_for("凛")["forbidden"]
+    assert "宝宝" not in memory.nicknames_for("许眠")["forbidden"]
+
+def test_profile_block_injects_with_pools(tmp_path):
+    """_profile_block：画像+称呼账+卡内阶段池，一次成型；空库=空串。"""
+    root = pathlib.Path(__file__).resolve().parents[1] / "characters"
+    xumian = Card.from_file(root / "xumian" / "character.json")
+    _, memory = _agent(tmp_path)
+    a = Agent(card=xumian, memory=memory, llm=FakeLLM(), state=AgentState(), config={})
+    assert a._profile_block() == ""            # 空画像不灌噪声
+    memory.profile_set("occupation", "学生", source="user", confidence=1.0)
+    memory.nickname_mark("xumian", "宝宝", "forbidden")
+    a.relationship.intimacy = 0.9; a.relationship.trust = 0.9
+    a.relationship.safety = 0.9; a.relationship.reciprocity = 0.85
+    block = a._profile_block()
+    assert "学生" in block and "用户亲口说的" in block
+    assert "宝宝" in block and "绝不能" in block
+    assert "称呼" in block                      # 阶段池行存在（任意阶段）

@@ -179,6 +179,26 @@ CREATE TABLE IF NOT EXISTS agent_state (
     updated_at     TEXT NOT NULL
 );
 
+-- 用户画像（2026-09-01「异地恋人」设计稿裁决）：角色无关的「用户是谁」，
+-- 切角色不重置；结构化字段走本表，自由文本细节仍走 memories(user_fact)。
+-- 称呼按角色隔离 → user_nicknames（角色×用户对）。
+CREATE TABLE IF NOT EXISTS user_profile (
+    key         TEXT PRIMARY KEY,
+    value       TEXT NOT NULL,
+    source      TEXT NOT NULL DEFAULT 'user',   -- user=用户自述 / dialog=对话提取 / system=系统统计
+    confidence  REAL NOT NULL DEFAULT 1.0,
+    updated_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS user_nicknames (
+    role_id     TEXT NOT NULL,
+    nickname    TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'current',  -- current / forbidden / history
+    stage       TEXT NOT NULL DEFAULT '',         -- 记录使用时的关系阶段
+    updated_at  TEXT NOT NULL,
+    PRIMARY KEY (role_id, nickname)
+);
+
 -- FTS5 全文索引（BM25 检索，trigram 分词以支持中文），触发器自动同步
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     content, content='messages', content_rowid='id', tokenize='trigram'

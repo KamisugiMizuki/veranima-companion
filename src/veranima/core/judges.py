@@ -39,6 +39,7 @@ class MessageJudgment:
     sleep_report: str = "none"            # 用户作息报告：sleeping/waking/none
     feedback_like: bool | None = None     # 对上一条回复正向（喜欢/认可）
     feedback_dislike: bool | None = None  # 对上一条回复负向（嫌弃/纠正风格内容）
+    profile: dict = field(default_factory=dict)  # 用户自述的稳定事实（闭集键→值）
     investment_note: str = ""             # 判定理由（日志/调试，不出口）
 
 
@@ -80,7 +81,13 @@ def build_judge_prompt(text: str, prev_assistant: str) -> str:
         '  "feedback_like": 若有上一条助手消息且用户这句在认可/喜欢它；'
         '"feedback_dislike": 用户在嫌弃/纠正它的内容或风格（"太长了""别这样回"）；'
         '无关联两者都 false。\n'
-        "判定看语义不看字面；拿不准就选最保守值（none/false）。只输出 JSON。"
+        '  "profile": 用户这句自述的稳定个人信息，对象（可空）——键只认这些：'
+        '"real_name"名字/"nickname_pref"希望被怎么称呼/"gender"性别/'
+        '"occupation"职业/"city"城市/"love_language"吃哪套关心（言语肯定/实际行动/陪伴/礼物/服务）/'
+        '"comfort_style"低落时希望被怎么对待/"teasing_tolerance"被调侃接受度(高/中/低)/'
+        '"health_notes"健康长期注意项/"personality_traits"性格自述；'
+        '只填这句话里明确自述的，别脑补，没提到给 {}。\n'
+        "判定看语义不看字面；拿不准就选最保守值（none/false/{}）。只输出 JSON。"
     )
 
 
@@ -108,6 +115,13 @@ def _coerce(raw: dict) -> MessageJudgment:
     j.sleep_report = sr if sr in _VALID_SLEEP else "none"
     if isinstance(raw.get("is_task"), bool):
         j.is_task = raw["is_task"]
+    pf = raw.get("profile")
+    if isinstance(pf, dict):
+        _PROF_KEYS = ("real_name", "nickname_pref", "gender", "age", "occupation",
+                      "city", "love_language", "comfort_style", "teasing_tolerance",
+                      "health_notes", "personality_traits", "current_goal", "pending_events")
+        j.profile = {str(k): str(v)[:100] for k, v in pf.items()
+                     if k in _PROF_KEYS and v not in (None, "", "null")}
     if isinstance(raw.get("feedback_like"), bool):
         j.feedback_like = raw["feedback_like"]
     if isinstance(raw.get("feedback_dislike"), bool):

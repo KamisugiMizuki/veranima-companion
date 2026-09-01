@@ -10,6 +10,7 @@ import datetime
 import json
 import logging
 import random
+import re
 import time
 from dataclasses import dataclass, field, replace
 from zoneinfo import ZoneInfo
@@ -1649,6 +1650,9 @@ class Agent:
         schedule_block = self._format_schedule_context(schedule_context)
         if schedule_block:
             extra_blocks.append(schedule_block)
+        profile_block = self._profile_block()
+        if profile_block:
+            extra_blocks.append(profile_block)
         system = build_system_prompt(
             self.card, self.state, self.memory,
             core_profile_budget=self.config.get("memory", {}).get("core_profile_budget", 1200),
@@ -1807,6 +1811,8 @@ class Agent:
 
         # 8. 事件记忆提取（判断点 memory_kind 优先，词表兜底）
         self._maybe_extract_events(user_text, judgment)
+        self._apply_profile_facts(judgment)
+        self._capture_nickname_feedback(user_text)
 
         # 8.5 MVP2 学习：隐式反馈 → 风格参数 + 语言镜像 + 承诺识别
         prev_reply = self._history[-3]["content"] if len(self._history) >= 3 else ""
@@ -3124,6 +3130,70 @@ class Agent:
             logger.debug("relearn lookup failed, fall through to store: %s", e)
         self.memory.store(layer, text[:100], importance=importance, confidence=0.6,
                           provenance="auto-extract", category=category, meta=meta)
+
+    _NICK_FORBID_PAT = re.compile(
+        r"(?:别|不要|不准|不许|不喜欢|不喜欢被|讨厌|受不了).{0,4}(?:叫|喊|称呼|管我叫)[我她他]?(?:「|“)?([^「」“”\s，。,.!?！？]{1,10})")
+
+    def _apply_profile_facts(self, judgment) -> None:
+        """统一判断点的 profile 字段落画像表（角色无关；对话提取 conf 0.7，
+        被用户自述级覆盖后对话级不再回退——规则在 store.profile_set）。"""
+        try:
+            for k, v in (getattr(judgment, "profile", None) or {}).items():
+                self.memory.profile_set(k, v, source="dialog", confidence=0.7)
+        except Exception as e:
+            logger.debug("profile facts store failed: %s", e)
+
+    def _capture_nickname_feedback(self, user_text: str) -> None:
+        """「别叫我X」→ 该角色对该称呼标记 forbidden（C 档闭集词面捕获）。"""
+        try:
+            m = self._NICK_FORBID_PAT.search(user_text or "")
+            if m:
+                from .persona import derive_relationship_stage
+                rid = self._schedule_role_id() or self.card.name
+                self.memory.nickname_mark(rid, m.group(1), "forbidden",
+                                          stage=derive_relationship_stage(self.relationship))
+        except Exception as e:
+            logger.debug("nickname feedback capture failed: %s", e)
+
+    def _profile_block(self) -> str:
+        """用户画像（角色无关）+ 本角色称呼账（current/forbidden）+ 卡内称呼候选池
+        （按关系阶段）→ prompt 块。空画像返回空串（不灌噪声、不动旧库）。"""
+        try:
+            prof = self.memory.profile_all()
+            rid = self._schedule_role_id() or self.card.name
+            nick = self.memory.nicknames_for(rid)
+            stage = ""
+            from .persona import derive_relationship_stage
+            stage = derive_relationship_stage(self.relationship)
+        except Exception as e:
+            logger.debug("profile block build failed: %s", e)
+            return ""
+        if not prof and not any(nick.values()):
+            return ""
+        lines = ["【你对用户的了解（画像·跨角色共享，切换角色不重置）】"]
+        label = {"real_name": "名字", "nickname_pref": "偏好被称", "gender": "性别",
+                 "age": "年龄", "occupation": "职业", "city": "城市",
+                 "love_language": "吃哪套关心", "comfort_style": "低落时想要",
+                 "teasing_tolerance": "可调侃度", "health_notes": "健康注意",
+                 "personality_traits": "性格自述"}
+        for k, zh in label.items():
+            if k in prof:
+                src = prof[k].get("source")
+                star = "（用户亲口说的，最高优先）" if src == "user" else ""
+                lines.append(f"- {zh}：{prof[k]['value']}{star}")
+        # 称呼账（角色×用户对，切换角色各叫各的）
+        if nick.get("current"):
+            lines.append(f"- 你平时叫ta：{'、'.join(nick['current'])}")
+        if nick.get("forbidden"):
+            lines.append(f"- 你绝不能这样叫ta（ta明确拒绝过）：{'、'.join(nick['forbidden'])}")
+        if nick.get("history"):
+            lines.append(f"- 曾用过已升级：{'、'.join(nick['history'])}")
+        # 卡的称呼候选池按当前关系阶段（卡 extensions.veranima.nickname_pools）
+        pools = ((self.card.veranima or {}).get("nickname_pools") or {})
+        if pools.get(stage):
+            lines.append(f"- 现阶段（{stage}）你可以用的称呼：{pools[stage]}")
+            lines.append("  （首次采用新称呼时自然带出，别突兀；用户拒绝过的一律避开）")
+        return "\n".join(lines)
 
     def _maybe_extract_events(self, user_text: str, judgment=None) -> None:
         """事件/偏好记忆提取（2026-08-31 判断点清算：memory_kind 有裁决

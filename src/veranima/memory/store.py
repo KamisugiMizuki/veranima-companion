@@ -684,6 +684,59 @@ class MemoryStore:
             d["relationship"] = {}
         return d
 
+    # ---------- 用户画像（角色无关）+ 称呼（按角色隔离） ----------
+
+    _PROFILE_KEYS = ("real_name", "nickname_pref", "gender", "age", "occupation",
+                     "city", "love_language", "comfort_style", "teasing_tolerance",
+                     "health_notes", "personality_traits", "current_goal", "pending_events")
+
+    def profile_get(self, key: str) -> dict | None:
+        row = self.con.execute(
+            "SELECT key, value, source, confidence FROM user_profile WHERE key=?",
+            (key,)).fetchone()
+        return dict(row) if row else None
+
+    def profile_all(self) -> dict[str, dict]:
+        rows = self.con.execute(
+            "SELECT key, value, source, confidence FROM user_profile").fetchall()
+        return {r["key"]: dict(r) for r in rows}
+
+    def profile_set(self, key: str, value: str, *, source: str = "dialog",
+                    confidence: float = 0.7) -> None:
+        """画像 upsert：user 来源不被 dialog 来源覆盖（用户自述 > 对话推断）。"""
+        if key not in self._PROFILE_KEYS:
+            return
+        cur = self.profile_get(key)
+        if cur and cur["source"] == "user" and source != "user" \
+                and float(cur["confidence"] or 0) >= confidence:
+            return
+        self.con.execute(
+            """INSERT INTO user_profile(key, value, source, confidence, updated_at)
+               VALUES (?,?,?,?,?)
+               ON CONFLICT(key) DO UPDATE SET value=excluded.value,
+               source=excluded.source, confidence=excluded.confidence,
+               updated_at=excluded.updated_at""",
+            (key, str(value)[:200], source, float(confidence), _now()))
+        self.con.commit()
+
+    def nickname_mark(self, role_id: str, nickname: str, status: str, stage: str = "") -> None:
+        self.con.execute(
+            """INSERT INTO user_nicknames(role_id, nickname, status, stage, updated_at)
+               VALUES (?,?,?,?,?)
+               ON CONFLICT(role_id, nickname) DO UPDATE SET status=excluded.status,
+               stage=excluded.stage, updated_at=excluded.updated_at""",
+            (role_id, str(nickname)[:40], status, stage, _now()))
+        self.con.commit()
+
+    def nicknames_for(self, role_id: str) -> dict[str, list[str]]:
+        rows = self.con.execute(
+            "SELECT nickname, status FROM user_nicknames WHERE role_id=?",
+            (role_id,)).fetchall()
+        out: dict[str, list[str]] = {"current": [], "forbidden": [], "history": []}
+        for r in rows:
+            out.setdefault(r["status"], []).append(r["nickname"])
+        return out
+
     def update_latest(self, memory_id: int, new_content: str, *, confidence: float = 1.0, meta: dict | None = None) -> MemoryEntry:
         """显式版本链：修正不覆盖——新版本入链，旧版本保留（DESIGN.md 写入与检索节）。
 
