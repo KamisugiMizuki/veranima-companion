@@ -42,6 +42,9 @@ class Circadian:
     chronotype: str
     recovery_rate_minutes_per_day: int
     target_sleep_minutes: int
+    # 作息向用户可偏移的总幅度上限（分钟）。职业硬约束强的卡（异地恋人=996）
+    # 不该像住家卡那样完全跟着用户倒；缺省 720=现状全幅，存量卡行为不变。
+    max_offset_minutes: int = 720
 
 
 @dataclass(frozen=True)
@@ -277,7 +280,8 @@ class ScheduleRuntime:
         return runtime
 
     def apply_offset(self, minutes: int, reason: str, when: dt.datetime) -> int:
-        value = max(-720, min(720, int(minutes)))
+        cap = self.outline.circadian.max_offset_minutes if self.outline.circadian else 720
+        value = max(-cap, min(cap, int(minutes)))
         self.schedule_offset_minutes = value
         self.offset_history.append({"at": when.isoformat(), "offset_minutes": value, "reason": str(reason)})
         self.offset_history = self.offset_history[-90:]
@@ -1072,6 +1076,12 @@ class ScheduleOutline:
             raise ScheduleTemplateError("circadian sleep values are invalid") from exc
         if recovery < 0 or not 1 <= target <= 1440:
             raise ScheduleTemplateError("circadian sleep values are out of range")
+        try:
+            max_off = int(raw.get("max_offset_minutes", 720))
+        except (TypeError, ValueError) as exc:
+            raise ScheduleTemplateError("circadian.max_offset_minutes is invalid") from exc
+        if not 0 <= max_off <= 720:
+            raise ScheduleTemplateError("circadian.max_offset_minutes must be between 0 and 720")
         if not all(isinstance(value, str) for value in (wake.get("start"), wake.get("end"), sleep.get("start"), sleep.get("end"))):
             raise ScheduleTemplateError("circadian windows are invalid")
-        return Circadian(wake["start"], wake["end"], sleep["start"], sleep["end"], chronotype, recovery, target)
+        return Circadian(wake["start"], wake["end"], sleep["start"], sleep["end"], chronotype, recovery, target, max_off)

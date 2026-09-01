@@ -1,0 +1,384 @@
+{
+  "enabled": true,
+  "schema_version": 1,
+  "timezone": "Asia/Shanghai",
+  "default_day_profile": "workday",
+  "day_profiles": {
+    "workday": {
+      "allowed_block_ids": [
+        "wake",
+        "commute_in",
+        "work",
+        "commute_home",
+        "supper",
+        "winddown",
+        "sleep"
+      ]
+    },
+    "rest_like": {
+      "allowed_block_ids": [
+        "wake",
+        "supper",
+        "winddown",
+        "sleep"
+      ]
+    }
+  },
+  "circadian": {
+    "wake_window": {
+      "start": "08:30",
+      "end": "10:00"
+    },
+    "sleep_window": {
+      "start": "01:00",
+      "end": "03:00"
+    },
+    "preferred_activity_periods": [
+      "evening",
+      "night"
+    ],
+    "chronotype": "evening_aligned",
+    "recovery_rate_minutes_per_day": 10,
+    "target_sleep_minutes": 420,
+    "max_offset_minutes": 120
+  },
+  "sleep": {
+    "grace_period_minutes": 30,
+    "max_extension_minutes": 30,
+    "extension_cost": 1.0
+  },
+  "space": {
+    "world_scope": {
+      "id": "xm_work_city",
+      "kind": "city_railway_circle",
+      "home_place_id": "xm_room"
+    },
+    "places": [
+      {
+        "id": "xm_room",
+        "label": "出租屋",
+        "kind": "home",
+        "tags": [
+          "rest",
+          "sleep",
+          "late_night"
+        ],
+        "interaction_impact": "none",
+        "sleep_allowed": true,
+        "ambient_profile": {
+          "light": "desk_lamp",
+          "sound": "city_night"
+        }
+      },
+      {
+        "id": "xm_desk",
+        "label": "公司工位",
+        "kind": "work",
+        "tags": [
+          "work",
+          "training",
+          "screens"
+        ],
+        "interaction_impact": "inconvenient",
+        "sleep_allowed": false,
+        "ambient_profile": {
+          "light": "office_fluorescent",
+          "sound": "keyboard_hum"
+        }
+      },
+      {
+        "id": "xm_table",
+        "label": "合租房小桌",
+        "kind": "home",
+        "tags": [
+          "takeout",
+          "supper"
+        ],
+        "interaction_impact": "none",
+        "sleep_allowed": false,
+        "ambient_profile": {
+          "light": "warm_indoor",
+          "sound": "fridge_hum"
+        }
+      },
+      {
+        "id": "xm_store",
+        "label": "楼下便利店",
+        "kind": "public",
+        "tags": [
+          "supply",
+          "night_walk"
+        ],
+        "interaction_impact": "mild",
+        "sleep_allowed": false,
+        "ambient_profile": {
+          "light": "neon",
+          "sound": "door_chime"
+        }
+      }
+    ],
+    "routes": [
+      {
+        "from_place_id": "xm_room",
+        "to_place_id": "xm_desk",
+        "mode": "transit_commute",
+        "duration_minutes": 40,
+        "bidirectional": true
+      },
+      {
+        "from_place_id": "xm_room",
+        "to_place_id": "xm_store",
+        "mode": "walking",
+        "duration_minutes": 5,
+        "bidirectional": true
+      },
+      {
+        "from_place_id": "xm_desk",
+        "to_place_id": "xm_store",
+        "mode": "walking",
+        "duration_minutes": 8,
+        "bidirectional": true
+      }
+    ]
+  },
+  "blocks": [
+    {
+      "id": "wake",
+      "category": "self_care",
+      "activity_pool": [
+        "wake_routine"
+      ],
+      "preferred_window": {
+        "start": "08:30",
+        "end": "10:00"
+      },
+      "duration_minutes": {
+        "min": 20,
+        "max": 50
+      },
+      "required": true,
+      "priority": 4,
+      "share_policy": "low_pressure",
+      "interaction_profile": "transition_fragmented",
+      "interaction_impact": "mild",
+      "deviation_policy": {
+        "allow_skip": false,
+        "allow_shift": true,
+        "allow_extend": true
+      },
+      "place_requirement": {
+        "place_policy": "fixed",
+        "fixed_place_id": "xm_room"
+      }
+    },
+    {
+      "id": "commute_in",
+      "category": "transition",
+      "activity_pool": [
+        "commute_transit"
+      ],
+      "preferred_window": {
+        "start": "09:30",
+        "end": "11:00"
+      },
+      "duration_minutes": {
+        "min": 30,
+        "max": 60
+      },
+      "required": true,
+      "priority": 3,
+      "share_policy": "normal",
+      "interaction_profile": "transition_fragmented",
+      "interaction_impact": "mild",
+      "deviation_policy": {
+        "allow_skip": true,
+        "allow_shift": true,
+        "allow_extend": false
+      },
+      "place_requirement": {
+        "place_policy": "any",
+        "fixed_place_id": null
+      }
+    },
+    {
+      "id": "work",
+      "category": "obligation",
+      "activity_pool": [
+        "model_training_work"
+      ],
+      "preferred_window": {
+        "start": "10:00",
+        "end": "21:30"
+      },
+      "duration_minutes": {
+        "min": 240,
+        "max": 420
+      },
+      "required": true,
+      "priority": 5,
+      "share_policy": "never",
+      "interaction_profile": "occupied_brief",
+      "interaction_impact": "inconvenient",
+      "deviation_policy": {
+        "allow_skip": false,
+        "allow_shift": true,
+        "allow_extend": true
+      },
+      "place_requirement": {
+        "place_policy": "fixed",
+        "fixed_place_id": "xm_desk"
+      }
+    },
+    {
+      "id": "commute_home",
+      "category": "transition",
+      "activity_pool": [
+        "commute_transit"
+      ],
+      "preferred_window": {
+        "start": "21:00",
+        "end": "23:00"
+      },
+      "duration_minutes": {
+        "min": 30,
+        "max": 60
+      },
+      "required": true,
+      "priority": 3,
+      "share_policy": "normal",
+      "interaction_profile": "transition_fragmented",
+      "interaction_impact": "mild",
+      "deviation_policy": {
+        "allow_skip": true,
+        "allow_shift": true,
+        "allow_extend": false
+      },
+      "place_requirement": {
+        "place_policy": "any",
+        "fixed_place_id": null
+      }
+    },
+    {
+      "id": "supper",
+      "category": "self_care",
+      "activity_pool": [
+        "late_takeout_dinner"
+      ],
+      "preferred_window": {
+        "start": "21:30",
+        "end": "23:30"
+      },
+      "duration_minutes": {
+        "min": 20,
+        "max": 60
+      },
+      "required": true,
+      "priority": 4,
+      "share_policy": "normal",
+      "interaction_profile": "available_normal",
+      "interaction_impact": "none",
+      "deviation_policy": {
+        "allow_skip": true,
+        "allow_shift": true,
+        "allow_extend": true
+      },
+      "place_requirement": {
+        "place_policy": "fixed",
+        "fixed_place_id": "xm_table"
+      }
+    },
+    {
+      "id": "winddown",
+      "category": "personal_interest",
+      "activity_pool": [
+        "meme_archiving",
+        "video_with_you",
+        "blog_browsing"
+      ],
+      "preferred_window": {
+        "start": "23:30",
+        "end": "01:00"
+      },
+      "duration_minutes": {
+        "min": 30,
+        "max": 120
+      },
+      "required": false,
+      "priority": 2,
+      "share_policy": "high_value",
+      "interaction_profile": "available_normal",
+      "interaction_impact": "none",
+      "deviation_policy": {
+        "allow_skip": true,
+        "allow_shift": true,
+        "allow_extend": true
+      },
+      "place_requirement": {
+        "place_policy": "fixed",
+        "fixed_place_id": "xm_room"
+      }
+    },
+    {
+      "id": "sleep",
+      "category": "sleep_window",
+      "activity_pool": [
+        "sleep"
+      ],
+      "preferred_window": {
+        "start": "01:00",
+        "end": "08:30"
+      },
+      "duration_minutes": {
+        "min": 360,
+        "max": 480
+      },
+      "required": true,
+      "priority": 5,
+      "share_policy": "never",
+      "interaction_profile": "sleep_like",
+      "interaction_impact": "unavailable",
+      "deviation_policy": {
+        "allow_skip": false,
+        "allow_shift": true,
+        "allow_extend": false
+      },
+      "place_requirement": {
+        "place_policy": "fixed",
+        "fixed_place_id": "xm_room"
+      }
+    }
+  ],
+  "interaction_profiles": {
+    "available_normal": {
+      "reply_style": "normal",
+      "max_sentences": 0,
+      "question_budget": 1,
+      "share_allowed": true
+    },
+    "occupied_brief": {
+      "reply_style": "short_precise",
+      "max_sentences": 2,
+      "question_budget": 0,
+      "share_allowed": false
+    },
+    "transition_fragmented": {
+      "reply_style": "fragmented",
+      "max_sentences": 2,
+      "question_budget": 1,
+      "share_allowed": true
+    },
+    "sleep_like": {
+      "reply_style": "drowsy",
+      "max_sentences": 1,
+      "question_budget": 0,
+      "share_allowed": false
+    }
+  },
+  "autonomy": {
+    "structure_preference": 0.5,
+    "deviation_propensity": 0.45,
+    "recovery_need": 0.6,
+    "novelty_drive": 0.35,
+    "max_deviations_per_day": 2
+  }
+}

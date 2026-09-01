@@ -158,6 +158,10 @@ private fun actMap(key: String): String = mapOf(
     "wake_routine" to "晨间梳洗", "focused_practice" to "在专注做事", "reset" to "在路上",
     "personal_interest_a" to "在自己的爱好里", "personal_interest_b" to "在自己的爱好里",
     "quiet_rest" to "歇着", "sleep" to "睡眠中",
+    // 许眠（异地恋人卡）
+    "commute_transit" to "在通勤路上", "model_training_work" to "在跑训练",
+    "late_takeout_dinner" to "在吃夜宵外卖", "meme_archiving" to "在收藏表情包",
+    "video_with_you" to "在等你同步放映", "blog_browsing" to "在刷博客",
 ).getOrDefault(key, key)
 
 private fun fmtThousand(n: Int): String = String.format("%,d", n)
@@ -520,6 +524,7 @@ fun SleepDetailScreen(onBack: () -> Unit) {
             if (rr != null && rr.length() > 0) {
                 val napping = rr.optBoolean("is_napping")
                 val offset = rr.optInt("offset_minutes", 0)
+                val maxOff = rr.optInt("max_offset_minutes", 720)
                 GalaxyCard(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("${rr.optString("name", "她")}的当前作息", fontSize = 14.sp,
@@ -546,7 +551,8 @@ fun SleepDetailScreen(onBack: () -> Unit) {
                                  else "${if (offset > 0) "+" else ""}$offset" + "分",
                                 fontSize = 24.sp, fontWeight = FontWeight.Bold,
                                 color = if (offset == 0) PrimaryInk() else AccentTaupe)
-                            Text("作息偏移", fontSize = 11.sp, color = Muted())
+                            Text(if (maxOff < 720) "作息偏移·上限±${maxOff / 60}h"
+                                 else "作息偏移", fontSize = 11.sp, color = Muted())
                         }
                     }
                     val place = rr.optString("now_place")

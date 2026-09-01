@@ -382,10 +382,29 @@ class RelationshipModel:
         )
 
     @classmethod
-    def from_initial(cls, initial_affection: float = 0.5) -> "RelationshipModel":
-        """P-3：initial_affection 只做 intimacy/familiarity 先验，不自动 trust/safety。"""
+    def from_initial(cls, initial_affection: float = 0.5,
+                     preset: dict | None = None) -> "RelationshipModel":
+        """P-3：initial_affection 只做 intimacy/familiarity 先验，不自动 trust/safety。
+
+        preset（卡 extensions.veranima.relationship_preset）：有交往史设定的卡
+        （如异地恋人=三年感情）逐维覆写初始七维——没有 preset 的卡行为不变。
+        只允许七个数值维，越界截断，其他键忽略。
+        """
         ia = max(0.0, min(1.0, float(initial_affection)))
-        return cls(intimacy=ia, familiarity=ia)
+        kw: dict = {"intimacy": ia, "familiarity": ia}
+        for dim in ("trust", "familiarity", "intimacy", "reciprocity", "safety",
+                    "conflict_tension", "repair_progress"):
+            if isinstance(preset, dict) and dim in preset:
+                try:
+                    kw[dim] = max(0.0, min(1.0, float(preset[dim])))
+                except (TypeError, ValueError):
+                    pass
+        m = cls(**kw)
+        if isinstance(preset, dict):
+            # 交往史自带的仪式/悬而未决线（羁绊图谱与牵挂的初始素材）
+            m.recurring_rituals = [str(x) for x in (preset.get("recurring_rituals") or [])][:8]
+            m.open_relational_threads = [str(x) for x in (preset.get("open_relational_threads") or [])][:8]
+        return m
 
 
 def apply_relationship_event(model: RelationshipModel, event: dict) -> RelationshipModel:

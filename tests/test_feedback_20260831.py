@@ -10,8 +10,10 @@
 from __future__ import annotations
 
 import datetime
+import pathlib
 
 from veranima.core.agent import Agent
+from veranima.core.character import CharacterCard as Card
 from veranima.core.character import CharacterCard
 from veranima.core.proactive import GreetingScheduler
 from veranima.core.reply import parse_reply
@@ -386,3 +388,67 @@ def test_schedule_offset_isolated_across_roles(tmp_path):
     assert ScheduleRuntime.from_snapshot(outline_a, snap).schedule_offset_minutes == 40
     # 切由岐：role_id 守卫 → 弃档回基准作息
     assert ScheduleRuntime.from_snapshot(outline_b, snap).schedule_offset_minutes == 0
+
+
+# ---------- 13. 跨角色关系隔离 + 卡级作息偏移上限（许眠卡落地） ----------
+
+def test_relationship_snapshot_isolated_across_roles(tmp_path):
+    """agent_state 共享单行：凛攒的亲密度不得灌给切换后的新角色，
+    同卡重启则必须保留（快照 owner 标守卫）。"""
+    root = pathlib.Path(__file__).resolve().parents[1] / "characters"
+    lin = Card.from_file(root / "lin" / "character.json")
+    xumian = Card.from_file(root / "xumian" / "character.json")
+    memory = MemoryStore(db_path=str(tmp_path / "iso.db"), config={}, provider=FakeEmbed())
+    a1 = Agent(card=lin, memory=memory, llm=None, state=AgentState(), config={})
+    a1.relationship.intimacy = 0.9
+    a1.state.attachment = 0.93
+    a1._persist_state()
+    a2 = Agent(card=xumian, memory=memory, llm=None,
+               state=AgentState.from_snapshot(memory.load_state()), config={})
+    assert a2.relationship.intimacy == 0.82  # 新角色=自己卡的 preset，非凛的 0.9
+    assert a2.state.attachment == 0.5
+    a2._persist_state()
+    a3 = Agent(card=xumian, memory=memory, llm=None,
+               state=AgentState.from_snapshot(memory.load_state()), config={})
+    assert a3.relationship.intimacy == 0.82  # 同卡重启不清档
+
+
+def test_card_relationship_preset_and_schedule_cap():
+    """异地恋人卡：交往史先验 + 作息偏移受 max_offset_minutes 约束（凛不受限）。"""
+    from veranima.core.persona import RelationshipModel
+    root = pathlib.Path(__file__).resolve().parents[1] / "characters"
+    xumian = Card.from_file(root / "xumian" / "character.json")
+    preset = xumian.veranima["relationship_preset"]
+    m = RelationshipModel.from_initial(0.5, preset=preset)
+    assert m.intimacy == 0.82 and m.trust == 0.80
+    assert m.recurring_rituals and m.open_relational_threads
+    import datetime as _dt
+    from veranima.core.virtual_schedule import ScheduleOutline, ScheduleRuntime
+    ox = ScheduleOutline.from_role_dir(root / "xumian")
+    rx = ScheduleRuntime(ox)
+    rx.apply_offset(9999, "x", _dt.datetime.now(_dt.timezone.utc))
+    assert rx.schedule_offset_minutes == 120  # 996 卡：只许挪两小时
+    ol = ScheduleOutline.from_role_dir(root / "lin")
+    rl = ScheduleRuntime(ol)
+    rl.apply_offset(9999, "x", _dt.datetime.now(_dt.timezone.utc))
+    assert rl.schedule_offset_minutes == 720  # 住家卡：全幅不变
+
+
+def test_relationship_roster_round_trip(tmp_path):
+    """roster：凛攒进度→切许眠→切回凛，凛的账还在；许眠吃自己 preset。"""
+    root = pathlib.Path(__file__).resolve().parents[1] / "characters"
+    lin = Card.from_file(root / "lin" / "character.json")
+    xumian = Card.from_file(root / "xumian" / "character.json")
+    db = str(tmp_path / "roster.db")
+    def boot(card):
+        mem = MemoryStore(db_path=db, config={}, provider=FakeEmbed())
+        snap = mem.load_state()
+        return Agent(card=card, memory=mem, llm=None,
+                     state=AgentState.from_snapshot(snap) if snap else AgentState(), config={})
+    a1 = boot(lin); a1.relationship.intimacy = 0.9; a1.state.attachment = 0.93; a1._persist_state()
+    a2 = boot(xumian); a2._persist_state()          # 首 boot=preset，写自己条目
+    a3 = boot(lin)
+    assert a3.relationship.intimacy == 0.9          # 凛的账原样回来（不被覆盖）
+    assert abs(a3.state.attachment - 0.93) < 1e-6
+    a4 = boot(xumian)
+    assert a4.relationship.intimacy == 0.82         # 许眠也没被凛灌

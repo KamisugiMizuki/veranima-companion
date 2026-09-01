@@ -45,6 +45,7 @@ class CharacterCard:
     tones: list[str] = field(default_factory=lambda: ["中性", "平静", "温柔"])
     # veranima 专属（extensions.veranima）
     veranima: dict[str, Any] = field(default_factory=dict)
+    source_path: str = ""            # 从文件加载时回填（日程 outline 按此定位卡目录）
 
     # P-0（PERSONA_LOOP_SPEC）：角色核心慢变量字段（普通对话/文风学习不得覆写）
     CORE_FIELDS = ("core_drives", "value_order", "inner_tensions", "long_term_desires", "relationship_expectation")
@@ -131,6 +132,7 @@ class CharacterCard:
                                  if k not in ("name", "description", "personality", "scenario", "first_mes", "mes_example", "tones", "extensions")},
             )
         logger.info("character card loaded: %s (from %s)", card.name, source)
+        card.source_path = "" if source == "<memory>" else str(source)
         return card
 
     def to_system_prompt(self, extra: str = "") -> str:

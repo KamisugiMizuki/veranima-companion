@@ -724,7 +724,20 @@ def _role_rhythm(agent) -> dict:
         import datetime
         rt = getattr(agent, "schedule_runtime", None)
         if rt is None:
-            return {}
+            # PC 端直接构造 Agent 未注入 character_card 路径时，outline loader
+            # 找不到卡目录 → runtime 恒 None。fallback 按当前卡名找同名目录
+            # （安卓 boot 走 config 注入不受影响；仅让此只读探针两处通用）
+            try:
+                from veranima.core.virtual_schedule import ScheduleOutline, ScheduleRuntime
+                cand = Path("characters") / str(getattr(agent.card, "name", ""))
+                if not (cand / "virtual_schedule.json").is_file():
+                    return {}
+                out = ScheduleOutline.from_role_dir(cand)
+                if not out.enabled:
+                    return {}
+                rt = ScheduleRuntime(out)
+            except Exception:
+                return {}
         tz = getattr(rt, "timezone", None)
         try:
             from zoneinfo import ZoneInfo
@@ -751,6 +764,7 @@ def _role_rhythm(agent) -> dict:
             "name": agent.card.name,
             "state": state,
             "offset_minutes": offset,
+            "max_offset_minutes": int(getattr(circ, "max_offset_minutes", 720)) if circ else 720,
             "wake_at": _shift(circ.wake_start, offset) if circ else "",
             "sleep_at": _shift(circ.sleep_start, offset) if circ else "",
             "is_napping": state in {"sleeping", "sleep_preparing"},

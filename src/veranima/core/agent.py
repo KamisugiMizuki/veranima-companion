@@ -199,13 +199,45 @@ class Agent:
         except Exception as e:
             logger.warning("state/history restore failed, starting fresh: %s", e)
 
-        # P-3 关系模型（PERSONA_LOOP_SPEC）：从快照恢复，否则用 initial_affection 先验
+        # P-3 关系模型（PERSONA_LOOP_SPEC）：从快照恢复，否则用 initial_affection 先验。
+        # 跨角色隔离（2026-09-01）：agent_state 是共享单行——roster 模式按卡名各记
+        # 各的账（凛↔许眠来回切不丢进度）；旧库无 roster → owner 标守卫（切卡重置
+        # 而非污染，下一次 persist 自动升级为 roster 结构）。
         from .persona import RelationshipModel
+        _rel0 = self.state.relationship or {}
+        self._rel_roster = _rel0.get("roster") if isinstance(_rel0.get("roster"), dict) else None
+        _roster = self._rel_roster
+        if _roster:
+            _mine = _roster.get(self.card.name)
+            if isinstance(_mine, dict) and _mine:
+                self.state.relationship = dict(_mine)
+                try:
+                    self.state.attachment = max(0.0, min(0.95, float(_mine.get("attachment", self.state.attachment))))
+                except (TypeError, ValueError):
+                    pass
+            else:
+                logger.info("roster has no entry for %r, booting fresh", self.card.name)
+                self.state.relationship = {}
+                self.state.attachment = self.state.initial_attachment
+        else:
+            _owner = str(_rel0.get("owner") or "")
+            if _owner and _owner != self.card.name:
+                logger.info("relationship snapshot owned by %r, booting %r fresh", _owner, self.card.name)
+                # 下方「当日去重键从快照恢复」读的就是 state.relationship——清空后
+                # greeter 自然拿到空集，问候去重键也随之归零（新角色第一天该说早安）
+                self.state.relationship = {}
+                self.state.attachment = self.state.initial_attachment
+            elif not _owner and self.state.relationship:
+                # 旧库无 owner 标：归属「当前在跑的卡」这个兼容假设在此钉死；
+                # 落库不用手动 persist——_persist_state 每次写入都会带 owner 标
+                self.state.relationship["owner"] = self.card.name
         if self.state.relationship:
             self.relationship = RelationshipModel.from_dict(self.state.relationship)
         else:
             ia = float(((self.card.veranima or {}).get("initial_affection") or 0.5))
-            self.relationship = RelationshipModel.from_initial(initial_affection=ia)
+            self.relationship = RelationshipModel.from_initial(
+                initial_affection=ia,
+                preset=(self.card.veranima or {}).get("relationship_preset"))
         if self.schedule_runtime is not None and self.state.relationship:
             saved_schedule = self.state.relationship.get("virtual_schedule_runtime")
             if isinstance(saved_schedule, dict):
@@ -730,6 +762,11 @@ class Agent:
         try:
             # P-3：关系模型快照同步进 AgentState；P-7：冲突状态随关系快照
             rel = self.relationship.to_dict()
+            rel["owner"] = self.card.name
+            # roster：各卡的关系进度并存于共享单行（凛↔许眠来回切互不覆盖）。
+            # 以库里既有 roster 为底、当前卡条目随本次 persist 刷新；owner 标保留
+            # 作旧库兼容读路径的回退键。attachment 一并入条目（它同属"角色关系"）。
+            rel["attachment"] = round(self.state.attachment, 4)
             rel["conflicts"] = self._conflicts.to_dict()
             rel["imprints"] = self._imprints.to_dict()
             rel["tension"] = self.tension.snapshot()
@@ -760,6 +797,10 @@ class Agent:
             rel["greeted"] = self.greeter.to_state()
             rel["occasions"] = sorted(self.occasion.triggered)
             rel["last_proactive_sent_at"] = getattr(self, "_last_proactive_sent_at", "")
+            # roster 落库：以 boot 读回的整张表为底刷新当前卡条目（rel 此时已完整）
+            roster = dict(self._rel_roster) if getattr(self, "_rel_roster", None) else {}
+            roster[self.card.name] = dict(rel)
+            rel["roster"] = roster
             self.state.relationship = rel
             self.memory.save_state(self.state.to_snapshot())
         except Exception as e:
@@ -1084,7 +1125,12 @@ class Agent:
         feedback = self.memory.recent_proactive_feedback(source="schedule_adapt", limit=30)
         if any(str(r.get("candidate_id") or "") == day_key for r in feedback):
             return
-        shift = int(max(-240, min(240, diff * 60 * 0.25)))  # 差值的 1/4，限 ±4h/天
+        # 差值的 1/4，渐进；单日步长与总量都卡到本卡偏移上限内
+        # （异地恋人等职业硬约束卡 circadian.max_offset_minutes 收窄 → 跟不动用户）
+        cap = getattr(circ, "max_offset_minutes", 720)
+        step = int(max(-min(240, cap), min(min(240, cap), diff * 60 * 0.25)))
+        target = max(-cap, min(cap, self.schedule_runtime.schedule_offset_minutes + step))
+        shift = target - self.schedule_runtime.schedule_offset_minutes
         if shift == 0:
             return
         try:
