@@ -23,8 +23,11 @@ DEFAULT_CARD_NAME = "小V"
 DEFAULT_CARD_FIRST_MES = "你好，我是小V。今天想聊点什么？"
 
 
-def create_agent(config: dict | None = None) -> Agent:
-    """按配置组装 Agent（角色卡 + 五层记忆 + LLM）。"""
+def create_agent(config: dict | None = None, *, memory=None, llm=None) -> Agent:
+    """按配置组装 Agent（角色卡 + 五层记忆 + LLM）。
+
+    memory/llm 可注入共享实例——多角色共存（MOMENTS_MULTIROLE_SPEC P1）时
+    N 个 Agent 必须共库单连接 + 共 LLM 客户端，roster/画像写不能打架。"""
     cfg = config or load_config()
 
     # 角色卡
@@ -42,11 +45,13 @@ def create_agent(config: dict | None = None) -> Agent:
         "host": llm_cfg.get("base_url", DEFAULT_BASE_URL),
         "root": cfg.get("root", str(Path.cwd())),
     }
-    db_path = resolve_path(memory_cfg, "db_path") or "data/veranima.db"
-    memory = MemoryStore(db_path=db_path, config=memory_cfg, llm_config=llm_cfg)
+    if memory is None:
+        db_path = resolve_path(memory_cfg, "db_path") or "data/veranima.db"
+        memory = MemoryStore(db_path=db_path, config=memory_cfg, llm_config=llm_cfg)
 
     # LLM
-    llm = LLMClient(cfg.get("llm", {}))
+    if llm is None:
+        llm = LLMClient(cfg.get("llm", {}))
 
     return Agent(
         card=card,

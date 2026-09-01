@@ -401,15 +401,15 @@ class MemoryStore:
 
     def store_message(self, role: str, content: str, energy: float | None = None,
                       mood: str | None = None, channel: str = "qq",
-                      attachments: str = "", tone: str = "") -> int:
+                      attachments: str = "", tone: str = "", role_id: str = "") -> int:
         """零开销摄入：原始消息立即入库（FTS5 触发器同步索引），不等待 LLM。
 
         attachments: JSON 数组字符串（图片等附件的稳定文件名，非路径非 base64）。
         tone: 回复情绪标签（P2 逐条分类；空=未分类/主动消息）。
         """
         cur = self.con.execute(
-            "INSERT INTO messages(role, content, channel, created_at, energy_at, mood_at, tone_at, attachments) VALUES (?,?,?,?,?,?,?,?)",
-            (role, content, channel or "qq", _now(), energy, mood, tone or "", attachments or ""),
+            "INSERT INTO messages(role, content, channel, created_at, energy_at, mood_at, tone_at, attachments, role_id) VALUES (?,?,?,?,?,?,?,?,?)",
+            (role, content, channel or "qq", _now(), energy, mood, tone or "", attachments or "", role_id or ""),
         )
         self.con.commit()
         return int(cur.lastrowid)
@@ -831,9 +831,53 @@ class MemoryStore:
         current = [e for e in entries if e.id not in superseded and not e.is_expired()]
         return current[:limit]
 
-    def recent_messages(self, limit: int = 20, channel: str | None = None) -> list[dict]:
+    def backfill_message_roles(self, role_id: str) -> int:
+        """旧库一次性迁移：role_id='' 的存量行归给 boot 时的活跃角色。
+        返回回填行数（0=无需迁移，幂等）。"""
+        cur = self.con.execute(
+            "UPDATE messages SET role_id=? WHERE role_id=''", (role_id,))
+        self.con.commit()
+        return cur.rowcount
+
+    def message_role_gaps(self) -> int:
+        return int(self.con.execute(
+            "SELECT COUNT(*) FROM messages WHERE role_id=''").fetchone()[0])
+
+    def unread_counts(self) -> dict[str, int]:
+        """各角色未读数：assistant 消息（主动/回复都算 TA 发来的）id 超已读指针。"""
+        rows = self.con.execute(
+            """SELECT m.role_id, COUNT(*) AS n FROM messages m
+               WHERE m.role != 'user' AND m.role_id != ''
+                 AND m.id > COALESCE((SELECT last_read_id FROM role_reads r
+                                      WHERE r.role_id = m.role_id), 0)
+               GROUP BY m.role_id""").fetchall()
+        return {r["role_id"]: int(r["n"]) for r in rows}
+
+    def mark_role_read(self, role_id: str) -> None:
+        top = self.con.execute(
+            "SELECT COALESCE(MAX(id), 0) AS t FROM messages WHERE role_id=?",
+            (role_id,)).fetchone()["t"]
+        self.con.execute(
+            """INSERT INTO role_reads(role_id, last_read_id, updated_at) VALUES (?,?,?)
+               ON CONFLICT(role_id) DO UPDATE SET last_read_id=excluded.last_read_id,
+               updated_at=excluded.updated_at""",
+            (role_id, int(top), _now()))
+        self.con.commit()
+
+    def last_messages_by_role(self) -> dict[str, dict]:
+        """角色列表页数据源：每个 role_id 的最后一条消息（预览+时间+未读基数）。"""
+        rows = self.con.execute(
+            """SELECT role_id, content, created_at, role FROM messages m
+               WHERE id = (SELECT MAX(id) FROM messages WHERE role_id = m.role_id)
+                 AND role_id != ''""").fetchall()
+        return {r["role_id"]: dict(r) for r in rows}
+
+    def recent_messages(self, limit: int = 20, channel: str | None = None,
+                        role_id: str | None = None) -> list[dict]:
+        """role_id=None → 全量（PC/QQ 单角色时代的消费口径，行为不变）；
+        给了值 → 仅该角色会话（安卓多角色聊天窗）。"""
         from ..core.reply import is_internal_reply
-        cols = "id, role, content, channel, created_at, energy_at, mood_at, tone_at, attachments"
+        cols = "id, role, content, channel, created_at, energy_at, mood_at, tone_at, attachments, role_id"
         if channel:
             rows = self.con.execute(
                 f"SELECT {cols} FROM messages WHERE channel=? ORDER BY id DESC LIMIT ?",
@@ -841,10 +885,16 @@ class MemoryStore:
             ).fetchall()
             return [dict(r) for r in reversed(rows)
                     if not (r["role"] == "assistant" and is_internal_reply(r["content"]))]
-        rows = self.con.execute(
-            f"SELECT {cols} FROM messages ORDER BY id DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
+        if role_id:
+            rows = self.con.execute(
+                f"SELECT {cols} FROM messages WHERE role_id=? ORDER BY id DESC LIMIT ?",
+                (role_id, limit),
+            ).fetchall()
+        else:
+            rows = self.con.execute(
+                f"SELECT {cols} FROM messages ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
         return [dict(r) for r in reversed(rows)
                 if not (r["role"] == "assistant" and is_internal_reply(r["content"]))]
 

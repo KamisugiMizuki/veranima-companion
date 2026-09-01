@@ -9,6 +9,8 @@ import shutil
 import traceback
 from pathlib import Path
 
+from veranima.app import create_agent  # 多角色注册表与 boot 共用（P1）
+
 log = logging.getLogger("fuyuno.bridge")
 
 _pending: list[str] = []  # tick 产出的主动消息，Kotlin 轮询取走
@@ -192,7 +194,6 @@ def boot(files_dir: str) -> str:
             log.info("inbox: characters 捡完")
 
         import yaml
-        from veranima.app import create_agent
         from veranima.config import normalize_llm_profiles
 
         cfg = yaml.safe_load((root / "config.yaml").read_text(encoding="utf-8"))
@@ -208,6 +209,14 @@ def boot(files_dir: str) -> str:
         imported = _pickup_backup(root, cfg, inbox)
 
         agent = create_agent(cfg)
+        boot.cfg = cfg          # 注册表重建 Agent 用同一份配置
+        boot.agents = {agent.role_key: agent}
+        try:
+            if agent.role_key and agent.memory.message_role_gaps():
+                n = agent.memory.backfill_message_roles(agent.role_key)
+                log.info("messages role_id backfilled: %d -> %s", n, agent.role_key)
+        except Exception:
+            log.exception("role backfill failed (non-fatal)")
         # 历史 NULL 分类按 layer 回填（幂等；2026-08-30 用户反馈新记忆不分类）
         try:
             from veranima.memory.store import backfill_categories
@@ -554,9 +563,29 @@ def derive_stage(model) -> str:
 
 # 关系七维每日快照表（趋势数据的唯一来源；bridge 自管，core 不感知）
 def _ensure_rel_snapshot_table(con) -> None:
-    con.execute(
-        "CREATE TABLE IF NOT EXISTS relationship_snapshots ("
-        " day TEXT PRIMARY KEY, dims_json TEXT NOT NULL, updated_at TEXT NOT NULL)")
+    old = con.execute("SELECT sql FROM sqlite_master WHERE type='table' "
+                      "AND name='relationship_snapshots'").fetchone()
+    if old is None:
+        con.execute(
+            "CREATE TABLE relationship_snapshots ("
+            " day TEXT NOT NULL, role_id TEXT NOT NULL DEFAULT '', dims_json TEXT NOT NULL,"
+            " updated_at TEXT NOT NULL, PRIMARY KEY (day, role_id))")
+    elif "PRIMARY KEY (day, role_id)" not in (old[0] or ""):
+        # 旧库（主键=day 单列；可能已被早期迁移 ALTER 补过 role_id 列）整表重建：
+        # 只搬带角色标的行，历史归属不明的旧行丢弃（丢的仅是趋势折线的几天快照，
+        # 羁绊图谱主数据走 agent_state 不受影响）
+        has_rid = any(r[1] == "role_id" for r in con.execute(
+            "PRAGMA table_info(relationship_snapshots)").fetchall())
+        sel = ("SELECT day, role_id, dims_json, updated_at FROM relationship_snapshots"
+               if has_rid else "SELECT day, '', dims_json, updated_at FROM relationship_snapshots")
+        con.execute("CREATE TABLE relationship_snapshots_new ("
+                    " day TEXT NOT NULL, role_id TEXT NOT NULL DEFAULT '', dims_json TEXT NOT NULL,"
+                    " updated_at TEXT NOT NULL, PRIMARY KEY (day, role_id))")
+        con.execute(f"INSERT OR IGNORE INTO relationship_snapshots_new "
+                    f"SELECT day, role_id, dims_json, updated_at FROM ({sel}) WHERE role_id != ''")
+        con.execute("DROP TABLE relationship_snapshots")
+        con.execute("ALTER TABLE relationship_snapshots_new RENAME TO relationship_snapshots")
+        log.info("relationship_snapshots rebuilt with (day, role_id) primary key")
     con.commit()
 
 
@@ -567,11 +596,14 @@ def _note_relationship_snapshot(agent) -> None:
     _ensure_rel_snapshot_table(con)
     dims = {k: round(float(v), 4) for k, v in agent.relationship.to_dict().items()
             if isinstance(v, (int, float))}
+    rid = str(getattr(agent, "role_key", "") or "")
+    day = datetime.date.today().isoformat()
+    # 先删后插（=同日覆盖最新值）：不用 ON CONFLICT 具位键——旧库该表主键是 day，
+    # conflict target (role_id,day) 在 ALTER 补列的表上会报错
+    con.execute("DELETE FROM relationship_snapshots WHERE role_id=? AND day=?", (rid, day))
     con.execute(
-        "INSERT INTO relationship_snapshots(day, dims_json, updated_at) VALUES (?,?,?) "
-        "ON CONFLICT(day) DO UPDATE SET dims_json=excluded.dims_json, updated_at=excluded.updated_at",
-        (datetime.date.today().isoformat(),
-         json.dumps(dims, ensure_ascii=False),
+        "INSERT INTO relationship_snapshots(day, role_id, dims_json, updated_at) VALUES (?,?,?,?)",
+        (day, rid, json.dumps(dims, ensure_ascii=False),
          datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")))
     con.commit()
 
@@ -632,19 +664,23 @@ def memory_full(memory_id: int) -> str:
         return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
 
 
-def relationship_trend() -> str:
+def relationship_trend(role: str = "") -> str:
     """羁绊图谱数据（Relationship Metrics）：当前七维 + 最近 10 天快照序列。
 
     首调=把今天值落快照；返回按日排序 [{day, dims}]，Kotlin 侧据此算「较昨日」
     与 7 日折线。无历史=快照只有一条，趋势显示「—」（不编造）。
+    role=角色目录名 → 读该角色的 roster 关系账（角色私产页入口）。
     """
-    agent = getattr(boot, "agent", None)
+    agent = _agent_for(role)
     if agent is None:
         return json.dumps({"ok": False, "error": "未初始化"})
     try:
         _note_relationship_snapshot(agent)
+        _ensure_rel_snapshot_table(agent.memory.con)
         rows = agent.memory.con.execute(
-            "SELECT day, dims_json FROM relationship_snapshots ORDER BY day DESC LIMIT 10").fetchall()
+            "SELECT day, dims_json FROM relationship_snapshots WHERE role_id=?"
+            " ORDER BY day DESC LIMIT 10",
+            (str(getattr(agent, "role_key", "") or ""),)).fetchall()
         series = [{"day": r["day"], "dims": json.loads(r["dims_json"])} for r in reversed(rows)]
         rel = agent.relationship.to_dict()
         from veranima.core.persona import derive_relationship_stage
@@ -654,6 +690,14 @@ def relationship_trend() -> str:
     except Exception as e:
         log.error("relationship_trend failed: %s", e)
         return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+def rhythm_status(role: str = "") -> str:
+    """角色当前作息（角色私产页专属卡：作息是 TA 的私产，不留在用户睡眠报告里）。"""
+    agent = _agent_for(role)
+    if agent is None:
+        return json.dumps({"ok": False, "error": "未初始化"})
+    return json.dumps({"ok": True, "role_rhythm": _role_rhythm(agent)}, ensure_ascii=False)
 
 
 def sleep_status() -> str:
@@ -706,8 +750,7 @@ def sleep_status() -> str:
                            "last": est, "cycles": [
                 {"id": c["id"], "fell_asleep_at": c.get("fell_asleep_at") or "",
                  "woke_at": c.get("woke_at") or "",
-                 "summary": c.get("summary") or ""} for c in cycles],
-                           "role_rhythm": _role_rhythm(agent)},
+                 "summary": c.get("summary") or ""} for c in cycles]},
             ensure_ascii=False)
     except Exception as e:
         log.error("sleep_status failed: %s", e)
@@ -940,7 +983,155 @@ def _classify_foreground_action(pkg: str, label: str) -> str:
         return ""
 
 
-def portrait_path() -> str:
+def _agent_for(role: str = ""):
+    """注册表取角色 Agent（''/None=活跃角色）。新角色=懒建共享同一
+    memory/llm 实例；建失败回退活跃角色（不炸会话）。"""
+    active = getattr(boot, "agent", None)
+    role = str(role or "").strip()
+    if not role or active is None or role == active.role_key:
+        return active
+    reg = getattr(boot, "agents", None) or {}
+    if role in reg:
+        return reg[role]
+    try:
+        root = Path(getattr(boot, "root", "."))
+        card_path = root / "characters" / role / "character.json"
+        if not card_path.is_file():
+            return active
+        import copy
+        cfg = copy.deepcopy(boot.cfg)
+        cfg["character_card"] = str(card_path)
+        a = create_agent(cfg, memory=active.memory, llm=active.llm)
+        boot.agents[role] = a
+        log.info("agent registry: %s booted (shared store)", role)
+        return a
+    except Exception:
+        log.exception("agent_for(%s) failed, fallback active", role)
+        return active
+
+
+def mark_read(role: str) -> str:
+    """会话页打开=该角色未读追平（role_reads 指针推到最大 id）。"""
+    agent = getattr(boot, "agent", None)
+    if agent is None:
+        return json.dumps({"ok": False})
+    try:
+        agent.memory.mark_role_read(str(role))
+        return json.dumps({"ok": True})
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)})
+
+
+def avatar_path(role: str) -> str:
+    """列表页方头像：characters/<role>/portrait.jpg（用户供图约定），缺=''→UI 首字母块。"""
+    try:
+        f = Path(getattr(boot, "root", ".")) / "characters" / str(role) / "portrait.jpg"
+        return str(f) if f.is_file() else ""
+    except Exception:
+        return ""
+
+
+def role_label(role: str) -> str:
+    """角色显示名（会话页/私产页顶栏用；失败回退目录名）。"""
+    try:
+        raw = json.loads((Path(getattr(boot, "root", ".")) / "characters" / str(role) / "character.json")
+                         .read_text(encoding="utf-8"))
+        return str(((raw.get("data") or {}).get("name")) or raw.get("name") or role)
+    except Exception:
+        return str(role)
+
+
+def role_reset(role: str, mode: str = "intimacy") -> str:
+    """角色私产重置：intimacy=关系账回 preset（含作息偏移）；messages=清空该角色会话。
+    共享记忆库不动（Q1 裁决：记忆全局）。"""
+    agent = _agent_for(role)
+    if agent is None:
+        return json.dumps({"ok": False, "error": "角色不存在"})
+    try:
+        role = str(role or agent.role_key)
+        if mode == "messages":
+            agent.memory.con.execute("DELETE FROM messages WHERE role_id=?", (role,))
+            agent.memory.con.execute("DELETE FROM role_reads WHERE role_id=?", (role,))
+            agent.memory.con.commit()
+            if agent.role_key == role:
+                agent._history = []
+            return json.dumps({"ok": True, "mode": mode})
+        # intimacy：roster 条目整个删掉 → 该角色下次 boot 从卡的 preset/initial 重来
+        rel = dict(agent.state.relationship or {})
+        roster = dict(rel.get("roster") or {})
+        roster.pop(role, None)
+        rel["roster"] = roster
+        if agent.role_key == role:
+            agent.state.relationship = {}
+            from veranima.core.persona import RelationshipModel
+            ia = float(((agent.card.veranima or {}).get("initial_affection") or 0.5))
+            agent.relationship = RelationshipModel.from_initial(
+                initial_affection=ia, preset=(agent.card.veranima or {}).get("relationship_preset"))
+            agent.state.attachment = agent.state.initial_attachment
+            try:  # 活跃角色：作息偏移当场归零（内存 runtime=roster 条目影子）
+                if agent.schedule_runtime is not None:
+                    agent.schedule_runtime.schedule_offset_minutes = 0
+                    agent.schedule_runtime.offset_history = []
+            except Exception:
+                pass
+            agent._persist_state()
+        else:
+            # 非活跃角色：直接改库里的 roster（其 Agent 未驻留内存）
+            con = agent.memory.con
+            row = con.execute("SELECT relationship FROM agent_state WHERE id=1").fetchone()
+            cur = json.loads((row[0] if row else None) or "{}")
+            cur_roster = dict(cur.get("roster") or {})
+            cur_roster.pop(role, None)
+            cur["roster"] = cur_roster
+            con.execute("UPDATE agent_state SET relationship=?, updated_at=? WHERE id=1",
+                        (json.dumps(cur, ensure_ascii=False),
+                         __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()))
+            con.commit()
+        return json.dumps({"ok": True, "mode": mode})
+    except Exception as e:
+        log.exception("role_reset failed")
+        return json.dumps({"ok": False, "error": str(e)})
+
+
+def roles_list() -> str:
+    """角色列表页数据源：目录名/显示名/最后一条预览/未读数/是否活跃。"""
+    agent = getattr(boot, "agent", None)
+    if agent is None:
+        return json.dumps({"ok": False, "roles": []})
+    try:
+        root = Path(getattr(boot, "root", "."))
+        mem = agent.memory
+        last = mem.last_messages_by_role()
+        unread = mem.unread_counts()
+        out = []
+        for d in sorted((root / "characters").iterdir()):
+            if not (d / "character.json").is_file():
+                continue
+            nm = ""
+            try:
+                import yaml  # noqa: F401  名字走卡 JSON，不建 Agent（列表页轻量）
+            except Exception:
+                pass
+            try:
+                raw = json.loads((d / "character.json").read_text(encoding="utf-8"))
+                nm = str(((raw.get("data") or {}).get("name")) or raw.get("name") or d.name)
+            except Exception:
+                nm = d.name
+            l = last.get(d.name) or {}
+            av = root / "characters" / d.name / "portrait.jpg"
+            out.append({"id": d.name, "name": nm,
+                        "preview": str(l.get("content") or "")[:40],
+                        "time": str(l.get("created_at") or ""),
+                        "unread": int(unread.get(d.name) or 0),
+                        "avatar": str(av) if av.is_file() else "",
+                        "active": agent.role_key == d.name})
+        return json.dumps({"ok": True, "roles": out}, ensure_ascii=False)
+    except Exception as e:
+        log.exception("roles_list failed")
+        return json.dumps({"ok": False, "error": str(e), "roles": []})
+
+
+def portrait_path(role: str = "") -> str:
     """当前角色立绘的绝对路径（视觉小说舞台用；空串=无图，UI 回退纯色舞台）。
 
     assets/portraits/<char>.jpg 由 Kotlin 在 boot 时解到 filesDir/portraits/
@@ -948,14 +1139,23 @@ def portrait_path() -> str:
     """
     try:
         root = Path(getattr(boot, "root", "."))
+        role = str(role or "").strip()
+        if role:
+            own = root / "characters" / role / "portraits"
+            if own.is_dir():
+                fs = [f for f in sorted(own.iterdir())
+                      if f.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")]
+                if fs:
+                    return str(fs[0])
         d = root / "portraits"
         if not d.is_dir():
             return ""
-        char = ""
-        try:
-            char = (boot.config or {}).get("active_character", "") or ""
-        except Exception:
-            pass
+        char = role
+        if not char:
+            try:
+                char = (boot.config or {}).get("active_character", "") or ""
+            except Exception:
+                pass
         for f in sorted(d.iterdir()):
             if char and char in f.stem:
                 return str(f)
@@ -966,14 +1166,15 @@ def portrait_path() -> str:
         return ""
 
 
-def history(limit: int = 80) -> str:
+def history(limit: int = 80, role: str = "") -> str:
     """最近 N 条对话（id 升序）。主动消息核心已落库（record_proactive_message），
     这里一起带出——聊天 UI 以库为准，无需单独通道。"""
-    agent = getattr(boot, "agent", None)
+    agent = _agent_for(role)
     if agent is None:
         return json.dumps({"ok": False, "messages": []})
     try:
-        rows = agent.memory.recent_messages(limit=int(limit))
+        rows = agent.memory.recent_messages(limit=int(limit),
+                                            role_id=(agent.role_key or None))
         root = Path(getattr(boot, "root", "."))
         out = []
         for r in rows:
@@ -992,7 +1193,7 @@ def history(limit: int = 80) -> str:
         return json.dumps({"ok": False, "error": str(e), "messages": []})
 
 
-def chat(text: str, image_paths: str = "[]") -> str:
+def chat(text: str, image_paths: str = "[]", role: str = "") -> str:
     """一轮对话（同步阻塞——真 UI 阶段换协程+回调）。
 
     image_paths: JSON 数组字符串，本地图片文件路径（≤4 张）。核心管线
@@ -1001,7 +1202,7 @@ def chat(text: str, image_paths: str = "[]") -> str:
     历史/记忆落 [图片] 占位；附件文件名存 filesDir/photos/ 并写进
     messages.attachments（历史重载渲染用——cacheDir 随时会被系统清）。
     """
-    agent = getattr(boot, "agent", None)
+    agent = _agent_for(role)
     if agent is None:
         return json.dumps({"ok": False, "error": "未初始化"})
     import time as _t

@@ -501,3 +501,52 @@ def test_profile_block_injects_with_pools(tmp_path):
     assert "学生" in block and "用户亲口说的" in block
     assert "宝宝" in block and "绝不能" in block
     assert "称呼" in block                      # 阶段池行存在（任意阶段）
+
+
+# ---------- 15. 多角色会话隔离（MOMENTS_MULTIROLE_SPEC P1） ----------
+
+def test_messages_isolated_by_role(tmp_path):
+    """两个 Agent 共享单库：各自 store/recent 只见自己的会话；PC 角色键空=不过滤。"""
+    root = pathlib.Path(__file__).resolve().parents[1] / "characters"
+    lin = Card.from_file(root / "lin" / "character.json")
+    xumian = Card.from_file(root / "xumian" / "character.json")
+    mem = MemoryStore(db_path=str(tmp_path / "iso2.db"), config={}, provider=FakeEmbed())
+    a1 = Agent(card=lin, memory=mem, llm=FakeLLM(), state=AgentState(), config={})
+    a2 = Agent(card=xumian, memory=mem, llm=FakeLLM(), state=AgentState(), config={})
+    assert (a1.role_key, a2.role_key) == ("lin", "xumian")
+    a1.memory.store_message("user", "凛的悄悄话", role_id=a1.role_key)
+    a2.memory.store_message("user", "眠的悄悄话", role_id=a2.role_key)
+    only_lin = mem.recent_messages(role_id="lin")
+    only_xu = mem.recent_messages(role_id="xumian")
+    assert [m["content"] for m in only_lin] == ["凛的悄悄话"]
+    assert [m["content"] for m in only_xu] == ["眠的悄悄话"]
+    assert len(mem.recent_messages()) == 2          # 不过滤=全量（PC 兼容）
+
+def test_backfill_and_unread(tmp_path):
+    """旧库迁移：'' 行一次性归活跃角色；未读=assistant 消息超已读指针。"""
+    _, mem = _agent(tmp_path)
+    mem.con.execute("INSERT INTO messages(role, content, channel, created_at) VALUES ('user','前世','','x')")
+    mem.con.commit()
+    assert mem.message_role_gaps() == 1
+    assert mem.backfill_message_roles("lin") == 1
+    assert mem.message_role_gaps() == 0
+    mem.store_message("assistant", "凛主动消息", role_id="lin")
+    mem.store_message("assistant", "眠主动消息", role_id="xumian")
+    assert mem.unread_counts() == {"lin": 1, "xumian": 1}
+    mem.mark_role_read("lin")
+    assert mem.unread_counts() == {"xumian": 1}  # 凛清零，眠不受影响
+
+def test_legacy_schema_migrates_role_id(tmp_path):
+    """旧库（messages 无 role_id 列）init_db 迁移补列，存量行不丢。"""
+    import sqlite3
+    db = tmp_path / "old.db"
+    con = sqlite3.connect(db)
+    con.execute("""CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT,
+        role TEXT NOT NULL, content TEXT NOT NULL, channel TEXT NOT NULL DEFAULT 'qq',
+        created_at TEXT NOT NULL, energy_at REAL, mood_at TEXT,
+        tone_at TEXT NOT NULL DEFAULT '', attachments TEXT NOT NULL DEFAULT '')""")
+    con.execute("INSERT INTO messages(role, content, created_at) VALUES ('user','旧行','x')")
+    con.commit(); con.close()
+    MemoryStore(db_path=str(db), config={}, provider=FakeEmbed())  # init_db 迁移
+    cols = {r[1] for r in sqlite3.connect(db).execute("PRAGMA table_info(messages)")}
+    assert "role_id" in cols

@@ -157,7 +157,7 @@ private fun fmtHm(s: String): String = parseIso(s)?.let { HM_FMT.format(it) } ?:
 private fun actMap(key: String): String = mapOf(
     "wake_routine" to "晨间梳洗", "focused_practice" to "在专注做事", "reset" to "在路上",
     "personal_interest_a" to "在自己的爱好里", "personal_interest_b" to "在自己的爱好里",
-    "quiet_rest" to "歇着", "sleep" to "睡眠中",
+    "quiet_rest" to "歇着", "sleep" to "睡眠中", "gap" to "在发呆间隙",
     // 许眠（异地恋人卡）
     "commute_transit" to "在通勤路上", "model_training_work" to "在跑训练",
     "late_takeout_dinner" to "在吃夜宵外卖", "meme_archiving" to "在收藏表情包",
@@ -368,10 +368,10 @@ private fun Modifier.border1(dark: Boolean): Modifier =
 // ==================== 页面2：羁绊图谱 Relationship Metrics ====================
 
 @Composable
-fun RelationshipDetailScreen(onBack: () -> Unit) {
+fun RelationshipDetailScreen(onBack: () -> Unit, role: String = "") {
     val dark = androidx.compose.foundation.isSystemInDarkTheme()
     var data by remember { mutableStateOf<JSONObject?>(null) }
-    LaunchedEffect(Unit) { data = bridgeJson("relationship_trend") }
+    LaunchedEffect(role) { data = bridgeJson("relationship_trend", role) }
 
     GalaxyPage(title = "羁绊图谱", onBack = onBack) {
         val d = data
@@ -519,57 +519,6 @@ fun SleepDetailScreen(onBack: () -> Unit) {
                 }
             }
             Spacer(Modifier.height(16.dp))
-            // ---- 角色当前作息（2026-09-01 用户指令：作息会随用户移动，展示移动结果） ----
-            val rr = d.optJSONObject("role_rhythm")
-            if (rr != null && rr.length() > 0) {
-                val napping = rr.optBoolean("is_napping")
-                val offset = rr.optInt("offset_minutes", 0)
-                val maxOff = rr.optInt("max_offset_minutes", 720)
-                GalaxyCard(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("${rr.optString("name", "她")}的当前作息", fontSize = 14.sp,
-                            fontWeight = FontWeight.Medium, color = PrimaryInk(),
-                            modifier = Modifier.weight(1f))
-                        GalaxyTag(
-                            if (napping) "睡梦中" else "清醒",
-                            if (napping) AccentBlue else AccentSage)
-                    }
-                    Spacer(Modifier.height(10.dp))
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(rr.optString("wake_at", "—").ifEmpty { "—" },
-                                fontSize = 24.sp, fontWeight = FontWeight.Bold, color = PrimaryInk())
-                            Text("起床", fontSize = 11.sp, color = Muted())
-                        }
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(rr.optString("sleep_at", "—").ifEmpty { "—"},
-                                fontSize = 24.sp, fontWeight = FontWeight.Bold, color = PrimaryInk())
-                            Text("就寝", fontSize = 11.sp, color = Muted())
-                        }
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(if (offset == 0) "基准"
-                                 else "${if (offset > 0) "+" else ""}$offset" + "分",
-                                fontSize = 24.sp, fontWeight = FontWeight.Bold,
-                                color = if (offset == 0) PrimaryInk() else AccentTaupe)
-                            Text(if (maxOff < 720) "作息偏移·上限±${maxOff / 60}h"
-                                 else "作息偏移", fontSize = 11.sp, color = Muted())
-                        }
-                    }
-                    val place = rr.optString("now_place")
-                    val activity = rr.optString("now_activity")
-                    if (!napping && (place.isNotEmpty() || activity.isNotEmpty())) {
-                        Spacer(Modifier.height(10.dp))
-                        Text(
-                            "此刻（${rr.optString("local_time", "")}）" +
-                                listOfNotNull(
-                                    activity.takeIf { it.isNotEmpty() }?.let { actMap(it) },
-                                    place.takeIf { it.isNotEmpty() }
-                                ).joinToString(" · "),
-                            fontSize = 12.sp, color = Muted())
-                    }
-                }
-                Spacer(Modifier.height(16.dp))
-            }
             // 底部：分段分布条（设备无脑电分期→按实际入睡/苏醒绘占比；诚实文案注明）
             val cycles = d.optJSONArray("cycles") ?: JSONArray()
             GalaxyCard(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {

@@ -69,7 +69,8 @@ CREATE TABLE IF NOT EXISTS messages (
     energy_at  REAL,
     mood_at    TEXT,
     tone_at    TEXT NOT NULL DEFAULT '',
-    attachments TEXT NOT NULL DEFAULT ''
+    attachments TEXT NOT NULL DEFAULT '',
+    role_id    TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
 
@@ -199,6 +200,13 @@ CREATE TABLE IF NOT EXISTS user_nicknames (
     PRIMARY KEY (role_id, nickname)
 );
 
+-- 多角色未读角标：last_read_id=已读指针（按消息自增 id 计，开会话页=追平）
+CREATE TABLE IF NOT EXISTS role_reads (
+    role_id      TEXT PRIMARY KEY,
+    last_read_id INTEGER NOT NULL DEFAULT 0,
+    updated_at   TEXT NOT NULL
+);
+
 -- FTS5 全文索引（BM25 检索，trigram 分词以支持中文），触发器自动同步
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     content, content='messages', content_rowid='id', tokenize='trigram'
@@ -311,6 +319,17 @@ def init_db(db_path: str | Path, dim: int = EMBEDDING_DIM, provider=None) -> sql
             logger.info("memories_fts rebuilt for %s memories", mem_count)
     except Exception as e:
         logger.warning("memories_fts migration check failed: %s", e)
+    # 迁移：messages 补 role_id 列（多角色会话隔离，旧库无新列；存量行留
+    # ''，由 app boot 时回填为当时的活跃角色——store.py 不认识"凛"这种业务值）
+    try:
+        mcols = {r["name"] for r in con.execute("PRAGMA table_info(messages)").fetchall()}
+        if "role_id" not in mcols:
+            con.execute("ALTER TABLE messages ADD COLUMN role_id TEXT NOT NULL DEFAULT ''")
+            logger.info("messages migration: added column role_id")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_messages_role ON messages(role_id, id)")
+        con.commit()
+    except Exception as e:
+        logger.warning("messages role_id migration failed: %s", e)
     # 迁移：agent_state 补 R1 列（R1_SPEC 5，旧库无新列）
     try:
         cols = {r["name"] for r in con.execute("PRAGMA table_info(agent_state)").fetchall()}

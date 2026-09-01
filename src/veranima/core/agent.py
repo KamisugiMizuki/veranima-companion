@@ -139,6 +139,10 @@ class Agent:
         # 值。PC（QQ/桌宠）=默认 "qq" 不变；安卓 device-config 置 "im"——历史导出/
         # 排查不再被误导成 QQ 链路。仅显示/查询标签，gate 分桶走各自 config。
         self.message_channel = str(self.config.get("channel_tag") or "qq")
+        # 多角色会话隔离键（MOMENTS_MULTIROLE_SPEC P1）：角色目录名；
+        # PC/QQ 端单角色时代=空串（读写全部不过滤，行为逐字不变）
+        _src = str(getattr(self.card, "source_path", "") or "").replace("\\", "/")
+        self.role_key = _src.split("/")[-2] if _src.endswith("character.json") and _src.count("/") >= 2 else ""
         self._history: list[dict] = []
         self._last_reply_ts: float | None = None  # 上一条回复时间（延迟信号用）
         self._last_search_request: dict[str, str] | None = None
@@ -188,7 +192,7 @@ class Agent:
                 )
                 logger.info("restored agent state: %s", self.state.summary())
             hist_limit = self.config.get("chat", {}).get("history_max_messages", 20)
-            recent = self.memory.recent_messages(limit=hist_limit)
+            recent = self.memory.recent_messages(limit=hist_limit, role_id=(self.role_key or None))
             self._history = [
                 self._history_entry(m["role"], m["content"], m.get("created_at"))
                 for m in recent
@@ -752,7 +756,7 @@ class Agent:
         review = MonthlyReview(self.memory, llm=self.llm)
         text = review.generate(name=self.card.name)
         # 回顾本身也作为一条 assistant 消息入档
-        self.memory.store_message("assistant", text, self.state.energy, self.state.mood)
+        self.memory.store_message("assistant", text, self.state.energy, self.state.mood, role_id=self.role_key)
         self._append_history_message("assistant", text)
         return text
 
@@ -1281,7 +1285,7 @@ class Agent:
         if not msgs:
             opening = self._sanitize_monologue(
                 self.card.first_mes or f"你好，我是{self.card.name}。今天想聊点什么？")
-            self.memory.store_message("assistant", opening, self.state.energy, self.state.mood)
+            self.memory.store_message("assistant", opening, self.state.energy, self.state.mood, role_id=self.role_key)
             self._append_history_message("assistant", opening)
             self._persist_state()
             return opening
@@ -1349,7 +1353,7 @@ class Agent:
         interaction_now = now or datetime.datetime.now(datetime.timezone.utc)
         if channel == "im" and any(token in user_text for token in ("你在哪", "你现在在哪里", "你在什么地方")):
             answer = self.current_space_answer(interaction_now)
-            self.memory.store_message("assistant", answer, self.state.energy, self.state.mood, channel=self.message_channel)
+            self.memory.store_message("assistant", answer, self.state.energy, self.state.mood, channel=self.message_channel, role_id=self.role_key)
             self._history.append(self._history_entry("user", user_text))
             self._history.append(self._history_entry("assistant", answer))
             self._persist_state()
@@ -1379,7 +1383,7 @@ class Agent:
                 "user", user_text + (" [图片]" * len(images) if images else ""),
                 self.state.energy, self.state.mood,
                 channel="pet" if channel == "tts" else self.message_channel,
-                attachments=attachments,
+                attachments=attachments, role_id=self.role_key,
             )
             scope = resolved_scope
             self.memory.archive_sleep_message(
@@ -1465,6 +1469,7 @@ class Agent:
         user_msg_id = self.memory.store_message(
             "user", store_text, self.state.energy, self.state.mood,
             channel="pet" if channel == "tts" else self.message_channel, attachments=attachments,
+            role_id=self.role_key,
         )
         self._process_tension_user_message(store_text, channel=channel, message_id=user_msg_id)
         self._capture_user_info_gap(user_text, user_msg_id, channel, resolved_scope)
@@ -1795,7 +1800,7 @@ class Agent:
         if channel == "im" and not tone:
             # P2：im 通道追加轻量情绪分类（失败/关闭→空，UI 回退 mood）
             tone = self._classify_tone(reply)
-        self.memory.store_message("assistant", reply, self.state.energy, self.state.mood,
+        self.memory.store_message("assistant", reply, self.state.energy, self.state.mood, role_id=self.role_key,
                                   channel="pet" if channel == "tts" else self.message_channel, tone=tone)
         if sleep_archive_ids_to_process:
             self.memory.mark_sleep_messages_processed(sleep_archive_ids_to_process)
@@ -2673,7 +2678,7 @@ class Agent:
         同时更新问候族合并窗口起点（所有主动源共享的唯一记账点）。
         """
         channel = channel or self.message_channel
-        self.memory.store_message("assistant", text, self.state.energy, self.state.mood, channel=channel)
+        self.memory.store_message("assistant", text, self.state.energy, self.state.mood, channel=channel, role_id=self.role_key)
         self._append_history_message("assistant", text)
         self._mark_proactive_sent(now)  # 测试注入同一时间线；生产 None=真实时刻
 
@@ -3095,7 +3100,7 @@ class Agent:
             msg = "下午好。"
         else:
             msg = "晚上好。今天过得怎么样？"
-        self.memory.store_message("assistant", msg, self.state.energy, self.state.mood)
+        self.memory.store_message("assistant", msg, self.state.energy, self.state.mood, role_id=self.role_key)
         self._append_history_message("assistant", msg)
         return msg
 
