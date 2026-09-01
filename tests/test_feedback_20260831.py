@@ -238,3 +238,46 @@ def test_woken_notice_consumes_greeting_slot(tmp_path, monkeypatch):
     b = Agent(card=card, memory=memory, llm=FakeLLM(),
               state=AgentState.from_snapshot(memory.load_state()), config={})
     assert b.tick_proactive(now=now + datetime.timedelta(minutes=2)) == []
+
+
+# ---------- 10. 待织池：素材攒窗合织（2026-09-01 用户裁决 v2） ----------
+
+def test_pending_materials_weave_when_window_opens(tmp_path, monkeypatch):
+    """窗口关着→素材攒池不单独发；窗口开→池内全部素材织进同一条消息（信息不丢）。
+    时间线全部用朴素本地时刻注入（stamp 与判定同一时钟，无 UTC/本地混算）。"""
+    card, memory = _agent(tmp_path)
+    a = Agent(card=card, memory=memory, llm=FakeLLM(), state=AgentState(), config={})
+    woven_in = {}
+
+    def fake_weave(texts):
+        woven_in["texts"] = list(texts)
+        return "｜".join(texts)
+    monkeypatch.setattr(a, "_weave_ritual", fake_weave)
+    monkeypatch.setattr(a, "_adapt_schedule_to_user",
+                        lambda wh, now, out: out.append("作息挪一挪"))
+    # 本地 8:00：+71min=9:11 仍在 morning 窗内（槽位不漂移）；合并窗口起点
+    # 由 record 记真实时刻，注入判定用 abs 差——两点都满足
+    t0 = datetime.datetime.combine(datetime.date.today(), datetime.time(8, 0))
+    # ① 睡醒公告（旁路源走 record 记账，注入同一时间线：窗口起点=t0）
+    a.record_proactive_message("刚发过一条睡醒公告", channel="im", now=t0)
+    # ② 7:11 tick：窗口关 → tick 不发、也不织（问候+adapt 素材进池；
+    #    顺带验证 2min<5min 静默期同样挡发送）
+    assert a.tick_proactive(now=t0 + datetime.timedelta(minutes=2)) == []
+    assert woven_in.get("texts") is None
+    assert len(a._ritual_pending) == 2  # greeting + schedule_adapt 双素材
+    # ③ 8:20（窗口 71min 后开 + 距末条用户消息>5min）：两素材织进同一条
+    msgs = a.tick_proactive(now=t0 + datetime.timedelta(minutes=71))
+    assert len(msgs) == 1 and "｜" in msgs[0]        # 单条=编织产物
+    assert set(woven_in["texts"]) == {"早。今天有什么打算？", "作息挪一挪"}  # 信息零丢失
+    assert a._ritual_pending == []
+
+
+def test_weave_falls_back_to_concat(tmp_path, monkeypatch):
+    """LLM 编织失败=分段拼接回退：宁可不美不能丢信息。"""
+    card, memory = _agent(tmp_path)
+    a = Agent(card=card, memory=memory, llm=FakeLLM(), state=AgentState(), config={})
+    monkeypatch.setattr(a, "_short_task",
+                        lambda task, **kw: (_ for _ in ()).throw(LLMError("down")))
+    out = a._weave_ritual(["第一件事A", "第二件事B"])
+    assert "第一件事A" in out and "第二件事B" in out
+    assert a._weave_ritual(["只有一件"]) == "只有一件"

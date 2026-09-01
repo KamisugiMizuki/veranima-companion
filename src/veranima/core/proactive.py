@@ -17,15 +17,17 @@ from ..memory.store import MemoryStore
 
 logger = logging.getLogger(__name__)
 
-# 问候型主动触发源清单（2026-09-01 用户提议）：tick_proactive 引擎按此优先级
-# 逐源求值，一轮最多放行一条；跨轮撞车由 Agent 的全局合并窗口统一仲裁。
-# 新增触发源=写一个 _ritual_* 生成器并注册进本表，不碰引擎。
+# 问候型主动触发源清单（2026-09-01 用户裁决 v2）：tick_proactive 求值全表、
+# 到期素材**全部收集**，一次织成同一条语义连续的消息（或多段连发）发出——
+# 不损失信息、不各自单发导致上下文断裂。新增触发源=写一个求值函数并注册。
+# （异步旁路源=睡醒公告/心跳/追问等不在此表：它们与 tick 消息撞车由
+#  proactive.merge_window_minutes 合并窗口错峰，窗口内素材不销毁、下轮并入。）
 RITUAL_SOURCES = (
     "greeting",        # 时段问候（早/午/晚，每日每时段去重）
     "sleep_hint",      # 26h 无作息报告轻提示（每日一次）
     "occasion",        # 节庆/纪念日（每日一次）
     "schedule_adapt",  # 角色作息向用户偏移的理由消息（每日一次）
-    "meal",            # 三餐提醒（每餐当日一次，兜底位）
+    "meal",            # 三餐提醒（每餐当日一次）
 )
 
 MEAL_SLOTS = {

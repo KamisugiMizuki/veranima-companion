@@ -251,6 +251,9 @@ class Agent:
         self.promises = PromiseBook(memory)
 
         # 主动触发（定时问候 + 节庆纪念 + 饭点兜底；CLI/QQ/安卓共用 tick_proactive）
+        # 待织池：合并窗口关着时到期素材攒在这里，窗口一开全部织成一条
+        # （ponytail: 仅内存态，重启丢当窗素材=可接受，主动消息非交易数据）
+        self._ritual_pending: list[dict] = []
         self.greeter = GreetingScheduler()
         self.occasion = OccasionChecker()
         # 当日去重键从状态快照恢复（在 _persist_state 里随关系快照落库）
@@ -2397,36 +2400,13 @@ class Agent:
             context={"calendar_source": "greeter/occasion"},
             channel="qq",  # 闸门分桶路由（PC 与安卓都走 qq 桶，安卓该桶已 gen_config 归零）；落库标签见下
         )
-        # 闸门先行（2026-08-31 用户反馈「醒了」三连发修复）：原顺序里作息适应
-        # 消息在 gate 之前生成，decision 不放行也照样 return msgs 漏发。
+        # 场景/日上限/静默时段（gate）仍然整体拦截：不放行时收集都不做，
+        # 去重键不消耗（defer 语义）。
         decision = self.gate.decide(
             cand, scene=self.scene_lock.current(),
             now=now_ts,  # 测试注入；生产传真实时间
         )
         if not decision.allow:
-            return []
-        # 用户活跃静默期（2026-08-31 用户反馈「醒了」三连发）：刚回过用户话，
-        # 13 秒后又蹦出作息通知/睡眠总结 = 闹钟行为。最近 5 分钟有用户消息则本轮
-        # ritual 整体让位（问候/提醒都等下一轮，去重键未消耗，不丢当日额度）。
-        try:
-            for row in reversed(self.memory.recent_messages(limit=5)):
-                if row.get("role") == "user":
-                    import datetime as _dt
-                    seen = _dt.datetime.fromisoformat(str(row.get("created_at")).replace("Z", "+00:00"))
-                    if seen.tzinfo is None:
-                        seen = seen.replace(tzinfo=_dt.timezone.utc)
-                    ref = now if isinstance(now, datetime.datetime) else datetime.datetime.now(datetime.timezone.utc)
-                    if ref.tzinfo is None:
-                        ref = ref.replace(tzinfo=_dt.timezone.utc)
-                    if abs((ref - seen).total_seconds()) < 5 * 60:
-                        return []
-                    break
-        except Exception as e:
-            logger.debug("ritual user-active check failed: %s", e)
-        # 问候族合并窗口（2026-09-01 用户反馈 07:09/07:11 两条早安背靠背）：
-        # 任何问候族消息（含本函数外的睡醒公告/心跳）发出后 60 分钟内整体让位。
-        # defer 语义=去重键不消耗，窗口过后当日额度仍在。
-        if not self.proactive_merge_open(now):
             return []
         # 三餐锚点按用户作息调整（2026-08-30 用户拍板）：从最近睡眠周期推导起床时间
         try:
@@ -2435,64 +2415,88 @@ class Agent:
         except Exception as e:
             logger.debug("meal anchor adjust failed: %s", e)
 
-        # ---- 触发源清单求值（proactive.RITUAL_SOURCES，一轮最多放行一条）----
-        # 每个源=「检查到候选 → 产出文本」的小函数；短路顺序即优先级。
-        def _src_greeting():
+        # ---- 触发源清单求值（proactive.RITUAL_SOURCES）：全表收集到期素材进
+        # 待织池，合并窗口一开就把池里所有素材织成一条语义连续的消息发出
+        # （2026-09-01 用户裁决 v2：连发几条不是问题，语义接不上才是；
+        #  睡醒公告后一小时才单发作息公告的因果脱节=素材攒到下条消息里说）----
+        # 去重键在收集时消费：素材一经产出必进某条消息（编织失败回退分段
+        # 拼接），唯一例外=进程在窗口期内存活不过 TTL 崩溃丢池（可接受，
+        # 主动消息非交易数据）。
+        materials: list[dict] = []
+
+        def _collect_greeting():
             slot = self.greeter.due_greeting(now=now)
-            return self.greeting_message(slot) if slot else ""  # 8.7.5 个性化问候
+            return [{"source": "greeting", "text": self.greeting_message(slot)}] if slot else []
 
-        def _src_sleep_hint():
-            return self._missing_sleep_report_hint(now)  # 26h 无作息报告轻提示（日一次）
+        def _collect_sleep_hint():
+            hint = self._missing_sleep_report_hint(now)  # 26h 无作息报告轻提示（日一次）
+            return [{"source": "sleep_hint", "text": hint}] if hint else []
 
-        def _src_occasion():
+        def _collect_occasion():
             occasion = self.occasion.due_occasion(self.memory, now=now)
-            return self.occasion.occasion_reaction(occasion, self.card.name) if occasion else ""
+            if not occasion:
+                return []
+            return [{"source": "occasion",
+                     "text": self.occasion.occasion_reaction(occasion, self.card.name)}]
 
-        def _src_schedule_adapt():
-            # 偏移照常执行，仅理由消息进问候族（2026-08-31 三连发修复的语义保持）
+        def _collect_schedule_adapt():
+            # 偏移立即执行（作息适应不依赖消息发送）；理由素材交编织器
             out: list[str] = []
             self._adapt_schedule_to_user(wake_hour, now, out)
-            return out[0] if out else ""
+            return [{"source": "schedule_adapt", "text": t} for t in out]
 
-        def _src_meal():
-            # 饭点兜底：问候窗口内整体让位；依恋 <0.4 不发；用户睡眠中不发
-            in_greeting_slot = self.greeter.slot_at(now) is not None
-            if in_greeting_slot or self.state.user_asleep or self.state.attachment < 0.4:
-                return ""
+        def _collect_meal():
+            # 依恋 <0.4 不发（"自己人"行为）；用户睡眠中不发；meal.due 当日各餐去重。
+            # 问候窗口内饭点整体让位（2026-08 双发修复不变式）：「中午好吃过饭了吗」
+            # 与「到饭点了」不叠发同一话题位——窗口内到点的餐顺延到窗口外再提醒。
+            if (self.greeter.slot_at(now) is not None
+                    or self.state.user_asleep or self.state.attachment < 0.4):
+                return []
             meal_sent_ids = {
                 str(row.get("candidate_id") or "")
                 for row in self.memory.recent_proactive_feedback(source="meal", limit=30)
             }
             due = self.meals.due(now=now, sent_ids=meal_sent_ids)
             if not due:
-                return ""
+                return []
             meal_name, meal_text, meal_cid = due
-            text = self._meal_message(meal_name, meal_text)
-            if text:
-                self.memory.record_proactive_feedback(
-                    source="meal", channel=self.message_channel, candidate_id=meal_cid)
-            return text
+            self.memory.record_proactive_feedback(
+                source="meal", channel=self.message_channel, candidate_id=meal_cid)
+            return [{"source": "meal", "text": meal_text, "meal": meal_name}]
 
-        generators = {
-            "greeting": _src_greeting,
-            "sleep_hint": _src_sleep_hint,
-            "occasion": _src_occasion,
-            "schedule_adapt": _src_schedule_adapt,
-            "meal": _src_meal,
+        collectors = {
+            "greeting": _collect_greeting,
+            "sleep_hint": _collect_sleep_hint,
+            "occasion": _collect_occasion,
+            "schedule_adapt": _collect_schedule_adapt,
+            "meal": _collect_meal,
         }
-        for source_name in RITUAL_SOURCES:
+        for source_name in RITUAL_SOURCES:  # 清单顺序=素材排列顺序（织入时的话题先后）
             try:
-                msg = generators[source_name]()
+                materials.extend(collectors[source_name]())
             except Exception as e:
                 logger.debug("ritual source %s failed: %s", source_name, e)
-                continue
-            if msg:
-                msgs.append(msg)
-                break  # 一轮一条（源内部去重键已消耗的，让位方不补发）
+
+        # 攒池 → 窗口开闸织发（ponytail: 池仅存内存；崩了丢当窗素材，
+        # 升级路径=池随 agent_state 持久化，出现可观测丢信投诉再做）
+        pending = self._ritual_pending
+        ref_ts = (now if isinstance(now, datetime.datetime)
+                  else datetime.datetime.fromtimestamp(now or time.time())).timestamp()
+        pending[:] = [m for m in pending if ref_ts - m["ts"] < 180 * 60]  # TTL：早招呼不拖到午后
+        pending.extend({**m, "ts": ref_ts} for m in materials)
+        if pending and self._ritual_send_open(now):
+            pool, self._ritual_pending[:] = list(pending), []
+            if len(pool) == 1 and pool[0]["source"] == "meal":
+                # 单条饭点走原有口语化改写
+                msgs.append(self._meal_message(pool[0]["meal"], pool[0]["text"]))
+            else:
+                woven = self._weave_ritual([m["text"] for m in pool])
+                if woven:
+                    msgs.append(woven)
         # ---- 清单求值结束 ----
         if not (persist is False) and msgs:
             for msg in msgs:
-                self.record_proactive_message(msg, channel=self.message_channel)
+                self.record_proactive_message(msg, channel=self.message_channel, now=now)
                 # 问句记期待（追问闭环的燃料；QQ 路径走自己的 _record_qq_expectation）
                 try:
                     self.record_proactive_expectation(msg, source="ritual", channel=self.message_channel)
@@ -2504,7 +2508,8 @@ class Agent:
             self.gate.commit(cand)
         return msgs
 
-    def record_proactive_message(self, text: str, *, channel: str | None = None) -> None:
+    def record_proactive_message(self, text: str, *, channel: str | None = None,
+                                 now=None) -> None:
         """发送成功后写入主动 assistant 消息，避免发送失败污染历史。
 
         channel=None → 用 self.message_channel（安卓 device-config 标 im）。
@@ -2513,11 +2518,68 @@ class Agent:
         channel = channel or self.message_channel
         self.memory.store_message("assistant", text, self.state.energy, self.state.mood, channel=channel)
         self._append_history_message("assistant", text)
-        self._mark_proactive_sent()
+        self._mark_proactive_sent(now)  # 测试注入同一时间线；生产 None=真实时刻
 
-    def _mark_proactive_sent(self) -> None:
-        self._last_proactive_sent_at = datetime.datetime.now(
-            datetime.timezone.utc).isoformat(timespec="seconds")
+    def _ritual_send_open(self, now=None) -> bool:
+        """待织池的发送闸：合并窗口开 + 最近 5 分钟没有用户消息（刚聊完不插话，
+        2026-08-31「醒了」三连发教训）。不满足=素材继续攒池，下一 tick 再判。"""
+        if not self.proactive_merge_open(now):
+            return False
+        try:
+            for row in reversed(self.memory.recent_messages(limit=5)):
+                if row.get("role") == "user":
+                    seen = self._naive_local(datetime.datetime.fromisoformat(
+                        str(row.get("created_at")).replace("Z", "+00:00")))
+                    ref = (now if isinstance(now, datetime.datetime)
+                           else datetime.datetime.fromtimestamp(now or time.time()))
+                    return abs((self._naive_local(ref) - seen).total_seconds()) >= 5 * 60
+                break
+        except Exception as e:
+            logger.debug("ritual user-active check failed: %s", e)
+        return True
+
+    def _weave_ritual(self, texts: list[str]) -> str:
+        """把多条到期素材织成一条语义连续的主动消息（2026-09-01 用户裁决 v2）。
+
+        素材=各触发源的成品/半成品文本；LLM 负责串成一段自然的话，信息一条不丢、
+        因果顺接（睡醒→作息调整→吃饭这种链条在一条里说完成立）。LLM 失败=回退
+        分段拼接（语义连续性降级，但信息零丢失——宁可不美不能丢）。"""
+        if not texts:
+            return ""
+        if len(texts) == 1:
+            return texts[0].strip()
+        task = (
+            "你手上同时有几件想对用户说的事（都成立、都不能丢）：\n"
+            + "\n".join(f"{i + 1}. {t.strip()}" for i, t in enumerate(texts))
+            + "\n把它们合成一条自然连贯的消息，像一个人的连续口吻一次说完："
+              "有事由和先后，用『对了』『顺便』『正好』这类过渡把话题串起来，"
+              "不要编号、不要分段并列、不要漏掉任何一件事的内容。只发消息本身。"
+        )
+        woven = ""
+        # 素材多条→思考量更大：首试默认预算，被截断则加倍重试一次（仍败=拼接回退）
+        for budget in (None, 2048):
+            try:
+                woven = (self._short_task(task, max_tokens=budget) or "").strip()
+            except Exception as e:
+                logger.debug("ritual weave llm failed (budget=%s): %s", budget, e)
+                woven = ""
+            if woven:
+                break
+        return woven or "\n\n".join(t.strip() for t in texts if t.strip())
+
+    @staticmethod
+    def _naive_local(dt_value):
+        """datetime → 朴素本地时刻（库内 _now() 存的是带时区 ISO；注入的多为朴素本地。
+        双向归一到同一时间制再比较，杜绝 aware/naive 相减的隐性错位。"""
+        if dt_value.tzinfo is not None:
+            return dt_value.astimezone().replace(tzinfo=None)
+        return dt_value
+
+    def _mark_proactive_sent(self, now=None) -> None:
+        stamp = now or datetime.datetime.now(datetime.timezone.utc)
+        if isinstance(stamp, (int, float)):
+            stamp = datetime.datetime.fromtimestamp(stamp, datetime.timezone.utc)
+        self._last_proactive_sent_at = stamp.astimezone().isoformat(timespec="seconds")
 
     def proactive_merge_open(self, now=None) -> bool:
         """问候族合并窗口（2026-09-01 用户反馈：07:09 睡醒公告与 07:11 时段问候
@@ -2535,11 +2597,11 @@ class Agent:
         try:
             then = _dt.datetime.fromisoformat(last)
             if then.tzinfo is None:
-                then = then.replace(tzinfo=_dt.timezone.utc)
+                then = then.astimezone()  # 朴素值=本地钟（全库统一约定）
             ref = now or _dt.datetime.now(_dt.timezone.utc)
             if isinstance(ref, _dt.datetime) and ref.tzinfo is None:
-                ref = ref.replace(tzinfo=_dt.timezone.utc)
-            return (ref - then).total_seconds() >= window * 60
+                ref = ref.astimezone()
+            return abs((ref - then).total_seconds()) >= window * 60
         except (TypeError, ValueError):
             return True
 
