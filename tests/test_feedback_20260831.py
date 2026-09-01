@@ -550,3 +550,43 @@ def test_legacy_schema_migrates_role_id(tmp_path):
     MemoryStore(db_path=str(db), config={}, provider=FakeEmbed())  # init_db 迁移
     cols = {r[1] for r in sqlite3.connect(db).execute("PRAGMA table_info(messages)")}
     assert "role_id" in cols
+
+
+# ---------- 16. 通知角色署名 + 头像查找（2026-09-01 用户裁决） ----------
+
+def test_drain_pending_carries_role_name(tmp_path):
+    """drain_pending 元素={role,name,text}：通知标题取角色名（微信式）。"""
+    import importlib
+    import sys
+    root = pathlib.Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(root / "android" / "fuyuno" / "app" / "src" / "main" / "python"))
+    try:
+        br = importlib.import_module("bridge")
+    finally:
+        sys.path.remove(str(root / "android" / "fuyuno" / "app" / "src" / "main" / "python"))
+    br._pending.clear()
+    br._pending.append({"role": "xumian", "name": "许眠", "text": "在吗"})
+    import json as _j
+    out = _j.loads(br.drain_pending())
+    assert out["messages"][0]["name"] == "许眠"
+    assert out["messages"][0]["role"] == "xumian"
+
+def test_avatar_path_convention(tmp_path):
+    """portrait.jpg 约定优先；缺→portraits/ 首图兜底；再缺=''。"""
+    import importlib, sys
+    root = pathlib.Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(root / "android" / "fuyuno" / "app" / "src" / "main" / "python"))
+    try:
+        br = importlib.import_module("bridge")
+    finally:
+        sys.path.remove(str(root / "android" / "fuyuno" / "app" / "src" / "main" / "python"))
+    br.boot.root = tmp_path
+    rd = tmp_path / "characters" / "foo"
+    rd.mkdir(parents=True)
+    assert br.avatar_path("foo") == ""
+    (rd / "portrait.jpg").write_bytes(b"x")
+    assert br.avatar_path("foo").endswith("portrait.jpg")
+    (rd / "portrait.jpg").unlink()
+    (rd / "portraits" / "a.png").parent.mkdir()
+    (rd / "portraits" / "a.png").write_bytes(b"y")
+    assert br.avatar_path("foo").endswith("a.png")

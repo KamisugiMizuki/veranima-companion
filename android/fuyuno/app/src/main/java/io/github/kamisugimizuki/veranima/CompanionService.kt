@@ -32,10 +32,13 @@ class CompanionService : Service() {
                     val bridge = Python.getInstance().getModule("bridge")
                     val r = JSONObject(bridge.callAttr("drain_pending").toString())
                     val msgs = r.getJSONArray("messages")
-                    for (i in 0 until msgs.length()) notifyProactive(msgs.getString(i))
-                    // 苏醒总结（用户报告「醒了」后角色口吻睡眠总结）走同一条主动通知
+                    for (i in 0 until msgs.length()) {
+                        val o = msgs.getJSONObject(i)
+                        notifyProactive(o.getString("text"), o.optString("name"), o.optString("role"))
+                    }
+                    // 苏醒总结走同一条主动通知（活跃角色口吻，角色名=当前卡）
                     val summary = bridge.callAttr("sleep_summary_pending").toString()
-                    if (summary.isNotEmpty() && summary != "None") notifyProactive(summary)
+                    if (summary.isNotEmpty() && summary != "None") notifyProactive(summary, "", "")
                     // 前台应用感知（UsageStats→包名+app名→LLM 判断动作）：仅授权后生效，内部有冷却
                     foregroundApp()?.let { (pkg, label) ->
                         bridge.callAttr("visual_note", pkg, label)
@@ -68,16 +71,25 @@ class CompanionService : Service() {
     private fun bigIcon(): android.graphics.Bitmap =
         BitmapFactory.decodeResource(resources, R.mipmap.ic_launcher)
 
-    private fun notifyProactive(text: String) {
+    private fun roleBigIcon(role: String): android.graphics.Bitmap? = try {
+        if (role.isBlank()) null
+        else BitmapFactory.decodeFile(java.io.File(filesDir, "characters/$role/portrait.jpg").absolutePath)
+    } catch (e: Exception) { null }
+
+    private fun notifyProactive(text: String, name: String = "", role: String = "") {
         val pi = PendingIntent.getActivity(
             this, 1, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+        // 微信式：主标题=发消息的角色名，正文=消息内容；大图标=该角色头像（缺图回退应用图标）
+        val title = name.ifBlank { runCatching {
+            JSONObject(Python.getInstance().getModule("bridge").callAttr("get_settings").toString())
+                .optString("active_character") } .getOrDefault("Veranima") }
         mgr().notify(System.currentTimeMillis().toInt(),
             NotificationCompat.Builder(this, CHANNEL_PROACTIVE)
                 .setSmallIcon(R.drawable.ic_stat_veranima)
                 .setColorized(true)
                 .setColor(0xFF7B8FA1.toInt())
-                .setLargeIcon(bigIcon())
-                .setContentTitle("驹川冬乃")
+                .setLargeIcon(roleBigIcon(role) ?: bigIcon())
+                .setContentTitle(title)
                 .setContentText(text)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(text))
                 .setAutoCancel(true)

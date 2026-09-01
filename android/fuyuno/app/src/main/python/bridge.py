@@ -13,7 +13,7 @@ from veranima.app import create_agent  # 多角色注册表与 boot 共用（P1�
 
 log = logging.getLogger("fuyuno.bridge")
 
-_pending: list[str] = []  # tick 产出的主动消息，Kotlin 轮询取走
+_pending: list[dict] = []  # tick 产出的主动消息（{role,name,text}），Kotlin 轮询取走
 
 
 def _render(agent, text: str) -> str:
@@ -82,12 +82,12 @@ def _tick_loop(interval: float = 60.0) -> None:
                 if text:
                     agent.gate.commit(cand)
                     agent.record_proactive_message(text, channel="im")
-                    _pending.append(_render(agent, text))
+                    _pending.append({"role": agent.role_key, "name": agent.card.name, "text": _render(agent, text)})
                     sent = True
                     log.info("schedule notice queued: %s", text[:60])
             if not sent:
                 for msg in agent.tick_proactive():
-                    _pending.append(_render(agent, msg))
+                    _pending.append({"role": agent.role_key, "name": agent.card.name, "text": _render(agent, msg)})
                     sent = True
                     log.info("proactive queued: %s", msg[:60])
             off = getattr(boot, "offline", None)
@@ -95,13 +95,13 @@ def _tick_loop(interval: float = 60.0) -> None:
                 # late_reply/heartbeat 内部已落库（store_message），不再 record
                 msg = agent.late_reply() or agent.heartbeat()
                 if msg:
-                    _pending.append(_render(agent, msg))
+                    _pending.append({"role": agent.role_key, "name": agent.card.name, "text": _render(agent, msg)})
                     log.info("offline think queued: %s", msg[:60])
             if not sent:
                 # 无人应答追问（期待过期后一句轻追问；每期待至多一次）
                 fu = agent.followup_message()
                 if fu:
-                    _pending.append(_render(agent, fu))
+                    _pending.append({"role": agent.role_key, "name": agent.card.name, "text": _render(agent, fu)})
                     log.info("followup queued: %s", fu[:60])
             digest = getattr(agent, "maybe_nightly_digest", None)
             if callable(digest):
@@ -151,7 +151,10 @@ def sleep_summary_pending() -> str:
 
 
 def drain_pending() -> str:
-    """取走全部待发主动消息（Kotlin 侧发通知）。"""
+    """取走全部待发主动消息（Kotlin 侧发通知）。
+
+    messages=[{role,name,text}]：role/name=发消息的角色（微信式通知标题）。
+    旧版纯字符串数组的形状转换在 Kotlin 侧不做——本函数是唯一生产者。"""
     out = list(_pending)
     _pending.clear()
     return json.dumps({"ok": True, "messages": out}, ensure_ascii=False)
@@ -1023,10 +1026,20 @@ def mark_read(role: str) -> str:
 
 
 def avatar_path(role: str) -> str:
-    """列表页方头像：characters/<role>/portrait.jpg（用户供图约定），缺=''→UI 首字母块。"""
+    """列表页方头像：约定 characters/<role>/portrait.jpg（用户供图）；
+    缺→回退 portraits/ 目录首图（项目既有结构）；再缺=''→UI 首字母块。"""
     try:
-        f = Path(getattr(boot, "root", ".")) / "characters" / str(role) / "portrait.jpg"
-        return str(f) if f.is_file() else ""
+        rd = Path(getattr(boot, "root", ".")) / "characters" / str(role)
+        f = rd / "portrait.jpg"
+        if f.is_file():
+            return str(f)
+        pd = rd / "portraits"
+        if pd.is_dir():
+            fs = [x for x in sorted(pd.iterdir())
+                  if x.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")]
+            if fs:
+                return str(fs[0])
+        return ""
     except Exception:
         return ""
 
@@ -1118,12 +1131,12 @@ def roles_list() -> str:
             except Exception:
                 nm = d.name
             l = last.get(d.name) or {}
-            av = root / "characters" / d.name / "portrait.jpg"
+            avp = avatar_path(d.name)
             out.append({"id": d.name, "name": nm,
                         "preview": str(l.get("content") or "")[:40],
                         "time": str(l.get("created_at") or ""),
                         "unread": int(unread.get(d.name) or 0),
-                        "avatar": str(av) if av.is_file() else "",
+                        "avatar": avp,
                         "active": agent.role_key == d.name})
         return json.dumps({"ok": True, "roles": out}, ensure_ascii=False)
     except Exception as e:

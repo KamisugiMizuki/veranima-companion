@@ -1,4 +1,5 @@
-"""从 C:/Users/Kamisugi/Downloads/windows_2k_hime.jpg 生成全端图标（一次性脚本，产物入库）。
+"""从 C:/Users/Kamisugi/Downloads/Veranima.png 生成安卓 launcher 图标（一次性脚本，产物入库）。
+旧源 windows_2k_hime.jpg（桌宠时代）；2026-09-01 品牌统一为 Veranima。
 
 中心裁方 → 各尺寸：安卓 mipmap mdpi~xxxhdpi(48..192) + 512 playstore；
 Electron：256px PNG + 多尺寸 .ico。
@@ -6,7 +7,7 @@ Electron：256px PNG + 多尺寸 .ico。
 from pathlib import Path
 from PIL import Image
 
-SRC = Path("C:/Users/Kamisugi/Downloads/windows_2k_hime.jpg")
+SRC = Path("C:/Users/Kamisugi/Downloads/Veranima.png")
 ROOT = Path(__file__).resolve().parent.parent  # android/fuyuno
 PROJ = ROOT.parent.parent                      # veranima 根
 

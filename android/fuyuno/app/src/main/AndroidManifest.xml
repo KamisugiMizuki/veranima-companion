@@ -11,7 +11,7 @@
     <!-- 前台应用感知（UsageStats；需用户在设置页授权「使用情况访问」） -->
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:ignore="ProtectedPermissions"/>
     <application
-        android:label="駒川 冬乃"
+        android:label="Veranima"
         android:icon="@mipmap/ic_launcher"
         android:debuggable="true"
         android:theme="@style/Theme.Fuyuno">
