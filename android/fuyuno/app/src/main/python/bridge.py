@@ -706,11 +706,77 @@ def sleep_status() -> str:
                            "last": est, "cycles": [
                 {"id": c["id"], "fell_asleep_at": c.get("fell_asleep_at") or "",
                  "woke_at": c.get("woke_at") or "",
-                 "summary": c.get("summary") or ""} for c in cycles]},
+                 "summary": c.get("summary") or ""} for c in cycles],
+                           "role_rhythm": _role_rhythm(agent)},
             ensure_ascii=False)
     except Exception as e:
         log.error("sleep_status failed: %s", e)
         return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+def _role_rhythm(agent) -> dict:
+    """角色当前作息（2026-09-01 用户指令：睡眠报告页展示）：真实值全部来自
+    schedule_runtime 快照——偏移量/当前状态/当前活动+地点/今日锚点。
+
+    起床/就寝锚点= circadian ± 累计偏移（作息适应是平移 circadian 生效的，
+    见 generate_next_day offset_adjustments）。日程未启用 → {}。"""
+    try:
+        import datetime
+        rt = getattr(agent, "schedule_runtime", None)
+        if rt is None:
+            return {}
+        tz = getattr(rt, "timezone", None)
+        try:
+            from zoneinfo import ZoneInfo
+            local = datetime.datetime.now(ZoneInfo(rt.outline.timezone))
+        except Exception:
+            local = datetime.datetime.now()
+        circ = rt.outline.circadian
+        offset = int(rt.schedule_offset_minutes or 0)
+
+        def _shift(hhmm: str, minutes: int) -> str:
+            try:
+                h, m = (int(x) for x in str(hhmm).split(":"))
+            except (ValueError, AttributeError):
+                return ""
+            t = (h * 60 + m + minutes) % (24 * 60)
+            return f"{t // 60:02d}:{t % 60:02d}"
+
+        state = str(rt.state.state)  # awake / sleep_preparing / sleeping
+        ctx = rt.current_context(local)
+        place = str(getattr(ctx, "place_label", "") or "")
+        # 人可读优先：activity_key（wake_routine…）；gap/sleep_window 等退回 category
+        activity = str(getattr(ctx, "activity_key", "") or getattr(ctx, "activity_category", "") or "")
+        rhythm = {
+            "name": agent.card.name,
+            "state": state,
+            "offset_minutes": offset,
+            "wake_at": _shift(circ.wake_start, offset) if circ else "",
+            "sleep_at": _shift(circ.sleep_start, offset) if circ else "",
+            "is_napping": state in {"sleeping", "sleep_preparing"},
+            "now_activity": activity,
+            "now_place": place,
+            "local_time": local.strftime("%H:%M"),
+        }
+        # 今日实际活动块（计划里带时刻的项；给用户看"她这一天怎么过"的前 4 段）
+        try:
+            plan = rt._next_day_plan or rt.outline.build_day_plan(
+                local, day_profile=rt.profile_override or None,
+                space_preference=rt.space_preference)
+            blocks = []
+            for item in (plan.items if plan else ())[:6]:
+                st = getattr(item, "planned_start", None)
+                blocks.append({
+                    "label": str(getattr(item, "activity_key", "") or getattr(item, "rule_id", "")),
+                    "at": st.strftime("%H:%M") if hasattr(st, "strftime") else "",
+                })
+            rhythm["today_blocks"] = blocks[:4]
+        except Exception:
+            pass
+        return rhythm
+    except Exception as e:
+        log.debug("_role_rhythm failed: %s", e)
+        return {}
 
 
 def memories_list(layer: str = "", category: str = "", limit: int = 200) -> str:

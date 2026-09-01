@@ -187,3 +187,54 @@ def test_channel_tag_defaults_qq(tmp_path):
     a = Agent(card=card, memory=memory, llm=FakeLLM(), state=AgentState(), config={})
     a.record_proactive_message("PC 默认")
     assert memory.recent_messages(limit=1)[0]["channel"] == "qq"
+
+
+# ---------- 8. 问候族合并窗口（2026-09-01 用户反馈 07:09/07:11 双早安） ----------
+
+def test_merge_window_blocks_second_ritual(tmp_path):
+    """任何问候族消息发出后 60min 内，其余源（含 tick_proactive 全链）让位。"""
+    card, memory = _agent(tmp_path)
+    a = Agent(card=card, memory=memory, llm=FakeLLM(), state=AgentState(), config={})
+    now = datetime.datetime.combine(datetime.date.today(), datetime.time(12, 30))
+    assert a.tick_proactive(now=now) != []          # 首发：中午问候
+    b = Agent(card=card, memory=memory, llm=FakeLLM(),
+              state=AgentState.from_snapshot(memory.load_state()), config={})
+    later = now + datetime.timedelta(minutes=20)
+    assert b.tick_proactive(now=later) == []        # 窗口内：睡醒公告/心跳同款撞车场景
+    # 窗口过后：问候族恢复（当日 meal 兜底位仍可在非问候窗口出）
+    assert b.proactive_merge_open(now + datetime.timedelta(minutes=61))
+
+
+def test_record_proactive_message_stamps_ledger(tmp_path):
+    """记账点唯一性：heartbeat/late_reply 等旁路源都经 record_proactive_message 更新窗口起点。"""
+    card, memory = _agent(tmp_path)
+    a = Agent(card=card, memory=memory, llm=FakeLLM(), state=AgentState(), config={})
+    assert a.proactive_merge_open()  # 无历史=开
+    a.record_proactive_message("角色睡醒公告")
+    assert not a.proactive_merge_open()  # 刚发过=关（2026-09-01 07:09→07:11 场景）
+
+
+def test_ritual_sources_single_message(tmp_path, monkeypatch):
+    """清单求值：多源同时到期也只出一条（greeting 优先级最高）。"""
+    card, memory = _agent(tmp_path)
+    a = Agent(card=card, memory=memory, llm=FakeLLM(), state=AgentState(), config={})
+    monkeypatch.setattr(a, "_missing_sleep_report_hint", lambda now="": "提示X")
+    now = datetime.datetime.combine(datetime.date.today(), datetime.time(12, 30))
+    msgs = a.tick_proactive(now=now)
+    assert len(msgs) == 1 and msgs[0] != "提示X"  # greeting 先命中；sleep_hint 不再叠发
+
+
+# ---------- 9. 睡醒公告吃掉时段问候位（2026-09-01 用户反馈 07:09/07:11 双早安） ----------
+
+def test_woken_notice_consumes_greeting_slot(tmp_path, monkeypatch):
+    card, memory = _agent(tmp_path)
+    a = Agent(card=card, memory=memory, llm=FakeLLM(), state=AgentState(), config={})
+    monkeypatch.setattr(a.llm, "is_model_loaded", lambda: True)
+    now = datetime.datetime.combine(datetime.date.today(), datetime.time(7, 9))
+    text = a.schedule_notice_text("woke", now)  # FakeLLM 返回「好的。」
+    assert text
+    assert now.strftime("%Y-%m-%d") + ":morning" in a.greeter.greeted
+    # 重启回灌后依然生效：同日上午 ritual 问候不再发
+    b = Agent(card=card, memory=memory, llm=FakeLLM(),
+              state=AgentState.from_snapshot(memory.load_state()), config={})
+    assert b.tick_proactive(now=now + datetime.timedelta(minutes=2)) == []

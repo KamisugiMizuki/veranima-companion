@@ -21,15 +21,19 @@ def test_freshness_mapping():
     assert freshness_for((start, now.date().isoformat()), now) == "oneMonth"
 
 
+_today = datetime.now(timezone.utc).date()
+_CRAWLED = (_today - timedelta(days=28)).isoformat()
+
+
 def _bing_response(request):
     body = __import__("json").loads(request.content)
     assert body["query"]
     assert "Authorization" in request.headers  # 无 Bearer 也算断言过头，只断存在
     return httpx.Response(200, json={"_type": "SearchResponse", "data": {"webPages": {"value": [
         {"name": "结果一", "url": "https://a.example/x", "displayUrl": "a.example",
-         "snippet": "短摘要", "summary": "这是博查的长摘要内容", "dateLastCrawled": "2026-08-01T00:00:00Z"},
+         "snippet": "短摘要", "summary": "这是博查的长摘要内容", "dateLastCrawled": f"{_CRAWLED}T00:00:00Z"},
         {"name": "结果二", "url": "https://b.example/y", "displayUrl": "b.example",
-         "snippet": "第二条摘要也够长可以的", "dateLastCrawled": "2026-08-02T00:00:00Z"},
+         "snippet": "第二条摘要也够长可以的", "dateLastCrawled": f"{(_today - timedelta(days=27)).isoformat()}T00:00:00Z"},
         {"name": "缺摘要", "url": "https://c.example/z", "snippet": ""},  # 应被丢
     ]}}})
 
@@ -52,12 +56,13 @@ def test_search_parses_and_maps_fields(monkeypatch):
         return real_client(**kw)
 
     monkeypatch.setattr(httpx, "Client", fake_client)
-    results = c.search("衣服 质量 评价", time_range=("2026-08-01", "2026-08-28"))
+    results = c.search("衣服 质量 评价", time_range=(
+        _CRAWLED, (_today - timedelta(days=1)).isoformat()))
 
     assert captured["url"] == "https://api.bochaai.com/v1/web-search"
     assert captured["auth"] == "Bearer sk-test"
     assert captured["body"]["summary"] is True
-    # ISO 日期元组 start=2026-08-01 距今 28 天 → oneMonth（不被 _coerce 降级为 oneDay）
+    # 起日=28 天前 → oneMonth（日期用相对今天计算，避免日历推进后跨档=日期地雷）
     assert captured["body"]["freshness"] == "oneMonth"
     assert len(results) == 2  # 缺摘要的被丢
     r0 = results[0]

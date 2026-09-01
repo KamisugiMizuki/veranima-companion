@@ -17,6 +17,17 @@ from ..memory.store import MemoryStore
 
 logger = logging.getLogger(__name__)
 
+# 问候型主动触发源清单（2026-09-01 用户提议）：tick_proactive 引擎按此优先级
+# 逐源求值，一轮最多放行一条；跨轮撞车由 Agent 的全局合并窗口统一仲裁。
+# 新增触发源=写一个 _ritual_* 生成器并注册进本表，不碰引擎。
+RITUAL_SOURCES = (
+    "greeting",        # 时段问候（早/午/晚，每日每时段去重）
+    "sleep_hint",      # 26h 无作息报告轻提示（每日一次）
+    "occasion",        # 节庆/纪念日（每日一次）
+    "schedule_adapt",  # 角色作息向用户偏移的理由消息（每日一次）
+    "meal",            # 三餐提醒（每餐当日一次，兜底位）
+)
+
 MEAL_SLOTS = {
     "breakfast": (8, "到饭点了，先去吃点早饭。"),
     "lunch": (12, "到饭点了，先去吃午饭。"),
@@ -76,6 +87,15 @@ class GreetingScheduler:
         if 18 <= h < 23:
             return "evening"
         return None
+
+    def consume_slot(self, now=None) -> None:
+        """把当前时段标记为已问候（2026-09-01：角色睡醒公告本身就是这一时段的
+        招呼——别的源发过，时段问候不再重复说「早安」）。"""
+        slot = self.slot_at(now)
+        if slot is not None:
+            import datetime
+            now = now or datetime.datetime.now()
+            self.greeted.add(f"{now.date()}:{slot}")
 
     def due_greeting(self, now=None) -> str | None:
         """返回当前应发的问候类型（morning/noon/evening）或 None（已问候过/非窗口）。"""

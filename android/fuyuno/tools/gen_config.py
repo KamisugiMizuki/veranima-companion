@@ -43,6 +43,8 @@ def main(root: Path, out: Path):
     p["max_per_day"] = 0
     p["min_gap_minutes"] = 0
     p["quiet_hours_enabled"] = False
+    # 问候族合并窗口（2026-09-01）：安卓 gate 归零后跨源撞车的唯一闸，显式给足
+    p["merge_window_minutes"] = 60
     ch = {k: {**v, "max_per_day": 0, "min_gap_minutes": 0}
           for k, v in (p.get("channels") or {}).items()}
     ch["im"] = {"enabled": True, "max_per_day": 0, "min_gap_minutes": 0}

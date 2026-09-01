@@ -35,7 +35,7 @@ from ..tools.search import (
 )
 from .character import CharacterCard
 from .learning import LanguageMirror, StyleLearner, extract_feedback
-from .proactive import GreetingScheduler, OccasionChecker
+from .proactive import GreetingScheduler, OccasionChecker, RITUAL_SOURCES
 from .promises import PromiseBook
 from .review import MonthlyReview
 from .state import AgentState
@@ -255,6 +255,10 @@ class Agent:
         self.occasion = OccasionChecker()
         # 当日去重键从状态快照恢复（在 _persist_state 里随关系快照落库）
         _rel_snap = self.state.relationship or {}
+        # 合并窗口起点：最近一次问候族主动消息发出时刻（UTC ISO）。所有
+        # greeting-family 触发源（时段问候/睡醒公告/作息适应/提示/饭点/心跳…）
+        # 共享这把闸：窗口内不再放行第二条（2026-09-01 用户反馈 07:09/07:11/08:04）。
+        self._last_proactive_sent_at = str(_rel_snap.get("last_proactive_sent_at") or "")
         self.greeter.restore_state(_rel_snap.get("greeted") or [])
         _today_key = datetime.date.today().isoformat()
         self.occasion.triggered.update(
@@ -398,7 +402,7 @@ class Agent:
                 return f"用户的{cn.get(meal, '饭')}点落在你睡着的时段里，你睡了之后没办法提醒ta按时吃"
         return ""
 
-    def schedule_notice_text(self, notice: str) -> str:
+    def schedule_notice_text(self, notice: str, now=None) -> str:
         tasks = {
             "sleep_preparing": "自然告诉用户你有点困，准备睡了，接下来起床前不会回复。只说一句，不要提系统或日程。",
             "woke": "自然告诉用户你刚恢复清醒。如果睡眠期间有消息，只表达刚看到，不编造消息内容。只说一句。",
@@ -411,7 +415,13 @@ class Agent:
             care = self._sleep_care_note()
             if care:
                 task += f"睡前顺带想到：{care}。把这个意思自然地融进同一句话里，像随口一想，不要提醒口吻。"
-        return self._short_task(task)
+        text = self._short_task(task)
+        # 睡醒公告=角色自己说的"早安"（2026-09-01 用户反馈 07:09 公告+07:11 时段
+        # 问候双早安）：它吃掉当前时段问候位，本时段 ritual 问候不再重复招呼
+        if text and notice == "woke":
+            self.greeter.consume_slot(now)
+            self._persist_state()
+        return text
 
     def schedule_notice_candidate(self, notice: str, channel: str):
         if self.schedule_runtime is None or notice not in {"sleep_preparing", "woke"}:
@@ -735,6 +745,7 @@ class Agent:
             # 同一天反复重发早安/中午好）——随关系快照落库，重启读回
             rel["greeted"] = self.greeter.to_state()
             rel["occasions"] = sorted(self.occasion.triggered)
+            rel["last_proactive_sent_at"] = getattr(self, "_last_proactive_sent_at", "")
             self.state.relationship = rel
             self.memory.save_state(self.state.to_snapshot())
         except Exception as e:
@@ -2126,8 +2137,7 @@ class Agent:
             return "", ""
         if not reply:
             return "", ""
-        self.memory.store_message("assistant", reply, self.state.energy, self.state.mood, channel="pet")
-        self._append_history_message("assistant", reply)
+        self.record_proactive_message(reply, channel="pet")
         return reply, ja
 
     def _visual_match_episode(self, tag: str) -> bool:
@@ -2174,8 +2184,7 @@ class Agent:
             return "", ""
         if not reply:
             return "", ""
-        self.memory.store_message("assistant", reply, self.state.energy, self.state.mood, channel="pet")
-        self._append_history_message("assistant", reply)
+        self.record_proactive_message(reply, channel="pet")
         return reply, ja
 
     def task_result_story(self, result: dict) -> str:
@@ -2414,63 +2423,73 @@ class Agent:
                     break
         except Exception as e:
             logger.debug("ritual user-active check failed: %s", e)
+        # 问候族合并窗口（2026-09-01 用户反馈 07:09/07:11 两条早安背靠背）：
+        # 任何问候族消息（含本函数外的睡醒公告/心跳）发出后 60 分钟内整体让位。
+        # defer 语义=去重键不消耗，窗口过后当日额度仍在。
+        if not self.proactive_merge_open(now):
+            return []
         # 三餐锚点按用户作息调整（2026-08-30 用户拍板）：从最近睡眠周期推导起床时间
         try:
             wake_hour = self._user_wake_hour()
             self.meals.adjust_to_user_cycle(wake_hour)
         except Exception as e:
             logger.debug("meal anchor adjust failed: %s", e)
-        slot = self.greeter.due_greeting(now=now)
-        if slot:
-            # 8.7.5 个性化问候（结合最近记忆；LLM 不可用回退模板）
-            msg = self.greeting_message(slot)
-            msgs.append(msg)
-        # 未报告睡眠提示（2026-08-30 用户拍板）：有睡眠史但最近 26h 无任何
-        # 睡眠/苏醒报告 → 每日一次轻吐槽（LLM 生成，失败回退模板）
-        if not msgs:
-            try:
-                hint = self._missing_sleep_report_hint(now)
-                if hint:
-                    msgs.append(hint)
-            except Exception as e:
-                logger.debug("missing sleep hint failed: %s", e)
-        if not msgs:
+
+        # ---- 触发源清单求值（proactive.RITUAL_SOURCES，一轮最多放行一条）----
+        # 每个源=「检查到候选 → 产出文本」的小函数；短路顺序即优先级。
+        def _src_greeting():
+            slot = self.greeter.due_greeting(now=now)
+            return self.greeting_message(slot) if slot else ""  # 8.7.5 个性化问候
+
+        def _src_sleep_hint():
+            return self._missing_sleep_report_hint(now)  # 26h 无作息报告轻提示（日一次）
+
+        def _src_occasion():
             occasion = self.occasion.due_occasion(self.memory, now=now)
-            if occasion:
-                msg = self.occasion.occasion_reaction(occasion, self.card.name)
-                msgs.append(msg)
-        # 角色作息适应用户（2026-08-30 用户拍板「比较好玩」）：作息偏移照常执行，
-        # 但理由消息让位给问候/节庆（2026-08-31 三连发修复：一个 tick 只出一条）。
-        if not msgs:
-            try:
-                self._adapt_schedule_to_user(wake_hour, now, msgs)
-            except Exception as e:
-                logger.debug("schedule adapt failed: %s", e)
-        # 饭点兜底（2026-08 收编进问候引擎）：仅当本轮问候/节庆都没发时才轮到，
-        # 且 meal.due 内部对问候窗口互斥——「中午好吃过饭了吗」与「到饭点了」不叠发。
-        # 文案走 LLM 口语化（角色口吻），失败回退模板。
-        meal_sent_ids = {
-            str(row.get("candidate_id") or "")
-            for row in self.memory.recent_proactive_feedback(source="meal", limit=30)
+            return self.occasion.occasion_reaction(occasion, self.card.name) if occasion else ""
+
+        def _src_schedule_adapt():
+            # 偏移照常执行，仅理由消息进问候族（2026-08-31 三连发修复的语义保持）
+            out: list[str] = []
+            self._adapt_schedule_to_user(wake_hour, now, out)
+            return out[0] if out else ""
+
+        def _src_meal():
+            # 饭点兜底：问候窗口内整体让位；依恋 <0.4 不发；用户睡眠中不发
+            in_greeting_slot = self.greeter.slot_at(now) is not None
+            if in_greeting_slot or self.state.user_asleep or self.state.attachment < 0.4:
+                return ""
+            meal_sent_ids = {
+                str(row.get("candidate_id") or "")
+                for row in self.memory.recent_proactive_feedback(source="meal", limit=30)
+            }
+            due = self.meals.due(now=now, sent_ids=meal_sent_ids)
+            if not due:
+                return ""
+            meal_name, meal_text, meal_cid = due
+            text = self._meal_message(meal_name, meal_text)
+            if text:
+                self.memory.record_proactive_feedback(
+                    source="meal", channel=self.message_channel, candidate_id=meal_cid)
+            return text
+
+        generators = {
+            "greeting": _src_greeting,
+            "sleep_hint": _src_sleep_hint,
+            "occasion": _src_occasion,
+            "schedule_adapt": _src_schedule_adapt,
+            "meal": _src_meal,
         }
-        # 问候窗口内（早6-10/午11-14/晚18-23）饭点整体让位：锚点 8/12 点天然在
-        # 窗口里 → 实际只有 17 点晚餐作为独立提醒存活。这正是「饭点纳入问候」的效果。
-        in_greeting_slot = self.greeter.slot_at(now) is not None
-        # 关系阶段解锁（自检缺口④）：提醒吃饭是"自己人"行为，依恋 <0.4 不发
-        meal_gate_open = self.state.attachment >= 0.4
-        due_meal = None if (msgs or in_greeting_slot or not meal_gate_open) else self.meals.due(now=now, sent_ids=meal_sent_ids)
-        if due_meal:
-            meal_name, meal_text, meal_cid = due_meal
-            # 用户睡眠中不发三餐提醒（2026-08-30 用户拍板：作息优先级低于角色作息，
-            # 角色睡眠由 gate.character_sleeping_check 拦截，这里补用户睡眠侧）
-            if self.state.user_asleep:
-                due_meal = None
-            else:
-                meal_msg = self._meal_message(meal_name, meal_text)
-                if meal_msg:
-                    msgs.append(meal_msg)
-                    self.memory.record_proactive_feedback(
-                        source="meal", channel=self.message_channel, candidate_id=meal_cid)
+        for source_name in RITUAL_SOURCES:
+            try:
+                msg = generators[source_name]()
+            except Exception as e:
+                logger.debug("ritual source %s failed: %s", source_name, e)
+                continue
+            if msg:
+                msgs.append(msg)
+                break  # 一轮一条（源内部去重键已消耗的，让位方不补发）
+        # ---- 清单求值结束 ----
         if not (persist is False) and msgs:
             for msg in msgs:
                 self.record_proactive_message(msg, channel=self.message_channel)
@@ -2489,10 +2508,40 @@ class Agent:
         """发送成功后写入主动 assistant 消息，避免发送失败污染历史。
 
         channel=None → 用 self.message_channel（安卓 device-config 标 im）。
+        同时更新问候族合并窗口起点（所有主动源共享的唯一记账点）。
         """
         channel = channel or self.message_channel
         self.memory.store_message("assistant", text, self.state.energy, self.state.mood, channel=channel)
         self._append_history_message("assistant", text)
+        self._mark_proactive_sent()
+
+    def _mark_proactive_sent(self) -> None:
+        self._last_proactive_sent_at = datetime.datetime.now(
+            datetime.timezone.utc).isoformat(timespec="seconds")
+
+    def proactive_merge_open(self, now=None) -> bool:
+        """问候族合并窗口（2026-09-01 用户反馈：07:09 睡醒公告与 07:11 时段问候
+        两条"早安"背靠背）：任何一条问候族消息发出后的窗口期内，其余问候族
+        触发源一律让位。窗口 = proactive.merge_window_minutes（默认 60，0=关）。
+        """
+        import datetime as _dt
+        try:
+            window = int((self.config.get("proactive") or {}).get("merge_window_minutes", 60))
+        except (TypeError, ValueError):
+            window = 60
+        last = str(getattr(self, "_last_proactive_sent_at", "") or "")
+        if window <= 0 or not last:
+            return True
+        try:
+            then = _dt.datetime.fromisoformat(last)
+            if then.tzinfo is None:
+                then = then.replace(tzinfo=_dt.timezone.utc)
+            ref = now or _dt.datetime.now(_dt.timezone.utc)
+            if isinstance(ref, _dt.datetime) and ref.tzinfo is None:
+                ref = ref.replace(tzinfo=_dt.timezone.utc)
+            return (ref - then).total_seconds() >= window * 60
+        except (TypeError, ValueError):
+            return True
 
     def record_proactive_expectation(self, text: str, *, source: str,
                                      channel: str = "im", candidate_id: str = "") -> None:
@@ -2526,6 +2575,8 @@ class Agent:
         now = now or datetime.datetime.now().astimezone()
         if now.tzinfo is None:
             now = now.replace(tzinfo=datetime.timezone.utc)
+        if not self.proactive_merge_open(now):
+            return ""  # 问候族合并窗口（2026-09-01）：刚发过别的主动消息，追问排队
         try:
             rows = self.memory.recent_proactive_feedback(limit=100)
         except Exception:
@@ -2586,9 +2637,7 @@ class Agent:
                 "UPDATE proactive_feedback SET followup_status='' WHERE id=?", (row["id"],))
             self.memory.con.commit()
             return ""
-        self.memory.store_message("assistant", text, self.state.energy, self.state.mood,
-                                  channel=row.get("channel") or "im")
-        self._append_history_message("assistant", text)
+        self.record_proactive_message(text, channel=row.get("channel") or "im")
         return text
 
     def heartbeat(self, *, commit: bool = True) -> str:
@@ -2613,6 +2662,9 @@ class Agent:
             cand, scene=self.scene_lock.current(),
         ).allow:
             return ""
+        # 问候族合并窗口（2026-09-01）：刚发过任何问候族消息 → 破冰让位
+        if not self.proactive_merge_open():
+            return ""
         recent = self.memory.recent_messages(limit=8)
         if not recent or recent[-1]["role"] != "assistant":
             return ""  # 用户刚说完话或有未闭合对话，不需要破冰
@@ -2634,9 +2686,7 @@ class Agent:
                 )
                 reply = self._short_task(task, max_tokens=1024)
                 if reply:
-                    self.memory.store_message("assistant", reply, self.state.energy, self.state.mood,
-                                              channel=self.message_channel)
-                    self._append_history_message("assistant", reply)
+                    self.record_proactive_message(reply)
                     if commit:
                         self.gate.commit(cand)
                     return reply
@@ -2649,8 +2699,7 @@ class Agent:
             "（离线整理完毕）我突然想起你上次说的那个计划，后来怎么样了？",
         ]
         reply = pool[0]
-        self.memory.store_message("assistant", reply, self.state.energy, self.state.mood, channel=self.message_channel)
-        self._append_history_message("assistant", reply)
+        self.record_proactive_message(reply)
         if commit:
             self.gate.commit(cand)
         return reply
@@ -2696,8 +2745,7 @@ class Agent:
                     )
                     reply = self._short_task(task, max_tokens=1024)
                     if reply:
-                        self.memory.store_message("assistant", reply, self.state.energy, self.state.mood, channel=self.message_channel)
-                        self._append_history_message("assistant", reply)
+                        self.record_proactive_message(reply)
                         if commit:
                             self.gate.commit(cand)
                         return reply
@@ -2715,8 +2763,7 @@ class Agent:
         if not candidates:
             return ""
         msg = random.choice(candidates)
-        self.memory.store_message("assistant", msg, self.state.energy, self.state.mood, channel=self.message_channel)
-        self._append_history_message("assistant", msg)
+        self.record_proactive_message(msg)
         if commit:
             self.gate.commit(cand)
         return msg
