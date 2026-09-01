@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -736,6 +737,135 @@ class MemoryStore:
         for r in rows:
             out.setdefault(r["status"], []).append(r["nickname"])
         return out
+
+    # ---------- 好友动态（moments）+ 角色设置（role_settings） ----------
+
+    def role_settings_get(self, role_id: str) -> dict:
+        import json as _json
+        row = self.con.execute("SELECT config FROM role_settings WHERE role_id=?",
+                               (role_id,)).fetchone()
+        if not row:
+            return {}
+        try:
+            d = _json.loads(row["config"] or "{}")
+            return d if isinstance(d, dict) else {}
+        except Exception:
+            return {}
+
+    def role_settings_set(self, role_id: str, cfg: dict) -> None:
+        import json as _json
+        self.con.execute(
+            """INSERT INTO role_settings(role_id, config, updated_at) VALUES (?,?,?)
+               ON CONFLICT(role_id) DO UPDATE SET config=excluded.config,
+               updated_at=excluded.updated_at""",
+            (role_id, _json.dumps(cfg or {}, ensure_ascii=False), _now()))
+        self.con.commit()
+
+    def moment_publish(self, role_id: str, content: str, *, kind: str = "D05",
+                       source_ref: str = "", dedupe_key: str = "") -> int:
+        """发布动态；dedupe_key 撞 UNIQUE=同素材已发过，静默返回 0（天然幂等）。"""
+        content = str(content or "").strip()
+        if not content or not role_id:
+            return 0
+        key = dedupe_key or f"{role_id}|{kind}|{hashlib.sha1(content.encode()).hexdigest()[:12]}"
+        try:
+            cur = self.con.execute(
+                "INSERT INTO moments(role_id, content, kind, source_ref, dedupe_key, created_at)"
+                " VALUES (?,?,?,?,?,?)",
+                (role_id, content[:280], kind if kind in ("D01","D02","D03","D04","D05","D06","D07") else "D05",
+                 source_ref[:120], key[:200], _now()))
+            self.con.commit()
+            return int(cur.lastrowid)
+        except Exception:
+            return 0
+
+    def moments_count_today(self, role_id: str, day_iso: str) -> int:
+        return int(self.con.execute(
+            "SELECT COUNT(*) FROM moments WHERE role_id=? AND substr(created_at,1,10)=?",
+            (role_id, day_iso)).fetchone()[0])
+
+    def moments_last_at(self, role_id: str) -> str:
+        row = self.con.execute("SELECT MAX(created_at) FROM moments WHERE role_id=?",
+                               (role_id,)).fetchone()
+        return str(row[0] or "")
+
+    def moments_recent_kinds(self, role_id: str, limit: int = 2) -> list[str]:
+        rows = self.con.execute(
+            "SELECT kind FROM moments WHERE role_id=? ORDER BY id DESC LIMIT ?",
+            (role_id, max(1, int(limit)))).fetchall()
+        return [r[0] for r in rows]
+
+    def moments_recent_texts(self, role_id: str, limit: int = 5) -> list[str]:
+        rows = self.con.execute(
+            "SELECT content FROM moments WHERE role_id=? ORDER BY id DESC LIMIT ?",
+            (role_id, max(1, int(limit)))).fetchall()
+        return [r[0] for r in rows]
+
+    def moment_get(self, moment_id: int) -> dict | None:
+        row = self.con.execute("SELECT * FROM moments WHERE id=?", (int(moment_id),)).fetchone()
+        return dict(row) if row else None
+
+    def moment_feed(self, limit: int = 60, before_id: int | None = None) -> list[dict]:
+        """信息流：动态+每条的赞数/我是否赞过/最近评论。角色侧无已读概念，翻页按 id。"""
+        if before_id:
+            rows = self.con.execute(
+                "SELECT * FROM moments WHERE id < ? ORDER BY id DESC LIMIT ?",
+                (int(before_id), max(1, min(int(limit), 200)))).fetchall()
+        else:
+            rows = self.con.execute(
+                "SELECT * FROM moments ORDER BY id DESC LIMIT ?",
+                (max(1, min(int(limit), 200)),)).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            agg = self.con.execute(
+                """SELECT SUM(kind='like') AS likes,
+                          SUM(kind='like' AND actor='user') AS liked_by_me
+                   FROM moment_interactions WHERE moment_id=?""", (d["id"],)).fetchone()
+            cm = self.con.execute(
+                "SELECT actor, content, created_at FROM moment_interactions "
+                "WHERE moment_id=? AND kind IN ('comment','reply') ORDER BY id ASC LIMIT 20",
+                (d["id"],)).fetchall()
+            d["likes"] = int(agg["likes"] or 0)
+            d["liked_by_me"] = bool(agg["liked_by_me"])
+            d["comments"] = [dict(c) for c in cm]
+            out.append(d)
+        return out
+
+    def moment_toggle_like(self, moment_id: int, actor: str = "user") -> bool:
+        """点赞开关。返回操作后是否为已赞态。"""
+        cur = self.con.execute(
+            "SELECT id FROM moment_interactions WHERE moment_id=? AND actor=? AND kind='like'",
+            (int(moment_id), actor)).fetchone()
+        if cur:
+            self.con.execute("DELETE FROM moment_interactions WHERE id=?", (cur["id"],))
+            self.con.commit()
+            return False
+        self.con.execute(
+            "INSERT INTO moment_interactions(moment_id, actor, kind, content, created_at)"
+            " VALUES (?,?,'like','',?)", (int(moment_id), actor, _now()))
+        self.con.commit()
+        return True
+
+    def moment_comment(self, moment_id: int, content: str, actor: str = "user") -> int:
+        content = str(content or "").strip()
+        if not content:
+            return 0
+        cur = self.con.execute(
+            "INSERT INTO moment_interactions(moment_id, actor, kind, content, created_at)"
+            " VALUES (?,?,'comment',?,?)", (int(moment_id), actor, content[:200], _now()))
+        self.con.commit()
+        return int(cur.lastrowid)
+
+    def moment_reply(self, moment_id: int, content: str, actor: str) -> int:
+        content = str(content or "").strip()
+        if not content or not actor:
+            return 0
+        cur = self.con.execute(
+            "INSERT INTO moment_interactions(moment_id, actor, kind, content, created_at)"
+            " VALUES (?,?,'reply',?,?)", (int(moment_id), actor, content[:120], _now()))
+        self.con.commit()
+        return int(cur.lastrowid)
 
     def update_latest(self, memory_id: int, new_content: str, *, confidence: float = 1.0, meta: dict | None = None) -> MemoryEntry:
         """显式版本链：修正不覆盖——新版本入链，旧版本保留（DESIGN.md 写入与检索节）。

@@ -106,6 +106,9 @@ def _tick_loop(interval: float = 60.0) -> None:
             digest = getattr(agent, "maybe_nightly_digest", None)
             if callable(digest):
                 digest()
+            # 好友动态（P2）：活跃角色实时闸控生成；只入库，不通知不占未读
+            if getattr(agent, "moments", None) is not None:
+                agent.moments.tick()
         except Exception:
             log.exception("proactive tick failed")
 
@@ -1007,6 +1010,11 @@ def _agent_for(role: str = ""):
         a = create_agent(cfg, memory=active.memory, llm=active.llm)
         boot.agents[role] = a
         log.info("agent registry: %s booted (shared store)", role)
+        try:  # Q4 混合调度：后台角色打开时=凌晨批量补（此刻现场补 1 条）
+            if getattr(a, "moments", None) is not None:
+                a.moments.tick(catch_up=True)
+        except Exception:
+            log.debug("catch-up moment failed", exc_info=True)
         return a
     except Exception:
         log.exception("agent_for(%s) failed, fallback active", role)
@@ -1042,6 +1050,81 @@ def avatar_path(role: str) -> str:
         return ""
     except Exception:
         return ""
+
+
+def moments_feed(limit: int = 60, before_id: int = 0) -> str:
+    """好友动态信息流（Kotlin 渲染）：{id,role,name,content,kind,time,likes,
+    liked_by_me,comments:[{actor,content,created_at}]}，按日倒序平铺。"""
+    agent = getattr(boot, "agent", None)
+    if agent is None:
+        return json.dumps({"ok": False, "moments": []})
+    try:
+        rows = agent.memory.moment_feed(limit=int(limit),
+                                        before_id=(int(before_id) or None))
+        for d in rows:
+            d["name"] = role_label(d["role_id"]) if d["role_id"] != "user" else "我"
+        return json.dumps({"ok": True, "moments": rows}, ensure_ascii=False)
+    except Exception as e:
+        log.exception("moments_feed failed")
+        return json.dumps({"ok": False, "error": str(e), "moments": []})
+
+
+def moment_like(moment_id: int) -> str:
+    """用户点赞/取消点赞（toggle）。返回 {ok, liked}。"""
+    agent = getattr(boot, "agent", None)
+    if agent is None:
+        return json.dumps({"ok": False})
+    try:
+        liked = agent.memory.moment_toggle_like(int(moment_id), "user")
+        return json.dumps({"ok": True, "liked": liked})
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)})
+
+
+def moment_comment(moment_id: int, text: str, role: str = "") -> str:
+    """用户评论 → 角色即时回复（≤30字，P2 固定 character 风格；回复失败不吞评论）。"""
+    agent = _agent_for(role)
+    if agent is None:
+        return json.dumps({"ok": False})
+    try:
+        agent.memory.moment_comment(int(moment_id), str(text), "user")
+        reply = ""
+        try:
+            reply = agent.moments.reply_comment(int(moment_id), str(text))
+        except Exception:
+            log.debug("moment reply failed", exc_info=True)
+        if reply:
+            agent.memory.moment_reply(int(moment_id), reply, agent.role_key)
+        return json.dumps({"ok": True, "reply": reply}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)})
+
+
+def moment_settings(role: str) -> str:
+    """读该角色动态/主动设置（角色私产页开关组数据源）。"""
+    agent = _agent_for(role)
+    if agent is None:
+        return json.dumps({"ok": False})
+    return json.dumps({"ok": True, "settings": agent.moments.settings()}, ensure_ascii=False)
+
+
+def moment_set(role: str, group: str, key: str, value: str) -> str:
+    """写设置：group=moments/proactive，key=enabled/frequency/mention_user。
+    布尔用 '1'/'0'，其余原样存字符串（core merge 有默认值兜底）。"""
+    agent = _agent_for(role)
+    if agent is None:
+        return json.dumps({"ok": False})
+    try:
+        cfg = dict(agent.moments.settings())
+        g = dict(cfg.get(group) or {})
+        g[key] = (value in ("1", "true")) if value in ("0", "1", "true", "false") else value
+        cfg[group] = g
+        agent.memory.role_settings_set(agent.role_key, cfg)
+        if agent.role_key != str(role or agent.role_key):
+            pass  # 设置永远锚定被路由角色的 role_key（_agent_for 已保证）
+        return json.dumps({"ok": True, "settings": cfg}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)})
 
 
 def role_label(role: str) -> str:

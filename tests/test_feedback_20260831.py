@@ -590,3 +590,68 @@ def test_avatar_path_convention(tmp_path):
     (rd / "portraits" / "a.png").parent.mkdir()
     (rd / "portraits" / "a.png").write_bytes(b"y")
     assert br.avatar_path("foo").endswith("a.png")
+
+
+# ---------- 17. 好友动态引擎（MOMENTS_MULTIROLE_SPEC P2） ----------
+
+def _moment_agent(tmp_path, role="xumian"):
+    root = pathlib.Path(__file__).resolve().parents[1] / "characters"
+    card = Card.from_file(root / role / "character.json")
+    mem = MemoryStore(db_path=str(tmp_path / "mo.db"), config={}, provider=FakeEmbed())
+    a = Agent(card=card, memory=mem, llm=FakeLLM(), state=AgentState(),
+              config={"character_card": str(root / role / "character.json"),
+                      "root": str(root.parent), "virtual_schedule": {"enabled": True}})
+    a.state.mood = "开心"   # D03 情绪素材稳定命中（默认"平静"不产素材=空池）
+    return a, mem
+
+
+def test_moment_publish_dedupe(tmp_path):
+    """dedupe_key 撞 UNIQUE=静默 0：同素材永不二次成动态。"""
+    a, mem = _moment_agent(tmp_path)
+    id1 = mem.moment_publish("xumian", "今天跑完了", kind="D03", source_ref="m1", dedupe_key="k1")
+    id2 = mem.moment_publish("xumian", "换个内容也一样被拒", kind="D03", source_ref="m2", dedupe_key="k1")
+    assert id1 > 0 and id2 == 0
+    assert len(mem.moments_recent_texts("xumian")) == 1
+
+def test_moment_gate_and_tick(tmp_path):
+    """发布链：素材→闸→入库；同 tick 幂等；开关关掉即停发。"""
+    a, mem = _moment_agent(tmp_path)
+    now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+    n1 = a.moments.tick(now=now)
+    assert n1 == 1                                   # FakeLLM 织文成功（"好的。"）
+    assert mem.moments_count_today("xumian", now.date().isoformat()) == 1
+    assert a.moments.tick(now=now) == 0              # 6h 冷却（gap 闸）
+    # 关开关=硬闸
+    mem.role_settings_set("xumian", {"moments": {"enabled": False}})
+    far = now + __import__("datetime").timedelta(hours=48)
+    assert a.moments.tick(now=far) == 0
+
+def test_moment_tick_role_key_required(tmp_path):
+    """PC/QQ 无角色键：动态引擎自动禁用（不炸、不产生无主动态）。"""
+    card, memory = _agent(tmp_path)
+    a = Agent(card=card, memory=memory, llm=FakeLLM(), state=AgentState(), config={})
+    assert a.role_key == ""
+    assert a.moments.tick() == 0
+
+def test_moment_llm_fail_fallback(tmp_path):
+    """织文失败（LLMError）→ 素材原文降级入库：零丢失。"""
+    a, mem = _moment_agent(tmp_path / "f")
+    a._short_task = lambda *a_, **k_: (_ for _ in ()).throw(LLMError("boom"))
+    now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+    assert a.moments.tick(now=now) == 1
+    row = mem.moments_recent_texts("xumian", limit=1)[0]
+    assert len(row) > 2 and row != "好的。"            # 降级=素材文本非 LLM 假答
+
+def test_moment_interactions_store(tmp_path):
+    """赞=toggle 幂等；评论+角色回复都进流水。"""
+    a, mem = _moment_agent(tmp_path)
+    mid = mem.moment_publish("xumian", "测试动态", kind="D05", source_ref="x", dedupe_key="kk")
+    assert mem.moment_toggle_like(mid) is True
+    assert mem.moment_toggle_like(mid) is False
+    assert mem.moment_toggle_like(mid) is True
+    mem.moment_comment(mid, "哈哈哈", "user")
+    mem.moment_reply(mid, "笑什么", "xumian")
+    feed = mem.moment_feed()
+    d = [x for x in feed if x["id"] == mid][0]
+    assert d["likes"] == 1 and d["liked_by_me"] is True
+    assert [c["actor"] for c in d["comments"]] == ["user", "xumian"]

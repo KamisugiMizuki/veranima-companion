@@ -307,6 +307,10 @@ class Agent:
         from .proactive import MealReminderScheduler
         self.meals = MealReminderScheduler(
             (self.config.get("proactive") or {}).get("meal_reminders", {}))
+        # 好友动态引擎（MOMENTS_MULTIROLE_SPEC P2）：素材四源→频率闸→织文→入库。
+        # 懒 import 防环（moments 引 agent 类型仅注释层面）；无角色键时 tick 自动禁用。
+        from .moments import MomentsEngine
+        self.moments = MomentsEngine(self)
 
         # R4 时空沉浸：场景锁 + 通道互斥 + 主动仲裁（最小版，R4_SPEC 1）
         self.scene_lock = SceneLock()

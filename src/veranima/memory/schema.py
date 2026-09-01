@@ -207,6 +207,40 @@ CREATE TABLE IF NOT EXISTS role_reads (
     updated_at   TEXT NOT NULL
 );
 
+-- 好友动态（MOMENTS_MULTIROLE_SPEC P2）：动态=角色虚拟生活的自然溢出，
+-- 每条带 kind（D01-D07 溯源类型）与 dedupe_key（素材唯一键，重复生成被
+-- UNIQUE 静默拒绝=天然去重）；role_id='user'=用户动态（P4 才产生）。
+CREATE TABLE IF NOT EXISTS moments (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    role_id     TEXT NOT NULL,
+    content     TEXT NOT NULL,
+    kind        TEXT NOT NULL DEFAULT 'D05',
+    source_ref  TEXT NOT NULL DEFAULT '',
+    dedupe_key  TEXT NOT NULL UNIQUE,
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_moments_role ON moments(role_id, id);
+
+-- 赞/评流水（actor='user' 或角色目录名）。like 幂等在代码层查存在性，
+-- comment/reply 多条天然允许。
+CREATE TABLE IF NOT EXISTS moment_interactions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    moment_id  INTEGER NOT NULL,
+    actor      TEXT NOT NULL,
+    kind       TEXT NOT NULL CHECK (kind IN ('like','comment','reply')),
+    content    TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mi_moment ON moment_interactions(moment_id);
+
+-- 角色独立设置（role_settings）：JSON 一列走天下（moments/proactive/互动三组，
+-- 默认值在 core 侧 merge，不在库里铺列）。
+CREATE TABLE IF NOT EXISTS role_settings (
+    role_id    TEXT PRIMARY KEY,
+    config     TEXT NOT NULL DEFAULT '{{}}',
+    updated_at TEXT NOT NULL
+);
+
 -- FTS5 全文索引（BM25 检索，trigram 分词以支持中文），触发器自动同步
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     content, content='messages', content_rowid='id', tokenize='trigram'
