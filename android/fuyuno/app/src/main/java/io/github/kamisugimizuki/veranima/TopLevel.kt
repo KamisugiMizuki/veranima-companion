@@ -295,11 +295,19 @@ private fun MomentsFeed() {
             avatars = (0 until a.length()).associate { i ->
                 val r = a.getJSONObject(i); r.getString("id") to r.optString("avatar") } }
     }
+    var publishing by remember { mutableStateOf(false) }
     LaunchedEffect(tick) { load() }
     LaunchedEffect(openComment) { if (openComment != null) load() }
     Column(Modifier.fillMaxSize().background(PageBg()).statusBarsPadding()) {
-        Text("好友动态", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = PrimaryInk(),
-            modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp))
+        Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("好友动态", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = PrimaryInk(),
+                modifier = Modifier.weight(1f).padding(start = 20.dp))
+            Box(Modifier.clip(RoundedCornerShape(999.dp)).border(1.dp, CardBorder(), RoundedCornerShape(999.dp))
+                    .clickable { publishing = true }.padding(horizontal = 14.dp, vertical = 6.dp)) {
+                Text("＋ 发一条", fontSize = 13.sp, color = Muted())
+            }
+            Spacer(Modifier.width(16.dp))
+        }
         val list = rows
         when {
             list == null -> Text("加载中…", color = Muted(), modifier = Modifier.padding(20.dp))
@@ -330,6 +338,26 @@ private fun MomentsFeed() {
                 }
             }
         }
+    }
+    if (publishing) {
+        var draft by remember { mutableStateOf("") }
+        AlertDialog(onDismissRequest = { publishing = false },
+            confirmButton = {
+                TextButton(enabled = draft.isNotBlank(), onClick = {
+                    scope.launch {
+                        withContext(Dispatchers.IO) {
+                            bridge.callAttr("moment_publish_user", draft.trim()) }
+                        publishing = false; tick++
+                    }
+                }) { Text("发布", color = PrimaryInk()) }
+            },
+            dismissButton = { TextButton(onClick = { publishing = false }) { Text("取消", color = Muted()) } },
+            title = { Text("发一条动态", color = PrimaryInk(), fontSize = 16.sp) },
+            text = { OutlinedTextField(draft, { draft = it }, Modifier.fillMaxWidth(), minLines = 3,
+                placeholder = { Text("此刻想记录点什么…", color = MutedSoft()) },
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = PrimaryInk(), unfocusedBorderColor = Hairline())) },
+            containerColor = CardBg())
     }
     openComment?.let { mid ->
         MomentCommentDialog(mid, avatars,
@@ -364,14 +392,16 @@ private fun MomentCard(m: MomentRow, avatar: String, onLike: () -> Unit, onComme
         Text(m.content, fontSize = 15.sp, color = Body(), lineHeight = 22.sp,
             modifier = Modifier.padding(start = 50.dp))
         Spacer(Modifier.height(8.dp))
-        // 互动行：[♡ n][评论] 两枚描边胶囊（Galaxy）
+        // 互动行：[♡ n][评论] 两枚描边胶囊（Galaxy；自己的动态不出现点赞）
         Row(Modifier.padding(start = 50.dp), horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.clip(RoundedCornerShape(999.dp)).border(1.dp, CardBorder(), RoundedCornerShape(999.dp))
-                    .background(if (m.likedByMe) InvertSurface() else Color.Transparent)
-                    .clickable(onClick = onLike).padding(horizontal = 12.dp, vertical = 5.dp)) {
-                Text((if (m.likedByMe) "♥ " else "♡ ") + (if (m.likes > 0) m.likes.toString() else "赞"),
-                    fontSize = 12.sp, color = if (m.likedByMe) OnInvert() else Muted())
+            if (m.role != "user") {
+                Box(Modifier.clip(RoundedCornerShape(999.dp)).border(1.dp, CardBorder(), RoundedCornerShape(999.dp))
+                        .background(if (m.likedByMe) InvertSurface() else Color.Transparent)
+                        .clickable(onClick = onLike).padding(horizontal = 12.dp, vertical = 5.dp)) {
+                    Text((if (m.likedByMe) "♥ " else "♡ ") + (if (m.likes > 0) m.likes.toString() else "赞"),
+                        fontSize = 12.sp, color = if (m.likedByMe) OnInvert() else Muted())
+                }
             }
             Box(Modifier.clip(RoundedCornerShape(999.dp)).border(1.dp, CardBorder(), RoundedCornerShape(999.dp))
                     .clickable(onClick = onComment).padding(horizontal = 12.dp, vertical = 5.dp)) {
@@ -563,6 +593,15 @@ fun RoleSpaceScreen(role: String, onBack: () -> Unit) {
                         withContext(Dispatchers.IO) {
                             bridge.callAttr("moment_set", role, "interaction", "comment_response_style",
                                 listOf("character", "minimal", "none")[idx]) }
+                        settings = JSONObject(withContext(Dispatchers.IO) {
+                            bridge.callAttr("moment_settings", role).toString() }).optJSONObject("settings")
+                    }
+                }
+                SettingSwitch("她回访你的动态（赞/评）", ic.optBoolean("react_to_user_moments", false)) { on ->
+                    scope.launch {
+                        withContext(Dispatchers.IO) {
+                            bridge.callAttr("moment_set", role, "interaction", "react_to_user_moments",
+                                if (on) "1" else "0") }
                         settings = JSONObject(withContext(Dispatchers.IO) {
                             bridge.callAttr("moment_settings", role).toString() }).optJSONObject("settings")
                     }

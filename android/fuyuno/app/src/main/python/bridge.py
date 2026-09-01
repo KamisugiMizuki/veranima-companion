@@ -116,6 +116,8 @@ def _tick_loop(interval: float = 60.0) -> None:
             # 好友动态（P2）：活跃角色实时闸控生成；只入库，不通知不占未读
             if getattr(agent, "moments", None) is not None:
                 agent.moments.tick()
+                # P4 回访：开关开且有未反应的用户动态才可能动（引擎内部掷骰+静默记账）
+                agent.moments.maybe_react_to_user_moments()
         except Exception:
             log.exception("proactive tick failed")
 
@@ -1119,6 +1121,18 @@ def moment_comment(moment_id: int, text: str, role: str = "") -> str:
         if reply:
             agent.memory.moment_reply(int(moment_id), reply, agent.role_key)
         return json.dumps({"ok": True, "reply": reply}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)})
+
+
+def moment_publish_user(text: str) -> str:
+    """用户发一条动态（P4 裁决）。同内容幂等（dedupe=内容哈希）。"""
+    agent = getattr(boot, "agent", None)
+    if agent is None:
+        return json.dumps({"ok": False, "error": "未初始化"})
+    try:
+        mid = agent.memory.moment_publish_user(str(text))
+        return json.dumps({"ok": bool(mid), "id": mid}, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"ok": False, "error": str(e)})
 

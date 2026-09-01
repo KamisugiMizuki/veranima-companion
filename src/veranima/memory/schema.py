@@ -227,7 +227,7 @@ CREATE TABLE IF NOT EXISTS moment_interactions (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     moment_id  INTEGER NOT NULL,
     actor      TEXT NOT NULL,
-    kind       TEXT NOT NULL CHECK (kind IN ('like','comment','reply')),
+    kind       TEXT NOT NULL CHECK (kind IN ('like','comment','reply','seen')),
     content    TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );

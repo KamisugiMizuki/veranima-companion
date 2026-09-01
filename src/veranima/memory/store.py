@@ -832,6 +832,43 @@ class MemoryStore:
             out.append(d)
         return out
 
+    def moment_publish_user(self, content: str) -> int:
+        """用户发布动态（P4）。dedupe 用内容哈希：同一句话发两次=只有一条。"""
+        content = str(content or "").strip()
+        if not content:
+            return 0
+        key = "user|" + hashlib.sha1(content.encode()).hexdigest()[:16]
+        return self.moment_publish("user", content, kind="U", source_ref="", dedupe_key=key)
+
+    def moment_ack(self, moment_id: int, actor: str) -> None:
+        """角色已阅标记（回访掷骰静默时记账，防同一条反复摇骰子）。
+        独立 kind='seen'：不显示、不计数、与 like 语义分离。"""
+        self.con.execute(
+            "INSERT INTO moment_interactions(moment_id, actor, kind, content, created_at)"
+            " VALUES (?,?,'seen','',?)", (int(moment_id), actor, _now()))
+        self.con.commit()
+
+    def _ensure_mi_seen_kind(self) -> None:
+        """旧库 moment_interactions 的 CHECK 白名单没有 'seen' → 整表重建加值。"""
+        row = self.con.execute("SELECT sql FROM sqlite_master WHERE type='table' "
+                               "AND name='moment_interactions'").fetchone()
+        if row and "'seen'" not in (row[0] or ""):
+            self.con.executescript("""
+                CREATE TABLE moment_interactions_new (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    moment_id  INTEGER NOT NULL,
+                    actor      TEXT NOT NULL,
+                    kind       TEXT NOT NULL CHECK (kind IN ('like','comment','reply','seen')),
+                    content    TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL
+                );
+                INSERT INTO moment_interactions_new SELECT * FROM moment_interactions;
+                DROP TABLE moment_interactions;
+                ALTER TABLE moment_interactions_new RENAME TO moment_interactions;
+                CREATE INDEX IF NOT EXISTS idx_mi_moment ON moment_interactions(moment_id);
+            """)
+            self.con.commit()
+
     def moment_toggle_like(self, moment_id: int, actor: str = "user") -> bool:
         """点赞开关。返回操作后是否为已赞态。"""
         cur = self.con.execute(

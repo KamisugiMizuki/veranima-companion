@@ -24,7 +24,8 @@ DEFAULT_SETTINGS = {
                 "allowed_types": ["D01", "D02", "D03", "D04", "D05", "D06", "D07"]},
     "proactive": {"enabled": True, "frequency": "medium",
                   "allowed_types": []},   # 空=全放行；非空=RITUAL_SOURCES 白名单
-    "interaction": {"comment_response_style": "character", "dm_after_like": False},
+    "interaction": {"comment_response_style": "character", "dm_after_like": False,
+                    "react_to_user_moments": False},  # P4：角色回访用户动态，默认关
     "expression": {"fixed_nickname": "", "sensitive_topics_extra": [], "expressiveness": "natural"},
 }
 _FREQ_DAILY = {"low": 1, "medium": 1, "high": 2}  # low=每2-3天1条（靠 6h 闸自然拉长→14h 起步）
@@ -284,6 +285,58 @@ class MomentsEngine:
             # （素材不销毁，下一 tick 还在池里——幂等键保证不重复）
             text = (fallback or "").strip()
         return text[:140]
+
+    # ---------- P4：用户动态回访（赞/评；react_to_user_moments 默认关） ----------
+
+    def maybe_react_to_user_moments(self, now: dt.datetime | None = None) -> int:
+        """角色刷用户动态（低频概率事件，设置关=零行为）。
+
+        每次最多处理一条最旧未反应的用户动态：赞 60% / 赞+评 25% / 静默 15%
+        （评论走 comment_response_style；none=退化为只赞）。回访不占聊天未读
+        （通知走 moments 自己的交互流，不进 _pending——评论区见，别私信轰炸）。
+        幂等：actor=role 的 interaction 行存在=已反应过，永不重复。"""
+        a = self.agent
+        if not a.role_key:
+            return 0
+        cfg = self.settings()
+        react = cfg.get("interaction") or {}
+        if not bool(react.get("react_to_user_moments", False)):
+            return 0
+        if bool((cfg.get("moments") or {}).get("enabled", True)) is False:
+            # 连自己动态都关了的角色，回访同样没心情（一个总闸精神）
+            pass  # 不禁：用户裁决只要求 react 开关控它；保持独立语义
+        rows = a.memory.con.execute(
+            """SELECT m.* FROM moments m
+               WHERE m.role_id='user'
+                 AND NOT EXISTS (SELECT 1 FROM moment_interactions i
+                                 WHERE i.moment_id=m.id AND i.actor=?)
+               ORDER BY m.id ASC LIMIT 1""", (a.role_key,)).fetchall()
+        if not rows:
+            return 0
+        mom = dict(rows[0])
+        import random
+        dice = random.random()
+        if dice < 0.15:
+            # 静默=先记账防下轮再掷骰子（否则这条永远悬着反复摇）
+            a.memory._ensure_mi_seen_kind()
+            a.memory.moment_ack(mom["id"], a.role_key)
+            return 0
+        a.memory.moment_toggle_like(mom["id"], a.role_key)
+        done = 1
+        if dice >= 0.60 and str(react.get("comment_response_style", "character")) != "none":
+            try:
+                text = (a._short_task(
+                    (f"你是{a.card.name}。看到喜欢的人（用户）发了一条动态："
+                     + "「" + str(mom["content"])[:100] + "」"
+                     + chr(10) + "以你的语气在下面评论一句，不超过20字，像朋友刷到动态的随手反应"
+                       "（好奇/接梗/关心都可以），别像客服。只输出评论正文。"),
+                    max_tokens=1024) or "").strip()
+            except Exception:
+                text = ""
+            if text:
+                a.memory.moment_comment(mom["id"], text[:60], a.role_key)
+                done += 1
+        return done
 
     # ---------- 评论响应（bridge.comment_moment 调；P2 固定 character 风格） ----------
 

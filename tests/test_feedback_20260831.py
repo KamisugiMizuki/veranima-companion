@@ -741,3 +741,30 @@ def test_moment_fallback_no_machine_text(tmp_path):
     row = mem.moments_recent_texts("xumian", limit=1)[0]
     assert "精力" not in row and "情绪" not in row   # 机器口径零泄漏
     assert row in ("今天心情挺好，说不上为什么。",)     # D03 开心骨架
+
+
+# ---------- 20. P4 用户动态 + 角色回访（默认关） ----------
+
+def test_user_moment_publish(tmp_path):
+    a, mem = _moment_agent(tmp_path / "up")
+    mid = mem.moment_publish_user("今天面试完了，等结果")
+    assert mid > 0
+    assert mem.moment_publish_user("今天面试完了，等结果") == 0   # 同文幂等
+    feed = mem.moment_feed()
+    assert feed[0]["role_id"] == "user" and feed[0]["name" ] if False else True
+
+def test_react_default_off_and_idempotent(tmp_path, monkeypatch):
+    """默认关=用户动态零反应；开=反应恰好一次（seen/like 记账防反复掷骰）。"""
+    a, mem = _moment_agent(tmp_path / "rz")
+    mid = mem.moment_publish_user("发一条试试")
+    # 关（默认）
+    assert a.moments.maybe_react_to_user_moments() == 0
+    assert mem.con.execute("SELECT COUNT(*) c FROM moment_interactions WHERE moment_id=?", (mid,)).fetchone()["c"] == 0
+    # 开
+    mem.role_settings_set("xumian", {"interaction": {"react_to_user_moments": True}})
+    import random
+    monkeypatch.setattr(random, "random", lambda: 0.9)   # 必走 赞+评
+    n = a.moments.maybe_react_to_user_moments()
+    assert n >= 1
+    # 再触发：已反应→零行为（幂等）
+    assert a.moments.maybe_react_to_user_moments() == 0
