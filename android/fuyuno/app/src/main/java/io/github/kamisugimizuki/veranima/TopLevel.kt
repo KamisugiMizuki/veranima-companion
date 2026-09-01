@@ -390,28 +390,45 @@ fun RoleSpaceScreen(role: String, onBack: () -> Unit) {
         }
     }
     confirm?.let { mode ->
+        // 严重后果操作：必须输入角色名才放行（防误触；2026-09-01 用户裁决）
+        var phrase by remember(mode) { mutableStateOf("") }
+        val word = name  // 输入比对基准=角色显示名
         AlertDialog(onDismissRequest = { confirm = null },
             confirmButton = {
-                TextButton(onClick = {
-                    confirm = null
-                    scope.launch {
-                        val o = JSONObject(withContext(Dispatchers.IO) {
-                            bridge.callAttr("role_reset", role, mode).toString()
-                        })
-                        snackbar.showSnackbar(if (o.optBoolean("ok")) "已完成" else "失败: ${o.optString("error")}")
-                        if (mode == "intimacy") {
-                            rhythm = JSONObject(withContext(Dispatchers.IO) {
-                                bridge.callAttr("rhythm_status", role).toString()
-                            }).optJSONObject("role_rhythm")
+                TextButton(
+                    enabled = phrase.trim() == word,
+                    onClick = {
+                        confirm = null
+                        scope.launch {
+                            val o = JSONObject(withContext(Dispatchers.IO) {
+                                bridge.callAttr("role_reset", role, mode).toString()
+                            })
+                            snackbar.showSnackbar(if (o.optBoolean("ok")) "已完成" else "失败: ${o.optString("error")}")
+                            if (mode == "intimacy") {
+                                rhythm = JSONObject(withContext(Dispatchers.IO) {
+                                    bridge.callAttr("rhythm_status", role).toString()
+                                }).optJSONObject("role_rhythm")
+                            } else {
+                                bridge.callAttr("mark_read", role)  // 清空后未读账已删，重推指针
+                            }
                         }
-                    }
-                }) { Text("确认", color = PrimaryInk()) }
+                    }) { Text("确认", color = if (phrase.trim() == word) PrimaryInk() else MutedSoft()) }
             },
             dismissButton = { TextButton(onClick = { confirm = null }) { Text("取消", color = Muted()) } },
             title = { Text(if (mode == "intimacy") "重置与${name}的关系？" else "清空${name}的会话历史？",
                 color = PrimaryInk()) },
-            text = { Text(if (mode == "intimacy") "羁绊回到初见、作息偏移归零；你们共同的记忆库不受影响。"
-                          else "这段聊天记录将永久删除。", color = Muted()) },
+            text = {
+                Column {
+                    Text(if (mode == "intimacy") "羁绊回到初见、作息偏移归零；共同的记忆库不受影响。此操作不可撤销。"
+                          else "这段聊天记录将永久删除，不可恢复。", color = Muted())
+                    Spacer(Modifier.height(12.dp))
+                    Text("输入「$word」以确认：", fontSize = 12.sp, color = PrimaryInk())
+                    OutlinedTextField(phrase, { phrase = it }, Modifier.fillMaxWidth().padding(top = 6.dp),
+                        singleLine = true, placeholder = { Text(word, color = MutedSoft()) },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = PrimaryInk(), unfocusedBorderColor = Hairline()))
+                }
+            },
             containerColor = CardBg())
     }
 }

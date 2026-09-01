@@ -127,7 +127,10 @@ tick_moments(now)                        # 与 tick_proactive 同频轮询
 - 用户评论：入库即触发一次同步 LLM 短回复（≤30 字，`comment_response_style:
   character/minimal/none`），回复作为 actor=role_id 的 interaction 行——
   评论区变成两人的小对话，不占聊天未读。
-- 用户发布动态：MVP 不做（裁决 Q3），信息流只读角色生活。
+- 用户发布动态：P1-P3 不做；**P4 开放**（2026-09-01 用户改判）：信息流加「我也发一条」
+  入口（moments.role_id='user' 即用户动态，表结构已兼容）；角色回访赞评由
+  **角色私产页开关 `react_to_user_moments` 控制，默认关**——关=角色对用户动态
+  完全不可见；开=低频概率事件（赞优先于评，评论走既有 comment_response_style）。
 - 角色之间互相点赞评论：**不做**（多智能体互演，破坏「他们各自眼里只有你」）。
 
 ## 5. 角色独立设置（role_settings JSON，UI 全走 Galaxy 开关组）
@@ -145,7 +148,8 @@ tick_moments(now)                        # 与 tick_proactive 同频轮询
 └ mention_user yes/indirect/no    [P2]（默认 indirect）
 互动                              [P3]
 ├ comment_response_style          [P3]（P2 先固定 character）
-└ dm_after_like                   [P3]
+├ dm_after_like                   [P3]
+└ react_to_user_moments           [P4]（默认关；开=该角色回访用户动态的赞/评）
 记忆与关系                        [P3]
 ├ 重置此角色记忆 / 重置亲密        [P3]（二次确认；导出复用现有 export）
 └ 从其他角色导入                  [不做]（Q1 裁决记忆库共享 → 迁移语义已无必要）
@@ -252,7 +256,7 @@ bridge 每日首次 tick 跨过 04:00 或角色被首次打开时距上次补生
 | P1 骨架 | messages.role_id 迁移；bridge Agent 注册表；三 tab UI；角色列表+分会话聊天；未读角标；角色私产页壳（齿轮入口+羁绊图谱+作息卡迁移+导出/重置） | 两角色各聊各的历史互不可见；roster/作息随角色走（真机） |
 | P2 动态+设置 | moments 引擎（D01/D03/D05/D06 四源起步）；信息流+详情+点赞；role_settings 最小集上线 | 真 DeepSeek 生成带溯源动态连发 20 条无重复主题；关开关即停发 |
 | P3 互动+全量设置 | 评论回复、D04/D07、类型过滤/称呼锁定/记忆重置、消息类型多选 | 评论→角色 30 字内回复链闭环；设置逐项行为断言 |
-| P4 润色 | 输入中状态、角色回访赞评（若 Q3 开）、记忆导入迁移（若 Q1 乙/丙） | 随裁决 |
+| P4 润色 | 输入中状态、**用户发动态 + 角色回访赞评（开关默认关）**、记忆导入迁移（若 Q1 乙/丙） | 用户发布→开关开的角色低频回访；开关关=零行为 |
 
 ## 9. 红线（不变项）
 
