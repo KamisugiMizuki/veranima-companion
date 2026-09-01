@@ -365,3 +365,24 @@ def test_dig_old_memory_returns_confidence(tmp_path):
         memory.store("episodic", f"旧事{i}", importance=0.6, confidence=0.5)
     got = a._dig_old_memory()
     assert got and isinstance(got, tuple) and got[1] == 0.5
+
+
+# ---------- 12. 作息偏移按角色隔离（跨角色切换不污染） ----------
+
+def test_schedule_offset_isolated_across_roles(tmp_path):
+    """A 角色攒的偏移落在共享 relationship 快照；B 角色 boot 恢复快照时
+    from_snapshot 的 role_id 守卫整体弃档（offset=0），不得继承。"""
+    from dataclasses import replace
+    from veranima.core.virtual_schedule import ScheduleOutline, ScheduleRuntime
+    outline_a = ScheduleOutline.from_role_dir("characters/lin")
+    outline_b = replace(outline_a, role_id="yuki")
+    assert outline_b.role_id != outline_a.role_id
+    # 凛攒 40 分钟偏移 → 落快照
+    rt_a = ScheduleRuntime(outline_a)
+    import datetime as _dt
+    rt_a.apply_offset(40, "test", _dt.datetime.now(_dt.timezone.utc))
+    snap = rt_a.to_snapshot()
+    # 凛自己重启：继承偏移
+    assert ScheduleRuntime.from_snapshot(outline_a, snap).schedule_offset_minutes == 40
+    # 切由岐：role_id 守卫 → 弃档回基准作息
+    assert ScheduleRuntime.from_snapshot(outline_b, snap).schedule_offset_minutes == 0
