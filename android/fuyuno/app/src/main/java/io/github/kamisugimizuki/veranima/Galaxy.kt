@@ -53,6 +53,8 @@ internal fun GalaxyPage(
     onBack: () -> Unit,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    // 安卓系统返回键 = 页内「返回」（2026-09-01 用户反馈：各页面均需支持）
+    androidx.activity.compose.BackHandler(onBack = onBack)
     Column(
         Modifier
             .fillMaxSize()

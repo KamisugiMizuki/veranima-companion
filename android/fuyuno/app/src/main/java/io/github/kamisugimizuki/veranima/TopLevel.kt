@@ -121,6 +121,7 @@ private fun GalaxyBottomBar(current: String, onSelect: (String) -> Unit) {
 data class RoleRow(val id: String, val name: String, val preview: String,
                    val time: String, val unread: Int, val avatar: String, val active: Boolean)
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RoleListScreen(onOpenRole: (String) -> Unit) {
     val bridge = remember { Python.getInstance().getModule("bridge") }
@@ -182,9 +183,17 @@ fun RoleListScreen(onOpenRole: (String) -> Unit) {
         if (list == null) {
             Text("加载中…", color = Muted(), modifier = Modifier.padding(20.dp))
         } else {
-            LazyColumn(Modifier.fillMaxSize()) {
-                items(list, key = { it.id }) { r ->
-                    RoleListItem(r, onClick = { onOpenRole(r.id) })
+            // 下拉刷新兜底（2026-09-02 用户反馈）：即时投递失效/后台 tick 竞态时
+            // 手动拉齐未读与预览
+            var refreshing by remember { mutableStateOf(false) }
+            androidx.compose.material3.pulltorefresh.PullToRefreshBox(refreshing, {
+                refreshing = true; reload()
+                scope.launch { kotlinx.coroutines.delay(600); refreshing = false }
+            }, Modifier.fillMaxSize()) {
+                LazyColumn(Modifier.fillMaxSize()) {
+                    items(list, key = { it.id }) { r ->
+                        RoleListItem(r, onClick = { onOpenRole(r.id) })
+                    }
                 }
             }
         }
@@ -268,6 +277,7 @@ data class MomentRow(val id: Long, val role: String, val name: String, val conte
                      val kind: String, val time: String, val likes: Int, val likedByMe: Boolean,
                      val comments: List<Triple<String, String, String>>)  // actor/content/time
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MomentsFeed() {
     val bridge = remember { Python.getInstance().getModule("bridge") }
@@ -317,24 +327,33 @@ private fun MomentsFeed() {
                 Text("动态来自她们的虚拟生活——日程、心情、碎碎念，攒够了自然会有",
                     fontSize = 12.sp, color = MutedSoft())
             }
-            else -> LazyColumn(Modifier.fillMaxSize()) {
-                // 按日分组（本地日期）
-                val grouped = list.groupBy { shortDate(it.time) }
-                grouped.forEach { (day, ms) ->
-                    item(key = "h_$day") {
-                        Text(day, fontSize = 11.sp, color = MutedSoft(),
-                            modifier = Modifier.padding(start = 20.dp, top = 14.dp, bottom = 4.dp))
-                    }
-                        items(ms, key = { "m_${it.id}" }) { m ->
-                            MomentCard(m, avatars[m.role] ?: "",
-                                onLike = {
-                                    scope.launch {
-                                        withContext(Dispatchers.IO) { bridge.callAttr("moment_like", m.id) }
-                                        tick++
-                                    }
-                                },
-                                onComment = { openComment = m.id })
+            else -> {
+                // 下拉刷新兜底（2026-09-02 用户反馈，与角色列表页同款）
+                var refreshing by remember { mutableStateOf(false) }
+                androidx.compose.material3.pulltorefresh.PullToRefreshBox(refreshing, {
+                    refreshing = true; tick++
+                    scope.launch { kotlinx.coroutines.delay(600); refreshing = false }
+                }, Modifier.fillMaxSize()) {
+                    LazyColumn(Modifier.fillMaxSize()) {
+                        // 按日分组（本地日期）
+                        val grouped = list.groupBy { shortDate(it.time) }
+                        grouped.forEach { (day, ms) ->
+                            item(key = "h_$day") {
+                                Text(day, fontSize = 11.sp, color = MutedSoft(),
+                                    modifier = Modifier.padding(start = 20.dp, top = 14.dp, bottom = 4.dp))
+                            }
+                                items(ms, key = { "m_${it.id}" }) { m ->
+                                    MomentCard(m, avatars[m.role] ?: "",
+                                        onLike = {
+                                            scope.launch {
+                                                withContext(Dispatchers.IO) { bridge.callAttr("moment_like", m.id) }
+                                                tick++
+                                            }
+                                        },
+                                        onComment = { openComment = m.id })
+                                }
                         }
+                    }
                 }
             }
         }
@@ -470,6 +489,8 @@ fun RoleSpaceScreen(role: String, onBack: () -> Unit) {
     when (sub.value) {
         "bond" -> { RelationshipDetailScreen(onBack = { sub.value = null }, role = role); return }
     }
+    // 安卓返回键=退出角色私产页（子页优先，2026-09-01 用户反馈各页面均需支持）
+    androidx.activity.compose.BackHandler(onBack = onBack)
     val bridge = remember { Python.getInstance().getModule("bridge") }
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()

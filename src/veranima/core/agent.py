@@ -678,7 +678,7 @@ class Agent:
         """仅为紧邻主动消息的澄清追问提供上一条主动原文。"""
         if channel != "im" or not is_clarification(user_text):
             return ""
-        rows = self.memory.recent_messages(limit=8, channel=self.message_channel)
+        rows = self._recent_msgs(limit=8, channel=self.message_channel)
         if len(rows) < 2 or rows[-1].get("role") != "user":
             return ""
         previous = rows[-2]
@@ -766,6 +766,15 @@ class Agent:
 
     # ---------- 公开接口 ----------
 
+    def _recent_msgs(self, limit: int = 8, channel: str | None = None) -> list[dict]:
+        """读本角色的近期会话（2026-09-02 真机实锤修复）：主动链素材此前读
+        无角色全量表——许眠 22:55 把凛窗口用户的「现在是真睡了」当成对自己说
+        的话引用、00:01 按凛账上的 07:10 苏醒发「早饭」。用户作息/睡眠周期是
+        全局事实（Q1 设计），但「翻聊天记录」属于 TA 自己那段关系，按角色隔离。
+        PC 单角色时代 role_key='' → 行为不变（None=全量）。"""
+        return self.memory.recent_messages(limit=limit, channel=channel,
+                                           role_id=(self.role_key or None))
+
     def _persist_state(self) -> None:
         """状态持久化（重启续接）：状态变更后写入 SQLite agent_state 单行。"""
         try:
@@ -820,6 +829,23 @@ class Agent:
     _SLEEP_KEYWORDS = ("睡了", "晚安", "睡觉", "入睡", "困了", "躺下", "去睡", "要睡", "眯一会", "睡着了", "上床")
     _WAKE_KEYWORDS = ("醒了", "起来了", "起床", "睡醒", "睡不着", "没睡", "醒着", "起来", "睁眼")
 
+    def _sync_user_asleep(self) -> None:
+        """多 Agent 共享单行的登记守卫（2026-09-02 真机实锤）：agent_state 是
+        共享单行，非活跃角色的内存 user_asleep 是 boot 时的旧值——用户对许眠
+        说「堂堂起床」时凛的 Agent 攥着 asleep=True，守卫把登记静默丢弃；
+        反向（stale False）则把该压的主动消息错发。DB 行=唯一真值，读前同步。
+        PC 单 Agent 时代同步=自写自读的 no-op，行为不变。"""
+        try:
+            row = self.memory.con.execute(
+                "SELECT user_asleep, last_sleep_report_at FROM agent_state WHERE id=1"
+            ).fetchone()
+        except Exception:
+            return
+        if row is None:
+            return
+        self.state.user_asleep = bool(row[0])
+        self.state.last_sleep_report_at = str(row[1] or "")
+
     def _note_sleep_report(self, user_text: str, now) -> str:
         """识别用户「入睡/苏醒」报告并记录 sleep_cycles。
 
@@ -832,6 +858,8 @@ class Agent:
         text = str(user_text or "").strip()
         if not text:
             return ""
+        # 守卫前先同步（陈旧内存态=登记被静默丢弃的根因，见 _sync_user_asleep）
+        self._sync_user_asleep()
         action = ""
         judgment = self.turn_judgment(text)
         if judgment is not None:
@@ -968,7 +996,7 @@ class Agent:
             ref = self._naive_local(now if isinstance(now, datetime.datetime)
                                     else datetime.datetime.fromtimestamp(now))
             last_user = None
-            for row in reversed(self.memory.recent_messages(limit=10)):
+            for row in reversed(self._recent_msgs(limit=10)):
                 if row.get("role") == "user":
                     last_user = self._naive_local(datetime.datetime.fromisoformat(
                         str(row.get("created_at")).replace("Z", "+00:00")))
@@ -992,7 +1020,7 @@ class Agent:
         if len(today) >= 2 or any(str(r.get("candidate_id") or "") == cid for r in today):
             return ""
         last_text = ""
-        for row in reversed(self.memory.recent_messages(limit=10)):
+        for row in reversed(self._recent_msgs(limit=10)):
             if row.get("role") == "user":
                 last_text = str(row.get("content") or "")[:60]
                 break
@@ -1285,7 +1313,7 @@ class Agent:
         """会话启动：恢复状态、时间问候或初遇开场白。"""
         self.state.tick(self.config.get("state", {}).get("energy_decay_per_minute", 0.02))
         # 首次会话：初遇开场白
-        msgs = self.memory.recent_messages(limit=2)
+        msgs = self._recent_msgs(limit=2)
         if not msgs:
             opening = self._sanitize_monologue(
                 self.card.first_mes or f"你好，我是{self.card.name}。今天想聊点什么？")
@@ -1370,7 +1398,7 @@ class Agent:
 
         # 用户睡眠周期（2026-08-30 用户拍板）：识别「入睡/苏醒」报告 → sleep_cycles
         # 表 + state.user_asleep。判断点哲学：关键词预筛 → LLM 确认（失败回退关键词）。
-        self._note_sleep_report(user_text, interaction_now)
+        sleep_action = self._note_sleep_report(user_text, interaction_now)
         # 苏醒总结一次性取出（提前 return 的路径也要清残留，防串到下一轮）
         wake_summary = getattr(self, "_wake_summary_for_turn", "")
         self._wake_summary_for_turn = ""
@@ -1397,8 +1425,24 @@ class Agent:
                 message_id=message_id,
                 sender_scope=scope,
             )
+            # 睡眠≠对作息报告聋（2026-09-02 用户反馈「睡眠中入睡/苏醒登记被忽略」）：
+            # 登记本来就在吞回复前执行（周期没丢），丢的是回音——用户在 TA 睡着时
+            # 报睡/报醒，得到一句带着困意的确认（=TA 浅眠里听见了），苏醒总结也
+            # 直接回进这个窗口（此前旁路进 boot.agent 队列，常落到别的角色头上）。
+            # 不让用户一句话把角色叫醒：作息是拟真底线，床边的软磨已有 grace 机制。
+            mumble = {"sleep": "（从枕头上抬起一点声音）嗯……晚安，那一起睡了。我醒了来找你。",
+                      "wake": "（迷迷糊糊）唔……你醒啦。"}
+            reply = mumble.get(sleep_action, "")
+            if sleep_action == "wake" and wake_summary:
+                reply += "\n\n" + wake_summary
+            if reply:
+                self.memory.store_message("assistant", reply, self.state.energy,
+                                          self.state.mood,
+                                          channel=self.message_channel,
+                                          role_id=self.role_key)
+                self._append_history_message("assistant", reply)
             self._persist_state()
-            return TurnResult(reply="", energy=self.state.energy, mood=self.state.mood)
+            return TurnResult(reply=reply, energy=self.state.energy, mood=self.state.mood)
 
         # ===== R0 阶段 1: prepare_turn（R0_SPEC 5）=====
         # 输入规整 → 状态推进 → 场景/打断 → 零开销入库 → 记忆检索预算
@@ -2899,7 +2943,7 @@ class Agent:
         # 问候族合并窗口（2026-09-01）：刚发过任何问候族消息 → 破冰让位
         if not self.proactive_merge_open():
             return ""
-        recent = self.memory.recent_messages(limit=8)
+        recent = self._recent_msgs(limit=8)
         if not recent or recent[-1]["role"] != "assistant":
             return ""  # 用户刚说完话或有未闭合对话，不需要破冰
         if getattr(self.llm, "is_model_loaded", None) is not None and self.llm.is_model_loaded():
@@ -2968,7 +3012,7 @@ class Agent:
         ).allow:
             return ""
         # 对话闭合检查：最后一条必须是 user 消息（有未回应完的内容）
-        recent = self.memory.recent_messages(limit=8)
+        recent = self._recent_msgs(limit=8)
         if not recent or recent[-1]["role"] != "user":
             return ""
         if getattr(self.llm, "is_model_loaded", None) is not None and self.llm.is_model_loaded():
@@ -3315,7 +3359,7 @@ class Agent:
             # 上下文相关（自检缺口⑤）：带上用户最近说了什么，让提醒显得"因为在意"
             # 而不是"因为到点"——用户说过忙/没吃/在减肥，口吻就该接得住。
             recent_user = [self._message_context_line(m)[:80] for m in reversed(
-                self.memory.recent_messages(limit=10)) if m["role"] == "user"][:3]
+                self._recent_msgs(limit=10)) if m["role"] == "user"][:3]
             ctx = ("\n用户最近说过：" + "；".join(recent_user)) if recent_user else ""
             task = (
                 f"到了该吃{cn}的时间点。用你自己的口吻提醒用户去吃饭，一句话，"
@@ -3337,7 +3381,7 @@ class Agent:
         if not (getattr(self.llm, "is_model_loaded", None) is not None and self.llm.is_model_loaded()):
             return base if not self.state.user_asleep else "（轻声）还在睡吗？醒了记得跟我说一声。"
         try:
-            recent = self.memory.recent_messages(limit=8)
+            recent = self._recent_msgs(limit=8)
             user_msgs = [self._message_context_line(m)[:90] for m in reversed(recent) if m["role"] == "user"]
             if not user_msgs:
                 return base

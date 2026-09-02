@@ -15,6 +15,42 @@ log = logging.getLogger("fuyuno.bridge")
 
 _pending: list[dict] = []  # tick 产出的主动消息（{role,name,text}），Kotlin 轮询取走
 
+# 即时投递钩子（2026-09-02 用户反馈：主动消息要即时进对话框）：Kotlin 侧
+# set_flush_hook 注入「发 ACTION_PROACTIVE 广播」闭包；每条主动消息进
+# _pending 的同时立刻触发一次（ChatScreen 收到即 loadHistory，消息此刻
+# 必已落库——所有 append 点都在 record_proactive_message 之后）。
+# drain_pending 的 30s 轮询保留=钩子未注入/广播丢失时的兜底。
+
+
+def set_flush_hook(cb) -> str:
+    try:
+        boot._flush_hook = cb
+        return json.dumps({"ok": True})
+    except Exception:
+        return json.dumps({"ok": False})
+
+
+def _queue(role: str, name: str, text: str) -> None:
+    """_pending 唯一 append 通道：入队 + 即时广播（钩子在则）。"""
+    _pending.append({"role": role, "name": name, "text": text})
+    _flush()
+
+
+def _flush() -> None:
+    """触发即时刷新钩子。Kotlin 注入的是包成 PyObject 的 Java Runnable=调
+    .run()；纯 Python callable（测试）=直接调。异常吞掉=通知链路坏了不拖死入队。"""
+    hook = getattr(boot, "_flush_hook", None)
+    if hook is None:
+        return
+    try:
+        run = getattr(hook, "run", None)
+        if callable(run):
+            run()
+        else:
+            hook()
+    except Exception:
+        log.debug("flush hook failed", exc_info=True)
+
 
 def _render(agent, text: str) -> str:
     """IM 通道统一出口（与 QQ _send_to_all 同构）：换行/波浪号/感叹号/emoji
@@ -89,12 +125,12 @@ def _tick_loop(interval: float = 60.0) -> None:
                 if text:
                     agent.gate.commit(cand)
                     agent.record_proactive_message(text, channel="im")
-                    _pending.append({"role": agent.role_key, "name": agent.card.name, "text": _render(agent, text)})
+                    _queue(agent.role_key, agent.card.name, _render(agent, text))
                     sent = True
                     log.info("schedule notice queued: %s", text[:60])
             if proactive_on and not sent:
                 for msg in agent.tick_proactive():
-                    _pending.append({"role": agent.role_key, "name": agent.card.name, "text": _render(agent, msg)})
+                    _queue(agent.role_key, agent.card.name, _render(agent, msg))
                     sent = True
                     log.info("proactive queued: %s", msg[:60])
             off = getattr(boot, "offline", None)
@@ -102,13 +138,13 @@ def _tick_loop(interval: float = 60.0) -> None:
                 # late_reply/heartbeat 内部已落库（store_message），不再 record
                 msg = agent.late_reply() or agent.heartbeat()
                 if msg:
-                    _pending.append({"role": agent.role_key, "name": agent.card.name, "text": _render(agent, msg)})
+                    _queue(agent.role_key, agent.card.name, _render(agent, msg))
                     log.info("offline think queued: %s", msg[:60])
             if proactive_on and not sent:
                 # 无人应答追问（期待过期后一句轻追问；每期待至多一次）
                 fu = agent.followup_message()
                 if fu:
-                    _pending.append({"role": agent.role_key, "name": agent.card.name, "text": _render(agent, fu)})
+                    _queue(agent.role_key, agent.card.name, _render(agent, fu))
                     log.info("followup queued: %s", fu[:60])
             digest = getattr(agent, "maybe_nightly_digest", None)
             if callable(digest):
@@ -154,6 +190,9 @@ def sleep_summary_pending() -> str:
         # 只有通知有、应用内没有——此前纯旁路文本，消息表零记录）
         try:
             agent.record_proactive_message(str(cycle["summary"]), channel="im")
+            # 本函数不进 _pending（Kotlin 直接 notify 返回值）——落库后手动
+            # 触发一次即时刷新钩子，与 _queue 同语义（2026-09-02）
+            _flush()
         except Exception:
             log.exception("sleep summary store_message failed (notification still sent)")
         return str(cycle["summary"])
@@ -240,6 +279,10 @@ def boot(files_dir: str) -> str:
                 log.info("backfill_categories: %d 条历史记忆已分类", _n)
         except Exception as e:
             log.warning("backfill_categories failed: %s", e)
+        try:  # P2 注册表回填 + P4 动态归属自愈（2026-09-02 真机实锤）
+            _backfill_moment_ownership(agent.memory.con)
+        except Exception:
+            log.exception("moment ownership repair failed (non-fatal)")
         boot.agent = agent
         # 周期调度器（tick 线程消费）：离线思考用默认参数（静默30min/概率0.3/
         # 日上限2），调参需求出现再进配置。饭点提醒已收编进 core tick_proactive。
@@ -586,13 +629,20 @@ def _ensure_rel_snapshot_table(con) -> None:
             " day TEXT NOT NULL, role_id TEXT NOT NULL DEFAULT '', dims_json TEXT NOT NULL,"
             " updated_at TEXT NOT NULL, PRIMARY KEY (day, role_id))")
     elif "PRIMARY KEY (day, role_id)" not in (old[0] or ""):
-        # 旧库（主键=day 单列；可能已被早期迁移 ALTER 补过 role_id 列）整表重建：
+        # 旧库（主键=day 单列；可能已被早期 ALTER 补过 role_id 列）整表重建：
         # 只搬带角色标的行，历史归属不明的旧行丢弃（丢的仅是趋势折线的几天快照，
-        # 羁绊图谱主数据走 agent_state 不受影响）
+        # 羁绊图谱主数据走 agent_state 不受影响）。
+        # 幂等收口（2026-09-02 真机实锤）：上回重建若中途崩溃，残表
+        # relationship_snapshots_new 滞留 → 下次进本分支 CREATE 撞 already exists
+        # → 整函数抛错 → 羁绊图谱每次打开都空白。先清残表，重跑即可恢复。
+        con.execute("DROP TABLE IF EXISTS relationship_snapshots_new")
         has_rid = any(r[1] == "role_id" for r in con.execute(
             "PRAGMA table_info(relationship_snapshots)").fetchall())
+        # 注意 SELECT 里补 AS role_id：派生表第 2 列没有别名时，外层
+        # "SELECT day, role_id, ..." 直接 no such column 崩在本分支（09-02 真机
+        # 羁绊图谱全空的实锤根因——每次进重建都在 INSERT SELECT 处炸）。
         sel = ("SELECT day, role_id, dims_json, updated_at FROM relationship_snapshots"
-               if has_rid else "SELECT day, '', dims_json, updated_at FROM relationship_snapshots")
+               if has_rid else "SELECT day, '' AS role_id, dims_json, updated_at FROM relationship_snapshots")
         con.execute("CREATE TABLE relationship_snapshots_new ("
                     " day TEXT NOT NULL, role_id TEXT NOT NULL DEFAULT '', dims_json TEXT NOT NULL,"
                     " updated_at TEXT NOT NULL, PRIMARY KEY (day, role_id))")
@@ -968,7 +1018,9 @@ def visual_note(pkg: str, label: str) -> str:
         log.info("visual_note: %s → %s (pkg=%s)", label, tag, pkg)
         reply, _ja = agent.proactive_from_visual(tag)
         if reply:
-            _pending.append(_render(agent, reply))
+            # 形状铁律：drain_pending 唯一生产者，Kotlin 按 {role,name,text} 对象
+            # 解析——这里塞裸字符串会让整批通知解析崩掉（消息丢失+广播不发）
+            _queue(agent.role_key, agent.card.name, _render(agent, reply))
             log.info("visual note queued: %s (%s → %s)", reply[:50], label, tag)
             return json.dumps({"ok": True, "detail": f"联想已排队: {reply[:30]}…"})
         return json.dumps({"ok": True, "detail": "无匹配记忆，未发起"})
@@ -996,6 +1048,29 @@ def _classify_foreground_action(pkg: str, label: str) -> str:
     except Exception as e:
         log.debug("foreground action classify failed: %s", e)
         return ""
+
+
+def _backfill_moment_ownership(con) -> int:
+    """动态归属自愈（2026-09-02 真机实锤）：moments 里 role_id 与 dedupe_key
+    前缀（'<发布者>|<素材>'）不一致的行，以前缀为准归位。前缀不是已知角色
+    目录的行不动（宁缺勿错归）。幂等：归位后不再有差异行。"""
+    root = Path(getattr(boot, "root", "."))
+    known = {p.parent.name for p in root.glob("characters/*/character.json")}
+    if not known:
+        return 0
+    fixed = 0
+    rows = con.execute(
+        "SELECT id, role_id, dedupe_key FROM moments "
+        "WHERE role_id != 'user' AND dedupe_key LIKE '%|%'").fetchall()
+    for r in rows:
+        owner = str(r["dedupe_key"] or "").split("|", 1)[0]
+        if owner and owner in known and owner != r["role_id"]:
+            con.execute("UPDATE moments SET role_id=? WHERE id=?", (owner, r["id"]))
+            fixed += 1
+    if fixed:
+        con.commit()
+        log.info("moment ownership repaired: %d rows", fixed)
+    return fixed
 
 
 def _agent_for(role: str = ""):
@@ -1097,8 +1172,8 @@ def moment_like(moment_id: int) -> str:
                          + chr(10) + "私聊ta一句反应（可以得意/不好意思/顺势找话），不超过25字，只输出正文。")) or ""
                     if dm:
                         _agent_for(str(mom["role_id"])).record_proactive_message(dm, channel="im")
-                        _pending.append({"role": str(mom["role_id"]),
-                                         "name": _agent_for(str(mom["role_id"])).card.name, "text": dm})
+                        _queue(str(mom["role_id"]),
+                               _agent_for(str(mom["role_id"])).card.name, dm)
             except Exception:
                 log.debug("dm_after_like failed", exc_info=True)
         return json.dumps({"ok": True, "liked": liked})

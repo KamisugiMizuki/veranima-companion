@@ -37,6 +37,17 @@ MEAL_SLOTS = {
     "dinner": (17, "到饭点了，先去吃晚饭。"),
 }
 
+
+def meal_word(hour: int) -> str:
+    """整点 → 那顿饭该叫什么（三餐锚点随用户作息平移后，餐名跟钟点不跟槽位）。"""
+    h = int(hour) % 24
+    if 5 <= h < 11:
+        return "早饭"
+    if 11 <= h < 15:
+        return "午饭"
+    if 17 <= h < 22:
+        return "晚饭"
+    return "夜宵"
 # 系统节日（公历固定日期；农历节日暂不处理）
 FIXED_HOLIDAYS = {
     (1, 1): "元旦",
@@ -149,6 +160,9 @@ class MealReminderScheduler:
 
         早餐=起床+2h、午餐=起床+6h、晚餐=起床+11h（近似常规间隔）；
         用户起床时间与默认 6 点差 <1h 则不动（等于常规作息）。
+        餐名跟着钟点走（2026-09-02 真机实锤：用户 22:26 醒→+2h=0 点，凌晨
+        00:01 发「到饭点了，先去吃点早饭」）：平移后整点若已不是那顿饭的
+        时段，把内置文案里的餐名换成当时钟点对应的那顿（夜宵就是夜宵）。
         """
         if wake_hour is None:
             return
@@ -165,7 +179,13 @@ class MealReminderScheduler:
         )
         for meal, hour in anchors:
             _text = self.slots.get(meal, ("", ""))[1]
-            self.slots[meal] = (int(hour) % 24, _text)
+            hour_i = int(hour) % 24
+            word = meal_word(hour_i)
+            for old_word in ("早饭", "午饭", "晚饭"):
+                if old_word != word and old_word in _text:
+                    _text = _text.replace(old_word, word)
+                    break  # 一行文案里只会有一个餐名
+            self.slots[meal] = (hour_i, _text)
 
     def scheduled_at(self, day, meal: str):
         import datetime

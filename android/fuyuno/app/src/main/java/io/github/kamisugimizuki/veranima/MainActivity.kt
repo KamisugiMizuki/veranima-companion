@@ -242,6 +242,12 @@ class MainActivity : ComponentActivity() {
             val files = filesDir.absolutePath
             val r = bridge.callAttr("boot", files).toString()
             android.util.Log.i("VeranimaBoot", "boot: $r")
+            // 即时投递钩子：Python 侧每条主动消息入队即广播（落库先于入队，
+            // ChatScreen 收到 loadHistory 必可见）。broadcast 线程安全，任意线程可调。
+            bridge.callAttr("set_flush_hook",
+                com.chaquo.python.PyObject.fromJava(Runnable {
+                    runCatching { sendBroadcast(android.content.Intent(CompanionService.ACTION_PROACTIVE)) }
+                }))
             bridge.callAttr("start_ticks")
         }
         setContent {
