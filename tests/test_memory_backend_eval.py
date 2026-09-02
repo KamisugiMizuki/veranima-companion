@@ -271,3 +271,19 @@ def test_nightly_digest_needs_minimum_material(tmp_path):
     out = agent.maybe_nightly_digest()
     assert out.get("created") is False
     assert llm.calls == []
+
+
+def test_nightly_digest_budget_floor_and_cooldown(tmp_path):
+    """09-02 真机实锤：digest 直调 chat(256) 被 reasoning 烧空且每分钟重试。
+    ① 预算不得低于 short_task_max_tokens 下限；② 坏输出后进冷却不再掷。"""
+    llm = FakeLLM("")  # 空 content = finish_reason=length 的测试替身
+    agent = next(_make_agent(tmp_path, llm))
+    for txt in ("甲情节", "乙情节", "丙情节"):
+        mid = agent.memory.store_message("user", txt)
+        agent._store_candidate({"kind": "shared_episode", "content": txt,
+                                "source_message_id": mid, "source": "rule_extract"})
+    out = agent.maybe_nightly_digest()
+    assert out.get("created") is False and len(llm.calls) == 1
+    assert llm.calls[0]["max_tokens"] >= 1024          # 预算下限（默认 config）
+    assert agent.maybe_nightly_digest().get("reason") == "cooldown"
+    assert len(llm.calls) == 1                          # 冷却期零调用

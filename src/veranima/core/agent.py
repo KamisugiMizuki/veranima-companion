@@ -2468,6 +2468,8 @@ class Agent:
 
         if self.llm is None or not getattr(self.llm, "base_url", ""):
             return {"created": False, "reason": "no_llm"}
+        if getattr(self, "_digest_retry_after", 0.0) > time.time():
+            return {"created": False, "reason": "cooldown"}
         today = datetime.date.today().isoformat()
         already = self.memory.con.execute(
             "SELECT count(*) FROM memories WHERE json_valid(meta) AND json_extract(meta,'$.digest_date')=?",
@@ -2510,17 +2512,22 @@ class Agent:
         )
         try:
             # 与 _short_task 相同的 system 锚定，但保留原始输出（JSON 协议，
-            # 不走 IM parse_reply——它会把结构化输出解析成空文本）
+            # 不走 IM parse_reply——它会把结构化输出解析成空文本）。
+            # 预算走 short_task 下限（2026-09-02 真机第 4 次实锤：这里直调
+            # chat(256) 被 reasoning 烧空 → finish_reason=length 每分钟重试
+            # 一次，白烧 API 还刷日志——预算与冷却双收口）。
             system = build_system_prompt(self.card, self.state, self.memory) + "\n" + self._time_context_instruction()
+            budget = max(256, int((self.config.get("llm", {}) or {}).get("short_task_max_tokens", 1024)))
             raw = self.llm.chat(
                 [
                     {"role": "system", "content": system},
                     {"role": "user", "content": task},
                 ],
-                max_tokens=256,
+                max_tokens=budget,
             )
         except Exception as e:
             logger.warning("nightly digest llm failed: %s", e)
+            self._digest_retry_after = time.time() + 6 * 3600
             return {"created": False, "reason": "llm_failed"}
         content = ""
         try:
@@ -2529,6 +2536,7 @@ class Agent:
         except _json.JSONDecodeError:
             content = ""
         if not content:
+            self._digest_retry_after = time.time() + 6 * 3600  # 输出不合规同样冷却
             return {"created": False, "reason": "bad_output"}
         source_ids = sorted({sid for e in episodes for sid in ((e.meta or {}).get("source_message_ids") or [])})
         if not source_ids:
