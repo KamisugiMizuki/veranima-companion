@@ -1383,6 +1383,9 @@ class Agent:
             return TurnResult(reply="", energy=self.state.energy, mood=self.state.mood)
 
         interaction_now = now or datetime.datetime.now(datetime.timezone.utc)
+        # 本轮所有 user_asleep 消费方（场景块/轻声问候/睡眠闸门）先同步真值：
+        # 共享单行下非活跃 Agent 的内存副本是旧的（2026-09-02 显示侧同病灶）
+        self._sync_user_asleep()
         if channel == "im" and any(token in user_text for token in ("你在哪", "你现在在哪里", "你在什么地方")):
             answer = self.current_space_answer(interaction_now)
             self.memory.store_message("assistant", answer, self.state.energy, self.state.mood, channel=self.message_channel, role_id=self.role_key)
@@ -2593,6 +2596,7 @@ class Agent:
         # P-7：未闭合冲突时禁止 ritual 主动（不加重关系压力）
         if self.persona_proactive_blocked("ritual"):
             return []
+        self._sync_user_asleep()  # 三餐/问候/轻提示都查 user_asleep——共享单行下必须读真值
         msgs: list[str] = []
         # gate.decide 需要 epoch 秒（now 可能是 datetime 注入，转 timestamp）
         now_ts = now.timestamp() if isinstance(now, datetime.datetime) else now

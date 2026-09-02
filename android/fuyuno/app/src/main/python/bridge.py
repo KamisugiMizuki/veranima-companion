@@ -769,14 +769,28 @@ def sleep_status() -> str:
     """睡眠报告数据（Sleep Monitor）：实时状态 + 最近周期 + 清醒中时长。
 
     质量分=显示端确定性估算（时长偏差 + 入睡时刻），非 core 概念，文案已注明。
+    状态读库不读内存（2026-09-02 用户反馈「宣告入睡后仍显示已唤醒」）：
+    agent_state 是共享单行，活跃 Agent 之外全用 DB 最新值——上一版修的是登记
+    侧脏读，显示侧同病灶在这才暴露。行缺失时回退内存态（boot 首帧在 save_state
+    之前的窗口，旧库无列同样回退——user_asleep 是迁移补列的，SELECT 崩=没这列）。
     """
     agent = getattr(boot, "agent", None)
     if agent is None:
         return json.dumps({"ok": False, "error": "未初始化"})
     try:
         import datetime
-        asleep = bool(getattr(agent.state, "user_asleep", False))
-        last_report = str(getattr(agent.state, "last_sleep_report_at", "") or "")
+        row = None
+        try:
+            row = agent.memory.con.execute(
+                "SELECT user_asleep, last_sleep_report_at FROM agent_state WHERE id=1").fetchone()
+        except Exception:
+            row = None  # 旧库无列：走内存回退
+        if row is not None:
+            asleep = bool(row[0])
+            last_report = str(row[1] or "")
+        else:
+            asleep = bool(getattr(agent.state, "user_asleep", False))
+            last_report = str(getattr(agent.state, "last_sleep_report_at", "") or "")
         cycles = agent.memory.recent_sleep_cycles(limit=15)
         closed = [c for c in cycles if c.get("woke_at")]
         cur_minutes = -1

@@ -180,6 +180,23 @@ def test_sleeping_window_answers_sleep_report(tmp_path):
     assert len(rows) == 3                           # 三条都进了睡眠信箱
 
 
+# ---------- 6) 睡眠报告显示侧读库真值（09-02『宣告入睡仍显示已唤醒』） ----------
+
+def test_sleep_status_reads_db_not_stale_memory(bridge, tmp_path):
+    store = MemoryStore(str(tmp_path / "db.sqlite"), config={}, provider=Embed())
+    a = _agent(store, "lin")
+    bridge.boot = SimpleNamespace(agent=a)
+    now = dt.datetime.now(dt.timezone.utc)
+    assert json.loads(bridge.sleep_status())["asleep"] is False
+    a._note_sleep_report("我先睡了", now)             # 登记走凛（save_state 落库）
+    xm = _agent(store, "xumian")                      # 另一角色 Agent 内存副本=旧值 False
+    xm.state.user_asleep = False
+    bridge.boot = SimpleNamespace(agent=xm)
+    out = json.loads(bridge.sleep_status())
+    assert out["asleep"] is True                      # 显示跟库走，不跟脏内存走
+    assert out["current_minutes"] >= 0
+
+
 # ---------- 4c) _queue 即时广播钩子 ----------
 
 def test_queue_fires_flush_hook(bridge):
