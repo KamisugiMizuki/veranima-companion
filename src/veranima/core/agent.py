@@ -665,6 +665,7 @@ class Agent:
         return (
             "【消息时间规则】历史消息和当前消息正文前的方括号时间是发送时间，格式为 YYYY-MM-DD HH:MM:SS。"
             "判断刚才、今天、昨天、是否跨夜或间隔多久时，优先依据这些时间；"
+            "凌晨/早上/中午/晚上/深夜这类时段词同样必须按时间戳选，一次回复里不得自相矛盾；"
             "不要仅凭晚安、睡觉或早安推断已经跨日，时间没有跨日就按连续对话处理；"
             "这些方括号时间是内部上下文标记，不要复制到回复正文。"
         )
@@ -2746,7 +2747,7 @@ class Agent:
         if not self.proactive_merge_open(now):
             return False
         try:
-            for row in reversed(self.memory.recent_messages(limit=5)):
+            for row in reversed(self._recent_msgs(limit=5)):
                 if row.get("role") == "user":
                     seen = self._naive_local(datetime.datetime.fromisoformat(
                         str(row.get("created_at")).replace("Z", "+00:00")))
