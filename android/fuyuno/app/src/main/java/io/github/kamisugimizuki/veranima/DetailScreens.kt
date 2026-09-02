@@ -56,7 +56,7 @@ import java.util.Locale
 // ---------- 手画图标（项目惯例：不拉 material-icons-extended；纯黑线条） ----------
 // 只用 moveTo/lineTo/close（PathBuilder 的 arc API 参数易错，圆形用 12 段折线近似）
 
-private fun vectorPath(name: String, draw: androidx.compose.ui.graphics.vector.PathBuilder.() -> Unit): ImageVector =
+internal fun vectorPath(name: String, draw: androidx.compose.ui.graphics.vector.PathBuilder.() -> Unit): ImageVector =
     ImageVector.Builder(name = name, defaultWidth = 24.dp, defaultHeight = 24.dp,
         viewportWidth = 24f, viewportHeight = 24f).apply {
         // 项目惯例（android-compose-ui 技能）：Builder.apply 内 path(fill=, stroke=) DSL
@@ -84,6 +84,18 @@ internal val IconMemoryVault: ImageVector by lazy {
 internal val IconBond: ImageVector by lazy {
     vectorPath("bond") {
         ring(9f, 14f, 5f); ring(15f, 14f, 5f)
+    }
+}
+
+internal val IconUserModel: ImageVector by lazy {
+    // 人头轮廓 + 一颗小星（=眼中的形象）：折线多边形头肩 + 三点星
+    vectorPath("usermodel") {
+        ring(12f, 7.5f, 3.6f)
+        moveTo(5f, 20f); lineTo(6.2f, 16.5f); lineTo(9f, 14.6f)
+        moveTo(19f, 20f); lineTo(17.8f, 16.5f); lineTo(15f, 14.6f)
+        moveTo(19.2f, 3.4f); lineTo(19.8f, 5f); lineTo(21.4f, 5.6f)
+        lineTo(19.8f, 6.2f); lineTo(19.2f, 7.8f); lineTo(18.6f, 6.2f)
+        lineTo(17f, 5.6f); lineTo(18.6f, 5f); close()
     }
 }
 

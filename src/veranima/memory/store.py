@@ -18,6 +18,7 @@ import sqlite3
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from .schema import LAYERS, init_db, unit_blob
@@ -224,6 +225,24 @@ class MemoryStore:
         self.llm_config = llm_config or {}
         self.provider = provider or make_provider(self.config, self.llm_config)
         self.con = init_db(db_path, dim=self.provider.dim, provider=self.provider)
+        # UserModel 单一真源（usermodel.py）：与库同目录，旧 user_profile 表一次性迁入
+        from .usermodel import UserModel
+        self.usermodel = UserModel(Path(db_path).parent / "usermodel.json")
+        self._migrate_user_profile_table()
+
+    def _migrate_user_profile_table(self) -> None:
+        """旧库 user_profile 表 → usermodel.json（一次性；幂等=文件里已有的键不回退）。"""
+        try:
+            rows = self.con.execute(
+                "SELECT key, value, source, confidence FROM user_profile").fetchall()
+        except sqlite3.Error:
+            return  # 老库无表 = 无可迁
+        for r in rows:
+            if self.usermodel.get_profile(r["key"]) is not None:
+                continue
+            self.usermodel.set_profile(
+                r["key"], r["value"], source=r["source"],
+                confidence=float(r["confidence"] or 0.7))
 
     def warm_embedding(self) -> None:
         """后台预热本地 embedding；远程/无预热 provider 直接跳过。"""
@@ -685,40 +704,19 @@ class MemoryStore:
             d["relationship"] = {}
         return d
 
-    # ---------- 用户画像（角色无关）+ 称呼（按角色隔离） ----------
-
-    _PROFILE_KEYS = ("real_name", "nickname_pref", "gender", "age", "occupation",
-                     "city", "love_language", "comfort_style", "teasing_tolerance",
-                     "health_notes", "personality_traits", "current_goal", "pending_events")
+    # ---------- 用户画像（角色无关·单一真源=usermodel.json，闭集键在 UserModel）+ 称呼（按角色隔离） ----------
 
     def profile_get(self, key: str) -> dict | None:
-        row = self.con.execute(
-            "SELECT key, value, source, confidence FROM user_profile WHERE key=?",
-            (key,)).fetchone()
-        return dict(row) if row else None
+        return self.usermodel.get_profile(key)
 
     def profile_all(self) -> dict[str, dict]:
-        rows = self.con.execute(
-            "SELECT key, value, source, confidence FROM user_profile").fetchall()
-        return {r["key"]: dict(r) for r in rows}
+        return self.usermodel.all_profile()
 
     def profile_set(self, key: str, value: str, *, source: str = "dialog",
                     confidence: float = 0.7) -> None:
-        """画像 upsert：user 来源不被 dialog 来源覆盖（用户自述 > 对话推断）。"""
-        if key not in self._PROFILE_KEYS:
-            return
-        cur = self.profile_get(key)
-        if cur and cur["source"] == "user" and source != "user" \
-                and float(cur["confidence"] or 0) >= confidence:
-            return
-        self.con.execute(
-            """INSERT INTO user_profile(key, value, source, confidence, updated_at)
-               VALUES (?,?,?,?,?)
-               ON CONFLICT(key) DO UPDATE SET value=excluded.value,
-               source=excluded.source, confidence=excluded.confidence,
-               updated_at=excluded.updated_at""",
-            (key, str(value)[:200], source, float(confidence), _now()))
-        self.con.commit()
+        """画像 upsert → usermodel.json（规则在 UserModel.set_profile：
+        user 来源不被 dialog 覆盖；pinned 键只认 user 写入）。"""
+        self.usermodel.set_profile(key, value, source=source, confidence=confidence)
 
     def nickname_mark(self, role_id: str, nickname: str, status: str, stage: str = "") -> None:
         self.con.execute(

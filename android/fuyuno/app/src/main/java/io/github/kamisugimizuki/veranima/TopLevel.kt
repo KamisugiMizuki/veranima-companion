@@ -477,6 +477,7 @@ fun SettingsTab() {
         composable("backup_detail") { BackupDetailScreen(onBack = { nav.popBackStack() }) }
         composable("memory_detail") { MemoryDetailScreen(onBack = { nav.popBackStack() }) }
         composable("sleep_detail") { SleepDetailScreen(onBack = { nav.popBackStack() }) }
+        composable("usermodel_detail") { UserModelScreen(onBack = { nav.popBackStack() }) }
     }
 }
 

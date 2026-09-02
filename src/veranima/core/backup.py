@@ -69,7 +69,7 @@ def export_backup(root: Path, db_path: Path, *, embedding_spec: str,
         with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.write(snap, "db/" + BACKUP_DB_NAME)
             zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=1))
-            for name in ("mirror.json", "style.json"):
+            for name in ("mirror.json", "style.json", "usermodel.json"):
                 f = root / "data" / name
                 if f.exists():
                     zf.write(f, f"state/{name}")

@@ -22,6 +22,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -78,6 +79,10 @@ fun SettingsMainScreen(nav: NavHostController) {
         GalaxyNavRow(icon = IconMoon, title = "用户睡眠报告",
             subtitle = "你的作息 · 实时状态 · 时长分布",
             onClick = { nav.navigate("sleep_detail") })
+        Spacer(Modifier.height(8.dp))
+        GalaxyNavRow(icon = IconUserModel, title = "用户画像（UserModel）",
+            subtitle = "角色眼中的你 · 13 项可编辑 · 锁定的不被自动改写",
+            onClick = { nav.navigate("usermodel_detail") })
         Spacer(Modifier.height(14.dp))
         TextButton(onClick = { openBatterySettings(ctx) }) { Text("电池优化白名单", color = Muted()) }
         TextButton(onClick = { openUsageAccess(ctx) }) { Text("使用情况访问（前台感知联想用；需手动授权）", color = Muted()) }
@@ -275,6 +280,114 @@ fun BackupDetailScreen(onBack: () -> Unit) {
                     colors = ButtonDefaults.buttonColors(InvertSurface(), OnInvert()),
                     shape = MaterialTheme.shapes.small) { Text("导入…") }
             }
+        }
+    }
+}
+
+// ---------- 二级页：UserModel（用户画像单一真源 data/usermodel.json） ----------
+
+/** 13 键的展示定义：键 → 标题+描述（描述=告诉用户这格会被角色怎么用）。 */
+private val UM_FIELDS = listOf(
+    "real_name" to ("名字" to "你告诉过角色怎么称呼你的全名。留空则角色只用称呼账里的叫法。"),
+    "nickname_pref" to ("希望被怎么称呼" to "你自己偏好的称呼倾向；具体在叫什么是各角色的称呼账（按关系演化），这里只定大方向。"),
+    "gender" to ("性别" to "你的性别。角色决定自称、语气和暧昧分寸时用。"),
+    "age" to ("年龄" to "你的年龄或人生阶段。影响话题参照系（角色不会拿它跟你套近乎装熟）。"),
+    "occupation" to ("职业" to "你做什么工作。角色聊你的日常、体谅你忙不忙时的基本盘。"),
+    "city" to ("城市" to "你住哪。异地角色算天气、说「你那边」时以这座城为准。"),
+    "love_language" to ("吃哪套关心" to "言语肯定 / 实际行动 / 陪伴 / 礼物 / 服务——角色选关心方式时优先用这套。"),
+    "comfort_style" to ("低落时想要什么" to "情绪差的时候希望被怎么对待：陪着、给建议、还是别烦你。角色照这个来，不猜。"),
+    "teasing_tolerance" to ("被调侃接受度" to "高 / 中 / 低。决定角色敢不敢损你、损多狠。"),
+    "health_notes" to ("健康注意项" to "长期要注意的事（熬夜伤胃、颈椎、过敏……）。角色会记着提醒，但不当医疗设备用。"),
+    "personality_traits" to ("性格自述" to "你怎么看自己。角色据此预判你的反应，但不会拿它给你下定义。"),
+    "current_goal" to ("近期在忙什么" to "手上正在推的事。角色主动关心进度、理解你没空聊的由头。"),
+    "pending_events" to ("快发生的事" to "考试、出差、复查这类有日期的 pending 事项。角色会记着日子。"),
+)
+
+@Composable
+fun UserModelScreen(onBack: () -> Unit) {
+    val bridge = remember { Python.getInstance().getModule("bridge") }
+    val scope = rememberCoroutineScope()
+    val snackbar = remember { SnackbarHostState() }
+    var loaded by remember { mutableStateOf(false) }
+    // 每键两份本地态：编辑框文本 + 锁定开关；载入时从 bridge 灌一次
+    val values = remember { UM_FIELDS.associate { (k, _) -> k to mutableStateOf("") } }
+    val pins = remember { UM_FIELDS.associate { (k, _) -> k to mutableStateOf(false) } }
+    val srcs = remember { UM_FIELDS.associate { (k, _) -> k to mutableStateOf("") } }
+    var portraits by remember { mutableStateOf(listOf<JSONObject>()) }
+    LaunchedEffect(Unit) {
+        runCatching {
+            val o = JSONObject(withContext(Dispatchers.IO) { bridge.callAttr("usermodel_get").toString() })
+            if (!o.optBoolean("ok")) return@runCatching
+            val prof = o.getJSONObject("profile")
+            for ((k, _) in UM_FIELDS) if (prof.has(k)) {
+                val e = prof.getJSONObject(k)
+                values[k]!!.value = e.optString("value")
+                pins[k]!!.value = e.optBoolean("pinned")
+                srcs[k]!!.value = e.optString("source")
+            }
+            val arr = o.getJSONArray("portraits")
+            portraits = (0 until arr.length()).map { arr.getJSONObject(it) }
+            loaded = true
+        }
+    }
+    fun save(k: String) = scope.launch {
+        val o = JSONObject(withContext(Dispatchers.IO) {
+            bridge.callAttr("usermodel_set", k, values[k]!!.value,
+                if (pins[k]!!.value) "1" else "").toString()
+        })
+        snackbar.showSnackbar(if (o.optBoolean("ok")) "$k 已保存" else "保存失败: ${o.optString("error")}")
+    }
+    Scaffold(snackbarHost = { SnackbarHost(snackbar) }, containerColor = PageBg(),
+        topBar = {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = onBack) { Text("返回", color = Muted()) }
+                Text("用户画像", style = MaterialTheme.typography.headlineSmall)
+            }
+        }) { pad ->
+        Column(Modifier.padding(pad).padding(horizontal = 16.dp).verticalScroll(rememberScrollState())) {
+            Text("这是角色们共同维护的「你是谁」：对话中自动提取，你也可以手改。" +
+                    "打开某格的「锁定」后，自动提取不再改它（你亲口说的话仍可更新）。",
+                fontSize = 12.sp, color = Muted(), modifier = Modifier.padding(bottom = 12.dp))
+            if (!loaded) { Text("读取中…", color = Muted()); return@Column }
+            for ((k, pair) in UM_FIELDS) {
+                val (title, desc) = pair
+                SectionCard(title) {
+                    Text(desc, fontSize = 12.sp, color = Muted(),
+                        modifier = Modifier.padding(bottom = 8.dp))
+                    val src = srcs[k]!!.value
+                    if (src.isNotEmpty()) Text(
+                        if (src == "user") "来源：你亲口说的" else "来源：对话中提取",
+                        fontSize = 11.sp, color = Muted(), modifier = Modifier.padding(bottom = 4.dp))
+                    OutlinedTextField(values[k]!!.value, { values[k]!!.value = it },
+                        Modifier.fillMaxWidth(), singleLine = true,
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = ImeAction.Done))
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text("锁定不被自动改写", fontSize = 13.sp, color = PrimaryInk(),
+                            modifier = Modifier.weight(1f))
+                        Switch(pins[k]!!.value, { on -> pins[k]!!.value = on; save(k) },
+                            colors = SwitchDefaults.colors(
+                                checkedTrackColor = InvertSurface(), checkedThumbColor = OnInvert(),
+                                uncheckedTrackColor = CardBg(), uncheckedThumbColor = Muted(),
+                                uncheckedBorderColor = CardBorder()))
+                    }
+                    SaveButton("保存") { save(k) }
+                }
+            }
+            SectionCard("我眼中的你（角色写，只读）") {
+                Text("每个角色在夜间整理时写下自己对你的印象——同一份画像，不同人读出不同的你。" +
+                        "这里改不了：那是她们的判断。", fontSize = 12.sp, color = Muted(),
+                    modifier = Modifier.padding(bottom = 8.dp))
+                if (portraits.isEmpty()) Text("还没有角色写过（需要聊出足够素材后夜里生成）。",
+                    fontSize = 13.sp, color = Muted())
+                portraits.forEach { p ->
+                    Text(p.optString("name"), fontSize = 13.sp, fontWeight = FontWeight(600),
+                        color = PrimaryInk(), modifier = Modifier.padding(top = 6.dp))
+                    Text(p.optString("text"), fontSize = 13.sp, color = PrimaryInk(),
+                        modifier = Modifier.padding(top = 2.dp))
+                }
+            }
+            Spacer(Modifier.height(24.dp))
         }
     }
 }

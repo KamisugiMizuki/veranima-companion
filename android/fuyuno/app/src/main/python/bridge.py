@@ -765,6 +765,52 @@ def rhythm_status(role: str = "") -> str:
     return json.dumps({"ok": True, "role_rhythm": _role_rhythm(agent)}, ensure_ascii=False)
 
 
+def usermodel_get() -> str:
+    """UserModel 编辑页数据（data/usermodel.json 单一真源）：
+    profile 13 键（含 source/pinned）+ portraits（角色名→「我眼中的你」，只读）。"""
+    agent = getattr(boot, "agent", None)
+    if agent is None:
+        return json.dumps({"ok": False, "error": "未初始化"})
+    try:
+        um = agent.memory.usermodel
+        root = Path(getattr(boot, "root", "."))
+        names = {}
+        for p in sorted(root.glob("characters/*/character.json")):
+            try:
+                card = json.loads(p.read_text(encoding="utf-8"))
+                names[p.parent.name] = str(card.get("name") or p.parent.name)
+            except Exception:
+                names[p.parent.name] = p.parent.name
+        portraits = [{"role": rid, "name": names.get(rid, rid), **v}
+                     for rid, v in sorted(um.all_portraits().items())]
+        return json.dumps({"ok": True, "path": um.path,
+                           "profile": um.all_profile(),
+                           "portraits": portraits}, ensure_ascii=False)
+    except Exception as e:
+        log.error("usermodel_get failed: %s", e)
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+def usermodel_set(key: str, value: str, pinned=None) -> str:
+    """设置页手改画像键：source=user 最高优先；pinned 传 '1'/'0' 顺便翻锁定。
+    value 空串=清除该键。"""
+    agent = getattr(boot, "agent", None)
+    if agent is None:
+        return json.dumps({"ok": False, "error": "未初始化"})
+    try:
+        um = agent.memory.usermodel
+        p = None if pinned in (None, "") else (str(pinned) == "1")
+        if str(value) == "" and p:
+            um.set_pinned(str(key), True)  # 空键只想翻锁定
+            return json.dumps({"ok": True}, ensure_ascii=False)
+        ok = um.set_profile(str(key), str(value), source="user",
+                            confidence=1.0, pinned=p)
+        return json.dumps({"ok": ok, "error": "" if ok else "未知键或被拒"},
+                          ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
 def sleep_status() -> str:
     """睡眠报告数据（Sleep Monitor）：实时状态 + 最近周期 + 清醒中时长。
 

@@ -2508,7 +2508,10 @@ class Agent:
             f"以下是用户近几天的情节片段，请整理成一段客观概括（不超过 80 字），"
             "如果从中能看出用户的行为规律（深夜才来发消息、反复回到同一话题、"
             "提到某事时情绪明显变化），在概括末尾用一句点出（例：' ta 好像总在深夜聊游戏'）；"
-            f"看不出规律就不要编。只输出 JSON：{{\"content\":\"概括\"}}。\n{chr(10).join(lines)}"
+            "看不出规律就不要编。\n"
+            "再写一格\"portrait\"：以你（当前角色）的口吻，写你眼中这是个什么样的用户，"
+            "≤80 字，只写从材料看得出的，写给以后的自己看（不是发给用户的话）。"
+            f"\n只输出 JSON：{{\"content\":\"概括\",\"portrait\":\"我眼中的你\"}}。\n{chr(10).join(lines)}"
         )
         try:
             # 与 _short_task 相同的 system 锚定，但保留原始输出（JSON 协议，
@@ -2517,7 +2520,8 @@ class Agent:
             # chat(256) 被 reasoning 烧空 → finish_reason=length 每分钟重试
             # 一次，白烧 API 还刷日志——预算与冷却双收口）。
             system = build_system_prompt(self.card, self.state, self.memory) + "\n" + self._time_context_instruction()
-            budget = max(256, int((self.config.get("llm", {}) or {}).get("short_task_max_tokens", 1024)))
+            # 输出两格（content+portrait）：下限翻倍，防 reasoning 吃预算截断 JSON
+            budget = 2 * max(256, int((self.config.get("llm", {}) or {}).get("short_task_max_tokens", 1024)))
             raw = self.llm.chat(
                 [
                     {"role": "system", "content": system},
@@ -2530,9 +2534,11 @@ class Agent:
             self._digest_retry_after = time.time() + 6 * 3600
             return {"created": False, "reason": "llm_failed"}
         content = ""
+        portrait = ""
         try:
             data = _json.loads((raw or "").strip())
             content = str(data.get("content") or "").strip()
+            portrait = str(data.get("portrait") or "").strip()
         except _json.JSONDecodeError:
             content = ""
         if not content:
@@ -2568,6 +2574,10 @@ class Agent:
                 (max(0.05, float(e.strength) * 0.5), e.id),
             )
         self.memory.con.commit()
+        # 「我眼中的你」：角色主观解读 → usermodel.json（按角色隔离；缺格不覆盖旧值）
+        if portrait:
+            rid = self._schedule_role_id() or self.role_key or self.card.name
+            self.memory.usermodel.set_portrait(rid, portrait)
         logger.info("nightly digest stored (%d episodes -> summary)", len(episodes))
         return {"created": True, "episodes": len(episodes)}
 
@@ -3240,19 +3250,24 @@ class Agent:
         except Exception as e:
             logger.debug("profile block build failed: %s", e)
             return ""
-        if not prof and not any(nick.values()):
+        portrait = self.memory.usermodel.get_portrait(rid)
+        if not prof and not any(nick.values()) and not portrait:
             return ""
         lines = ["【你对用户的了解（画像·跨角色共享，切换角色不重置）】"]
         label = {"real_name": "名字", "nickname_pref": "偏好被称", "gender": "性别",
                  "age": "年龄", "occupation": "职业", "city": "城市",
                  "love_language": "吃哪套关心", "comfort_style": "低落时想要",
                  "teasing_tolerance": "可调侃度", "health_notes": "健康注意",
-                 "personality_traits": "性格自述"}
+                 "personality_traits": "性格自述", "current_goal": "近期在忙",
+                 "pending_events": "pending 的事"}
         for k, zh in label.items():
             if k in prof:
                 src = prof[k].get("source")
                 star = "（用户亲口说的，最高优先）" if src == "user" else ""
                 lines.append(f"- {zh}：{prof[k]['value']}{star}")
+        portrait = self.memory.usermodel.get_portrait(rid)
+        if portrait:
+            lines.append(f"【我眼中的你（你自己的判断，保持这个视角）】{portrait}")
         # 称呼账（角色×用户对，切换角色各叫各的）
         if nick.get("current"):
             lines.append(f"- 你平时叫ta：{'、'.join(nick['current'])}")
