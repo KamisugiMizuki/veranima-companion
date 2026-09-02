@@ -333,7 +333,7 @@ fun UserModelScreen(onBack: () -> Unit) {
     fun save(k: String) = scope.launch {
         val o = JSONObject(withContext(Dispatchers.IO) {
             bridge.callAttr("usermodel_set", k, values[k]!!.value,
-                if (pins[k]!!.value) "1" else "").toString()
+                if (pins[k]!!.value) "1" else "0").toString()  // 显式 0/1：'' =不动锁定态，取消锁定会丢
         })
         snackbar.showSnackbar(if (o.optBoolean("ok")) "$k 已保存" else "保存失败: ${o.optString("error")}")
     }
