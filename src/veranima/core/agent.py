@@ -311,6 +311,9 @@ class Agent:
         # 懒 import 防环（moments 引 agent 类型仅注释层面）；无角色键时 tick 自动禁用。
         from .moments import MomentsEngine
         self.moments = MomentsEngine(self)
+        # 牵挂账本（MIND_LOOP_SPEC M1）：两次开口之间仍在演进的心智状态
+        from .mind import ThreadLedger
+        self.threads = ThreadLedger(self)
 
         # R4 时空沉浸：场景锁 + 通道互斥 + 主动仲裁（最小版，R4_SPEC 1）
         self.scene_lock = SceneLock()
@@ -808,6 +811,17 @@ class Agent:
                         ),
                         source={**summary, "sleep_cycle_id": cycle},
                     )
+                    # 日终有波折才开牵挂（M1；纯顺利的一天不记事——真机审计
+                    # 结论：报表数字不是心事，被打断/没睡好才是）
+                    try:
+                        if summary["interruption_minutes"] >= 20:
+                            self.threads.from_schedule_event(
+                                "手头的事总被打断，有点烦", intensity=0.5)
+                        elif summary["sleep_debt_minutes"] >= 30:
+                            self.threads.from_schedule_event(
+                                "最近没睡好，白天一直缓不过来", intensity=0.5)
+                    except Exception:
+                        logger.debug("thread from day_close skipped", exc_info=True)
                     rel["virtual_schedule_archived_cycle"] = cycle
                     self.schedule_runtime.activity_spans.clear()
                     self.schedule_runtime.current_item_id = ""
@@ -1585,6 +1599,13 @@ class Agent:
             self.mirror.to_prompt_block(),
             self.promises.to_prompt_block(query_hint=query_hint),
         ]
+        try:
+            self.threads.tick(interaction_now)   # 开口前先推进状态（纯算术零成本）
+            _tb = self.threads.prompt_block()
+            if _tb:
+                extra_blocks.append(_tb)
+        except Exception:
+            logger.debug("thread block skipped", exc_info=True)
         proactive_context = self._adjacent_proactive_context(user_text, channel)
         if proactive_context:
             extra_blocks.append(proactive_context)
@@ -1873,6 +1894,11 @@ class Agent:
         # 8. 事件记忆提取（判断点 memory_kind 优先，词表兜底）
         self._maybe_extract_events(user_text, judgment)
         self._apply_profile_facts(judgment)
+        try:
+            if getattr(judgment, 'thread_candidate', ''):
+                self.threads.from_user(judgment.thread_candidate)
+        except Exception:
+            pass
         self._capture_nickname_feedback(user_text)
 
         # 8.5 MVP2 学习：隐式反馈 → 风格参数 + 语言镜像 + 承诺识别
@@ -2700,6 +2726,11 @@ class Agent:
                 source="meal", channel=self.message_channel, candidate_id=meal_cid)
             return [{"source": "meal", "text": meal_text, "meal": meal_name}]
 
+        def _collect_thread():
+            # 牵挂自述（M1 自我发起源）：不是被什么刺激到，是心里有事想说
+            mat = self.threads.ritual_material(now)
+            return [mat] if mat else []
+
         collectors = {
             "greeting": _collect_greeting,
             "context_probe": _collect_context_probe,
@@ -2707,6 +2738,7 @@ class Agent:
             "occasion": _collect_occasion,
             "schedule_adapt": _collect_schedule_adapt,
             "meal": _collect_meal,
+            "thread": _collect_thread,
         }
         for source_name in RITUAL_SOURCES:  # 清单顺序=素材排列顺序（织入时的话题先后）
             try:

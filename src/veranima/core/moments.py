@@ -43,7 +43,7 @@ def merge_settings(raw: dict | None) -> dict:
     return out
 
 
-_KINDS = {"D01", "D03", "D05", "D06", "D02", "D04", "D07"}
+_KINDS = {"D01", "D03", "D05", "D06", "D02", "D04", "D07", "D08"}
 
 # 虚拟天气（裁决 Q5）：纯函数哈希，同城同天全消费者一致；档=体感可说的朴素词
 _WEATHERS = ("晴", "多云", "阴", "雨", "降温", "大风")
@@ -206,6 +206,13 @@ class MomentsEngine:
                     break
         except Exception:
             logger.debug("D07 collect failed", exc_info=True)
+        # D08 牵挂（M1）：她心里挂着的事——自我发起的动态素材
+        try:
+            th = a.threads.moment_material(now) if getattr(a, "threads", None) else None
+            if th:
+                mats.append(th)
+        except Exception:
+            logger.debug("D08 collect failed", exc_info=True)
         # 类型轮换权重：D01/D03 高，D05 中，D02/D04/D06 点缀，D07 稀有（排序稳定=按源优先级）
         return [x for x in mats if x[0] in _KINDS]
 

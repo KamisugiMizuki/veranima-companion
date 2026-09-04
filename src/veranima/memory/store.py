@@ -1019,6 +1019,47 @@ class MemoryStore:
         return int(self.con.execute(
             "SELECT COUNT(*) FROM messages WHERE role_id=''").fetchone()[0])
 
+    # ---------- 牵挂账本（M1；生命周期纯逻辑在 core/mind.py） ----------
+
+    def thread_add(self, role_id: str, topic: str, origin: str, *,
+                   intensity: float = 0.6, next_beat_at: str = "") -> int:
+        """同一角色同主题去重：已存在=强度取高刷新，不重复开线。"""
+        topic = str(topic or "").strip()[:60]
+        if not topic or not role_id:
+            return 0
+        row = self.con.execute(
+            "SELECT id, intensity FROM mind_threads WHERE role_id=? AND status='open' "
+            "AND topic LIKE ?", (role_id, f"%{topic[:12]}%")).fetchone()
+        ts = _now()
+        if row:
+            self.con.execute(
+                "UPDATE mind_threads SET intensity=MAX(intensity,?),"
+                " next_beat_at=COALESCE(NULLIF(?, ''), next_beat_at), updated_at=? WHERE id=?",
+                (max(0.0, min(1.0, intensity)), next_beat_at, ts, row["id"]))
+            self.con.commit()
+            return int(row["id"])
+        cur = self.con.execute(
+            "INSERT INTO mind_threads(role_id, topic, origin, intensity, status,"
+            " beat_step, next_beat_at, created_at, updated_at)"
+            " VALUES (?,?,?,?, 'open', 0, ?,?,?)",
+            (role_id, topic, origin, max(0.0, min(1.0, intensity)), next_beat_at, ts, ts))
+        self.con.commit()
+        return int(cur.lastrowid)
+
+    def thread_list(self, role_id: str, *, open_only: bool = True) -> list[dict]:
+        q = "SELECT * FROM mind_threads WHERE role_id=?" + (" AND status='open'" if open_only else "")
+        return [dict(r) for r in self.con.execute(q + " ORDER BY intensity DESC, id ASC", (role_id,))]
+
+    def thread_update(self, thread_id: int, **fields) -> None:
+        cols = [k for k in fields if k in ("intensity", "status", "beat_step", "next_beat_at")]
+        if not cols:
+            return
+        sets = ", ".join(f"{c}=?" for c in cols)
+        self.con.execute(
+            f"UPDATE mind_threads SET {sets}, updated_at=? WHERE id=?",
+            (*[fields[c] for c in cols], _now(), int(thread_id)))
+        self.con.commit()
+
     def last_conversation_turn(self, role_id: str) -> dict | None:
         """该角色会话的最后一条消息（漏回追补判定用）。"""
         row = self.con.execute(

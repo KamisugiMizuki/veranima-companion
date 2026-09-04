@@ -40,6 +40,7 @@ class MessageJudgment:
     feedback_like: bool | None = None     # 对上一条回复正向（喜欢/认可）
     feedback_dislike: bool | None = None  # 对上一条回复负向（嫌弃/纠正风格内容）
     profile: dict = field(default_factory=dict)  # 用户自述的稳定事实（闭集键→值）
+    thread_candidate: str = ""            # 值得角色持续惦记的事（M1 牵挂；空=无）
     investment_note: str = ""             # 判定理由（日志/调试，不出口）
 
 
@@ -79,6 +80,9 @@ def build_judge_prompt(text: str, prev_assistant: str) -> str:
         '叮嘱助手别熬夜、问对方睡没睡、描述昨晚的事都算 none,\n'
         '  "is_task": 是否委托助手做一件需要动手执行的事（查文件/写东西/整理/下载'
         '，含不带"帮我"字样的说法）,\n'
+        '  "thread_candidate": 用户这句话里是否有值得你之后一直惦记的事'
+        '（要考试/等结果/身体不舒服/答应你的事）——有则用不超过20字'
+        '记下这件事（以你的视角），没有则空字符串,\n'
         '  "feedback_like": 若有上一条助手消息且用户这句在认可/喜欢它；'
         '"feedback_dislike": 用户在嫌弃/纠正它的内容或风格（"太长了""别这样回"）；'
         '无关联两者都 false。\n'
@@ -114,6 +118,8 @@ def _coerce(raw: dict) -> MessageJudgment:
         j.wants_remember = raw["wants_remember"]
     sr = str(raw.get("sleep_report") or "")
     j.sleep_report = sr if sr in _VALID_SLEEP else "none"
+    tc = raw.get("thread_candidate")
+    j.thread_candidate = str(tc).strip()[:40] if isinstance(tc, str) else ""
     if isinstance(raw.get("is_task"), bool):
         j.is_task = raw["is_task"]
     pf = raw.get("profile")

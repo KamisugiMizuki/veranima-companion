@@ -840,3 +840,63 @@ def test_last_conversation_turn(tmp_path):
     mem.store_message("assistant", "在", role_id="lin")   # 别的角色不算
     last = mem.last_conversation_turn("xumian")
     assert last and last["role"] == "user" and last["content"] == "在吗"
+
+
+# ---------- 22. M1 牵挂账本（MIND_LOOP_SPEC） ----------
+
+def test_thread_lifecycle(tmp_path):
+    """开线→半衰→到点推进→低强度关闭（纯算术，无 LLM）。"""
+    import datetime
+    a, mem = _moment_agent(tmp_path / "th1")
+    tid = a.threads.from_user("周三要开述职会", intensity=0.8)
+    assert tid > 0
+    rows = mem.thread_list("xumian")
+    assert len(rows) == 1 and rows[0]["origin"] == "user"
+    now = datetime.datetime.now(datetime.timezone.utc)
+    # 到剧本步点：强度小涨 + beat_step+1 + 下一步 +24h
+    near = (now + datetime.timedelta(minutes=5)).isoformat()
+    mem.thread_update(tid, next_beat_at=near)
+    a.threads.tick(now + datetime.timedelta(hours=1))
+    r1 = mem.thread_list("xumian")[0]
+    assert r1["beat_step"] == 1 and float(r1["intensity"]) > 0.8
+    # 陈旧无步点：半衰到阈值下自动关
+    mem.thread_update(tid, intensity=0.16, next_beat_at="", beat_step=0)
+    old = now - datetime.timedelta(days=3)
+    mem.con.execute("UPDATE mind_threads SET updated_at=? WHERE id=?", (old.isoformat(), tid))
+    mem.con.commit()
+    a.threads.tick(now)
+    assert mem.thread_list("xumian") == []  # done 不列
+    assert mem.thread_list("xumian", open_only=False)[0]["status"] == "done"
+
+def test_thread_dedup_like_topics(tmp_path):
+    """同主题（前 12 字 LIKE）不开第二条，强度取高。"""
+    a, mem = _moment_agent(tmp_path / "th2")
+    id1 = a.threads.from_user("训练结果还没出，一直悬着", intensity=0.5)
+    id2 = a.threads.from_user("训练结果还没出，一直悬着", intensity=0.8)
+    assert id1 == id2 and len(mem.thread_list("xumian")) == 1
+    assert float(mem.thread_list("xumian")[0]["intensity"]) == 0.8
+
+def test_thread_prompt_block_and_material(tmp_path):
+    """注入块含牵挂+禁编造指令；素材必须是成品第一人称话；同线 12h 不重复。"""
+    a, mem = _moment_agent(tmp_path / "th3")
+    assert a.threads.prompt_block() == ""          # 无牵挂零噪音
+    a.threads.from_user("答辩定在9月15号", intensity=0.9)
+    block = a.threads.prompt_block()
+    assert "答辩定在9月15号" in block and "绝不允许编造" in block
+    m = a.threads.ritual_material()
+    assert m and m["source"] == "thread"
+    assert m["text"].startswith("你之前说")       # user 起源=替你记着句式（成品话）
+    assert a.threads.ritual_material() is None     # 同线重复取材被 12h 窗口挡
+
+def test_thread_moment_d08(tmp_path):
+    """动态 D08：牵挂是最自然的动态素材。"""
+    a, mem = _moment_agent(tmp_path / "th4")
+    a.threads.from_user("高铁票还没抢", intensity=0.9)
+    mats = a.moments._materials(__import__("datetime").datetime.now(__import__("datetime").timezone.utc))
+    d08 = [x for x in mats if x[0] == "D08"]
+    assert d08 and "高铁票" in d08[0][1] and d08[0][3]  # 降级骨架非空
+
+def test_thread_meal_gate_unaffected(tmp_path):
+    """无牵挂时 thread 源零产出（饭点等既有主动行为逐字不变）。"""
+    a, mem = _moment_agent(tmp_path / "th5")
+    assert a.threads.ritual_material() is None

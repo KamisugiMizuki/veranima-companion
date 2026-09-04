@@ -29,6 +29,7 @@ RITUAL_SOURCES = (
     "occasion",        # 节庆/纪念日（每日一次）
     "schedule_adapt",  # 角色作息向用户偏移的理由消息（每日一次）
     "meal",            # 三餐提醒（每餐当日一次）
+    "thread",          # 牵挂自述（M1 自我发起源：TA 自己心里有事想说，非刺激驱动）
 )
 
 MEAL_SLOTS = {

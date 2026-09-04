@@ -207,6 +207,21 @@ CREATE TABLE IF NOT EXISTS role_reads (
     updated_at   TEXT NOT NULL
 );
 
+-- 牵挂账本（MIND_LOOP_SPEC M1）：角色心里持续挂着的事，tick 程序驱动演进
+CREATE TABLE IF NOT EXISTS mind_threads (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    role_id      TEXT NOT NULL,
+    topic        TEXT NOT NULL,
+    origin       TEXT NOT NULL CHECK (origin IN ('schedule','user','promise','thread','self')),
+    intensity    REAL NOT NULL DEFAULT 0.6,
+    status       TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','done')),
+    beat_step    INTEGER NOT NULL DEFAULT 0,
+    next_beat_at TEXT NOT NULL DEFAULT '',
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_threads_role ON mind_threads(role_id, status);
+
 -- 好友动态（MOMENTS_MULTIROLE_SPEC P2）：动态=角色虚拟生活的自然溢出，
 -- 每条带 kind（D01-D07 溯源类型）与 dedupe_key（素材唯一键，重复生成被
 -- UNIQUE 静默拒绝=天然去重）；role_id='user'=用户动态（P4 才产生）。
