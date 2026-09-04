@@ -92,6 +92,15 @@ class ThreadLedger:
 
     # ---------- 消费 ----------
 
+    def close_by_index(self, idx: int, ids_snapshot: tuple) -> None:
+        """判断点宣告完结（序号按送判时刻的清单快照映射）：强度砸到自发阈值
+        以下、剧本冻结——不再主动提；不立即删：记忆里留着，淡出交给半衰。
+        （真人也不会刚听说答辩完就把这页撕掉。）"""
+        if not (1 <= idx <= len(ids_snapshot)):
+            return
+        self.agent.memory.thread_update(int(ids_snapshot[idx - 1]),
+                                        intensity=0.3, next_beat_at="")
+
     def top(self, n: int = _TOP_N) -> list[dict]:
         try:
             return self.agent.memory.thread_list(self.role)[:n]

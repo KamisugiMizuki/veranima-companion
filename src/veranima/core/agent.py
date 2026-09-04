@@ -1283,7 +1283,8 @@ class Agent:
             (str(e.get("content") or "") for e in reversed(self._history)
              if e.get("role") == "assistant"), "")
         j = judge_message(self.llm, key, prev_assistant,
-                          config=self.config.get("judgment", {}) or {})
+                          config=self.config.get("judgment", {}) or {},
+                          open_threads=self.threads.top())
         self._judgment = j
         self._judgment_for = key
         return j
@@ -1897,6 +1898,8 @@ class Agent:
         try:
             if getattr(judgment, 'thread_candidate', ''):
                 self.threads.from_user(judgment.thread_candidate)
+            if getattr(judgment, 'thread_closed', 0):
+                self.threads.close_by_index(judgment.thread_closed, judgment.thread_ids)
         except Exception:
             pass
         self._capture_nickname_feedback(user_text)

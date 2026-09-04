@@ -900,3 +900,18 @@ def test_thread_meal_gate_unaffected(tmp_path):
     """无牵挂时 thread 源零产出（饭点等既有主动行为逐字不变）。"""
     a, mem = _moment_agent(tmp_path / "th5")
     assert a.threads.ritual_material() is None
+
+def test_thread_closure_by_judgment(tmp_path):
+    """#M1b 完结标记：宣告做完→强度砸到 0.3（自发阈值下）+剧本冻结；
+    未完结语料（"还没做完"）不许误关；序号按送判快照映射。"""
+    a, mem = _moment_agent(tmp_path / "tc")
+    a.threads._last_material = {}
+    tid = a.threads.from_user("周三的述职答辩", intensity=0.8)
+    rows = mem.thread_list("xumian")
+    ids = tuple(r["id"] for r in rows)
+    a.threads.close_by_index(1, ids)
+    r1 = mem.thread_list("xumian")[0]
+    assert float(r1["intensity"]) == 0.3 and r1["next_beat_at"] == ""
+    assert a.threads.ritual_material() is None          # 不再自发提起
+    a.threads.close_by_index(5, ids)                    # 越界序号=零行为
+    assert float(mem.thread_list("xumian")[0]["intensity"]) == 0.3

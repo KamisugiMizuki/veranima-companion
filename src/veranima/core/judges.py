@@ -41,6 +41,8 @@ class MessageJudgment:
     feedback_dislike: bool | None = None  # 对上一条回复负向（嫌弃/纠正风格内容）
     profile: dict = field(default_factory=dict)  # 用户自述的稳定事实（闭集键→值）
     thread_candidate: str = ""            # 值得角色持续惦记的事（M1 牵挂；空=无）
+    thread_closed: int = 0                # 本句宣告完结的牵挂序号（0=无；对照注入清单）
+    thread_ids: tuple = ()                # 送判时的序号→线程 id 快照（tick 重排防错位）
     investment_note: str = ""             # 判定理由（日志/调试，不出口）
 
 
@@ -51,8 +53,11 @@ class JudgeConfig:
     history_note_max: int = 120
 
 
-def build_judge_prompt(text: str, prev_assistant: str) -> str:
+def build_judge_prompt(text: str, prev_assistant: str, open_threads: list | None = None) -> str:
     ctx = f"\n上一条助手消息（可能为空）：{prev_assistant[:120]}" if prev_assistant else ""
+    if open_threads:
+        lst = "\n".join(f"{i + 1}. {th['topic']}" for i, th in enumerate(open_threads))
+        ctx += "\n她当前挂心的事：\n" + lst
     return (
         "分析下面这条用户消息（来自聊天伴侣场景，用户=对话对象，角色=助手）。"
         f"消息：{text[:220]}{ctx}\n"
@@ -80,9 +85,15 @@ def build_judge_prompt(text: str, prev_assistant: str) -> str:
         '叮嘱助手别熬夜、问对方睡没睡、描述昨晚的事都算 none,\n'
         '  "is_task": 是否委托助手做一件需要动手执行的事（查文件/写东西/整理/下载'
         '，含不带"帮我"字样的说法）,\n'
-        '  "thread_candidate": 用户这句话里是否有值得你之后一直惦记的事'
-        '（要考试/等结果/身体不舒服/答应你的事）——有则用不超过20字'
-        '记下这件事（以你的视角），没有则空字符串,\n'
+        '  "thread_candidate": 用户这句话里是否有值得你之后一直惦记的事'
+
+        '（要考试/等结果/身体不舒服/答应你的事）——有则用不超过20字'
+
+        '记下这件事（以你的视角），没有则空字符串,\n'
+
+        '  "thread_closed": 下面"她挂心的事"清单里，本条消息宣告了哪件已完结'
+        '（做完了/办妥了/取消了/过去了）——输出其编号数字（如 1），都没完结或无清单=0；'
+        '"挺顺利""完了感觉还行"算完结，"还没做完/又延了"不算,\n'
         '  "feedback_like": 若有上一条助手消息且用户这句在认可/喜欢它；'
         '"feedback_dislike": 用户在嫌弃/纠正它的内容或风格（"太长了""别这样回"）；'
         '无关联两者都 false。\n'
@@ -120,6 +131,10 @@ def _coerce(raw: dict) -> MessageJudgment:
     j.sleep_report = sr if sr in _VALID_SLEEP else "none"
     tc = raw.get("thread_candidate")
     j.thread_candidate = str(tc).strip()[:40] if isinstance(tc, str) else ""
+    try:
+        j.thread_closed = max(0, int(raw.get("thread_closed") or 0))
+    except (TypeError, ValueError):
+        j.thread_closed = 0
     if isinstance(raw.get("is_task"), bool):
         j.is_task = raw["is_task"]
     pf = raw.get("profile")
@@ -137,7 +152,8 @@ def _coerce(raw: dict) -> MessageJudgment:
 
 
 def judge_message(llm, text: str, prev_assistant: str = "",
-                  *, config: dict | None = None) -> MessageJudgment | None:
+                  *, config: dict | None = None,
+                  open_threads: list | None = None) -> MessageJudgment | None:
     """一次调用产全量判断。返回 None=不可用/不值得判（调用方全量回退规则）。
 
     预筛（控成本非裁决）：<6 字极短消息不送判，但含场景词（要睡了/去忙等）
@@ -157,13 +173,14 @@ def judge_message(llm, text: str, prev_assistant: str = "",
         return None
     try:
         raw = llm.chat_structured(
-            [{"role": "user", "content": build_judge_prompt(text, prev_assistant)}],
+            [{"role": "user", "content": build_judge_prompt(text, prev_assistant, open_threads)}],
             temperature=0.1,  # 预算不传=全局上限（12 字段 JSON+reasoning，512 实测被烧空）
         )
         data = json.loads(str(raw).strip().strip("`").removeprefix("json").strip())
         if not isinstance(data, dict):
             return None
         j = _coerce(data)
+        j.thread_ids = tuple(int(th["id"]) for th in (open_threads or []))
         j.investment_note = str(data.get("_why") or "")[:80]
         return j
     except Exception as e:
