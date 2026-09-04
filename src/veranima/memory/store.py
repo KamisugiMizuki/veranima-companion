@@ -650,7 +650,12 @@ class MemoryStore:
     # ---------- Agent 状态持久化（2026-08-04 重启续接） ----------
 
     def save_state(self, snapshot: dict) -> None:
-        """Agent 内在状态（依恋度/精力/情绪/计数/R1 字段）单行 upsert。"""
+        """Agent 内在状态单行 upsert。
+
+        user_asleep/last_sleep_report_at 是**跨角色共享的用户态**：多 Agent
+        并存时各自的内存副本会互相过期覆盖（2026-09-04 真机实锤：凛的 stale
+        False 把许眠刚写的"已醒"盖回去）。这两列不进 upsert，只走
+        set_sleep_state 列级写（2026-09-04 审计裁决）。"""
         import json as _json
         self.con.execute(
             """INSERT INTO agent_state (id, energy, mood, attachment, mood_score, total_messages,
@@ -668,7 +673,6 @@ class MemoryStore:
               last_cause=excluded.last_cause,
               valence=excluded.valence, arousal=excluded.arousal, dominance=excluded.dominance,
               relationship=excluded.relationship,
-              user_asleep=excluded.user_asleep, last_sleep_report_at=excluded.last_sleep_report_at,
               updated_at=excluded.updated_at""",
             (snapshot.get("energy", 100.0), snapshot.get("mood", "平静"),
              snapshot.get("attachment", 0.5), snapshot.get("mood_score", 0.0),
@@ -682,6 +686,13 @@ class MemoryStore:
              snapshot.get("last_sleep_report_at", "") or "",
              _now()),
         )
+        self.con.commit()
+
+    def set_sleep_state(self, asleep: bool, reported_at: str) -> None:
+        """用户睡眠态列级写（唯一正门）：不碰整行，多 Agent 无覆盖竞态。"""
+        self.con.execute(
+            "UPDATE agent_state SET user_asleep=?, last_sleep_report_at=? WHERE id=1",
+            (int(bool(asleep)), str(reported_at or "")))
         self.con.commit()
 
     def load_state(self) -> dict | None:
@@ -1007,6 +1018,13 @@ class MemoryStore:
     def message_role_gaps(self) -> int:
         return int(self.con.execute(
             "SELECT COUNT(*) FROM messages WHERE role_id=''").fetchone()[0])
+
+    def last_conversation_turn(self, role_id: str) -> dict | None:
+        """该角色会话的最后一条消息（漏回追补判定用）。"""
+        row = self.con.execute(
+            "SELECT role, content, created_at FROM messages WHERE role_id=? ORDER BY id DESC LIMIT 1",
+            (role_id,)).fetchone()
+        return dict(row) if row else None
 
     def role_message_count(self, role_id: str) -> int:
         """该角色会话的消息总数（角色里程碑的唯一真源——agent_state 的

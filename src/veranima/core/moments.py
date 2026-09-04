@@ -63,6 +63,29 @@ def virtual_weather(city: str, day: dt.date) -> str:
     return pool[seed % len(pool)] if pool else "晴"
 
 
+def _looks_truncated(t: str) -> bool:
+    """残句：以句读/连接词悬空结尾（LLM 预算截断的机器指纹）。"""
+    t = t.strip()
+    if not t:
+        return False
+    tail = t[-1]
+    if tail in ("，", "、", "：", "；", ",", ":", ";", "(", "（"):
+        return True
+    if tail in (chr(34), "“", "「", "『"):
+        return True  # 引号开头类悬空（未闭合引用）
+    return False
+
+
+def _looks_machine(t: str) -> bool:
+    """统计口径残留：内部字段名词面（有效活动/作息偏移/睡眠债务=日终摘要
+    原文指纹，人话动态不会这么说话），或数字+单位成串（≥3=报表腔）。"""
+    import re
+    if any(w in t for w in ("有效活动", "作息偏移", "睡眠债务")):
+        return True
+    return len(re.findall(r"\d+\s*(分钟|小时|%)", t)) >= 3
+
+
+
 # 活动键→人话（喂 LLM 素材用；未收录原样——英文键 LLM 也懂，UI 那份 actMap 是显示用）
 _ACT_LABELS = {
     "wake_routine": "起床收拾", "focused_practice": "专注做自己的事", "reset": "在路上",
@@ -243,6 +266,11 @@ class MomentsEngine:
         dedupe = f"{role}|{ref}"
         mention = str((cfg.get("moments") or {}).get("mention_user", "indirect"))
         content = self._compose(kind, text, mention, fallback)
+        # 发布硬闸（2026-09-04 真机实锤）：织文"成功返回"也可能是截断残句
+        # （句读处断掉没写完）或统计口径没洗掉（"X分钟 中断Y"）——宁发骨架不发残次品。
+        if content and (_looks_truncated(content) or _looks_machine(content)):
+            logger.info("moment rejected (%s): %r", kind, content[:40])
+            content = (fallback or "").strip()
         if not content:
             return 0
         pub = self.agent.memory.moment_publish(role, content, kind=kind,

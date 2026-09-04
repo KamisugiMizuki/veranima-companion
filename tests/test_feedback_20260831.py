@@ -768,3 +768,75 @@ def test_react_default_off_and_idempotent(tmp_path, monkeypatch):
     assert n >= 1
     # 再触发：已反应→零行为（幂等）
     assert a.moments.maybe_react_to_user_moments() == 0
+
+
+# ---------- 21. 2026-09-04 审计八项修动 ----------
+
+def test_sleep_columns_survive_cross_agent_persist(tmp_path):
+    """#1：A agent 报醒（列级写）→ B agent persist 整行不得把 asleep 盖回 True。"""
+    a, mem = _moment_agent(tmp_path / "s1")
+    mem.save_state(mem.load_state() or {})   # 建行
+    a.state.user_asleep = True
+    mem.set_sleep_state(True, "2026-09-04T01:00:00+00:00")
+    row = mem.con.execute("SELECT user_asleep FROM agent_state WHERE id=1").fetchone()
+    assert int(row[0]) == 1
+    # 另一 Agent 持 stale False 内存副本 persist：列不动
+    a.state.user_asleep = False
+    a._persist_state()
+    row2 = mem.con.execute("SELECT user_asleep FROM agent_state WHERE id=1").fetchone()
+    assert int(row2[0]) == 1
+
+
+def test_episodic_present_annotation(tmp_path):
+    """#2：episode 提取带 present=在场角色；闪回池与召回标注各自过滤。"""
+    from veranima.memory.store import MemoryEntry
+    import datetime
+    a, mem = _moment_agent(tmp_path / "pr")
+    e = mem.store("episodic", "用户说昨晚九点还醒着", meta={"present": "凛"})
+    # 闪回排除别家在场的事
+    a._dug_memory_ids = []
+    pool_ids = [x.id for x in mem.list_layer("episodic", limit=30)
+                if str((x.meta or {}).get("present") or "") in ("", a.card.name)]
+    assert e.id not in pool_ids
+    # 召回注入标注
+    from veranima.core.prompts import _annotate_present
+    _annotate_present([e], a.card)
+    assert "凛和ta之间的事" in e.content
+
+
+def test_moment_publish_gate(tmp_path):
+    """#5：织文成功但残句/报表腔→发布闸拒，退降级骨架。"""
+    a, mem = _moment_agent(tmp_path / "gate")
+    # FakeLLM 直返报表腔（3 个数字单位=机器判定命中）
+    a._short_task = lambda *x, **k: "本周有效活动69分钟，中断0，作息偏移0，睡眠债务1分钟。"
+    now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+    n = a.moments.tick(now=now)
+    row = mem.moments_recent_texts("xumian", limit=1)
+    if n:
+        assert row[0] == "今天心情挺好，说不上为什么。"   # D03 开心骨架
+        assert "分钟" not in row[0]
+
+
+def test_planner_failure_keeps_deterministic_plan(tmp_path):
+    """#3：planner 抛异常=无微调、确定性计划照常，不得沿 advance 上抛。"""
+    import datetime
+    a, mem = _moment_agent(tmp_path / "pl")
+    rt = a.schedule_runtime
+    if rt is None:
+        import pytest; pytest.skip("no schedule runtime")
+    rt.planner = lambda w: (_ for _ in ()).throw(RuntimeError("boom"))
+    rt._next_day_plan = None
+    import dataclasses
+    rt.state = dataclasses.replace(rt.state, state="sleeping")  # frozen dataclass
+    rt.generate_next_day_after_sleep(datetime.datetime.now(datetime.timezone.utc))
+    # 不抛=过（返回值非重点，异常吞噬才是本修的语义）
+
+
+def test_last_conversation_turn(tmp_path):
+    """#6 判定数据面：角色会话尾=最后一条消息（含 role，漏回追补的依据）。"""
+    a, mem = _moment_agent(tmp_path / "ct")
+    assert mem.last_conversation_turn("xumian") is None
+    mem.store_message("user", "在吗", role_id="xumian")
+    mem.store_message("assistant", "在", role_id="lin")   # 别的角色不算
+    last = mem.last_conversation_turn("xumian")
+    assert last and last["role"] == "user" and last["content"] == "在吗"

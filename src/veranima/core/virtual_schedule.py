@@ -3,10 +3,14 @@ from __future__ import annotations
 
 import json
 import hashlib
+import logging
 import datetime as dt
 from zoneinfo import ZoneInfo
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+
+
+logger = logging.getLogger(__name__)
 
 
 class ScheduleTemplateError(ValueError):
@@ -689,7 +693,15 @@ class ScheduleRuntime:
             raise ScheduleTemplateError("next-day plan requires sleeping state")
         if self._next_day_plan is not None:
             return self._next_day_plan
-        output = self.planner(when) if self.planner else None
+        # planner 失败（真机实锤 2026-09-04：DeepSeek 截断异常沿 advance 上抛）
+        # =本轮无 LLM 微调、确定性计划照常——它不该炸掉 tick 循环，更不该
+        # 连带吞掉用户轮次（07:09「堂堂起床」登记成功但回复+落库全丢 116min）。
+        output = None
+        if self.planner is not None:
+            try:
+                output = self.planner(when)
+            except Exception as e:
+                logger.warning("schedule planner failed (deterministic plan kept): %s", e)
         if self.calendar is not None:
             day = self.calendar.day((when + dt.timedelta(days=1)).astimezone(ZoneInfo(self.outline.timezone)).date())
             if output is None:

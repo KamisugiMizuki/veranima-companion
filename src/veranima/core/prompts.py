@@ -155,7 +155,8 @@ def build_system_prompt(
         core_profile=memory.list_layer("core_profile", limit=20),
         procedural=memory.list_layer("procedural", limit=20),
         semantic=memory.recall(query_hint, top_k=5, layer="semantic") if query_hint else [],
-        episodic=memory.recall(query_hint, top_k=5, layer="episodic") if query_hint else [],
+        episodic=_annotate_present(
+            memory.recall(query_hint, top_k=5, layer="episodic") if query_hint else [], card),
         session=memory.list_layer("session", limit=10),
         budgets={
             "core_profile": core_profile_budget,
@@ -183,6 +184,17 @@ def build_system_prompt(
         parts.append(format_block)
 
     return "\n".join(parts)
+
+
+def _annotate_present(entries, card):
+    """共享记忆库的 episodic 条目标注在场角色（审计#2）：别人在场的事，
+    不是你亲历的记忆——防跨角色脑补穿帮（历史条目无 present 键=不标注）。"""
+    name = str(getattr(card, "name", "") or "")
+    for e in entries:
+        pres = str((e.meta or {}).get("present") or "")
+        if pres and pres != name:
+            e.content = f"（这是{pres}和ta之间的事，你只是听ta提起过）{e.content}"
+    return entries
 
 
 def _fuzzy_ify(text: str) -> str:

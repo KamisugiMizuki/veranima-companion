@@ -185,11 +185,24 @@ def sleep_summary_pending() -> str:
         sent = agent.memory.recent_proactive_feedback(source="sleep_summary", limit=30)
         if any(str(r.get("candidate_id") or "") == cid for r in sent):
             return ""
-        agent.memory.record_proactive_feedback(source="sleep_summary", channel="qq", candidate_id=cid)
+        # 时效闸（2026-09-04 真机实锤：早上 05:56 醒的总结 23:15 才补发，
+        # 深夜冒一句「醒这么早」）：苏醒超 3 小时=过期，记账放弃不再补发——
+        # 过期问候不如不说（与主动消息不补发同款裁决）。
+        try:
+            import datetime as _dt
+            woke = _dt.datetime.fromisoformat(str(cycle.get("woke_at") or ""))
+            if (_dt.datetime.now(_dt.timezone.utc) - woke).total_seconds() > 3 * 3600:
+                agent.memory.record_proactive_feedback(
+                    source="sleep_summary", channel=agent.message_channel, candidate_id=cid)
+                return ""
+        except Exception:
+            pass
+        agent.memory.record_proactive_feedback(source="sleep_summary",
+                                               channel=agent.message_channel, candidate_id=cid)
         # 落库为 assistant 消息：通知栏与 App 内聊天页同步可见（2026-08-31 用户反馈
         # 只有通知有、应用内没有——此前纯旁路文本，消息表零记录）
         try:
-            agent.record_proactive_message(str(cycle["summary"]), channel="im")
+            agent.record_proactive_message(str(cycle["summary"]))
             # 本函数不进 _pending（Kotlin 直接 notify 返回值）——落库后手动
             # 触发一次即时刷新钩子，与 _queue 同语义（2026-09-02）
             _flush()
@@ -199,6 +212,36 @@ def sleep_summary_pending() -> str:
     except Exception as e:
         log.debug("sleep_summary_pending failed: %s", e)
         return ""
+
+
+def catch_up_replies() -> str:
+    """漏回追补（2026-09-04 审计#6）：会话尾是用户消息且没人回=上轮进程
+    没跑完（闪退/后台被杀/LLM 炸）。boot 后延迟触发一次：
+    只补 2-40 分钟内的（太久=用户早不需要了）；每角色至多一条。
+    走正常 handle() 链=通知/落库/记账全复用。"""
+    agents = getattr(boot, "agents", None) or {}
+    if not agents:
+        agent0 = getattr(boot, "agent", None)
+        agents = {agent0.role_key: agent0} if agent0 is not None else {}
+    import datetime as _dt
+    n = 0
+    for role, agent in agents.items():
+        if agent is None or not role:
+            continue
+        try:
+            last = agent.memory.last_conversation_turn(role)
+            if not last or last["role"] != "user":
+                continue
+            ago = (_dt.datetime.now(_dt.timezone.utc)
+                   - _dt.datetime.fromisoformat(last["created_at"])).total_seconds()
+            if not (120 <= ago <= 2400):
+                continue
+            log.info("catch-up reply for %s (unanswered %.0fmin)", role, ago / 60)
+            agent.handle(last["content"], channel="im")
+            n += 1
+        except Exception:
+            log.exception("catch_up failed for %s", role)
+    return json.dumps({"ok": True, "handled": n})
 
 
 def drain_pending() -> str:
@@ -298,6 +341,10 @@ def boot(files_dir: str) -> str:
         if imported:
             probe["imported"] = imported
         log.info("boot ok: %s", probe)
+        # 漏回追补（审计#6）：boot 30s 后跑一次——上次进程死在轮次中途时，
+        # 会话尾的用户消息在这一步得到回复（窗口/每角色一条的判定在函数内）
+        import threading as _th
+        _th.Timer(30.0, catch_up_replies).start()
         return json.dumps(probe, ensure_ascii=False)
     except Exception as e:
         tb = traceback.format_exc(limit=6)

@@ -892,12 +892,15 @@ class Agent:
             self.state.user_asleep = True
             self.state.last_sleep_report_at = now.isoformat(timespec="seconds")
             self.memory.open_sleep_cycle(now.isoformat(timespec="seconds"))
+            # 用户态列级写（#1 审计）：整行 upsert 不含这两列，防 stale agent 覆盖
+            self.memory.set_sleep_state(True, now.isoformat(timespec="seconds"))
             logger.info("user sleep reported at %s", now.isoformat(timespec="seconds"))
             self._persist_state()
             return "sleep"
         if action == "wake" and self.state.user_asleep:
             self.state.user_asleep = False
             self.state.last_sleep_report_at = now.isoformat(timespec="seconds")
+            self.memory.set_sleep_state(False, now.isoformat(timespec="seconds"))
             cycle = self.memory.close_sleep_cycle(now.isoformat(timespec="seconds"))
             logger.info("user wake reported at %s", now.isoformat(timespec="seconds"))
             self._persist_state()
@@ -974,6 +977,7 @@ class Agent:
                 "用你的口吻发一条简短的起床问候+睡眠状况总结（两三句话），"
                 "可以轻松评价一下他的作息（规律/熬夜/睡得不错），别说教，像朋友刚睡醒时说话。"
                 f"提到吃饭/活动安排时按「现在={w}」这个时刻选对的餐点（早上=早饭/晚上=晚饭），别串时段。"
+                "标点按你平时的说话习惯来，别整句不带标点用空格断句。"
             )
             return (self._short_task(task, max_tokens=256) or "").strip()
         except Exception as e:
@@ -3314,6 +3318,10 @@ class Agent:
         prefer = ["我特别喜欢", "我很喜欢", "我特别", "我最爱", "我最喜欢", "我喜欢", "我讨厌", "我害怕",
                   "我是", "我的", "我住在", "我在", "我养", "我爱"]
         if kind in ("event", "commitment") or (kind == "none" and any(s in user_text for s in strong)):
+            _meta = {"emotion": emotion} if emotion else {}
+            # 在场角色（2026-09-04 审计#2）：共享记忆库里 episode 必须记
+            # "这事发生在谁和谁的对话里"——否则许眠会拿凛的对话脑补"我翻过你记录"
+            _meta["present"] = self.card.name
             entry = self.memory.store(
                 "episodic",
                 user_text[:100],
@@ -3321,7 +3329,7 @@ class Agent:
                 confidence=0.8 if kind != "none" else 0.6,  # 语义裁决比词表命中更可信
                 provenance="auto-extract",
                 category="event" if kind != "commitment" else "commitment",
-                meta={"emotion": emotion} if emotion else None,
+                meta=_meta or None,
             )
             logger.info("episodic extracted: #%s (kind=%s)", entry.id, kind or "rule")
         elif kind == "preference" or (kind == "none" and any(s in user_text for s in prefer)):
@@ -3358,7 +3366,8 @@ class Agent:
             eps = self.memory.list_layer("episodic", limit=30)
             sems = self.memory.list_layer("semantic", limit=30)
             used = set(getattr(self, "_dug_memory_ids", []))
-            pool = [e for e in (eps + sems) if e.id % 3 != 0 and e.id not in used]  # 分散+已挖排除
+            pool = [e for e in (eps + sems) if e.id % 3 != 0 and e.id not in used
+                    and str((e.meta or {}).get("present") or "") in ("", self.card.name)]  # 分散+已挖+在场过滤
             if not pool:
                 return None
             if topic_hint:
