@@ -19,6 +19,7 @@
 | `desktop/` | 桌宠 GUI | GUI_SPEC（Electron 壳：主窗/聊天窗/设置/日志） |
 | `android/` | 安卓端 | ANDROID_SCOPE_SPEC（APK 功能范围裁决）+ ANDROID_UI_VISUAL_NOVEL_SPEC（视觉小说舞台化） |
 | `moments/` | 多角色共存与好友动态 | MOMENTS_MULTIROLE_SPEC（微信式三 tab 界面/动态七型引擎/角色独立设置/记忆隔离架构，裁决前设计稿） |
+| `mind/` | 内心生活闭环 | MIND_LOOP_SPEC（牵挂账本/驱力池/心境残响/夜眠消化/生活反应性——反「状态机感」全局表现层，v1 草案待裁决） |
 | `character/` | 角色包 | CHARPKG_SPEC（.charpkg 导出/导入/安全边界） |
 | `hermes/` | Hermes 集成 | HERMES_AGENT_INTEGRATION_SPEC（R5 执行后端对接契约） |
 | `newly_added/` | 灵感暂存 | design_append.md（用户随手记的功能点子常驻模板，评估后并入 DESIGN.md） |
