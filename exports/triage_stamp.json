@@ -1,0 +1,5 @@
+{
+  "screened_through": "2026-09-06T05:10:00+00:00",
+  "classes": ["duplicate_broadcast", "internal_leak", "ledger_pollution", "machine_moment", "fabrication_candidates"],
+  "note": "该时刻前的原始数据已按 classes 清单+人读双轨筛查（09-06 批次，报告见会话）。已知旧账=修复前版本产生，不算复发：复读/泄漏/判词/digest 病灶均有 6eb96bd/cb14679 行为测试钉死。新类别出现=先 --all 校准再更新本戳。"
+}
