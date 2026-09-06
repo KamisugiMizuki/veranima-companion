@@ -139,9 +139,11 @@ def _coerce(raw: dict) -> MessageJudgment:
         j.is_task = raw["is_task"]
     pf = raw.get("profile")
     if isinstance(pf, dict):
+        # 与 usermodel.PROFILE_KEYS 同步的 11 键闭集（M1c：current_goal/
+        # pending_events 退役——事件归牵挂，不归画像；prompt 侧本来就没列它们）
         _PROF_KEYS = ("real_name", "nickname_pref", "gender", "age", "occupation",
                       "city", "love_language", "comfort_style", "teasing_tolerance",
-                      "health_notes", "personality_traits", "current_goal", "pending_events")
+                      "health_notes", "personality_traits")
         j.profile = {str(k): str(v)[:100] for k, v in pf.items()
                      if k in _PROF_KEYS and v not in (None, "", "null")}
     if isinstance(raw.get("feedback_like"), bool):

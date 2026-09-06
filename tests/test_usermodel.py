@@ -137,10 +137,10 @@ def test_digest_stores_portrait(tmp_path):
     assert out.get("created") is True
     rid = agent._schedule_role_id() or agent.card.name
     assert agent.memory.usermodel.get_portrait(rid) == "他嘴上说没事，连加三天班就是在硬撑。"
-    # prompt 注入（含新增的 current_goal 标签行也在同一块）
-    agent.memory.profile_set("current_goal", "veranima 安卓化", source="user", confidence=1.0)
+    # prompt 注入（画像标签行与 portrait 在同一块；current_goal 已退役见 M1c 测试）
+    agent.memory.profile_set("personality_traits", "嘴上说没事实则硬撑", source="user", confidence=1.0)
     block = agent._profile_block()
-    assert "我眼中的你" in block and "硬撑" in block and "近期在忙" in block
+    assert "我眼中的你" in block and "硬撑" in block and "性格自述" in block
 
 
 def test_digest_without_portrait_keeps_old(tmp_path):

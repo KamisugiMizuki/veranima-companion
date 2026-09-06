@@ -281,6 +281,22 @@ CREATE TABLE IF NOT EXISTS memory_embedding (
     memory_id INTEGER PRIMARY KEY,
     embedding BLOB NOT NULL
 );
+
+-- 决策留痕（HARNESS_SPEC D1）：每次自发副作用（主动消息/苏醒播报/动态发布）
+-- 落一行——导出即账本，「她为什么说了/没说这句」不再靠 DB 考古猜。
+-- 只记自发行为；对话一问一答不进（量大且非验收面）。
+CREATE TABLE IF NOT EXISTS decisions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts          TEXT NOT NULL,
+    role_id     TEXT NOT NULL DEFAULT '',
+    kind        TEXT NOT NULL,               -- wakesummary/meal/thread/greeting/ritual/heartbeat/moment…
+    object_ref  TEXT NOT NULL DEFAULT '',    -- sleep_cycle:7 / moment:41（被操作对象指针）
+    verdict     TEXT NOT NULL,               -- sent/rejected/expired/deduped/failed
+    reason      TEXT NOT NULL DEFAULT '',    -- 判定短句（人读）
+    digest      TEXT NOT NULL DEFAULT '',    -- 决策时刻读到的关键输入摘要（≤200 字）
+    effect_ref  INTEGER NOT NULL DEFAULT 0   -- 产出去向（message/moment id；0=无产出）
+);
+CREATE INDEX IF NOT EXISTS idx_decisions_ts ON decisions(id);
 """
 
 

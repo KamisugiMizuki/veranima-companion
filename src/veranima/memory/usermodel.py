@@ -24,8 +24,13 @@ logger = logging.getLogger(__name__)
 PROFILE_KEYS = (
     "real_name", "nickname_pref", "gender", "age", "occupation",
     "city", "love_language", "comfort_style", "teasing_tolerance",
-    "health_notes", "personality_traits", "current_goal", "pending_events",
+    "health_notes", "personality_traits",
 )
+# M1c（09-06 裁决 Q2）：current_goal/pending_events 退役——带保质期的事件
+# 不是「这个人是谁」，且无半衰/完结机制会常驻成永远；职责移交牵挂账本
+# （mind_threads，有 ×0.85/日半衰 + thread_closed 完结闸）。存量迁移见
+# migrate_event_profile_keys。
+_RETIRED_EVENT_KEYS = ("current_goal", "pending_events")
 # 冲突链：user 亲口 > dialog 对话提取。pinned 另立一道闸（见 set_profile）。
 _SOURCE_RANK = {"user": 2, "dialog": 1}
 
@@ -55,8 +60,11 @@ class UserModel:
             with open(self.path, encoding="utf-8") as f:
                 doc = json.load(f)
             if isinstance(doc, dict):
+                # 不按 PROFILE_KEYS 过滤：退役事件键（current_goal/pending_events）
+                # 的存量值要留给 M1c 迁移（drop_retired_event_keys）读到；对外
+                # 读面（all_profile/get_profile）各自有闭集闸，不会漏出去。
                 prof = {k: v for k, v in (doc.get("profile") or {}).items()
-                        if k in PROFILE_KEYS and isinstance(v, dict)}
+                        if isinstance(v, dict)}
                 self._doc = {"version": 1, "profile": prof,
                              "portraits": doc.get("portraits") or {}}
         except Exception as e:  # 坏文件 = 空档起步（下次写整文件覆盖）
@@ -104,7 +112,7 @@ class UserModel:
     def all_profile(self) -> dict[str, dict]:
         doc = self._ensure()
         return {k: dict(v) for k, v in doc["profile"].items()
-                if v.get("value")}
+                if k in PROFILE_KEYS and v.get("value")}
 
     def set_profile(self, key: str, value: str, *, source: str = "dialog",
                     confidence: float = 0.7, pinned: bool | None = None) -> bool:
@@ -152,6 +160,21 @@ class UserModel:
         entry["pinned"] = bool(pinned)
         self._dirty = True
         self._save()
+
+    def drop_retired_event_keys(self) -> list[tuple[str, str]]:
+        """M1c 迁移料：返回退役键的存量值并即时抹掉（删除即幂等标记——
+        下次 boot 无键可迁）。返回 [(key, value), ...]。"""
+        doc = self._ensure()
+        out: list[tuple[str, str]] = []
+        for k in _RETIRED_EVENT_KEYS:
+            v = str((doc["profile"].get(k) or {}).get("value") or "").strip()
+            if v:
+                out.append((k, v))
+                doc["profile"].pop(k, None)
+                self._dirty = True
+        if out:
+            self._save()
+        return out
 
     # ---------- portraits（角色写，用户只读） ----------
 

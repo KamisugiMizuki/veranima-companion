@@ -319,6 +319,15 @@ class Agent:
         # 牵挂账本（MIND_LOOP_SPEC M1）：两次开口之间仍在演进的心智状态
         from .mind import ThreadLedger
         self.threads = ThreadLedger(self)
+        # M1c 画像瘦身（09-06 裁决 Q2）：current_goal/pending_events 存量值
+        # 一次性开进牵挂账本（origin=user=用户自述的事；强度 0.6；抹键=幂等，
+        # N 个 Agent 共享同一 usermodel.json，先 boot 者迁移一次后无键可迁）。
+        try:
+            for _k, _v in self.memory.usermodel.drop_retired_event_keys():
+                self.threads.from_user(_v, intensity=0.6)
+                logger.info("M1c migrated profile key %s -> thread (role=%s)", _k, self.threads.role)
+        except Exception:
+            logger.debug("profile-event migration skipped", exc_info=True)
 
         # R4 时空沉浸：场景锁 + 通道互斥 + 主动仲裁（最小版，R4_SPEC 1）
         self.scene_lock = SceneLock()
@@ -942,6 +951,10 @@ class Agent:
                         self.memory.record_proactive_feedback(
                             source="sleep_summary", channel=self.message_channel,
                             candidate_id=f"sleep_summary:{cycle['id']}")
+                        self.memory.log_decision(
+                            self.role_key or self.card.name, "wakesummary", "sent",
+                            reason="长睡眠苏醒总结融进当轮回复", digest=summary,
+                            object_ref=f"sleep_cycle:{cycle['id']}")
                         logger.info("sleep summary: %s", summary[:60])
                 except Exception as e:
                     logger.debug("sleep summary failed: %s", e)
@@ -2392,7 +2405,7 @@ class Agent:
             return "", ""
         if not reply:
             return "", ""
-        self.record_proactive_message(reply, channel="pet")
+        self.record_proactive_message(reply, channel="pet", kind="visual")
         return reply, ja
 
     def _visual_match_episode(self, tag: str) -> bool:
@@ -2667,6 +2680,7 @@ class Agent:
             return []
         self._sync_user_asleep()  # 三餐/问候/轻提示都查 user_asleep——共享单行下必须读真值
         msgs: list[str] = []
+        msg_kinds: list[tuple] = []  # 与 msgs 同序的 (kind, reason, object_ref)（D1 留痕）
         # gate.decide 需要 epoch 秒（now 可能是 datetime 注入，转 timestamp）
         now_ts = now.timestamp() if isinstance(now, datetime.datetime) else now
         cand = ProactiveCandidate(
@@ -2787,9 +2801,13 @@ class Agent:
             except Exception:
                 logger.debug("probe freshness check failed", exc_info=True)
             if last_user_ts:
-                pending[:] = [m for m in pending
-                              if not (m.get("source") == "context_probe"
-                                      and m["ts"] < last_user_ts)]
+                doomed = [m for m in pending
+                          if m.get("source") == "context_probe" and m["ts"] < last_user_ts]
+                if doomed:
+                    self.memory.log_decision(
+                        self.role_key or self.card.name, "context_probe", "expired",
+                        reason="素材生成后用户已回话，猜测破产", digest=doomed[0].get("text", ""))
+                pending[:] = [m for m in pending if m not in doomed]
         # 角色主动消息类型白名单（P3 设置：空=全放行；非空=RITUAL_SOURCES 子集）
         _allow = ((getattr(self, "moments", None) and
                    self.moments.settings().get("proactive") or {}).get("allowed_types")
@@ -2800,17 +2818,25 @@ class Agent:
                        for m in materials)
         if pending and self._ritual_send_open(now):
             pool, self._ritual_pending[:] = list(pending), []
+            pool_kind = "+".join(dict.fromkeys(m.get("source", "?") for m in pool))[:40]
             if len(pool) == 1 and pool[0]["source"] == "meal":
                 # 单条饭点走原有口语化改写
                 msgs.append(self._meal_message(pool[0]["meal"], pool[0]["text"]))
+                msg_kinds.append((f"ritual:{pool_kind}",
+                                  f"餐槽 {pool[0].get('meal','')}", pool[0].get("cid", "")))
             else:
                 woven = self._weave_ritual([m["text"] for m in pool])
                 if woven:
                     msgs.append(woven)
+                    msg_kinds.append((f"ritual:{pool_kind}",
+                                      "池织发 " + str(len(pool)) + " 素材", ""))
         # ---- 清单求值结束 ----
         if not (persist is False) and msgs:
-            for msg in msgs:
-                self.record_proactive_message(msg, channel=self.message_channel, now=now)
+            for i, msg in enumerate(msgs):
+                kind, why, objref = (msg_kinds[i] if i < len(msg_kinds)
+                                     else ("proactive", "", ""))
+                self.record_proactive_message(msg, channel=self.message_channel, now=now,
+                                              kind=kind, reason=why, object_ref=objref)
                 # 问句记期待（追问闭环的燃料；QQ 路径走自己的 _record_qq_expectation）
                 try:
                     self.record_proactive_expectation(msg, source="ritual", channel=self.message_channel)
@@ -2823,16 +2849,23 @@ class Agent:
         return msgs
 
     def record_proactive_message(self, text: str, *, channel: str | None = None,
-                                 now=None) -> None:
+                                 now=None, kind: str = "proactive",
+                                 reason: str = "", object_ref: str = "") -> int:
         """发送成功后写入主动 assistant 消息，避免发送失败污染历史。
 
         channel=None → 用 self.message_channel（安卓 device-config 标 im）。
         同时更新问候族合并窗口起点（所有主动源共享的唯一记账点）。
+        D1 决策留痕（HARNESS_SPEC）：本函数=自发消息唯一出口，sent 账在此
+        一处落全（kind 由带上下文的调用方标注，默认笼统 proactive）。
         """
         channel = channel or self.message_channel
-        self.memory.store_message("assistant", text, self.state.energy, self.state.mood, channel=channel, role_id=self.role_key)
+        mid = self.memory.store_message("assistant", text, self.state.energy, self.state.mood, channel=channel, role_id=self.role_key)
         self._append_history_message("assistant", text)
         self._mark_proactive_sent(now)  # 测试注入同一时间线；生产 None=真实时刻
+        self.memory.log_decision(self.role_key or self.card.name, kind, "sent",
+                                 reason=reason, digest=text, object_ref=object_ref,
+                                 effect_ref=mid)
+        return mid
 
     def _ritual_send_open(self, now=None) -> bool:
         """待织池的发送闸：合并窗口开 + 最近 5 分钟没有用户消息（刚聊完不插话，
@@ -3341,8 +3374,7 @@ class Agent:
                  "age": "年龄", "occupation": "职业", "city": "城市",
                  "love_language": "吃哪套关心", "comfort_style": "低落时想要",
                  "teasing_tolerance": "可调侃度", "health_notes": "健康注意",
-                 "personality_traits": "性格自述", "current_goal": "近期在忙",
-                 "pending_events": "pending 的事"}
+                 "personality_traits": "性格自述"}
         for k, zh in label.items():
             if k in prof:
                 src = prof[k].get("source")

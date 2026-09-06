@@ -1,6 +1,7 @@
 # 陪伴心智 Harness（HARNESS_SPEC）
 
-状态：**提案，未动工**（09-06 用户裁决：先写 spec，之后做）。
+状态：**D1 已落地（09-06），D2-D4 提案待动工**（用户裁决：先写 spec 后开工；
+D1 零行为改动，09-06 获批提前做）。
 一句话：把「角色内部状态」从散落在各模块的私有实现，收拢成统一操作的
 对象层——记忆、睡眠、牵挂、动态、画像都是同一类东西：**带时间线的事实源，
 经判断点决定是否产出对外行为，产出必须留痕**。
@@ -83,9 +84,14 @@ decisions(id, ts, kind, object_ref, candidate, verdict, reason,
 
 ## 6. 分期（动工时按此顺序，每步独立可回滚）
 
-1. **D1 留痕先行（零行为改动）**：建 decisions 表 + 现有四类副作用
-   （wakesummary/meal/thread/moment）发一条记一条。跑一周，肉眼对比
-   导出——先证明「账本说得清为什么」，再动管线。
+1. **D1 留痕先行（零行为改动）✅ 已落地（09-06 用户批准提前开工）**：
+   decisions 表 + `MemoryStore.log_decision`（失败静默——观测面不拖死行为）。
+   记账点=四类自发副作用出口：`record_proactive_message`（自发消息唯一出口，
+   sent 账在此一处落全；织发 kind 带素材构成如 `ritual:thread+meal`）、
+   苏醒总结（wakesummary/sent，object=sleep_cycle:N）、动态发布（moment:Dxx 的
+   sent/rejected/failed/deduped 全态）、联想素材过期销毁（context_probe/expired）。
+   闸门整体拒绝暂不记（tick 每 60s 一次，逐轮记「窗口关」=噪音；D2 内容闸
+   的否决才值得入账）。
 2. **D2 内容闸**：tick 出池前对每条候选加一次裁决（素材时效/语境复核/
    事实闭集校验——09-06 的 probe 保鲜闸与「公司」红线词是它的手写原型）；
    否决写 decisions 不发。判断点哲学不变：规则预筛、LLM 裁决、fail-open。

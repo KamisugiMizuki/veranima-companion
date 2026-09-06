@@ -277,13 +277,24 @@ class MomentsEngine:
         # （句读处断掉没写完）或统计口径没洗掉（"X分钟 中断Y"）——宁发骨架不发残次品。
         if content and (_looks_truncated(content) or _looks_machine(content)):
             logger.info("moment rejected (%s): %r", kind, content[:40])
+            self.agent.memory.log_decision(role, f"moment:{kind}", "rejected",
+                                           reason="残句/报表腔硬闸", digest=content)
             content = (fallback or "").strip()
         if not content:
+            self.agent.memory.log_decision(role, f"moment:{kind}", "failed",
+                                           reason="织文失败且无降级骨架，宁缺毋滥",
+                                           digest=text)
             return 0
         pub = self.agent.memory.moment_publish(role, content, kind=kind,
                                                source_ref=ref, dedupe_key=dedupe)
         if pub:
             logger.info("moment published %s/%s: %s", role, kind, content[:40])
+            self.agent.memory.log_decision(role, f"moment:{kind}", "sent",
+                                           reason=f"素材 {ref[:60]}", digest=content,
+                                           object_ref=f"moment:{pub}", effect_ref=pub)
+        else:
+            self.agent.memory.log_decision(role, f"moment:{kind}", "deduped",
+                                           reason=f"同素材已发过 {dedupe[:60]}", digest=content)
         return 1 if pub else 0
 
     def _compose(self, kind: str, material: str, mention: str, fallback: str | None = None) -> str:

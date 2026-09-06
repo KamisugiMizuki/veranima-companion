@@ -286,7 +286,9 @@ fun BackupDetailScreen(onBack: () -> Unit) {
 
 // ---------- 二级页：UserModel（用户画像单一真源 data/usermodel.json） ----------
 
-/** 13 键的展示定义：键 → 标题+描述（描述=告诉用户这格会被角色怎么用）。 */
+/** 画像键的展示定义：键 → 标题+描述（描述=告诉用户这格会被角色怎么用）。
+ *  M1c（09-06 裁决）：current_goal/pending_events 已退役——带日期的事归牵挂
+ *  账本（有半衰有完结闸），不是「这个人是谁」；设置页不再提供手填。 */
 private val UM_FIELDS = listOf(
     "real_name" to ("名字" to "你告诉过角色怎么称呼你的全名。留空则角色只用称呼账里的叫法。"),
     "nickname_pref" to ("希望被怎么称呼" to "你自己偏好的称呼倾向；具体在叫什么是各角色的称呼账（按关系演化），这里只定大方向。"),
@@ -299,8 +301,6 @@ private val UM_FIELDS = listOf(
     "teasing_tolerance" to ("被调侃接受度" to "高 / 中 / 低。决定角色敢不敢损你、损多狠。"),
     "health_notes" to ("健康注意项" to "长期要注意的事（熬夜伤胃、颈椎、过敏……）。角色会记着提醒，但不当医疗设备用。"),
     "personality_traits" to ("性格自述" to "你怎么看自己。角色据此预判你的反应，但不会拿它给你下定义。"),
-    "current_goal" to ("近期在忙什么" to "手上正在推的事。角色主动关心进度、理解你没空聊的由头。"),
-    "pending_events" to ("快发生的事" to "考试、出差、复查这类有日期的 pending 事项。角色会记着日子。"),
 )
 
 @Composable

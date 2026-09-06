@@ -1209,6 +1209,24 @@ class MemoryStore:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def log_decision(self, role_id: str, kind: str, verdict: str, *,
+                     reason: str = "", digest: str = "",
+                     object_ref: str = "", effect_ref: int = 0) -> None:
+        """决策留痕（HARNESS_SPEC D1）：一次自发副作用一行账。
+
+        失败静默——留痕是观测面，观测面不许拖死行为本身。
+        """
+        try:
+            self.con.execute(
+                "INSERT INTO decisions(ts, role_id, kind, object_ref, verdict,"
+                " reason, digest, effect_ref) VALUES (?,?,?,?,?,?,?,?)",
+                (_now(), str(role_id or ""), kind[:40], object_ref[:120],
+                 verdict[:20], reason[:200], digest[:200], int(effect_ref or 0)),
+            )
+            self.con.commit()
+        except Exception as e:
+            logger.debug("decision log failed (%s/%s): %s", kind, verdict, e)
+
     def _row_to_entry(self, row: sqlite3.Row) -> MemoryEntry:
         return MemoryEntry(
             id=row["id"], layer=row["layer"], content=row["content"],
