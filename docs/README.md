@@ -22,6 +22,7 @@
 | `mind/` | 内心生活闭环 | MIND_LOOP_SPEC（牵挂账本/驱力池/心境残响/夜眠消化/生活反应性——反「状态机感」全局表现层，v1 草案待裁决） |
 | `character/` | 角色包 | CHARPKG_SPEC（.charpkg 导出/导入/安全边界） |
 | `hermes/` | Hermes 集成 | HERMES_AGENT_INTEGRATION_SPEC（R5 执行后端对接契约） |
+| `harness/` | 心智 Harness | HARNESS_SPEC（事实源→判断点→池→闸→产出+决策留痕，v0 提案未动工） |
 | `newly_added/` | 灵感暂存 | design_append.md（用户随手记的功能点子常驻模板，评估后并入 DESIGN.md） |
 | `for_users/` | 人读文档 | 设计视角三档（A 一页纸 / B 结构图 / C 契约）+ 项目思维导图 HTML |
 

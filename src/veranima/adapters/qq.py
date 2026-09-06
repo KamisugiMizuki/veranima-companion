@@ -400,6 +400,12 @@ class QQAdapter:
                         summary = str(
                             data.get("summary") or data.get("text") or data.get("raw") or ""
                         ).strip().strip("[]")
+                        # NapCat 偶发把整个 face 段 dict 塞进 summary（真机实锤：
+                        # 整包 {'faceIndex':...} repr 进消息表→进记忆库→进 prompt）。
+                        # 只留 faceText 可读名，其余丢弃。
+                        if "faceIndex" in summary:
+                            m_ft = re.search(r"'faceText':\s*'([^']+)'", summary)
+                            summary = (m_ft.group(1) if m_ft else "表情").strip("/[]")
                         face_id = str(data.get("id") or "").strip()
                         if not summary and not data.get("summary") and has_text:
                             parts.append(f"[QQ表情：id={face_id}]" if face_id else "[QQ表情：未知]")

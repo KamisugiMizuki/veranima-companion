@@ -37,6 +37,15 @@ class _FakeStore:
     def record_proactive_feedback(self, **kw):
         self.feedback.append(kw)
 
+    def claim_sleep_summary(self, cycle_id):
+        # 与真 store 同语义：认领状态长在周期行上——首次 True，之后 False
+        if not hasattr(self, "_claimed"):
+            self._claimed = set()
+        if cycle_id in self._claimed:
+            return False
+        self._claimed.add(cycle_id)
+        return True
+
 
 class _Gate:
     def __init__(self, allow=True):

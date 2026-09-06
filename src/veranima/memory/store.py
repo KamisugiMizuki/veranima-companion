@@ -1158,6 +1158,10 @@ class MemoryStore:
                 )
                 self.con.commit()
                 return
+            # 响应标记只更新既有行——没找到未响应行就到此为止。落穿 INSERT 会造出
+            # responded=1 的幽灵记账行（09-05 真机 proactive_feedback 68-73 即此，
+            # 事后复盘时把「发没发过」的账彻底搅浑）。
+            return
         self.con.execute(
             "INSERT INTO proactive_feedback"
             " (sent_at, source, channel, candidate_id, requires_reply, direct_question, expires_at, expectation_status,"
@@ -1296,6 +1300,10 @@ class MemoryStore:
             for mid, (e, sim) in pool.items()
             # M-1 过期 + M-B 双时间线（valid_from 未到的记忆对「现在」不可见）
             if mid not in superseded and not e.is_expired() and e.is_active()
+            # 张力账本判词不是共同记忆（09-06 真机实锤：60+ 条「用户认真回应了
+            # 直接问题」类机械文本经 recall 灌回 prompt，角色复述机器判词）。
+            # 写入侧保留（tension.restore 靠这些行重建事件账），消费侧一律挡掉。
+            and str((e.meta or {}).get("kind") or "") != "relational_tension_event"
         }
         if not pool:
             return []
@@ -1514,10 +1522,25 @@ class MemoryStore:
         return [dict(r) for r in rows]
 
     def update_sleep_summary(self, cycle_id: int, summary: str) -> None:
-        """苏醒总结写入指定周期（close 后补写，避免二次 close 找不到 open cycle）。"""
+        """苏醒总结写入指定周期并同步认领（close 后补写，避免二次 close
+        找不到 open cycle）。认领=写死在周期行上：谁生成总结谁消费它，
+        旁路通道（bridge 通知栏补发）此后永远拿不到发送权。"""
         self.con.execute(
-            "UPDATE sleep_cycles SET summary=? WHERE id=?", (summary, cycle_id))
+            "UPDATE sleep_cycles SET summary=?, claimed=1 WHERE id=?", (summary, cycle_id))
         self.con.commit()
+
+    def claim_sleep_summary(self, cycle_id: int) -> bool:
+        """苏醒总结认领（幂等）：未认领→置 1 返回 True；已认领→False。
+
+        认领状态长在周期行上，不记 proactive_feedback——那张共享表无角色归属、
+        多消费方（当轮融合/旁路补发/ responded 回填）互相踩键，09-05/09-06 真机
+        实锤同一总结播报 4~6 次。UPDATE...WHERE claimed=0 的 rowcount 就是原子闸。
+        """
+        cur = self.con.execute(
+            "UPDATE sleep_cycles SET claimed=1 WHERE id=? AND claimed=0",
+            (int(cycle_id),))
+        self.con.commit()
+        return cur.rowcount == 1
 
     def latest_closed_cycle(self) -> dict | None:
         """最近一个已闭合周期（苏醒总结用）。"""

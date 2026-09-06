@@ -197,6 +197,11 @@ def sleep_summary_pending() -> str:
                 return ""
         except Exception:
             pass
+        # 认领闸（09-06 真机实锤：同一总结被播报 4~6 次）：proactive_feedback
+        # 那张共享账表的查询/回填路径不可靠（responded 回填会改写同键行），
+        # 认领状态必须长在周期行上——claim 成功=本总结此前没人发过。
+        if not agent.memory.claim_sleep_summary(cycle["id"]):
+            return ""
         agent.memory.record_proactive_feedback(source="sleep_summary",
                                                channel=agent.message_channel, candidate_id=cid)
         # 落库为 assistant 消息：通知栏与 App 内聊天页同步可见（2026-08-31 用户反馈

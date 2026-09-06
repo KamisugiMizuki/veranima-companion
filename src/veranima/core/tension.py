@@ -357,3 +357,17 @@ def event_meta_from_memory(entries) -> list[dict]:
         if isinstance(meta, dict) and meta.get("kind") == "relational_tension_event":
             out.append(meta)
     return out
+
+
+# 记账语料黑名单（09-06 真机导出实锤：episodic 库里 87 条中 60+ 条是「用户
+# 认真回应了直接问题（判断点）」这类判词——它们随 recall/考古/视觉联想/夜间
+# digest 灌回 prompt，角色把机器判词当共同记忆，甚至复述出「判断点」字样）。
+# 这些行是张力账本的事件存储（tension.restore 依赖），不删写入，只挡消费。
+TENSION_LEDGER_KIND = "relational_tension_event"
+
+
+def is_tension_ledger(entry) -> bool:
+    meta = getattr(entry, "meta", None)
+    if meta is None and isinstance(entry, dict):
+        meta = entry.get("meta")
+    return isinstance(meta, dict) and meta.get("kind") == TENSION_LEDGER_KIND

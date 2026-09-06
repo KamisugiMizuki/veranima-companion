@@ -368,6 +368,20 @@ def init_db(db_path: str | Path, dim: int = EMBEDDING_DIM, provider=None) -> sql
             logger.info("memories_fts rebuilt for %s memories", mem_count)
     except Exception as e:
         logger.warning("memories_fts migration check failed: %s", e)
+    # 迁移：sleep_cycles 补 claimed 列（苏醒总结认领位，09-06 复读实锤根修）。
+    # 旧列：去重记在共享单行表 proactive_feedback（无角色归属、多消费方都往里
+    # 记同名键、且用户回一句就被 responded 记账污染）——认领状态跟着周期走才成立
+    try:
+        scols = {r["name"] for r in con.execute("PRAGMA table_info(sleep_cycles)").fetchall()}
+        if "claimed" not in scols:
+            con.execute("ALTER TABLE sleep_cycles ADD COLUMN claimed INTEGER NOT NULL DEFAULT 0")
+            # 存量带总结的周期=旧版旁路已播报过（真机 09-05/09-06 复读的那批）——
+            # 全部置已认领，升级后任何一次旁路轮询都不可能再重放旧总结
+            con.execute("UPDATE sleep_cycles SET claimed=1 WHERE summary<>''")
+            logger.info("sleep_cycles migration: added column claimed (backfilled sent)")
+        con.commit()
+    except Exception as e:
+        logger.warning("sleep_cycles claimed migration failed: %s", e)
     # 迁移：messages 补 role_id 列（多角色会话隔离，旧库无新列；存量行留
     # ''，由 app boot 时回填为当时的活跃角色——store.py 不认识"凛"这种业务值）
     try:

@@ -204,7 +204,11 @@ def strip_thinking_trace(text: str) -> str:
 
 
 _INTERNAL_TERMS = ("依恋度", "attachment", "PersonaBrief", "回用动作", "表达意图",
-                   "记忆候选", "候选池", "relational_tension", "tension 值", "TV 值")
+                   "记忆候选", "候选池", "relational_tension", "tension 值", "TV 值",
+                   # 我们 system prompt 的原句被复读=思考残片（08-28 真机实锤：
+                   # 一整段 'Wait, "不要输出思考过程…So I should output raw JSON"'
+                   # 被当回复发出）。正常台词永远不会引用这句指令。
+                   "不要输出思考过程", "raw JSON", "memory_candidates")
 # ^ 封闭词表=我们自己注入 system prompt 的字段名：模型只能从上下文复读，台词
 #   永远不会合法使用 → 确定性硬杀（不是面向样例，是杀自己漏出去的词源）。
 # 角色卡派生的开放元词（风格标签/人设描述）不进硬杀——台词可能合法出现，
@@ -254,14 +258,15 @@ def drop_lines(value: str, doomed: set[str]) -> str:
 
 def _drop_monologue_paragraphs(value: str) -> str:
     """剥离思考独白（规则层——2026-08-31 真机 #549 实锤裸独白绕过标题检测）。
-    只杀确定性部分（封闭词+强组合）；灰色地带由出口 LLM 判定兜住，
-    本函数同时作为无 LLM 环境（历史过滤/纯函数调用方）的降级防线。"""
+    整段丢弃不保行：思考外溢不会在段落中间切回人话（08-28 实锤逐行删后
+    剩 'Actually, usually agent' 英文残句照样发出）。命中内部词/强组合的行
+    所在的整个段落一起杀。灰色地带由出口 LLM 判定兜住，本函数同时作为
+    无 LLM 环境（历史过滤/纯函数调用方）的降级防线。"""
     kept = []
     for block in re.split(r"\n{2,}", value):
         lines = [ln for ln in block.splitlines() if ln.strip()]
-        survivors = [ln for ln in lines if not _looks_monologue(ln.strip())]
-        if survivors:
-            kept.append("\n".join(survivors))
+        if lines and not any(_looks_monologue(ln.strip()) for ln in lines):
+            kept.append("\n".join(lines))
     return "\n\n".join(kept).strip()
 
 

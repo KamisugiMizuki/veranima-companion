@@ -288,13 +288,18 @@ class Agent:
         self.promises = PromiseBook(memory)
 
         # 主动触发（定时问候 + 节庆纪念 + 饭点兜底；CLI/QQ/安卓共用 tick_proactive）
-        # 待织池：合并窗口关着时到期素材攒在这里，窗口一开全部织成一条
-        # （ponytail: 仅内存态，重启丢当窗素材=可接受，主动消息非交易数据）
+        # 待织池：合并窗口关着时到期素材攒在这里，窗口一开全部织成一条。
+        # 随 relationship 快照持久化（09-06 真机：MIUI 杀后台=进程日常蒸发，
+        # 纯内存池=攒着的牵挂/饭点素材全丢且去重键已消耗=当天闭嘴）
         self._ritual_pending: list[dict] = []
         self.greeter = GreetingScheduler()
         self.occasion = OccasionChecker()
         # 当日去重键从状态快照恢复（在 _persist_state 里随关系快照落库）
         _rel_snap = self.state.relationship or {}
+        for _m in (_rel_snap.get("ritual_pending") or []):
+            if (isinstance(_m, dict) and _m.get("text") and _m.get("ts")
+                    and _m.get("role") == (self.role_key or self.card.name)):
+                self._ritual_pending.append(_m)
         # 合并窗口起点：最近一次问候族主动消息发出时刻（UTC ISO）。所有
         # greeting-family 触发源（时段问候/睡醒公告/作息适应/提示/饭点/心跳…）
         # 共享这把闸：窗口内不再放行第二条（2026-09-01 用户反馈 07:09/07:11/08:04）。
@@ -641,7 +646,10 @@ class Agent:
             stamp = datetime.datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
             if stamp.tzinfo is not None:
                 stamp = stamp.astimezone().replace(tzinfo=None)
-            return f"[{stamp.strftime('%Y-%m-%d %H:%M:%S')}] {content}"
+            # 前缀带星期（09-05 真机：模型从对话推「明天周五」，周六发出
+            # 「周五嘛今天不用早起」）。ISO 时间戳人眼不算星期，直接给。
+            wd = "周一 周二 周三 周四 周五 周六 周日".split()[stamp.weekday()]
+            return f"[{stamp.strftime('%Y-%m-%d %H:%M:%S')} {wd}] {content}"
         except (TypeError, ValueError):
             return str(content)
 
@@ -830,6 +838,8 @@ class Agent:
             rel["greeted"] = self.greeter.to_state()
             rel["occasions"] = sorted(self.occasion.triggered)
             rel["last_proactive_sent_at"] = getattr(self, "_last_proactive_sent_at", "")
+            # 待织池随快照落盘（TTL 180min 读取端过滤，过期素材下次 restore 自然淘汰）
+            rel["ritual_pending"] = list(self._ritual_pending)[-6:]
             # roster 落库：以 boot 读回的整张表为底刷新当前卡条目（rel 此时已完整）
             roster = dict(self._rel_roster) if getattr(self, "_rel_roster", None) else {}
             roster[self.card.name] = dict(rel)
@@ -2510,12 +2520,15 @@ class Agent:
         ).fetchone()[0]
         if already:
             return {"created": False, "reason": "already_digested_today"}
-        # 当日 0 点（UTC）起的新增 episodic——夜间整理只整理当天的事
+        # 当日 0 点（UTC）起的新增 episodic——夜间整理只整理当天的事；
+        # 张力账本判词不是素材（09-06：digest 把「用户认真回应了直接问题」
+        # 写成当日要闻总结，再经注入循环成角色自述）
+        from .tension import is_tension_ledger
         day_start = datetime.datetime.now(datetime.timezone.utc).replace(
             hour=0, minute=0, second=0, microsecond=0).isoformat(timespec="seconds")
         episodes = [
             e for e in self.memory.list_layer("episodic", limit=200)
-            if e.created_at >= day_start
+            if e.created_at >= day_start and not is_tension_ledger(e)
         ]
         if len(episodes) < min_episodes:
             return {"created": False, "reason": "not_enough_material", "episodes": len(episodes)}
@@ -2749,19 +2762,38 @@ class Agent:
             except Exception as e:
                 logger.debug("ritual source %s failed: %s", source_name, e)
 
-        # 攒池 → 窗口开闸织发（ponytail: 池仅存内存；崩了丢当窗素材，
-        # 升级路径=池随 agent_state 持久化，出现可观测丢信投诉再做）
+        # 攒池 → 窗口开闸织发（池随 relationship 快照持久化，见 _persist_state）
         pending = self._ritual_pending
         ref_ts = (now if isinstance(now, datetime.datetime)
                   else datetime.datetime.fromtimestamp(now or time.time())).timestamp()
         pending[:] = [m for m in pending if ref_ts - m["ts"] < 180 * 60]  # TTL：早招呼不拖到午后
+        # 联想素材保鲜闸（09-03 真机实锤：15:01 生成「三个小时没动静」进池，
+        # 用户 15:21 已回话，15:36 出窗照发）：素材生成后又说过话=猜测已破产，
+        # 再提=「哪个平行宇宙的三个小时」。只挡 context_probe（饭点/问候不依赖
+        # 「你没说话」这个前提，顺延仍然成立）。
+        probes = [m for m in pending if m.get("source") == "context_probe"]
+        if probes:
+            last_user_ts = 0.0
+            try:
+                for row in reversed(self._recent_msgs(limit=5)):
+                    if row.get("role") == "user":
+                        last_user_ts = self._naive_local(datetime.datetime.fromisoformat(
+                            str(row.get("created_at")).replace("Z", "+00:00"))).timestamp()
+                        break
+            except Exception:
+                logger.debug("probe freshness check failed", exc_info=True)
+            if last_user_ts:
+                pending[:] = [m for m in pending
+                              if not (m.get("source") == "context_probe"
+                                      and m["ts"] < last_user_ts)]
         # 角色主动消息类型白名单（P3 设置：空=全放行；非空=RITUAL_SOURCES 子集）
         _allow = ((getattr(self, "moments", None) and
                    self.moments.settings().get("proactive") or {}).get("allowed_types")
                   if hasattr(self, "moments") else None) or []
         if _allow:
             materials = [m for m in materials if m.get("source") in _allow]
-        pending.extend({**m, "ts": ref_ts} for m in materials)
+        pending.extend({**m, "ts": ref_ts, "role": self.role_key or self.card.name}
+                       for m in materials)
         if pending and self._ritual_send_open(now):
             pool, self._ritual_pending[:] = list(pending), []
             if len(pool) == 1 and pool[0]["source"] == "meal":
@@ -3036,13 +3068,19 @@ class Agent:
                     return reply
             except Exception as e:
                 logger.debug("heartbeat LLM failed, fallback to template: %s", e)
-        # 降级：模板池
+        # 降级：模板池（与 late_reply 同款——排除近期已发过的，随机取；
+        # 全用过=这轮闭嘴。旧版 pool[0] 写死：LLM 一挂每次重启都复读同一句，
+        # 09-04/09-05 真机两天内逐字出现三次「上次你说那事」）
         pool = [
             "（刚在整理聊天记录）上次你说那事，后来有后续了吗？",
             "刚闲着没事翻了翻咱俩的聊天记录，发现你之前念叨的东西挺多的……最近都还好吗？",
             "（离线整理完毕）我突然想起你上次说的那个计划，后来怎么样了？",
         ]
-        reply = pool[0]
+        used = {m["content"] for m in recent if m["role"] == "assistant"}
+        candidates = [p for p in pool if p not in used]
+        if not candidates:
+            return ""
+        reply = random.choice(candidates)
         self.record_proactive_message(reply)
         if commit:
             self.gate.commit(cand)
@@ -3401,7 +3439,9 @@ class Agent:
             eps = self.memory.list_layer("episodic", limit=30)
             sems = self.memory.list_layer("semantic", limit=30)
             used = set(getattr(self, "_dug_memory_ids", []))
+            from .tension import is_tension_ledger  # 判词不进考古（09-06 记账污染）
             pool = [e for e in (eps + sems) if e.id % 3 != 0 and e.id not in used
+                    and not is_tension_ledger(e)
                     and str((e.meta or {}).get("present") or "") in ("", self.card.name)]  # 分散+已挖+在场过滤
             if not pool:
                 return None

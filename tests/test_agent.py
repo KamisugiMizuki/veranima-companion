@@ -97,11 +97,11 @@ def test_prompt_preserves_message_times_across_restart(agent):
 
     assert llm.last_messages[1] == {
         "role": "user",
-        "content": "[2026-08-21 10:40:48] 我觉得是该睡觉的时间了",
+        "content": "[2026-08-21 10:40:48 周五] 我觉得是该睡觉的时间了",
     }
     assert llm.last_messages[2] == {
         "role": "assistant",
-        "content": "[2026-08-21 10:40:52] 行了，赶紧躺着去，晚安。",
+        "content": "[2026-08-21 10:40:52 周五] 行了，赶紧躺着去，晚安。",
     }
     assert llm.last_messages[-1]["content"].startswith("[")
     assert llm.last_messages[-1]["content"].endswith("不对，我根本还没睡")

@@ -238,7 +238,7 @@ def test_history_compaction_prompt_keeps_message_times(tmp_path):
 
     a._compact_history()
 
-    assert "[2026-08-21 10:00:00] 第0条消息" in seen[0]
+    assert "[2026-08-21 10:00:00 周五] 第0条消息" in seen[0]
 
 
 def test_history_compaction_failure_truncates(tmp_path):

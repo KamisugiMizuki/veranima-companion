@@ -19,7 +19,7 @@ import pytest
 
 from veranima.core.agent import Agent
 from veranima.core.character import CharacterCard
-from veranima.core.proactive import MealReminderScheduler, meal_word
+from veranima.core.proactive import MEAL_SLOTS, MealReminderScheduler, meal_word
 from veranima.core.state import AgentState
 from veranima.memory.store import MemoryStore
 
@@ -98,11 +98,17 @@ def test_meal_word_maps_clock_to_meal():
 
 
 def test_adjust_to_user_cycle_renames_off_slot_meal():
-    """真机实锤链：用户 22:26 醒 → 早锚=0 点 → 文案必须改口夜宵。"""
-    m = MealReminderScheduler()
+    """真机实锤链：用户 22:26 醒 → 早锚=0 点 → 产出文案必须改口夜宵。
+
+    09-06 改名时机根修：文案不再原地改写 slots（改写会跨日卡死——次日槽位
+    重算时模板里已无「早饭」可换，夜宵永久卡在早锚），due() 产出时现算。
+    """
+    m = MealReminderScheduler({"jitter_minutes": 0})  # 去抖动=锚点即命中时刻
     m.adjust_to_user_cycle(22.43)
     hour, text = m.slots["breakfast"]
-    assert hour == 0 and "早饭" not in text and "夜宵" in text
+    assert hour == 0 and text == MEAL_SLOTS["breakfast"][1]  # 模板永不动
+    due = m.due(now=dt.datetime(2026, 9, 6, 0, 0), sent_ids=set())
+    assert due is not None and "夜宵" in due[1] and "早饭" not in due[1]
 
 
 # ---------- 4a) 快照迁移幂等（羁绊图谱全空的根因） ----------

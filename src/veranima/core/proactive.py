@@ -178,15 +178,11 @@ class MealReminderScheduler:
             ("lunch", (wake_hour + 6.0) % 24),
             ("dinner", (wake_hour + 11.0) % 24),
         )
+        # 只挪锚点小时，文案不原地改写（旧版把「早饭」换成「夜宵」后写回
+        # slots——次日作息回正、槽位重算时文案里再没有「早饭」可换，夜宵
+        # 字样永久卡在午饭槽位）。餐名统一由 due() 在产出时按钟点现算。
         for meal, hour in anchors:
-            _text = self.slots.get(meal, ("", ""))[1]
-            hour_i = int(hour) % 24
-            word = meal_word(hour_i)
-            for old_word in ("早饭", "午饭", "晚饭"):
-                if old_word != word and old_word in _text:
-                    _text = _text.replace(old_word, word)
-                    break  # 一行文案里只会有一个餐名
-            self.slots[meal] = (hour_i, _text)
+            self.slots[meal] = (int(hour) % 24, self.slots[meal][1])
 
     def scheduled_at(self, day, meal: str):
         import datetime
@@ -217,6 +213,13 @@ class MealReminderScheduler:
                 minutes=self.jitter_minutes,
             )
             if target <= now <= window_end:
+                # 餐名跟钟点不跟槽位（09-02 真机实锤：凌晨 00:01 喊早饭）。
+                # 按 now 现算——slots 里的模板文案永不改写（改写会跨日卡死）
+                word = meal_word(now.hour)
+                for old_word in ("早饭", "午饭", "晚饭"):
+                    if old_word != word and old_word in text:
+                        text = text.replace(old_word, word)
+                        break  # 一行文案里只会有一个餐名
                 return meal, text, candidate_id
         return None
 
