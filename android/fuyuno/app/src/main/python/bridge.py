@@ -169,58 +169,11 @@ def start_ticks() -> str:
     return json.dumps({"ok": True})
 
 
-def sleep_summary_pending() -> str:
-    """最近闭合周期若带未发送的苏醒总结 → 返回文本并标记已发（proactive_feedback 去重）。
-
-    由 drain_pending 消费：用户报告「醒了」后，总结作为独立主动消息推送。
-    """
-    agent = getattr(boot, "agent", None)
-    if agent is None:
-        return ""
-    try:
-        cycle = agent.memory.latest_closed_cycle()
-        if not cycle or not cycle.get("summary"):
-            return ""
-        cid = f"sleep_summary:{cycle['id']}"
-        sent = agent.memory.recent_proactive_feedback(source="sleep_summary", limit=30)
-        if any(str(r.get("candidate_id") or "") == cid for r in sent):
-            return ""
-        # 时效闸（2026-09-04 真机实锤：早上 05:56 醒的总结 23:15 才补发，
-        # 深夜冒一句「醒这么早」）：苏醒超 3 小时=过期，记账放弃不再补发——
-        # 过期问候不如不说（与主动消息不补发同款裁决）。
-        try:
-            import datetime as _dt
-            woke = _dt.datetime.fromisoformat(str(cycle.get("woke_at") or ""))
-            if (_dt.datetime.now(_dt.timezone.utc) - woke).total_seconds() > 3 * 3600:
-                agent.memory.record_proactive_feedback(
-                    source="sleep_summary", channel=agent.message_channel, candidate_id=cid)
-                return ""
-        except Exception:
-            pass
-        # 认领闸（09-06 真机实锤：同一总结被播报 4~6 次）：proactive_feedback
-        # 那张共享账表的查询/回填路径不可靠（responded 回填会改写同键行），
-        # 认领状态必须长在周期行上——claim 成功=本总结此前没人发过。
-        if not agent.memory.claim_sleep_summary(cycle["id"]):
-            return ""
-        agent.memory.record_proactive_feedback(source="sleep_summary",
-                                               channel=agent.message_channel, candidate_id=cid)
-        # 落库为 assistant 消息：通知栏与 App 内聊天页同步可见（2026-08-31 用户反馈
-        # 只有通知有、应用内没有——此前纯旁路文本，消息表零记录）
-        try:
-            agent.record_proactive_message(str(cycle["summary"]))
-            # 本函数不进 _pending（Kotlin 直接 notify 返回值）——落库后手动
-            # 触发一次即时刷新钩子，与 _queue 同语义（2026-09-02）
-            _flush()
-        except Exception:
-            log.exception("sleep summary store_message failed (notification still sent)")
-        return str(cycle["summary"])
-    except Exception as e:
-        log.debug("sleep_summary_pending failed: %s", e)
-        return ""
-
-
 def catch_up_replies() -> str:
-    """漏回追补（2026-09-04 审计#6）：会话尾是用户消息且没人回=上轮进程
+    """漏回追补（2026-09-04 审计#6）。09-06 苏醒总结旁路删除后成为唯一
+    崩溃补回通道：登记前崩=周期还开着，重跑 handle 全流程补回（含总结）；
+    登记后崩=总结已落 sleep_cycles（睡眠详情页可见），补回的那轮无总结素材
+    ——宁缺勿重播（旁路复读 4~6 次才是当时更大的罪）。会话尾是用户消息且没人回=上轮进程
     没跑完（闪退/后台被杀/LLM 炸）。boot 后延迟触发一次：
     只补 2-40 分钟内的（太久=用户早不需要了）；每角色至多一条。
     走正常 handle() 链=通知/落库/记账全复用。"""
@@ -498,7 +451,10 @@ def get_settings() -> str:
         active = Path(cur).parent.name if cur else ""
         return json.dumps({"ok": True, "fields": fields,
                            "search_provider": "bocha",
-                           "characters": chars, "active_character": active},
+                           "characters": chars, "active_character": active,
+                           # 目录名→显示名（通知标题兜底用；09-06 实锤标题
+                           # 出现 "xumian"——active_character 是目录名不是人话）
+                           "active_character_label": role_label(active) if active else ""},
                           ensure_ascii=False)
     except Exception as e:
         return json.dumps({"ok": False, "error": str(e)})

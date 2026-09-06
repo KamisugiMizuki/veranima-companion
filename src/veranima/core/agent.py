@@ -1165,11 +1165,13 @@ class Agent:
         return hours[len(hours) // 2]
 
     def _adapt_schedule_to_user(self, wake_hour: float | None, now, msgs: list[str]) -> None:
-        """角色作息向用户作息偏移（每日一次，去重）。
+        """角色作息向用户作息偏移（每日一次，去重，双向）。
 
-        比较用户起床中位数与角色 circadian.sleep_end（角色起床时刻）；
-        差 ≥2h 时把角色作息向用户方向偏移差值的 1/4（渐进、最多 ±4h），
-        并生成一条角色口吻的理由消息（LLM 失败静默）。
+        比较用户起床中位数与角色 circadian.wake_end（睡醒窗结束=实际起床
+        时刻）。09-06 实锤根修：旧版误拿 sleep_end（就寝窗结束，许眠=03:00）
+        当起床时刻——任何用户起床都晚于它 → diff 恒正 → 只会往后调、从不
+        往前调。差 ≥2h 时向用户方向偏移差值的 1/4（渐进，±对称，单日步长
+        与总量卡本卡 max_offset_minutes），并生成一条角色口吻的理由消息。
         """
         if wake_hour is None or not self.schedule_runtime:
             return
@@ -1179,7 +1181,7 @@ class Agent:
         if circ is None:
             return
         try:
-            hh, mm = (int(x) for x in str(circ.sleep_end).split(":"))
+            hh, mm = (int(x) for x in str(circ.wake_end).split(":"))
             role_wake = hh + mm / 60.0
         except Exception:
             return
@@ -2367,10 +2369,11 @@ class Agent:
         old = str(matched_memory or "").strip()[:120]
         if not old:
             # 兼容旧调用；生产视觉链会把混合 recall 的命中直接传入。
+            from .tension import is_tension_ledger
             try:
                 hits = [
                     e for e in self.memory.list_layer("episodic", limit=20)
-                    if tag in (e.content or "")
+                    if tag in (e.content or "") and not is_tension_ledger(e)
                 ]
             except Exception:
                 hits = []
@@ -2399,10 +2402,11 @@ class Agent:
         """
         if not tag:
             return False
+        from .tension import is_tension_ledger
         try:
             hits = [
                 e for e in self.memory.list_layer("episodic", limit=20)
-                if tag in (e.content or "")
+                if tag in (e.content or "") and not is_tension_ledger(e)
             ]
             return bool(hits)
         except Exception:
@@ -3069,12 +3073,14 @@ class Agent:
             except Exception as e:
                 logger.debug("heartbeat LLM failed, fallback to template: %s", e)
         # 降级：模板池（与 late_reply 同款——排除近期已发过的，随机取；
-        # 全用过=这轮闭嘴。旧版 pool[0] 写死：LLM 一挂每次重启都复读同一句，
-        # 09-04/09-05 真机两天内逐字出现三次「上次你说那事」）
+        # 全用过=这轮闭嘴）。文案纪律（09-06 实锤「上次你说那事，后来有后续了吗」
+        # 被当场质问『我说的啥来着』）：降级句可以虚构角色自己的行为（整理记录），
+        # 不许预设用户说过某个具体事项——心跳触发时对话已闭合、dig 可能无素材，
+        # 「那件事」没有先行物=编造可证伪事实，踩身份红线。
         pool = [
-            "（刚在整理聊天记录）上次你说那事，后来有后续了吗？",
-            "刚闲着没事翻了翻咱俩的聊天记录，发现你之前念叨的东西挺多的……最近都还好吗？",
-            "（离线整理完毕）我突然想起你上次说的那个计划，后来怎么样了？",
+            "刚整理完一堆旧记录，突然想找你说话。今天过得怎么样？",
+            "发呆的工夫，想起你了，就来打个招呼。不用急着回。",
+            "我这边在处理自己的一些旧东西。你那边呢，有什么新的吗？",
         ]
         used = {m["content"] for m in recent if m["role"] == "assistant"}
         candidates = [p for p in pool if p not in used]

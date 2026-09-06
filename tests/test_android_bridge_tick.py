@@ -37,15 +37,6 @@ class _FakeStore:
     def record_proactive_feedback(self, **kw):
         self.feedback.append(kw)
 
-    def claim_sleep_summary(self, cycle_id):
-        # 与真 store 同语义：认领状态长在周期行上——首次 True，之后 False
-        if not hasattr(self, "_claimed"):
-            self._claimed = set()
-        if cycle_id in self._claimed:
-            return False
-        self._claimed.add(cycle_id)
-        return True
-
 
 class _Gate:
     def __init__(self, allow=True):
@@ -71,32 +62,6 @@ class _FakeAgent:
         # 与真 Agent 同语义：不传=落 message_channel（bridge 侧不再显式传通道）
         self.memory.store_message("assistant", text, 0.7, 0.2,
                                   channel=channel or self.message_channel)
-
-
-def test_sleep_summary_pending_stores_and_dedups(bridge):
-    """苏醒总结=通知栏 + App 内双通道（2026-08-31 用户反馈只有通知没有应用内）：
-    首次调用返回文本且落库 assistant 消息+认领去重；再次调用零输出。"""
-    import datetime
-    agent = _FakeAgent(_Gate())
-    cycle = {"id": 7, "summary": "早，昨晚睡得还行嘛。",
-             "woke_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
-    agent.memory.latest_closed_cycle = lambda: cycle
-    bridge.boot = type("B", (), {"agent": agent})()
-    assert bridge.sleep_summary_pending() == "早，昨晚睡得还行嘛。"
-    assert ("assistant", "早，昨晚睡得还行嘛。", "im") in agent.memory.messages
-    assert agent.memory.feedback and agent.memory.feedback[0]["candidate_id"] == "sleep_summary:7"
-    assert bridge.sleep_summary_pending() == ""              # 去重：不重发
-    assert len(agent.memory.messages) == 1                   # 不重存
-    # 时效闸（2026-09-04 审计#4）：苏醒超 3h 的旧总结=过期不发，记账认领防夜半诈尸
-    agent2 = _FakeAgent(_Gate())
-    stale = {"id": 8, "summary": "醒这么早？",
-             "woke_at": (datetime.datetime.now(datetime.timezone.utc)
-                         - datetime.timedelta(hours=17)).isoformat()}
-    agent2.memory.latest_closed_cycle = lambda: stale
-    bridge.boot = type("B", (), {"agent": agent2})()
-    assert bridge.sleep_summary_pending() == ""
-    assert agent2.memory.feedback and agent2.memory.feedback[0]["candidate_id"] == "sleep_summary:8"
-    assert not agent2.memory.messages
 
 
 def test_offline_think_timer_window_dedup(bridge):

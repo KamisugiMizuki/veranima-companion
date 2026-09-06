@@ -36,9 +36,6 @@ class CompanionService : Service() {
                         val o = msgs.getJSONObject(i)
                         notifyProactive(o.getString("text"), o.optString("name"), o.optString("role"))
                     }
-                    // 苏醒总结走同一条主动通知（活跃角色口吻，角色名=当前卡）
-                    val summary = bridge.callAttr("sleep_summary_pending").toString()
-                    if (summary.isNotEmpty() && summary != "None") notifyProactive(summary, "", "")
                     // 前台应用感知（UsageStats→包名+app名→LLM 判断动作）：仅授权后生效，内部有冷却
                     foregroundApp()?.let { (pkg, label) ->
                         bridge.callAttr("visual_note", pkg, label)
@@ -80,9 +77,10 @@ class CompanionService : Service() {
         val pi = PendingIntent.getActivity(
             this, 1, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
         // 微信式：主标题=发消息的角色名，正文=消息内容；大图标=该角色头像（缺图回退应用图标）
+        // label=目录名→显示名（旧版直取 active_character=目录名，通知标题冒出 "xumian"）
         val title = name.ifBlank { runCatching {
             JSONObject(Python.getInstance().getModule("bridge").callAttr("get_settings").toString())
-                .optString("active_character") } .getOrDefault("Veranima") }
+                .optString("active_character_label") } .getOrDefault("Veranima") }
         mgr().notify(System.currentTimeMillis().toInt(),
             NotificationCompat.Builder(this, CHANNEL_PROACTIVE)
                 .setSmallIcon(R.drawable.ic_stat_veranima)

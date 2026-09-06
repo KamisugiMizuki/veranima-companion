@@ -15,6 +15,9 @@
 from __future__ import annotations
 
 import datetime
+import pathlib
+
+import pytest
 
 from veranima.core.agent import Agent
 from veranima.core.character import CharacterCard
@@ -54,6 +57,31 @@ def _agent(tmp_path, llm=None):
     a = Agent(card=card, memory=memory, llm=llm or FakeLLM(),
               state=AgentState(), config={})
     return a, memory
+
+
+# ---------- 0) 通知标题只出显示名（"xumian" 目录名根治：旁路删除） ----------
+
+@pytest.fixture(scope="module")
+def bridge():
+    import importlib.util
+    p = pathlib.Path(__file__).resolve().parents[1] / "android/fuyuno/app/src/main/python/bridge.py"
+    spec = importlib.util.spec_from_file_location("fuyuno_bridge_0906", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_bridge_wakesummary_bypass_removed(bridge):
+    """苏醒总结旁路（唯一产出空 name 通知=标题回退目录名的路径）已删除；
+    通知唯一生产者=_queue（全部带 card.name 显示名）。"""
+    src = pathlib.Path(bridge.__file__).read_text(encoding="utf-8")
+    assert "sleep_summary_pending" not in src
+    # bridge: android/fuyuno/app/src/main/python/bridge.py → 同 main 下 java/
+    kt = (pathlib.Path(bridge.__file__).parents[1]
+          / "java/io/github/kamisugimizuki/veranima/CompanionService.kt")
+    kt_src = kt.read_text(encoding="utf-8")
+    assert "sleep_summary_pending" not in kt_src
+    assert "active_character_label" in kt_src        # 兜底标题=显示名不是目录名
 
 
 # ---------- 1) 苏醒总结认领：周期行级幂等（旁路通道根修） ----------
@@ -109,16 +137,23 @@ def test_heartbeat_fallback_rotates_and_silences(tmp_path):
             raise RuntimeError("llm down")
 
     a, memory = _agent(tmp_path, llm=DeadLLM())
-    # 对话闭合（最后一条=assistant）+ 无素材可用：降级池必须避开已发模板
-    a.record_proactive_message("随便聊点什么收尾")
-    for p in [
-        "（刚在整理聊天记录）上次你说那事，后来有后续了吗？",
-        "刚闲着没事翻了翻咱俩的聊天记录，发现你之前念叨的东西挺多的……最近都还好吗？",
-        "（离线整理完毕）我突然想起你上次说的那个计划，后来怎么样了？",
-    ]:
-        memory.store_message("assistant", p, 60, "开心")
-        a._append_history_message("assistant", p)
-    assert a.heartbeat() == ""  # 三条全用过=闭嘴，不再第四遍「上次你说那事」
+    # 对话闭合：直存 assistant 收尾条——不走 record_proactive_message，
+    # 那会开问候族合并窗口=心跳设计性让位（旧测试因此空转通过）
+    memory.store_message("assistant", "随便聊点什么收尾", 60, "开心")
+    a._append_history_message("assistant", "随便聊点什么收尾")
+    sent = [a.heartbeat()]                      # 第一条=池里随机一句
+    assert sent[0] and "上次你说" not in sent[0] and "那个计划" not in sent[0]
+    # 文案纪律（09-06 被质问『我说的啥来着』）：降级句不许预设用户说过具体事项——
+    # 连发三轮全部过一遍
+    for _ in range(3):
+        m = a.heartbeat()
+        if m:
+            sent.append(m)
+            memory.store_message("assistant", m, 60, "开心")
+            a._append_history_message("assistant", m)
+    assert all("上次你说" not in s and "你之前提过" not in s and "那个计划" not in s
+               for s in sent)
+    assert a.heartbeat() == ""                  # 三条全用过=这轮闭嘴
 
 
 # ---------- 4) 联想素材保鲜：生成后用户已回话 → 出池不补发 ----------
@@ -176,3 +211,47 @@ def test_meal_slots_never_mutated():
     m.adjust_to_user_cycle(7.5)   # 模拟次日回正（旧版：模板已被改坏，换不回来）
     for meal in ("breakfast", "lunch", "dinner"):
         assert m.slots[meal][1] == MEAL_SLOTS[meal][1]
+
+
+# ---------- 8) 作息适应双向（旧版锚点拿错 sleep_end → 只会往后调） ----------
+
+def _sched_agent(tmp_path, name="Sleeper"):
+    import json as _json
+    from veranima.core.virtual_schedule import ScheduleRuntime, ScheduleOutline
+    role = tmp_path / "characters" / name
+    role.mkdir(parents=True)
+    (role / "virtual_schedule.json").write_text(_json.dumps({
+        "enabled": True, "schema_version": 1, "timezone": "Asia/Shanghai",
+        "default_day_profile": "base", "day_profiles": {"base": {"allowed_block_ids": []}},
+        "blocks": [], "interaction_profiles": {}, "autonomy": {},
+        "circadian": {"wake_window": {"start": "06:00", "end": "07:00"},   # 起床=07:00
+                      "sleep_window": {"start": "23:00", "end": "23:30"},  # 就寝窗尾≠起床
+                      "chronotype": "day_aligned", "target_sleep_minutes": 480,
+                      "max_offset_minutes": 240},
+        "sleep": {},
+    }), encoding="utf-8")
+    (role / "character.json").write_text("{}", encoding="utf-8")
+    card = CharacterCard(name=name)
+    memory = MemoryStore(db_path=str(tmp_path / "s.db"), config={}, provider=FakeEmbed())
+    a = Agent(card=card, memory=memory, llm=FakeLLM(), state=AgentState(),
+              config={"root": str(tmp_path)})
+    a.schedule_runtime = ScheduleRuntime(ScheduleOutline.from_role_dir(role))
+    return a
+
+
+def test_schedule_adapt_moves_forward_and_backward(tmp_path):
+    """用户 03:00 起（角色 07:00）→ 往前调（负偏移）；11:00 起 → 往后调。
+
+    旧版拿 circadian.sleep_end（就寝窗结束）当角色起床时刻——任何用户起床
+    都晚于它 → diff 恒正 → 真机一周 7 条 adapt 全为正向、零负向（09-06 实锤）。
+    """
+    import datetime
+    now = datetime.datetime(2026, 9, 6, 4, 0, tzinfo=datetime.timezone.utc)
+
+    a = _sched_agent(tmp_path / "early", "Early")
+    a._adapt_schedule_to_user(3.0, now, [])   # 用户比角色早起 4h
+    assert a.schedule_runtime.schedule_offset_minutes < 0
+
+    b = _sched_agent(tmp_path / "late", "Late")
+    b._adapt_schedule_to_user(11.0, now, [])  # 用户晚起 4h → 正偏移（旧行为保持）
+    assert b.schedule_runtime.schedule_offset_minutes > 0
