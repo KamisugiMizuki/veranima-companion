@@ -692,8 +692,55 @@ class Agent:
             "判断刚才、今天、昨天、是否跨夜或间隔多久时，优先依据这些时间；"
             "凌晨/早上/中午/晚上/深夜这类时段词同样必须按时间戳选，一次回复里不得自相矛盾；"
             "不要仅凭晚安、睡觉或早安推断已经跨日，时间没有跨日就按连续对话处理；"
-            "这些方括号时间是内部上下文标记，不要复制到回复正文。"
+            "这些方括号时间是内部上下文标记，不要复制到回复正文。\n"
+            "【事实边界】你只可以把你确实知道的事（用户提过/画像记录）当既定事实说。"
+            "对用户的情况不确定时，猜测要猜出声：用问句猜（「是论文吗？」「你们组会要交？」），"
+            "绝不能把没听用户说过的东西当真的——「记得你还有论文」这种句式不行，"
+            "除非你确定 ta 亲口说过。"
         )
+
+    _RISKY_ENTITIES = ("论文", "毕设", "答辩", "组会", "导师", "老板", "公司",
+                       "同事", "聚餐", "室友", "对象", "女朋友", "男朋友")
+    # 高危实体（对大学生/上班族语境 prior 极强、编出来一查就穿帮的世界设定）。
+    # 真机 09-07 案底：「你们公司聚餐」(08-31) / 「记得你还有论文」(#761)。
+    _FACT_CLAIM_RE = None  # 延迟编译，见 _fabrication_gate
+
+    @classmethod
+    def _fabrication_gate(cls, reply: str, source_text: str) -> str:
+        """出口编造闸（09-07 用户裁决「真人会说'论文吗'，不会当既定事实」）：
+        既定事实句式（记得你还有/你上次说/你们导儿…）+ 高危实体词，而该词在
+        本轮可见上下文（用户消息+注入画像）无出处 → 删该句，换开放问法。
+        猜测+疑问句=人类正常行为，放行（不碰含 吗/呢/? 的行）。
+        词面确定性规则、零 LLM 调用、可无状态复现；漏判由 triage 人读兜底。
+        （ponytail: 句式表按真机案底生长，别预先穷举中文一切事实句。）"""
+        import re
+        src = str(source_text or "")
+        if cls._FACT_CLAIM_RE is None:
+            cls._FACT_CLAIM_RE = re.compile(
+                "(?:记得|记着|知道)你(?:还|又)?有"
+                "|你(?:之前|上次|老|总|又)\\S{0,2}(?:说|提|讲)的?"
+                "|(?:你|你们)的?(?:论文|毕设|答辩|组会|导师|老板|公司|同事|室友|对象)"
+                "|(?:你|你们)\\S{0,3}(?:聚餐|开会|加班|上课|考试|交稿)")
+        kept = []
+        hit = False
+        for line in str(reply or "").split("\n"):
+            sents = [s for s in re.split(r"(?<=[。！？!?~])", line) if s]
+            out = []
+            for s in sents:
+                if (cls._FACT_CLAIM_RE.search(s)
+                        and any(k in s for k in cls._RISKY_ENTITIES)
+                        and not any(q in s for q in ("吗", "呢", "?", "？"))
+                        and not any(k in src for k in cls._RISKY_ENTITIES
+                                    if k in s)):
+                    hit = True
+                    continue
+                out.append(s)
+            kept.append("".join(out))
+        if not hit:
+            return reply
+        text = "\n".join(kept).strip() or "最近有什么正经事压着你吗？"
+        logger.info("fabrication gate: sentence(s) stripped")
+        return text
 
     @classmethod
     def _message_context_line(cls, message: dict) -> str:
@@ -751,6 +798,18 @@ class Agent:
             cls._TIME_ECHO_RE = re.compile(
                 r"(?:^|(?<=\n))\s*(?:\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?: 周[一二三四五六日])?\]\s*)+")
         return cls._TIME_ECHO_RE.sub("", str(text or "")).lstrip()
+
+    def _fact_grounding_src(self) -> str:
+        """编造闸的溯源面=模型此刻真看得见的「用户亲口话」：近 20 条历史里的
+        user 行 + 注入画像（画像值本身源自用户自述）。assistant 行刻意排除——
+        自己编过一遍进了历史，不该成为下遍的出处（编造自我强化回路）。"""
+        try:
+            parts = [str(e.get("content", "")) for e in self._history[-20:]
+                     if e.get("role") == "user"]
+            parts.append(self._profile_block())
+            return "\n".join(parts)
+        except Exception:
+            return ""
 
     def _append_history_message(self, role: str, content: str, created_at: str | None = None) -> None:
         self._history.append(self._history_entry(role, content, created_at or self._local_message_time()))
@@ -1906,6 +1965,8 @@ class Agent:
                 turn_reply = None
         if not generation_failed and reply:
             reply = self._strip_time_echo(reply)
+            reply = self._fabrication_gate(
+                reply, self._fact_grounding_src() + "\n" + (user_text or ""))
 
         if generation_failed:
             self._history.append(self._history_entry("user", store_text, self._message_time_for_id(user_msg_id)))
@@ -2888,6 +2949,7 @@ class Agent:
         """
         channel = channel or self.message_channel
         text = self._strip_time_echo(text)  # 短任务链（followup/heartbeat/digest）同样可能回显前缀
+        text = self._fabrication_gate(text, self._fact_grounding_src())
         mid = self.memory.store_message("assistant", text, self.state.energy, self.state.mood, channel=channel, role_id=self.role_key)
         self._append_history_message("assistant", text)
         self._mark_proactive_sent(now)  # 测试注入同一时间线；生产 None=真实时刻

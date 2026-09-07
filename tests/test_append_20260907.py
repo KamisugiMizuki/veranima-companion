@@ -144,3 +144,23 @@ def test_strip_time_echo_single_double_and_hallucinated():
     assert s("第一行。\n[2026-09-07 12:32:01 周一] 第二行。") == "第一行。\n第二行。"
     # 正文中间的日期引用不动（不是行首标记=人话）
     assert s("记得 2026-09-07 12:30:11 那条吗") == "记得 2026-09-07 12:30:11 那条吗"
+
+
+# ---------- 编造闸（09-07 用户裁决：猜要猜出声，不许当既定事实） ----------
+
+def test_fabrication_gate_strips_claim_keeps_question():
+    from veranima.core.agent import Agent
+    g = Agent._fabrication_gate
+    # 既定事实句式 + 高危实体 + 无出处 → 删句，好句保留
+    out = g("行。记得你还有论文的事要忙，可别全丢了。午饭呢？", "周五要交初稿，烦")
+    assert "论文" not in out and "午饭呢？" in out
+    # 猜测+疑问句=人类正常行为 → 放行
+    q = "快交稿了？是论文吗还是别的，说一声我帮你盯着"
+    assert g(q, "马上要交稿了") == q
+    # 有出处（用户亲口提过论文）→ 陈述也放行
+    assert g("记得你还有论文的事", "我论文被导师打回来了") == "记得你还有论文的事"
+    # 无高危实体的正常闲聊整段原样
+    plain = "草，你这起床气挺足。先吃点东西吧。"
+    assert g(plain, "堂堂起床") == plain
+    # 全删光 → 换开放问法（不空回复）
+    assert g("你们公司聚餐真不错。", "今天好累") == "最近有什么正经事压着你吗？"
