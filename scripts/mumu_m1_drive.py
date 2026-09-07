@@ -122,8 +122,8 @@ def sql(q):
 
 
 def clock_restore():
-    sh(["shell", "settings put system auto_time 1"])
-    sh(["shell", "am broadcast -a android.intent.action.TIME_SET"])
+    # auto_time 在 global 命名空间（09-07 实锤：只写 system=没还原，钟停拨位）
+    sh(["shell", "settings put global auto_time 1; am broadcast -a android.intent.action.TIME_SET"])
     print("[clock] auto_time=1 已恢复（对时到真实时间）")
 
 
