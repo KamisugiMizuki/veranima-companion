@@ -704,6 +704,36 @@ class Agent:
         role = {"user": "用户", "assistant": "我"}.get(message.get("role"), message.get("role", "消息"))
         return f"{role}: {cls._format_history_content(message.get('content', ''), message.get('created_at'))}"
 
+    def _recall_evidence_block(self, keyword: str) -> str:
+        """角色翻聊天记录（09-07 用户裁决）：被要求找回说过的话 → FTS 检索
+        本会话历史注入原话（真人被这么说时也是回去看原话，不凭记忆脑补）。
+        role_key 隔离：共享库下凛翻不到许眠窗口的对话（09-04 审计#2 纪律）。
+        查无=注入「诚实说没翻到」，绝不给编造留台阶。"""
+        import datetime as _dt
+        try:
+            hits = self.memory.search_messages(keyword, limit=6,
+                                               role_id=(self.role_key or None))
+        except Exception:
+            logger.debug("recall evidence search failed", exc_info=True)
+            return ""
+        if not hits:
+            return (f"【翻记录结果】按「{keyword}」检索了本会话聊天记录，没有找到相关内容。"
+                    "如实告诉用户没翻到、请 ta 多给点线索；绝不编造记录里没有的内容。")
+        rows = []
+        for h in reversed(hits):
+            try:
+                ts = _dt.datetime.fromisoformat(
+                    str(h["created_at"]).replace("Z", "+00:00")
+                ).astimezone().strftime("%m-%d %H:%M")
+            except (TypeError, ValueError):
+                ts = "?"
+            rows.append(f"[{ts}] {'我' if h['role'] == 'assistant' else '你'}："
+                        f"{str(h['content'])[:80]}")
+        return (f"【翻到的聊天记录】按「{keyword}」在本会话历史里检索到这些原话（先后排列）：\n"
+                + "\n".join(rows) + "\n"
+                "这就是当时说过的话——直接引用或回应它，别再说「我不记得」；"
+                "只有查无此话时才说没找到，绝不编造记录里没有的内容。")
+
     def _adjacent_proactive_context(self, user_text: str, channel: str) -> str:
         """仅为紧邻主动消息的澄清追问提供上一条主动原文。"""
         if channel != "im" or not is_clarification(user_text):
@@ -1660,6 +1690,15 @@ class Agent:
         proactive_context = self._adjacent_proactive_context(user_text, channel)
         if proactive_context:
             extra_blocks.append(proactive_context)
+        # 角色翻聊天记录（09-07 用户裁决）：judges 判出 recall_evidence=用户要
+        # 找回说过的话 → FTS 检索本会话历史，原文注入让 TA「翻出来」而不是凭
+        # 记忆脑补（真人被要求翻记录时也是回去看原话）。按 role_key 隔离——
+        # 共享库下凛翻不到许眠窗口的对话（09-04 审计#2 同纪律）。
+        _rv = str(getattr(judgment, "recall_evidence", "") or "") if judgment else ""
+        if _rv:
+            _blk = self._recall_evidence_block(_rv)
+            if _blk:
+                extra_blocks.append(_blk)
         # 苏醒总结融合（2026-08-31 用户反馈「醒了」三连发）：wake_summary 在
         # handle 开头一次性取出（见 _note_sleep_report 后），融进本轮回复不旁路推送
         if wake_summary:

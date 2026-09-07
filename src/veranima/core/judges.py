@@ -41,6 +41,7 @@ class MessageJudgment:
     feedback_dislike: bool | None = None  # 对上一条回复负向（嫌弃/纠正风格内容）
     veto_source: str = ""                 # 否决的主动类型（RITUAL_SOURCES 源名闭集；空=无）
     veto_days: int = 0                    # 否决保质期（天）；0=永久
+    recall_evidence: str = ""             # 要翻聊天记录找的话头关键词（≤20字；空=无）
     profile: dict = field(default_factory=dict)  # 用户自述的稳定事实（闭集键→值）
     thread_candidate: str = ""            # 值得角色持续惦记的事（M1 牵挂；空=无）
     thread_closed: int = 0                # 本句宣告完结的牵挂序号（0=无；对照注入清单）
@@ -107,6 +108,9 @@ def build_judge_prompt(text: str, prev_assistant: str, open_threads: list | None
         '  "veto_days": 该否决的保质期天数（"这三天"=3/"这几天|一周"=7/"这个月"=30；\n'
         '  没有时间限定=0，表示永久）。拿不准时：明确划界句式（别老/别再）给0，\n'
         '  带时限说法给对应天数。\n'
+        '  "recall_evidence": 用户是否要求助手翻聊天记录找回某段说过的话'
+        '（"我昨天说的那个""你自己翻翻记录""之前提过的那家店"=要翻，给出检索用的'
+        '话头关键词≤10字（如"体检 复查"）；只是闲聊提到过去的事、没要求找回=空）,\n'
         '  "profile": 用户这句自述的稳定个人信息，对象（可空）——键只认这些：'
         '"real_name"名字/"nickname_pref"希望被怎么称呼/"gender"性别/'
         '"occupation"职业/"city"城市/"love_language"吃哪套关心（言语肯定/实际行动/陪伴/礼物/服务）/'
@@ -168,6 +172,9 @@ def _coerce(raw: dict) -> MessageJudgment:
             j.veto_days = max(0, min(365, int(raw.get("veto_days") or 0)))
         except (TypeError, ValueError):
             j.veto_days = 0
+    re_ = raw.get("recall_evidence")
+    if isinstance(re_, str):
+        j.recall_evidence = re_.strip()[:20]
     return j
 
 

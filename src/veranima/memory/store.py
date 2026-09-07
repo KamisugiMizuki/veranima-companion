@@ -555,43 +555,44 @@ class MemoryStore:
         ).fetchone()
         return str(row["created_at"]) if row else None
 
-    def search_messages(self, query: str, limit: int = 50, before_id: int | None = None) -> list[dict]:
-        """历史搜索：复用 messages_fts，按消息 id 倒序；空查询不返回全库。"""
+    def search_messages(self, query: str, limit: int = 50, before_id: int | None = None,
+                        role_id: str | None = None) -> list[dict]:
+        """历史搜索：复用 messages_fts，按消息 id 倒序；空查询不返回全库。
+        role_id（09-07 角色翻记录）：共享库按会话隔离——凛不能翻出许眠窗口的对话。"""
         from ..core.reply import is_internal_reply
 
         query = str(query or "").strip()
         if not query:
             return []
         limit = max(1, min(int(limit), 200))
+        rs = " AND role_id=?" if role_id else ""
+        rp = (role_id,) if role_id else ()
         # trigram 对少于 3 个字符的中文词不建 token；短词用参数化 LIKE 保证可搜。
         if len(query) < 3:
-            params = (f"%{query}%", limit) if before_id is None else (f"%{query}%", int(before_id), limit)
-            sql = (
-                "SELECT id, role, content, created_at FROM messages "
-                "WHERE content LIKE ? ORDER BY id DESC LIMIT ?"
-                if before_id is None else
-                "SELECT id, role, content, created_at FROM messages "
-                "WHERE content LIKE ? AND id < ? ORDER BY id DESC LIMIT ?"
-            )
-            rows = self.con.execute(sql, params).fetchall()
+            conds = ["content LIKE ?"]
+            params: list = [f"%{query}%"]
+            if before_id is not None:
+                conds.append("id < ?")
+                params.append(int(before_id))
+            if role_id:
+                conds.append("role_id=?")
+                params.append(role_id)
+            sql = ("SELECT id, role, content, created_at FROM messages WHERE "
+                   + " AND ".join(conds) + " ORDER BY id DESC LIMIT ?")
+            rows = self.con.execute(sql, (*params, limit)).fetchall()
             return [dict(r) for r in rows
                     if not (r["role"] == "assistant" and is_internal_reply(r["content"]))]
         fts_query = self._fts_query(query)
-        if before_id is None:
-            rows = self.con.execute(
-                """SELECT m.id, m.role, m.content, m.created_at
-                   FROM messages_fts f JOIN messages m ON m.id=f.rowid
-                   WHERE messages_fts MATCH ? ORDER BY m.id DESC LIMIT ?""",
-                (fts_query, limit),
-            ).fetchall()
-        else:
-            rows = self.con.execute(
-                """SELECT m.id, m.role, m.content, m.created_at
-                   FROM messages_fts f JOIN messages m ON m.id=f.rowid
-                   WHERE messages_fts MATCH ? AND m.id < ?
-                   ORDER BY m.id DESC LIMIT ?""",
-                (fts_query, int(before_id), limit),
-            ).fetchall()
+        where = "messages_fts MATCH ?" + (" AND m.id < ?" if before_id is not None else "") + rs
+        cond: list = [fts_query]
+        if before_id is not None:
+            cond.append(int(before_id))
+        cond += list(rp) + [limit]
+        rows = self.con.execute(
+            f"""SELECT m.id, m.role, m.content, m.created_at
+               FROM messages_fts f JOIN messages m ON m.id=f.rowid
+               WHERE {where} ORDER BY m.id DESC LIMIT ?""", cond,
+        ).fetchall()
         return [dict(r) for r in rows
                 if not (r["role"] == "assistant" and is_internal_reply(r["content"]))]
 

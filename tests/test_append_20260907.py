@@ -201,3 +201,39 @@ def test_moment_gate_blocks_sleeping_catch_up(tmp_path):
             return _Ctx2()
     a.schedule_runtime = _RT3(sleeping=False)
     assert a.moments._gate(now, {"moments": {"enabled": True}}) == ""
+
+
+# ---------- 角色翻聊天记录（09-07 用户裁决：被要求找回时说"我翻翻"然后真翻） ----------
+
+def test_search_messages_role_isolation(tmp_path):
+    """共享库按会话隔离：凛翻不到许眠窗口的对话（09-04 审计#2 同纪律）。"""
+    mem = MemoryStore(db_path=str(tmp_path / "iso.db"), config={}, provider=FakeEmbed())
+    mem.store_message("user", "周五要交毕设初稿", role_id="lin")
+    mem.store_message("user", "周五的体检复查安排好了", role_id="xumian")
+    hits = mem.search_messages("周五", role_id="lin")
+    assert len(hits) == 1 and "初稿" in hits[0]["content"]
+    hits = mem.search_messages("周五", role_id="xumian")
+    assert len(hits) == 1 and "体检" in hits[0]["content"]
+    assert len(mem.search_messages("周五")) == 2   # 不带 role=旧口径全量不变
+
+
+def test_judges_recall_evidence_coerce():
+    from veranima.core.judges import _coerce
+    j = _coerce({"recall_evidence": "体检 复查"})
+    assert j.recall_evidence == "体检 复查"
+    assert _coerce({"recall_evidence": "x" * 50}).recall_evidence == "x" * 20
+    assert _coerce({}).recall_evidence == ""
+
+
+def test_recall_evidence_block(tmp_path):
+    """翻记录注入块：命中→带时间原话+「别说不记得」；查无→诚实模板不给编造
+    留台阶；隔离→xumian 的 Agent 翻不到 lin 窗口的对话（端到端 handle 接线
+    留给真机链路验——假 LLM 喂不动 im 结构化协议）。"""
+    a = _agent(tmp_path)
+    a.role_key = "xumian"
+    a.memory.store_message("user", "中饭点了m记，薯条确实好吃", role_id="xumian")
+    a.memory.store_message("assistant", "记下了，不吃辣这条", role_id="lin")  # 别的会话，不该被翻到
+    blk = a._recall_evidence_block("薯条")
+    assert "【翻到的聊天记录】" in blk and "m记" in blk and "你：" in blk
+    assert "lin" not in blk and "记下了" not in blk   # 跨会话隔离
+    assert "没有找到" in a._recall_evidence_block("火锅店")
