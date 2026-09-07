@@ -39,6 +39,55 @@ MEAL_SLOTS = {
 }
 
 
+# 主动否决台账（§12-C 裁决，2026-09-07）：用户表态「别老提X类主动」后进
+# 否决表（源名闭集=RITUAL_SOURCES），tick 收集端确定性剔除，跨周不复发。
+# 识别走统一判断点（judges.veto_source），本模块的 VETO_PHRASES 词面只做
+# 判断点缺席时的兜底——「语义判断每处一次 LLM、关键词=预筛兜底」铁律同款。
+# 不并入 memory_review_inbox：那是记忆准入队列，容器错。
+
+VETO_PHRASES = ("别再", "别老", "不要再", "不要总是", "别提醒", "不用提醒", "不用跟我")
+
+# 否决句里的口语别名 → RITUAL_SOURCES 源名（闭集映射，LLM 与词表共用）
+VETO_ALIASES = {
+    "meal": ("饭", "吃饭", "饭点", "吃饭提醒", "提醒我吃饭"),
+    "greeting": ("早安", "晚安", "问好", "打招呼", "问候"),
+    "occasion": ("节日", "过节", "纪念日"),
+    "context_probe": ("猜我在干嘛", "推测", "在干嘛"),
+    "sleep_hint": ("作息", "催我睡", "睡觉报告"),
+    "schedule_adapt": ("作息调整", "跟我调作息"),
+    "thread": ("惦记", "念叨那件事"),
+}
+
+
+def _num(s: str) -> int:
+    """阿拉伯或简单中文数字（一~十）→ int；解析不了=0。"""
+    if s.isdigit():
+        return int(s)
+    cn = {"一": 1, "两": 2, "二": 2, "三": 3, "四": 4, "五": 5,
+          "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+    return cn.get(s, 0)
+
+
+def veto_from_keywords(text: str) -> tuple[str, int] | None:
+    """(被否决源名, 保质期天数)；无命中=None。判断点可用时由 LLM 裁决，
+    这里只是兜底。保质期=X天/N周/一个月，无限定词=0（永久）——「别老提醒
+    我喝水」就是永久语义，「最近」当修饰词不封顶。
+    """
+    t = str(text or "")
+    if not any(p in t for p in VETO_PHRASES):
+        return None
+    for src, aliases in VETO_ALIASES.items():
+        if not any(a in t for a in aliases):
+            continue
+        days = 0
+        m = re.search(r"([0-9一二两三四五六七八九十]+)\s*([天周]|个?月)", t)
+        if m:
+            n = _num(m.group(1))
+            days = n * 7 if m.group(2) == "周" else n * 30 if m.group(2) != "天" else n
+        return src, days
+    return None
+
+
 def meal_word(hour: int) -> str:
     """整点 → 那顿饭该叫什么（三餐锚点随用户作息平移后，餐名跟钟点不跟槽位）。"""
     h = int(hour) % 24

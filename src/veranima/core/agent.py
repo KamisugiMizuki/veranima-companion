@@ -36,7 +36,7 @@ from ..tools.search import (
 )
 from .character import CharacterCard
 from .learning import LanguageMirror, StyleLearner, extract_feedback
-from .proactive import GreetingScheduler, OccasionChecker, RITUAL_SOURCES
+from .proactive import GreetingScheduler, OccasionChecker, RITUAL_SOURCES, veto_from_keywords
 from .promises import PromiseBook
 from .review import MonthlyReview
 from .state import AgentState
@@ -309,6 +309,11 @@ class Agent:
         self.occasion.triggered.update(
             str(k) for k in (_rel_snap.get("occasions") or [])
             if str(k).startswith(_today_key + ":"))
+        # §12-C 否决台账（09-07 裁决）：{源名: 到期日 ISO}，到期日空=永久；
+        # 随关系快照落库（per 角色），tick 收集端剔除，跨周不复发
+        self._proactive_veto: dict[str, str] = {
+            str(k): str(v) for k, v in (_rel_snap.get("proactive_veto") or {}).items()
+            if str(k) in RITUAL_SOURCES}
         from .proactive import MealReminderScheduler
         self.meals = MealReminderScheduler(
             (self.config.get("proactive") or {}).get("meal_reminders", {}))
@@ -846,6 +851,7 @@ class Agent:
             # 同一天反复重发早安/中午好）——随关系快照落库，重启读回
             rel["greeted"] = self.greeter.to_state()
             rel["occasions"] = sorted(self.occasion.triggered)
+            rel["proactive_veto"] = dict(getattr(self, "_proactive_veto", {}))
             rel["last_proactive_sent_at"] = getattr(self, "_last_proactive_sent_at", "")
             # 待织池随快照落盘（TTL 180min 读取端过滤，过期素材下次 restore 自然淘汰）
             rel["ritual_pending"] = list(self._ritual_pending)[-6:]
@@ -1928,6 +1934,7 @@ class Agent:
         except Exception:
             pass
         self._capture_nickname_feedback(user_text)
+        self._capture_proactive_veto(user_text, judgment)
 
         # 8.5 MVP2 学习：隐式反馈 → 风格参数 + 语言镜像 + 承诺识别
         prev_reply = self._history[-3]["content"] if len(self._history) >= 3 else ""
@@ -2574,6 +2581,8 @@ class Agent:
             "看不出规律就不要编。\n"
             "再写一格\"portrait\"：以你（当前角色）的口吻，写你眼中这是个什么样的用户，"
             "≤80 字，只写从材料看得出的，写给以后的自己看（不是发给用户的话）。"
+            "顺着三个固定角度想（有依据才写，没依据的角度跳过）：ta 什么时候最爱来找我、"
+            "哪几类话题 ta 会回避或一笔带过、ta 反复提起的事有没有变化。\n"
             f"\n只输出 JSON：{{\"content\":\"概括\",\"portrait\":\"我眼中的你\"}}。\n{chr(10).join(lines)}"
         )
         try:
@@ -2775,6 +2784,8 @@ class Agent:
             "thread": _collect_thread,
         }
         for source_name in RITUAL_SOURCES:  # 清单顺序=素材排列顺序（织入时的话题先后）
+            if self._vetoed(source_name, now):  # §12-C：否决闸在收集前——去重键未消耗，解除后当日仍可发
+                continue
             try:
                 materials.extend(collectors[source_name]())
             except Exception as e:
@@ -3340,6 +3351,61 @@ class Agent:
                 self.memory.profile_set(k, v, source="dialog", confidence=0.7)
         except Exception as e:
             logger.debug("profile facts store failed: %s", e)
+
+    def _capture_proactive_veto(self, user_text: str, judgment) -> None:
+        """「别老提醒我吃饭」→ 记入主动否决台账（§12-C，09-07 裁决）。
+
+        识别优先统一判断点（judgment.veto_source，LLM 裁决），judgment 缺席/
+        未裁决时退回词面兜底（veto_from_keywords）——铁律：词表只做预筛兜底。
+        保质期：judgment.veto_days>0 或有天数 → 到期自动解除；0=永久。
+        台账随关系快照持久化（per 角色），消费端 = tick 收集剔除。
+        """
+        try:
+            src = ""
+            days = 0
+            vs = str(getattr(judgment, "veto_source", "") or "")
+            if vs:  # 判断点已裁决（含裁决为「无否决」后的空串——不再兜底）
+                src, days = vs, int(getattr(judgment, "veto_days", 0) or 0)
+            elif judgment is None:
+                kw = veto_from_keywords(user_text)
+                if kw:
+                    src, days = kw
+            if not src or src not in RITUAL_SOURCES:
+                return
+            if days > 0:
+                until = (datetime.datetime.now()
+                         + datetime.timedelta(days=days)).date().isoformat()
+            else:
+                until = ""  # 永久
+            self._proactive_veto[src] = until
+            self._persist_state()
+            logger.info("proactive veto: source=%s until=%s", src, until or "永久")
+        except Exception as e:
+            logger.debug("proactive veto capture failed: %s", e)
+
+    def _vetoed(self, source: str, now) -> bool:
+        """该主动类型当前是否被否决（到期自动解除；now 支持 date/datetime/时间戳）。"""
+        until = self._proactive_veto.get(source)
+        if until is None:
+            return False
+        if not until:
+            return True  # 永久
+        try:
+            if isinstance(now, (int, float)):
+                today = datetime.datetime.fromtimestamp(now).date()
+            elif isinstance(now, datetime.datetime):
+                today = now.date()
+            elif isinstance(now, datetime.date):
+                today = now
+            else:
+                today = datetime.date.today()
+            expired = today > datetime.date.fromisoformat(until)
+        except Exception:
+            expired = False  # 到期日读不懂时宁可继续尊重否决（保守方向）
+        if expired:
+            self._proactive_veto.pop(source, None)
+            return False
+        return True
 
     def _capture_nickname_feedback(self, user_text: str) -> None:
         """「别叫我X」→ 该角色对该称呼标记 forbidden（C 档闭集词面捕获）。"""

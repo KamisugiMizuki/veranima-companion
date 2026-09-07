@@ -39,6 +39,8 @@ class MessageJudgment:
     sleep_report: str = "none"            # 用户作息报告：sleeping/waking/none
     feedback_like: bool | None = None     # 对上一条回复正向（喜欢/认可）
     feedback_dislike: bool | None = None  # 对上一条回复负向（嫌弃/纠正风格内容）
+    veto_source: str = ""                 # 否决的主动类型（RITUAL_SOURCES 源名闭集；空=无）
+    veto_days: int = 0                    # 否决保质期（天）；0=永久
     profile: dict = field(default_factory=dict)  # 用户自述的稳定事实（闭集键→值）
     thread_candidate: str = ""            # 值得角色持续惦记的事（M1 牵挂；空=无）
     thread_closed: int = 0                # 本句宣告完结的牵挂序号（0=无；对照注入清单）
@@ -97,6 +99,14 @@ def build_judge_prompt(text: str, prev_assistant: str, open_threads: list | None
         '  "feedback_like": 若有上一条助手消息且用户这句在认可/喜欢它；'
         '"feedback_dislike": 用户在嫌弃/纠正它的内容或风格（"太长了""别这样回"）；'
         '无关联两者都 false。\n'
+        '  "veto_source": 用户是否在接受主动之外明确表态别再提某一类助手自发的话\n'
+        '（"别老提醒我喝水/吃饭"="meal"、"每天早安晚安好烦"="greeting"、\n'
+        '  "过节不用你提"="occasion"、"别猜我在干嘛"="context_probe"、\n'
+        '  "别催我睡觉/报作息"="sleep_hint"、"不用你迁就我作息"="schedule_adapt"、\n'
+        '  "别老念叨那件事"="thread"；普通嫌弃某条回复内容不算，留空），\n'
+        '  "veto_days": 该否决的保质期天数（"这三天"=3/"这几天|一周"=7/"这个月"=30；\n'
+        '  没有时间限定=0，表示永久）。拿不准时：明确划界句式（别老/别再）给0，\n'
+        '  带时限说法给对应天数。\n'
         '  "profile": 用户这句自述的稳定个人信息，对象（可空）——键只认这些：'
         '"real_name"名字/"nickname_pref"希望被怎么称呼/"gender"性别/'
         '"occupation"职业/"city"城市/"love_language"吃哪套关心（言语肯定/实际行动/陪伴/礼物/服务）/'
@@ -150,6 +160,14 @@ def _coerce(raw: dict) -> MessageJudgment:
         j.feedback_like = raw["feedback_like"]
     if isinstance(raw.get("feedback_dislike"), bool):
         j.feedback_dislike = raw["feedback_dislike"]
+    from .proactive import RITUAL_SOURCES  # 源名闭集（违表输出丢弃，同 _VALID_* 纪律）
+    vs = str(raw.get("veto_source") or "")
+    if vs in RITUAL_SOURCES:
+        j.veto_source = vs
+        try:
+            j.veto_days = max(0, min(365, int(raw.get("veto_days") or 0)))
+        except (TypeError, ValueError):
+            j.veto_days = 0
     return j
 
 
