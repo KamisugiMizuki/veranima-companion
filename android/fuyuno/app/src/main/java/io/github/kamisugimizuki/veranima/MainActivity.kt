@@ -16,6 +16,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -276,7 +277,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 internal fun ChatScreen(role: String, onBack: () -> Unit, onOpenSpace: () -> Unit) {
     // 2026-09-01 用户裁决：会话页去立绘舞台，纯 IM 聊天框（分界线以上整体删除；
@@ -375,22 +376,51 @@ internal fun ChatScreen(role: String, onBack: () -> Unit, onOpenSpace: () -> Uni
         if (proactiveTick.value > 0) loadHistory()
     }
 
-    val send = fun() {
-        val q = input.value.trim()
-        val imgs = pendingImages.value
-        if ((q.isEmpty() && imgs.isEmpty()) || busy.value) return
-        msgs.add(Msg(-1, true, q, imgs)); input.value = ""
-        pendingImages.value = emptyList()
+    // 长按菜单/多选/引用态（09-07 微信式消息动作）。临时气泡用递减负 id——
+    // key=m.id 下固定 -1/-2 会撞（09-07 翻页引入 key 的连带修正）。
+    val quoted = remember { mutableStateOf<Msg?>(null) }
+    val tmpId = remember { longArrayOf(-1L) }
+    val menuFor = remember { mutableStateOf<Msg?>(null) }
+    val selectMode = remember { mutableStateOf(false) }
+    val selected = remember { mutableStateOf(setOf<Long>()) }
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    fun fmtShort(t: String) = runCatching {
+        java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault()).format(
+            java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", java.util.Locale.US).parse(t))
+    }.getOrDefault("")
+    // 合并转发=聊天记录卡片（09-07 用户裁决：卡头要角色名+日期）。纯文本协议
+    // [聊天记录] 开头行=卡片标记——core 零感知（它收到就是段普通文本，「你翻
+    // 出来的东西」进历史/检索全走现成链）；UI 按标记换行渲染成卡片气泡。
+    fun buildChatCard(picked: List<Msg>): String {
+        val ts = picked.map { it.time }.filter { it.isNotEmpty() }.sorted()
+        val span = if (ts.isEmpty()) "" else {
+            val a = fmtShort(ts.first()); val b = fmtShort(ts.last())
+            if (a.take(5) == b.take(5)) " ${a.take(5)}" else " ${a.take(5)} ~ ${b.take(5)}"
+        }
+        val name = charName.value
+        val head = "——— 聊天记录 ———\n$name 与 你（${picked.size} 条$span）"
+        val body = picked.joinToString("\n") { p ->
+            val who = if (p.me) "你" else name
+            val t = if (p.time.isNotEmpty()) fmtShort(p.time) + " " else ""
+            val txt = p.text.lineSequence().first().take(60)
+            "$t$who：$txt"
+        }
+        return "[聊天记录]\n$head\n$body\n———————"
+    }
+    // 真正发送（引用/合并转发/普通输入共用一个出口）
+    val sendText = fun(text: String, imgs: List<String>) {
+        if ((text.isEmpty() && imgs.isEmpty()) || busy.value) return
+        msgs.add(Msg(tmpId[0]--, true, text, imgs))
         focusManager.clearFocus()
         busy.value = true
         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
         scope.launch {
             val r = withContext(Dispatchers.IO) {
-                bridge.callAttr("chat", q, org.json.JSONArray(imgs).toString(), role).toString()
+                bridge.callAttr("chat", text, org.json.JSONArray(imgs).toString(), role).toString()
             }
             val o = JSONObject(r)
             if (o.optBoolean("ok")) {
-                msgs.add(Msg(-2, false, o.getString("reply"), emptyList(), "", o.optString("tone"), ""))
+                msgs.add(Msg(tmpId[0]--, false, o.getString("reply"), emptyList(), "", o.optString("tone"), ""))
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
             } else status.value = "chat 失败: ${o.optString("error")}"
             busy.value = false
@@ -398,8 +428,57 @@ internal fun ChatScreen(role: String, onBack: () -> Unit, onOpenSpace: () -> Uni
             withContext(Dispatchers.IO) { bridge.callAttr("mark_read", role) }
         }
     }
+    val send = fun() {
+        val typed = input.value.trim()
+        val imgs = pendingImages.value
+        val quote = quoted.value
+        val text = when {
+            quote != null && typed.isNotEmpty() -> "「${quote.text}」\n———\n$typed"
+            quote != null -> "「${quote.text}」"
+            else -> typed
+        }
+        quoted.value = null
+        input.value = ""
+        pendingImages.value = emptyList()
+        sendText(text, imgs)
+    }
+    // 动作表=数据驱动（09-07 用户裁决「菜单要支持后续扩展」）：加功能=加一行
+    // (标签→动作)；长按弹层与多选操作条共用同一声明形态，UI 挂载点不改动。
+    val msgActions = fun(m: Msg): List<Pair<String, () -> Unit>> = listOf(
+        "复制" to {
+            clipboard.setText(androidx.compose.ui.text.AnnotatedString(m.text))
+            status.value = "已复制"
+            menuFor.value = null
+        },
+        "引用" to { quoted.value = m; menuFor.value = null },
+        "多选" to {
+            selectMode.value = true; selected.value = setOf(m.id); menuFor.value = null
+        },
+    )
+    val multiActions = fun(): List<Pair<String, () -> Unit>> {
+        val picked = msgs.filter { selected.value.contains(it.id) }.sortedBy { it.id }
+        if (picked.isEmpty()) return emptyList()
+        return listOf(
+            "复制" to {
+                clipboard.setText(androidx.compose.ui.text.AnnotatedString(
+                    picked.joinToString("\n") { (if (it.me) "我" else charName.value) + "：" + it.text }))
+                status.value = "已复制 ${picked.size} 条"
+            },
+            "合并转发" to {
+                sendText(buildChatCard(picked), emptyList())
+                selectMode.value = false; selected.value = emptySet()
+            },
+        )
+    }
 
-    androidx.activity.compose.BackHandler { onBack() }
+    androidx.activity.compose.BackHandler {
+        // 弹层/多选优先关，其次退页
+        when {
+            menuFor.value != null -> menuFor.value = null
+            selectMode.value -> { selectMode.value = false; selected.value = emptySet() }
+            else -> onBack()
+        }
+    }
 
     Column(Modifier.fillMaxSize().background(PageBg()).statusBarsPadding()) {
         // 顶栏：返回｜角色名｜齿轮
@@ -448,29 +527,57 @@ internal fun ChatScreen(role: String, onBack: () -> Unit, onOpenSpace: () -> Uni
             items(msgs, key = { m -> m.id }) { m ->
                 Box(if (m.me) Modifier.fillMaxWidth() else Modifier,
                     contentAlignment = if (m.me) Alignment.CenterEnd else Alignment.CenterStart) {
+                    val selectedHere = selected.value.contains(m.id)
                     Surface(color = if (m.me) SurfaceDark() else PageBg(),
                             contentColor = if (m.me) OnDark() else Body(),
                             border = androidx.compose.foundation.BorderStroke(
-                                1.dp, if (m.me) Color.Transparent else CardBorder()),
+                                if (selectedHere) 2.dp else 1.dp,
+                                when {
+                                    selectedHere -> PrimaryInk()
+                                    m.me -> Color.Transparent
+                                    else -> CardBorder()
+                                }),
                             shape = RoundedCornerShape(
                                 topStart = 12.dp, topEnd = 12.dp,
                                 bottomStart = if (m.me) 12.dp else 4.dp,
                                 bottomEnd = if (m.me) 4.dp else 12.dp),
                             modifier = Modifier.padding(vertical = 4.dp)
-                                .widthIn(max = (screenW * 0.78f).dp)) {
+                                .widthIn(max = (screenW * 0.78f).dp)
+                                // 长按=动作菜单（menuFor 驱动，菜单实体在列表外层单份）；
+                                // 多选态点击=勾选/取消，态外点击=无操作（保留图片查看）
+                                .combinedClickable(
+                                    onClick = {
+                                        if (selectMode.value) selected.value =
+                                            if (selectedHere) selected.value - m.id
+                                            else selected.value + m.id
+                                    },
+                                    onLongClick = {
+                                        if (!selectMode.value) {
+                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            menuFor.value = m
+                                        }
+                                    }
+                                )) {
                         Column(Modifier.padding(12.dp)) {
                             m.images.forEach { p2 -> ImageThumb(p2, (screenW * 0.6f).dp) { zoom.value = p2 } }
-                            if (m.text.isNotEmpty()) Text(m.text,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = if (m.me) OnDark() else Body())
+                            if (m.text.isNotEmpty()) {
+                                if (m.text.startsWith("[聊天记录]")) {
+                                    // 合并转发卡片：白底黑边内框 + 灰字（Galaxy 卡片语言）
+                                    Surface(color = CardBg(), contentColor = Body(),
+                                        border = androidx.compose.foundation.BorderStroke(1.dp, CardBorder()),
+                                        shape = RoundedCornerShape(8.dp),
+                                        modifier = Modifier.widthIn(max = (screenW * 0.66f).dp)) {
+                                        Column(Modifier.padding(10.dp)) {
+                                            Text(m.text.removePrefix("[聊天记录]\n"),
+                                                style = MaterialTheme.typography.bodySmall)
+                                        }
+                                    }
+                                } else Text(m.text,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = if (m.me) OnDark() else Body())
+                            }
                             if (m.time.isNotEmpty()) {
-                                val hhmm = remember(m.time) {
-                                    runCatching {
-                                        java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault()).format(
-                                            java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX",
-                                                java.util.Locale.US).parse(m.time))
-                                    }.getOrDefault("")
-                                }
+                                val hhmm = remember(m.time) { fmtShort(m.time) }
                                 if (hhmm.isNotEmpty()) Text(hhmm,
                                     style = MaterialTheme.typography.labelSmall,
                                     color = if (m.me) OnDarkSoft() else MutedSoft(),
@@ -498,6 +605,37 @@ internal fun ChatScreen(role: String, onBack: () -> Unit, onOpenSpace: () -> Uni
                                 .clickable { pendingImages.value = pendingImages.value - p2 })
                     }
                 }
+            }
+        }
+        // 引用条（09-07 长按菜单）：引用态显示在输入上方，× 取消
+        quoted.value?.let { q ->
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                Surface(color = CardBg(), contentColor = Muted(),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, CardBorder()),
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier.weight(1f)) {
+                    Text("引用：“${q.text.take(40)}”",
+                        maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
+                }
+                TextButton(onClick = { quoted.value = null }) { Text("×", color = PrimaryInk()) }
+            }
+        }
+        // 多选操作条：动作同样走动作表（复制/合并转发/取消）
+        if (selectMode.value) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                Text("已选 ${selected.value.size} 条", style = MaterialTheme.typography.bodySmall,
+                    color = Muted())
+                multiActions().forEach { (label, act) ->
+                    TextButton(onClick = act) { Text(label, color = PrimaryInk()) }
+                }
+                TextButton(onClick = {
+                    selectMode.value = false; selected.value = emptySet()
+                }) { Text("取消", color = Muted()) }
             }
         }
         Row(Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
@@ -531,6 +669,25 @@ internal fun ChatScreen(role: String, onBack: () -> Unit, onOpenSpace: () -> Uni
         }
     }
     zoom.value?.let { pz -> ZoomDialog(pz) { zoom.value = null } }
+    // 长按动作菜单（微信式底部弹层：动作表驱动，一行一项）
+    menuFor.value?.let { target ->
+        Dialog(onDismissRequest = { menuFor.value = null }) {
+            Surface(color = CardBg(), contentColor = Body(),
+                border = androidx.compose.foundation.BorderStroke(1.dp, CardBorder()),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth(0.62f)) {
+                Column {
+                    msgActions(target).forEach { (label, act) ->
+                        TextButton(onClick = act,
+                            modifier = Modifier.fillMaxWidth()) {
+                            Text(label, color = PrimaryInk(),
+                                modifier = Modifier.fillMaxWidth())
+                        }
+                    }
+                }
+            }
+        }
+    }
     if (showAlbumPicker.value) {
         AlbumPicker(maxPick = 4,
             onPick = { uris -> showAlbumPicker.value = false; saveToPhotos(uris) },
