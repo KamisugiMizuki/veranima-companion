@@ -2720,6 +2720,7 @@ class Agent:
             if e.created_at >= day_start and not is_tension_ledger(e)
         ]
         if len(episodes) < min_episodes:
+            logger.info("digest skip: not_enough_material (%d<%d)", len(episodes), min_episodes)
             return {"created": False, "reason": "not_enough_material", "episodes": len(episodes)}
         # 排除已被任何历史 digest 引用过的来源消息（防跨日重复整理同批片段）
         used = {
@@ -2736,6 +2737,7 @@ class Agent:
         ]
         # 过滤后仍不足则视为无新素材（宁可跳过也不重复整理旧材料）
         if len(episodes) < min_episodes:
+            logger.info("digest skip: no_new_material (%d<%d)", len(episodes), min_episodes)
             return {"created": False, "reason": "no_new_material", "episodes": len(episodes)}
         lines = [f"- {e.content}（来源消息：{', '.join(map(str, (e.meta or {}).get('source_message_ids') or []))}）"
                  for e in episodes[:10]]
@@ -2810,6 +2812,7 @@ class Agent:
         except _json.JSONDecodeError:
             content = ""
         if not content:
+            logger.info("digest skip: bad_output (%r)", (raw or "")[:60])
             self._digest_retry_after = time.time() + 6 * 3600  # 输出不合规同样冷却
             return {"created": False, "reason": "bad_output"}
         source_ids = sorted({sid for e in episodes for sid in ((e.meta or {}).get("source_message_ids") or [])})
