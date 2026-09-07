@@ -68,10 +68,13 @@ def check_internal_leak(con, since):
 
 
 def check_ledger_pollution(con, since):
-    """张力判词混进记忆正文（09-06 实锤 60+ 条——写入侧已挡，此查漏网）。"""
+    """张力判词混进记忆正文（09-06 实锤 60+ 条——写入侧已挡，此查漏网）。
+    relational_tension_event 是设计内的账本归档行（09-07 增量首跑 6 条即此），
+    病灶是判词被 digest 复述/进别的 kind——排除账本 kind 才是查漏网。"""
     rows = con.execute(
-        "SELECT content, created_at FROM memories WHERE created_at>? AND"
-        " (content LIKE ? OR content LIKE ?)",
+        "SELECT content, created_at FROM memories WHERE created_at>?"
+        " AND (content LIKE ? OR content LIKE ?)"
+        " AND meta NOT LIKE '%relational_tension_event%'",
         (since, "%回应了直接问题%", "%没有回应直接问题%")).fetchall()
     return [(c[:60], _local(t)) for c, t in rows]
 

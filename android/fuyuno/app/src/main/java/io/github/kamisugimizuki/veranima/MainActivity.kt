@@ -255,6 +255,24 @@ class MainActivity : ComponentActivity() {
                 AppRoot()
             }
         }
+        // M1 验收驱动器（仅 debug APK；真机裁决=测试内容绝不装机）：
+        // adb am start --esa drive_b64 <base64(utf8消息)> → 走 bridge.chat 全链
+        // （judges/线程/落库/回复），处理完 finish() 不扰动现有 UI 栈。
+        // 生产 UI 链路（ChatScreen/adb input）与此无关。
+        val drive = intent?.getStringArrayExtra("drive_b64")?.firstOrNull()
+        if (drive != null) {
+            lifecycleScope.launch(Dispatchers.IO) {
+                try {
+                    bridge.callAttr("boot", filesDir.absolutePath).toString()
+                    val msg = String(android.util.Base64.decode(drive, android.util.Base64.DEFAULT), Charsets.UTF_8)
+                    val r = bridge.callAttr("chat", msg, "[]", "").toString()
+                    android.util.Log.i("VeranimaDrive", "drive(${msg.take(12)}): ${r.take(160)}")
+                } catch (e: Exception) {
+                    android.util.Log.e("VeranimaDrive", "drive failed: $e")
+                }
+                finish()
+            }
+        }
     }
 }
 
