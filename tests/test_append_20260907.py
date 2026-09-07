@@ -418,6 +418,23 @@ def test_morning_greeting_weaves_echo_and_burns_it(tmp_path):
 
 # ---------- D3 性格闸收编：旁路与池同一套心情 ----------
 
+def test_moment_failed_material_not_rewoven(tmp_path):
+    """重试风暴根因修复（09-08 MuMu 实锤：纯数字报表素材每 90s 重选、
+    每次拒前白烧 2 条 LLM 整夜不停）：今日失败/拒绝过的素材 ref 不再进候选。"""
+    a = _agent(tmp_path)
+    a.role_key = "xumian"
+    a.moments.agent = a
+    # 落两笔失败账（object_ref=ref:event:140 / ref:probe）
+    a.memory.log_decision("xumian", "moment:D01", "failed",
+                          reason="织文失败且无降级骨架，宁缺毋滥", object_ref="ref:event:140")
+    a.memory.log_decision("xumian", "moment:D03", "rejected",
+                          reason="残句/报表腔硬闸", object_ref="ref:mood:低落")
+    failed = a.memory.moment_failed_refs_today("xumian")
+    assert failed == {"event:140", "mood:低落"}   # 前缀剥净、24h 内都算
+    # 无账时=空集（不误伤首次尝试）
+    assert a.memory.moment_failed_refs_today("lin") == set()
+
+
 def test_bypass_sources_respect_mood_gate(tmp_path):
     a = _agent(tmp_path)
     a.state.mood = "低落"

@@ -2791,7 +2791,9 @@ class Agent:
             )
         except Exception as e:
             logger.warning("nightly digest llm failed: %s", e)
-            self._digest_retry_after = time.time() + 6 * 3600
+            # 冷却 30min（旧 6h：预算类失败修一版 APK 即作废、MuMu 实测整晚
+            # 被挡；总量控制另有周期戳兜着，这里只是防连击烧 API）
+            self._digest_retry_after = time.time() + 1800
             return {"created": False, "reason": "llm_failed"}
         content = ""
         portrait = ""

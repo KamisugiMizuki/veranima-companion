@@ -278,6 +278,15 @@ class MomentsEngine:
         # 稀有度权重（设计稿：D07 关系表达最稀有；D01/D03 优先）
         prio = {"D01": 0, "D03": 1, "D05": 2, "D02": 3, "D06": 4, "D04": 5, "D07": 6}
         mats.sort(key=lambda m: (m[0] in recent_kinds, prio.get(m[0], 9)))
+        # 今日已失败素材不再重试（09-08 MuMu 实锤：报表素材每 tick 重选、
+        # 每次拒前白烧 2 条 LLM=整夜 API 风暴）——账本反查，次日新素材自然再战
+        try:
+            failed = self.agent.memory.moment_failed_refs_today(role)
+            mats = [m for m in mats if m[2] not in failed]
+        except Exception:
+            logger.debug("moment failure-ledger filter failed", exc_info=True)
+        if not mats:
+            return 0
         kind, text, ref, fallback = mats[0]
         dedupe = f"{role}|{ref}"
         mention = str((cfg.get("moments") or {}).get("mention_user", "indirect"))
@@ -287,12 +296,13 @@ class MomentsEngine:
         if content and (_looks_truncated(content) or _looks_machine(content)):
             logger.info("moment rejected (%s): %r", kind, content[:40])
             self.agent.memory.log_decision(role, f"moment:{kind}", "rejected",
-                                           reason="残句/报表腔硬闸", digest=content)
+                                           reason="残句/报表腔硬闸",
+                                           object_ref=f"ref:{ref}", digest=content)
             content = (fallback or "").strip()
         if not content:
             self.agent.memory.log_decision(role, f"moment:{kind}", "failed",
                                            reason="织文失败且无降级骨架，宁缺毋滥",
-                                           digest=text)
+                                           object_ref=f"ref:{ref}", digest=text)
             return 0
         pub = self.agent.memory.moment_publish(role, content, kind=kind,
                                                source_ref=ref, dedupe_key=dedupe)

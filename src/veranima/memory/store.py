@@ -799,6 +799,23 @@ class MemoryStore:
                                (role_id,)).fetchone()
         return str(row[0] or "")
 
+    def moment_failed_refs_today(self, role_id: str) -> set:
+        """今日已「织文失败/硬闸拒绝」的动态素材 ref 集合（D4 账本现物，零新表）。
+
+        重试风暴根因修复（09-08 MuMu 实锤：纯数字报表素材每 90s 重选一次、
+        每次拒前白烧 2 条 LLM 调用整夜不停）：dedupe_key 只挡发布挡不住
+        发布前的织文，失败的素材次日（新 day_close_summary）自然再战。"""
+        try:
+            from datetime import timedelta
+            cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(timespec="seconds")
+            rows = self.con.execute(
+                "SELECT object_ref FROM decisions WHERE role_id=? AND kind LIKE 'moment:%' "
+                "AND verdict IN ('rejected','failed') AND ts>=?",
+                (role_id, cutoff)).fetchall()
+            return {str(r[0] or "")[4:] for r in rows if str(r[0] or "").startswith("ref:")}
+        except Exception:
+            return set()
+
     def moments_recent_kinds(self, role_id: str, limit: int = 2) -> list[str]:
         rows = self.con.execute(
             "SELECT kind FROM moments WHERE role_id=? ORDER BY id DESC LIMIT ?",
