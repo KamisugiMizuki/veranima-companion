@@ -337,6 +337,13 @@ internal fun ChatScreen(role: String, onBack: () -> Unit, onOpenSpace: () -> Uni
         }
     }
 
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    fun msgFromJson(m: org.json.JSONObject): Msg {
+        val imgs = mutableListOf<String>()
+        m.optJSONArray("images")?.let { ia -> for (j in 0 until ia.length()) imgs.add(ia.getString(j)) }
+        return Msg(m.getLong("id"), m.getBoolean("me"), m.getString("text"), imgs,
+            m.optString("time"), m.optString("tone"), m.optString("mood"))
+    }
     val loadHistory = fun() {
         scope.launch {
             val o = JSONObject(
@@ -344,13 +351,7 @@ internal fun ChatScreen(role: String, onBack: () -> Unit, onOpenSpace: () -> Uni
             if (o.optBoolean("ok")) {
                 val arr = o.getJSONArray("messages")
                 msgs.clear()
-                for (i in 0 until arr.length()) {
-                    val m = arr.getJSONObject(i)
-                    val imgs = mutableListOf<String>()
-                    m.optJSONArray("images")?.let { ia -> for (j in 0 until ia.length()) imgs.add(ia.getString(j)) }
-                    msgs.add(Msg(m.getLong("id"), m.getBoolean("me"), m.getString("text"), imgs,
-                        m.optString("time"), m.optString("tone"), m.optString("mood")))
-                }
+                for (i in 0 until arr.length()) msgs.add(msgFromJson(arr.getJSONObject(i)))
             }
         }
     }
@@ -416,11 +417,35 @@ internal fun ChatScreen(role: String, onBack: () -> Unit, onOpenSpace: () -> Uni
             Text(status.value, style = MaterialTheme.typography.bodySmall, color = MutedSoft(),
                 modifier = Modifier.padding(horizontal = 12.dp))
         }
-        val listState = androidx.compose.foundation.lazy.rememberLazyListState()
-        LaunchedEffect(msgs.size) { if (msgs.isNotEmpty()) listState.animateScrollToItem(msgs.size - 1) }
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    val olderBusy = remember { mutableStateOf(false) }
+    val noMore = remember { mutableStateOf(false) }
+    val loadOlder = fun() {
+        if (olderBusy.value || noMore.value || msgs.isEmpty()) return
+        olderBusy.value = true
+        scope.launch {
+            val first = msgs.first().id
+            val o = JSONObject(withContext(Dispatchers.IO) {
+                bridge.callAttr("history", 80, role, first).toString() })
+            val arr = if (o.optBoolean("ok")) o.getJSONArray("messages") else org.json.JSONArray()
+            if (arr.length() == 0) noMore.value = true
+            val older = (0 until arr.length()).map { msgFromJson(arr.getJSONObject(it)) }
+            // 不触尾 id → 不弹回底部；items key=m.id → 视口锚在原首条不跳页
+            msgs.addAll(0, older)
+            olderBusy.value = false
+        }
+    }
+    // 只在尾消息变化（新消息/自己发送）时滚到底；prepend 旧页保持阅读位置
+    LaunchedEffect(msgs.lastOrNull()?.id) {
+        if (msgs.isNotEmpty()) listState.animateScrollToItem(msgs.size - 1)
+    }
+    LaunchedEffect(listState.firstVisibleItemIndex == 0, listState.isScrollInProgress) {
+        // 上滑到顶且停手 → 翻旧页（isScrolling 进 key=同位置连刷两页可触发）
+        if (listState.firstVisibleItemIndex == 0 && !listState.isScrollInProgress) loadOlder()
+    }
         LazyColumn(Modifier.weight(1f).padding(horizontal = 12.dp), state = listState,
             contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 6.dp)) {
-            items(msgs) { m ->
+            items(msgs, key = { m -> m.id }) { m ->
                 Box(if (m.me) Modifier.fillMaxWidth() else Modifier,
                     contentAlignment = if (m.me) Alignment.CenterEnd else Alignment.CenterStart) {
                     Surface(color = if (m.me) SurfaceDark() else PageBg(),

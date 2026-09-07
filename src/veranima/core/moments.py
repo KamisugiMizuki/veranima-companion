@@ -226,6 +226,15 @@ class MomentsEngine:
         if m.get("frequency") == "low":
             daily_max = 0  # 低档=每2-3天1条：靠 min_gap 14h 表达（每日上限不设，见下）
         today = now.date().isoformat()
+        # 睡窗闸（09-07 真机案底：凛 sleep_window 23:00-01:00，凌晨 1:52 打开
+        # 动态页 catch_up 补发了 D02——动态=她醒着时发的生活内容，睡着不发）
+        rt = getattr(self.agent, "schedule_runtime", None)
+        if rt is not None:
+            try:
+                if rt.sleeping or rt.current_context(now).activity_category == "sleep_window":
+                    return "asleep"
+            except Exception:
+                pass
         cnt = self.agent.memory.moments_count_today(self.agent.role_key, today)
         if daily_max and cnt >= daily_max:
             return "daily"
@@ -257,8 +266,8 @@ class MomentsEngine:
         blocked = self._gate(now, cfg)
         if blocked and not catch_up:
             return 0
-        if blocked in ("off", "daily", "gap"):
-            return 0  # 追补也不越过硬闸（catch_up 只豁免 repeat）
+        if blocked in ("off", "daily", "gap", "asleep"):
+            return 0  # 追补也不越过硬闸（catch_up 只豁免 repeat；睡着=硬闸）
         mats = self._materials(now)
         allowed = (cfg.get("moments") or {}).get("allowed_types") or list(_KINDS)
         mats = [m for m in mats if m[0] in allowed]

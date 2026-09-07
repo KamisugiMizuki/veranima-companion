@@ -149,18 +149,55 @@ def test_strip_time_echo_single_double_and_hallucinated():
 # ---------- 编造闸（09-07 用户裁决：猜要猜出声，不许当既定事实） ----------
 
 def test_fabrication_gate_strips_claim_keeps_question():
+    """出口闸已按 09-07 用户二次裁决撤销（真人的记忆错觉=拟真的一部分，硬删
+    是矫枉过正）——留下的方向断言：system 必须教『事实边界』=不许当既定事实、
+    不确定用问句猜。闸的代码与 _fabrication_gate 测试一并删除。"""
     from veranima.core.agent import Agent
-    g = Agent._fabrication_gate
-    # 既定事实句式 + 高危实体 + 无出处 → 删句，好句保留
-    out = g("行。记得你还有论文的事要忙，可别全丢了。午饭呢？", "周五要交初稿，烦")
-    assert "论文" not in out and "午饭呢？" in out
-    # 猜测+疑问句=人类正常行为 → 放行
-    q = "快交稿了？是论文吗还是别的，说一声我帮你盯着"
-    assert g(q, "马上要交稿了") == q
-    # 有出处（用户亲口提过论文）→ 陈述也放行
-    assert g("记得你还有论文的事", "我论文被导师打回来了") == "记得你还有论文的事"
-    # 无高危实体的正常闲聊整段原样
-    plain = "草，你这起床气挺足。先吃点东西吧。"
-    assert g(plain, "堂堂起床") == plain
-    # 全删光 → 换开放问法（不空回复）
-    assert g("你们公司聚餐真不错。", "今天好累") == "最近有什么正经事压着你吗？"
+    instr = Agent._time_context_instruction()
+    assert "【事实边界】" in instr and "论文吗" in instr
+    assert not hasattr(Agent, "_fabrication_gate")
+
+
+# ---------- 动态睡窗闸（09-07 真机案底：1:52 给睡着的凛补发 D02） ----------
+
+def test_moment_gate_blocks_sleeping_catch_up(tmp_path):
+    import dataclasses
+    import datetime
+    import pathlib
+    from veranima.core.agent import Agent
+    from veranima.core.character import CharacterCard
+    from veranima.core.state import AgentState
+    from veranima.memory.store import MemoryStore
+    card = CharacterCard(name="小V", first_mes="你好")
+    mem = MemoryStore(db_path=str(tmp_path / "m.db"), config={}, provider=FakeEmbed())
+    a = Agent(card=card, memory=mem, llm=FakeLLM(), state=AgentState(), config={})
+    a.role_key = "lin"
+
+    class _Ctx:
+        activity_category = "sleep_window"
+
+    class _RT:
+        def __init__(self, sleeping):
+            self.sleeping = sleeping
+
+        def current_context(self, when):
+            return _Ctx()
+
+    now = datetime.datetime(2026, 9, 7, 1, 52, tzinfo=datetime.timezone.utc)
+    # 真 runtime 判定路径（schedule_runtime=None 的裸 Agent 不受影响）
+    a.schedule_runtime = _RT(sleeping=False)
+    assert a.moments._gate(now, {"moments": {"enabled": True}}) == "asleep"
+    a.schedule_runtime = _RT(sleeping=True)
+    assert a.moments._gate(now, {"moments": {"enabled": True}}) == "asleep"
+    # catch_up 也不越过（tick 硬闸名单含 asleep）→ 0 发布
+    assert a.moments.tick(now=now, catch_up=True) == 0
+    assert mem.con.execute("select count(*) from moments").fetchone()[0] == 0
+    # 醒着+活动非 sleep_window → 正常放行（闸不误伤日间发布）
+    class _Ctx2:
+        activity_category = "social"
+
+    class _RT3(_RT):
+        def current_context(self, when):
+            return _Ctx2()
+    a.schedule_runtime = _RT3(sleeping=False)
+    assert a.moments._gate(now, {"moments": {"enabled": True}}) == ""

@@ -1103,28 +1103,29 @@ class MemoryStore:
         return {r["role_id"]: dict(r) for r in rows}
 
     def recent_messages(self, limit: int = 20, channel: str | None = None,
-                        role_id: str | None = None) -> list[dict]:
+                        role_id: str | None = None,
+                        before_id: int | None = None) -> list[dict]:
         """role_id=None → 全量（PC/QQ 单角色时代的消费口径，行为不变）；
-        给了值 → 仅该角色会话（安卓多角色聊天窗）。"""
+        给了值 → 仅该角色会话（安卓多角色聊天窗）。
+        before_id → 只取更早的（聊天窗上滑翻页，09-07 用户反馈 80 条封顶）。"""
         from ..core.reply import is_internal_reply
         cols = "id, role, content, channel, created_at, energy_at, mood_at, tone_at, attachments, role_id"
+        where, params = [], []
         if channel:
-            rows = self.con.execute(
-                f"SELECT {cols} FROM messages WHERE channel=? ORDER BY id DESC LIMIT ?",
-                (channel, limit),
-            ).fetchall()
-            return [dict(r) for r in reversed(rows)
-                    if not (r["role"] == "assistant" and is_internal_reply(r["content"]))]
+            where.append("channel=?")
+            params.append(channel)
         if role_id:
-            rows = self.con.execute(
-                f"SELECT {cols} FROM messages WHERE role_id=? ORDER BY id DESC LIMIT ?",
-                (role_id, limit),
-            ).fetchall()
-        else:
-            rows = self.con.execute(
-                f"SELECT {cols} FROM messages ORDER BY id DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
+            where.append("role_id=?")
+            params.append(role_id)
+        if before_id:
+            where.append("id<?")
+            params.append(int(before_id))
+        params.append(limit)
+        sql = f"SELECT {cols} FROM messages"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY id DESC LIMIT ?"
+        rows = self.con.execute(sql, params).fetchall()
         return [dict(r) for r in reversed(rows)
                 if not (r["role"] == "assistant" and is_internal_reply(r["content"]))]
 

@@ -1163,6 +1163,8 @@ def _agent_for(role: str = ""):
         boot.agents[role] = a
         log.info("agent registry: %s booted (shared store)", role)
         try:  # Q4 混合调度：后台角色打开时=凌晨批量补（此刻现场补 1 条）
+            # 睡窗闸在 core moments._gate 统一管（09-07 真机案底：1:52 给睡着的
+            # 凛补发动态——闸放引擎里，tick/catch_up 两条路共用一个根）
             if getattr(a, "moments", None) is not None:
                 a.moments.tick(catch_up=True)
         except Exception:
@@ -1448,15 +1450,17 @@ def portrait_path(role: str = "") -> str:
         return ""
 
 
-def history(limit: int = 80, role: str = "") -> str:
+def history(limit: int = 80, role: str = "", before_id: int = 0) -> str:
     """最近 N 条对话（id 升序）。主动消息核心已落库（record_proactive_message），
-    这里一起带出——聊天 UI 以库为准，无需单独通道。"""
+    这里一起带出——聊天 UI 以库为准，无需单独通道。
+    before_id>0 → 只取更早的（上滑翻页，09-07 用户反馈 80 条封顶无法追溯）。"""
     agent = _agent_for(role)
     if agent is None:
         return json.dumps({"ok": False, "messages": []})
     try:
         rows = agent.memory.recent_messages(limit=int(limit),
-                                            role_id=(agent.role_key or None))
+                                            role_id=(agent.role_key or None),
+                                            before_id=int(before_id) or None)
         root = Path(getattr(boot, "root", "."))
         out = []
         for r in rows:
