@@ -2778,9 +2778,10 @@ class Agent:
             # chat(256) 被 reasoning 烧空 → finish_reason=length 每分钟重试
             # 一次，白烧 API 还刷日志——预算与冷却双收口）。
             system = build_system_prompt(self.card, self.state, self.memory) + "\n" + self._time_context_instruction()
-            # 输出四格（content+portrait+echo+threads）：下限×4，防 reasoning
-            # 吃预算截断 JSON
-            budget = 4 * max(256, int((self.config.get("llm", {}) or {}).get("short_task_max_tokens", 1024)))
+            # 四格任务=digest 里最重的思考（09-08 MuMu 实锤：×4=4096 仍被
+            # reasoning 烧空 finish_reason=length）——顶到模型输出上限 8K；
+            # DeepSeek 按实际 token 计费，抬上限不涨价
+            budget = min(8192, 8 * max(256, int((self.config.get("llm", {}) or {}).get("short_task_max_tokens", 1024))))
             raw = self.llm.chat(
                 [
                     {"role": "system", "content": system},
