@@ -1,5 +1,5 @@
 {
-  "screened_through": "2026-09-06T05:10:00+00:00",
-  "classes": ["duplicate_broadcast", "internal_leak", "ledger_pollution", "machine_moment", "fabrication_candidates"],
-  "note": "该时刻前的原始数据已按 classes 清单+人读双轨筛查（09-06 批次，报告见会话）。已知旧账=修复前版本产生，不算复发：复读/泄漏/判词/digest 病灶均有 6eb96bd/cb14679 行为测试钉死。新类别出现=先 --all 校准再更新本戳。"
+  "screened_through": "2026-09-07T04:38:00+00:00",
+  "classes": ["duplicate_broadcast", "internal_leak", "ledger_pollution", "machine_moment", "fabrication_candidates", "time_echo"],
+  "note": "该时刻前的原始数据已按 classes 清单+人读双轨筛查（09-07 批次：真机 phone_full 导出五类增量全绿；time_echo 为当日新增类，--all 校准=真机 18/483 旧污染行全部产生于 _strip_time_echo 收口前，属已知旧账不算复发；ledger_pollution 同日修正=排除设计内 relational_tension_event 账本 kind）。旧账行留在历史里会随 20 条窗口自然滚出，不做数据迁移。新类别出现=先 --all 校准再更新本戳。"
 }

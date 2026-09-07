@@ -101,12 +101,26 @@ def check_unbalanced_fabrication(con, since):
     return [(c[:80], _local(t)) for c, t in rows]
 
 
+def check_time_echo(con, since):
+    """可见回复回显内部时间前缀 [YYYY-MM-DD HH:MM:SS 周X]（09-07 真机实锤：
+    prompt 软约束挡不住，_strip_time_echo 已收口——此查=验证收口没漏出口，
+    双前缀行=#759/#761 形态）。"""
+    import re
+    pat = re.compile(r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
+    rows = con.execute(
+        "SELECT id, content, created_at FROM messages WHERE role='assistant' AND created_at>?",
+        (since,)).fetchall()
+    return [(f"#{r['id']} {r['content'][:52]}", _local(r["created_at"]))
+            for r in rows if pat.search(str(r["content"])[:80])]
+
+
 CHECKS = {
     "duplicate_broadcast": check_duplicates,
     "internal_leak": check_internal_leak,
     "ledger_pollution": check_ledger_pollution,
     "machine_moment": check_machine_moment,
     "fabrication_candidates": check_unbalanced_fabrication,
+    "time_echo": check_time_echo,
 }
 
 

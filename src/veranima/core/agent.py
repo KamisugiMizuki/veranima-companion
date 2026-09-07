@@ -737,6 +737,21 @@ class Agent:
             )
         return ""
 
+    _TIME_ECHO_RE = None  # 延迟编译（见 _strip_time_echo）
+
+    @classmethod
+    def _strip_time_echo(cls, text: str) -> str:
+        """剥掉模型回显的内部时间前缀（09-07 真机实锤：「【消息时间规则】不要
+        复制到回复正文」是 prompt 软约束，LLM 照抄；#759/#761 一条消息甚至两个
+        前缀、第二个还是幻觉出来的未来时间，并污染 created_at 配对）。前缀是
+        prompt 拼装件（_format_history_content），剥掉零信息损失；只剥行首/
+        换行后紧贴正文的标记，不动正文中间引用日期的正常表达。"""
+        import re
+        if cls._TIME_ECHO_RE is None:
+            cls._TIME_ECHO_RE = re.compile(
+                r"(?:^|(?<=\n))\s*(?:\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?: 周[一二三四五六日])?\]\s*)+")
+        return cls._TIME_ECHO_RE.sub("", str(text or "")).lstrip()
+
     def _append_history_message(self, role: str, content: str, created_at: str | None = None) -> None:
         self._history.append(self._history_entry(role, content, created_at or self._local_message_time()))
 
@@ -1889,6 +1904,8 @@ class Agent:
                 generation_failed = True
                 reply = "（我这边暂时没拿到回复，再说一遍？）"
                 turn_reply = None
+        if not generation_failed and reply:
+            reply = self._strip_time_echo(reply)
 
         if generation_failed:
             self._history.append(self._history_entry("user", store_text, self._message_time_for_id(user_msg_id)))
@@ -2870,6 +2887,7 @@ class Agent:
         一处落全（kind 由带上下文的调用方标注，默认笼统 proactive）。
         """
         channel = channel or self.message_channel
+        text = self._strip_time_echo(text)  # 短任务链（followup/heartbeat/digest）同样可能回显前缀
         mid = self.memory.store_message("assistant", text, self.state.energy, self.state.mood, channel=channel, role_id=self.role_key)
         self._append_history_message("assistant", text)
         self._mark_proactive_sent(now)  # 测试注入同一时间线；生产 None=真实时刻

@@ -128,3 +128,19 @@ def test_digest_portrait_guidance_words(tmp_path):
     assert out.get("created") is True
     task = llm.calls[-1]["messages"][-1]["content"]
     assert "什么时候最爱来找我" in task and "回避" in task and "有依据才写" in task
+
+
+# ---------- 时间回显剥除（09-07 真机增量病灶） ----------
+
+def test_strip_time_echo_single_double_and_hallucinated():
+    from veranima.core.agent import Agent
+    s = Agent._strip_time_echo
+    # 单前缀（含/不含星期都剥）
+    assert s("[2026-09-07 12:30:11 周一] 好，知道你还没真睡。") == "好，知道你还没真睡。"
+    assert s("[2026-09-07 12:30:11] 正文") == "正文"
+    # 双前缀拼接（#759/#761 实锤形态：第二个还是幻觉时间）
+    assert s("[2026-09-07 12:30:30 周一] [2026-09-07 12:32:01 周一] 知道了。") == "知道了。"
+    # 换行后的第二个也剥
+    assert s("第一行。\n[2026-09-07 12:32:01 周一] 第二行。") == "第一行。\n第二行。"
+    # 正文中间的日期引用不动（不是行首标记=人话）
+    assert s("记得 2026-09-07 12:30:11 那条吗") == "记得 2026-09-07 12:30:11 那条吗"
