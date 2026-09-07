@@ -36,7 +36,8 @@ from ..tools.search import (
 )
 from .character import CharacterCard
 from .learning import LanguageMirror, StyleLearner, extract_feedback
-from .proactive import GreetingScheduler, OccasionChecker, RITUAL_SOURCES, veto_from_keywords
+from .proactive import (GreetingScheduler, OccasionChecker, RITUAL_SOURCES,
+                        pool_take, veto_from_keywords)
 from .promises import PromiseBook
 from .review import MonthlyReview
 from .state import AgentState
@@ -314,6 +315,10 @@ class Agent:
         self._proactive_veto: dict[str, str] = {
             str(k): str(v) for k, v in (_rel_snap.get("proactive_veto") or {}).items()
             if str(k) in RITUAL_SOURCES}
+        # M2 驱力池（longing/care_need 算术账，纯状态零 LLM）：同样随快照复活
+        from .proactive import DesireLedger
+        self.desires = DesireLedger(self)
+        self.desires.restore(_rel_snap.get("desires"))
         from .proactive import MealReminderScheduler
         self.meals = MealReminderScheduler(
             (self.config.get("proactive") or {}).get("meal_reminders", {}))
@@ -901,6 +906,7 @@ class Agent:
             rel["greeted"] = self.greeter.to_state()
             rel["occasions"] = sorted(self.occasion.triggered)
             rel["proactive_veto"] = dict(getattr(self, "_proactive_veto", {}))
+            rel["desires"] = self.desires.to_dict()  # M2 驱力账（重启续攒）
             rel["last_proactive_sent_at"] = getattr(self, "_last_proactive_sent_at", "")
             # 待织池随快照落盘（TTL 180min 读取端过滤，过期素材下次 restore 自然淘汰）
             rel["ritual_pending"] = list(self._ritual_pending)[-6:]
@@ -1232,14 +1238,47 @@ class Agent:
         hours.sort()
         return hours[len(hours) // 2]
 
-    def _adapt_schedule_to_user(self, wake_hour: float | None, now, msgs: list[str]) -> None:
-        """角色作息向用户作息偏移（每日一次，去重，双向）。
+    def _user_sleep_hour(self) -> float | None:
+        """最近 3 个闭合周期 fell_asleep_at 中位数（本地小时）——与 _user_wake_hour 对称。"""
+        import datetime
+        hours = []
+        for c in self.memory.recent_sleep_cycles(limit=3):
+            f = c.get("fell_asleep_at") or ""
+            if not f:
+                continue
+            try:
+                dt = datetime.datetime.fromisoformat(f).astimezone()
+                hours.append(dt.hour + dt.minute / 60.0)
+            except Exception:
+                continue
+        if not hours:
+            return None
+        hours.sort()
+        return hours[len(hours) // 2]
 
-        比较用户起床中位数与角色 circadian.wake_end（睡醒窗结束=实际起床
-        时刻）。09-06 实锤根修：旧版误拿 sleep_end（就寝窗结束，许眠=03:00）
-        当起床时刻——任何用户起床都晚于它 → diff 恒正 → 只会往后调、从不
-        往前调。差 ≥2h 时向用户方向偏移差值的 1/4（渐进，±对称，单日步长
-        与总量卡本卡 max_offset_minutes），并生成一条角色口吻的理由消息。
+    @staticmethod
+    def _arc_overlap(w1: float, s1: float, w2: float, s2: float) -> float:
+        """清醒弧交叠比例（0-1）：各自 [wake→sleep] 跨日弧的交集 / 较短弧。"""
+        def arc_len(w, s):
+            return (s - w) % 24.0 or 24.0
+        def inside(x, w, s):
+            return (x - w) % 24.0 < arc_len(w, s)
+        la, lb = arc_len(w1, s1), arc_len(w2, s2)
+        if min(la, lb) <= 0:
+            return 0.0
+        # 采样求交（15min 粒度够——这不是数学题是作息题）
+        n = max(4, int(min(la, lb) * 4))
+        hit = sum(1 for i in range(n)
+                  if inside(w1 + la * i / n, w1, s1) and inside(w1 + la * i / n, w2, s2))
+        return hit / n
+
+    def _adapt_schedule_to_user(self, wake_hour: float | None, now, msgs: list[str]) -> None:
+        """角色作息向用户偏移（每日一次，去重，双向）。Q4 升级（09-07 裁决）：
+        触发从「wake 单点差 ≥2h」改为**清醒窗重合度驱动+阈值滞后**——重合度
+        低于 engage(0.55)=想陪却没窗口（值得动）；高于 disengage(0.65)=别折腾
+        （滞后带防振荡：旧版 recovery 每日回拉与适应 +120min 打架正是没滞后）。
+        睡眠周期数据不足退回 wake 中位数对 circ.wake_end 的旧判据（单点 diff）。
+        动多少=diff/4 渐进、卡 max_offset_minutes；重合度落 decisions（D4 可读）。
         """
         if wake_hour is None or not self.schedule_runtime:
             return
@@ -1251,12 +1290,31 @@ class Agent:
         try:
             hh, mm = (int(x) for x in str(circ.wake_end).split(":"))
             role_wake = hh + mm / 60.0
+            sh, sm = (int(x) for x in str(circ.sleep_start).split(":"))
+            role_sleep = sh + sm / 60.0
         except Exception:
             return
         diff = wake_hour - role_wake  # 用户相对角色晚起为正
-        if abs(diff) < 2.0:
-            return  # 作息接近，不动
+        user_sleep = self._user_sleep_hour()
+        ov = (self._arc_overlap(wake_hour, user_sleep, role_wake, role_sleep)
+              if user_sleep is not None else None)
+        cfg = self.config.get("proactive", {}) or {}
+        engage = float(cfg.get("rhythm_engage_below", 0.55))
+        disengage = float(cfg.get("rhythm_disengage_above", 0.65))
         now = now or datetime.datetime.now(datetime.timezone.utc)
+        if ov is not None:
+            if ov >= engage:  # 重合够（含滞后带）：不动；账照记（D4 看得见为什么没动）
+                self.memory.log_decision(
+                    self.role_key or self.card.name, "rhythm_overlap",
+                    f"{ov:.2f}", reason="重合充足不动（滞后带内同）",
+                    digest=f"engage={engage} disengage={disengage}")
+                return
+        elif abs(diff) < 2.0:
+            return  # 无睡眠数据且单点差小，不动
+        if ov is not None and abs(diff) < 2.0:
+            # 重合度低但 wake 差小=用户晚睡型（夜里醒着没窗口陪）：方向=推迟
+            # 角色就寝，用 (1-ov) 折算等效 diff（每 10% 不重合≈0.5h）
+            diff = diff - (1.0 - ov) * 5.0
         day_key = f"adapt:{now.date().isoformat()}"
         feedback = self.memory.recent_proactive_feedback(source="schedule_adapt", limit=30)
         if any(str(r.get("candidate_id") or "") == day_key for r in feedback):
@@ -1272,15 +1330,19 @@ class Agent:
         try:
             self.schedule_runtime.apply_offset(
                 self.schedule_runtime.schedule_offset_minutes + shift,
-                f"适应用户作息（用户起床 {wake_hour:.1f}h vs 角色 {role_wake:.1f}h）",
+                f"适应用户作息（重合度 {ov if ov is not None else '?'}，用户起床 {wake_hour:.1f}h vs 角色 {role_wake:.1f}h）",
                 now,
             )
             self._persist_state()
-            logger.info("schedule adapted to user: +%d min (user wake %.1f, role %.1f)",
-                        shift, wake_hour, role_wake)
+            logger.info("schedule adapted to user: %+d min (overlap=%s, user wake %.1f, role %.1f)",
+                        shift, f"{ov:.2f}" if ov is not None else "n/a", wake_hour, role_wake)
         except Exception as e:
             logger.debug("schedule adapt apply failed: %s", e)
             return
+        self.memory.log_decision(
+            self.role_key or self.card.name, "rhythm_overlap",
+            f"{ov:.2f}" if ov is not None else "n/a",
+            reason=f"作息偏移 {shift:+d} 分钟", digest=f"diff={diff:.1f}h")
         self.memory.record_proactive_feedback(
             source="schedule_adapt", channel=self.message_channel, candidate_id=day_key)
         if self.llm is not None and getattr(self.llm, "base_url", ""):
@@ -1367,7 +1429,32 @@ class Agent:
                           open_threads=self.threads.top())
         self._judgment = j
         self._judgment_for = key
+        self._log_judge_decisions(j, key)
         return j
+
+    def _log_judge_decisions(self, j, user_text: str) -> None:
+        """HARNESS Q3 裁决（09-07）：只存有后果的六类裁决进 decisions——回放面
+        盖住所有会改状态的决定；闲聊轮（全默认值）不记，表不爆。"""
+        if j is None:
+            return
+        try:
+            role = self.role_key or self.card.name
+            for kind, val, why in (
+                    ("judge:veto", j.veto_source or None,
+                     f"保质期 {j.veto_days} 天" if j.veto_days else "永久"),
+                    ("judge:recall", j.recall_evidence or None, "要翻记录"),
+                    ("judge:thread_open", j.thread_candidate or None, "开牵挂"),
+                    ("judge:sleep_report", j.sleep_report if j.sleep_report != "none" else None, ""),
+                    ("judge:conflict", j.conflict or None, "")):
+                if val:
+                    self.memory.log_decision(role, kind, str(val), reason=why,
+                                             digest=str(user_text)[:80])
+            if j.thread_closed:
+                self.memory.log_decision(role, "judge:thread_close",
+                                         str(j.thread_closed), reason="宣告完结",
+                                         digest=str(user_text)[:80])
+        except Exception:
+            logger.debug("judge decisions log failed (non-blocking)", exc_info=True)
 
     def _process_tension_user_message(self, text: str, *, channel: str, message_id: int) -> None:
         """把用户本轮的明确关系信号送入 TV；普通短消息不产生负向事件。"""
@@ -2834,6 +2921,15 @@ class Agent:
             mat = self.threads.ritual_material(now)
             return [mat] if mat else []
 
+        self.desires.tick(now)
+        _desire = self.desires.material(now)  # 一次 tick 至多一条驱力料（内部优先级）
+
+        def _collect_longing():
+            return [_desire] if _desire and _desire["source"] == "longing" else []
+
+        def _collect_care():
+            return [_desire] if _desire and _desire["source"] == "care_need" else []
+
         collectors = {
             "greeting": _collect_greeting,
             "context_probe": _collect_context_probe,
@@ -2842,6 +2938,8 @@ class Agent:
             "schedule_adapt": _collect_schedule_adapt,
             "meal": _collect_meal,
             "thread": _collect_thread,
+            "longing": _collect_longing,
+            "care_need": _collect_care,
         }
         for source_name in RITUAL_SOURCES:  # 清单顺序=素材排列顺序（织入时的话题先后）
             if self._vetoed(source_name, now):  # §12-C：否决闸在收集前——去重键未消耗，解除后当日仍可发
@@ -2888,7 +2986,9 @@ class Agent:
         pending.extend({**m, "ts": ref_ts, "role": self.role_key or self.card.name}
                        for m in materials)
         if pending and self._ritual_send_open(now):
-            pool, self._ritual_pending[:] = list(pending), []
+            # 池预算排干（M2 第一砖，proactive.pool_take）：一次窗口最多
+            # weave_cap 条素材缝一条——易腐先出、缓事留池等下窗，不丢信。
+            pool = pool_take(pending, self._weave_cap())
             pool_kind = "+".join(dict.fromkeys(m.get("source", "?") for m in pool))[:40]
             if len(pool) == 1 and pool[0]["source"] == "meal":
                 # 单条饭点走原有口语化改写
@@ -2896,7 +2996,8 @@ class Agent:
                 msg_kinds.append((f"ritual:{pool_kind}",
                                   f"餐槽 {pool[0].get('meal','')}", pool[0].get("cid", "")))
             else:
-                woven = self._weave_ritual([m["text"] for m in pool])
+                woven = self._weave_ritual([m["text"] for m in pool],
+                                           sources=[m.get("source", "?") for m in pool])
                 if woven:
                     msgs.append(woven)
                     msg_kinds.append((f"ritual:{pool_kind}",
@@ -2939,6 +3040,19 @@ class Agent:
                                  effect_ref=mid)
         return mid
 
+    def _weave_cap(self) -> int:
+        """一次织入的素材预算=心境系数（MIND 3.2「心境进预算」：频率闸从
+        调度器变成性格）。proactive.weave_cap 显式配置优先；默认 2——人一次
+        主动开口≈「正事+顺便」，3 件以上=小作文（09-07 病灶：4 素材缝一条
+        触发截断重试链）。低落只说急事(1)，开心多聊(3)。"""
+        try:
+            explicit = int((self.config.get("proactive", {}) or {}).get("weave_cap", 0))
+        except (TypeError, ValueError):
+            explicit = 0
+        if explicit > 0:
+            return explicit
+        return {"低落": 1, "开心": 3}.get(self.state.mood, 2)
+
     def _ritual_send_open(self, now=None) -> bool:
         """待织池的发送闸：合并窗口开 + 最近 5 分钟没有用户消息（刚聊完不插话，
         2026-08-31「醒了」三连发教训）。不满足=素材继续攒池，下一 tick 再判。"""
@@ -2957,22 +3071,34 @@ class Agent:
             logger.debug("ritual user-active check failed: %s", e)
         return True
 
-    def _weave_ritual(self, texts: list[str]) -> str:
+    def _weave_ritual(self, texts: list[str], sources: list[str] | None = None) -> str:
         """把多条到期素材织成一条语义连续的主动消息（2026-09-01 用户裁决 v2）。
 
         素材=各触发源的成品/半成品文本；LLM 负责串成一段自然的话，信息一条不丢、
         因果顺接（睡醒→作息调整→吃饭这种链条在一条里说完成立）。LLM 失败=回退
-        分段拼接（语义连续性降级，但信息零丢失——宁可不美不能丢）。"""
+        分段拼接（语义连续性降级，但信息零丢失——宁可不美不能丢）。
+
+        D2 内容闸（HARNESS 裁决=织文批量形态，09-07）：带 sources 时同一次调用
+        顺带裁决「过时/不该说的丢弃」——输出 [SKIP n] 行+理由，否决写 decisions
+        不发（素材本身不销毁：账本/去重键在，下次到点还会顶上来）。fail-open：
+        解析不出 SKIP=全量织入，闸故障绝不吞消息。单条素材不走此闸（直返路径，
+        规则层保鲜闸已覆盖）。"""
         if not texts:
             return ""
         if len(texts) == 1:
             return texts[0].strip()
+        n = len(texts)
+        judged = sources is not None and n >= 2
         task = (
-            "你手上同时有几件想对用户说的事（都成立、都不能丢）：\n"
+            "你手上同时有几件想对用户说的事：\n"
             + "\n".join(f"{i + 1}. {t.strip()}" for i, t in enumerate(texts))
-            + "\n把它们合成一条自然连贯的消息，像一个人的连续口吻一次说完："
+            + ("\n先自查：有没有哪件已经过时（说出来会露馅：时间点不对、情况已变、"
+               "或与刚发生的事自相矛盾）？有则输出行 `[SKIP 编号 一句话理由]`（可多行），"
+               "这些不用织进消息。没有 SKIP 行=全部成立。" if judged else "")
+            + "\n把剩下的事合成一条自然连贯的消息，像一个人的连续口吻一次说完："
               "有事由和先后，用『对了』『顺便』『正好』这类过渡把话题串起来，"
-              "不要编号、不要分段并列、不要漏掉任何一件事的内容。只发消息本身。"
+              "不要编号、不要分段并列、不要漏掉任何一件（被 SKIP 的除外）。"
+              "消息本身之外只允许 SKIP 行。"
         )
         woven = ""
         # 素材多条→思考量更大：首试默认预算，被截断则加倍重试一次（仍败=拼接回退）
@@ -2984,7 +3110,33 @@ class Agent:
                 woven = ""
             if woven:
                 break
-        return woven or "\n\n".join(t.strip() for t in texts if t.strip())
+        if not woven:
+            return "\n\n".join(t.strip() for t in texts if t.strip())
+        if judged:
+            skip_lines = [l for l in woven.splitlines() if l.strip().startswith("[SKIP")]
+            if skip_lines:
+                body = "\n".join(l for l in woven.splitlines()
+                                 if not l.strip().startswith("[SKIP")).strip()
+                idxs = set()
+                import re as _re
+                role = self.role_key or self.card.name
+                for ln in skip_lines:
+                    mm = _re.search(r"\[SKIP\s+(\d+)[^\d]*(.{0,80})", ln)
+                    if not mm:
+                        continue
+                    i = int(mm.group(1))
+                    if 1 <= i <= n:
+                        idxs.add(i)
+                        self.memory.log_decision(
+                            role, f"ritual_item:{sources[i - 1] if i - 1 < len(sources) else '?'}",
+                            "vetoed", reason=mm.group(2).strip()[:80] or "内容闸判定过时",
+                            digest=texts[i - 1][:120])
+                if idxs and len(idxs) < n:
+                    logger.info("weave gate vetoed %d item(s)", len(idxs))
+                    return body or "\n\n".join(
+                        t.strip() for j, t in enumerate(texts, 1)
+                        if j not in idxs and t.strip())
+        return woven
 
     @staticmethod
     def _naive_local(dt_value):

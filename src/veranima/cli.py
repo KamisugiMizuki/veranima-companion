@@ -174,6 +174,30 @@ def _style_cmd(args) -> int:
     return 1
 
 
+def _replay_cmd(args) -> int:
+    """HARNESS D4：decisions 账 → 可读事件流（导出件用 --db 指，只读打开）。"""
+    import sqlite3
+    from pathlib import Path
+    if args.db:
+        db = Path(args.db)
+    else:
+        cfg = load_config()
+        root = Path(cfg.get("root", "."))
+        db = Path((cfg.get("memory") or {}).get("db_path") or (root / "data" / "veranima.db"))
+        if not db.is_absolute():
+            db = root / db
+    if not db.is_file():
+        print(f"库不存在: {db}", file=sys.stderr)
+        return 1
+    con = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
+    con.row_factory = sqlite3.Row
+    from .tools.replay import load, stats_text, timeline
+    rows = load(con, since=args.since, role=args.role, kind=args.kind)
+    print(stats_text(rows) if args.replay_action == "stats" else timeline(rows))
+    print(f"\n共 {len(rows)} 条决策（{db.name}）")
+    return 0
+
+
 def _backup_cmd(args) -> int:
     """记忆备份（共享记忆，全量覆盖语义）：export <zip> / import <zip>。角色走 roles export/import。"""
     from .core.backup import export_backup, import_backup
@@ -232,6 +256,12 @@ def main(argv: list[str] | None = None) -> int:
     bp = sub.add_parser("backup", help="记忆备份：共享记忆+学习状态 → 单 zip（跨 Windows/安卓；角色用 roles export）")
     bp.add_argument("backup_action", choices=["export", "import"])
     bp.add_argument("path", nargs="?", default="", help="zip 路径（export 可省略，自动生成带时间戳文件名）")
+    rp_ = sub.add_parser("replay", help="HARNESS D4 决策回放：decisions 账→可读事件流（--db 指导出件）")
+    rp_.add_argument("replay_action", choices=["decisions", "stats"], nargs="?", default="decisions")
+    rp_.add_argument("--since", default="", help="起始时刻（ISO）")
+    rp_.add_argument("--role", default="", help="只看某角色 role_key")
+    rp_.add_argument("--kind", default="", help="类型子串过滤（ritual/moment/judge…）")
+    rp_.add_argument("--db", default="", help="指定 db 文件（默认=config 库；导出件只读回放）")
     tp = sub.add_parser("task", help="R5 任务管道：模糊指令 → 工单 → dsh")
     tp.add_argument("text", nargs="+", help="任务描述")
     cp = sub.add_parser("create", help="共同创作")
@@ -268,6 +298,8 @@ def main(argv: list[str] | None = None) -> int:
         return _roles_cmd(args)
     if args.cmd == "backup":
         return _backup_cmd(args)
+    if args.cmd == "replay":
+        return _replay_cmd(args)
     if args.cmd == "task":
         return _task_cmd(args)
     if args.cmd == "style":

@@ -251,12 +251,18 @@ def test_pending_materials_weave_when_window_opens(tmp_path, monkeypatch):
     a = Agent(card=card, memory=memory, llm=FakeLLM(), state=AgentState(), config={})
     woven_in = {}
 
-    def fake_weave(texts):
+    def fake_weave(texts, **kw):  # D2 起生产侧带 sources kwarg
         woven_in["texts"] = list(texts)
         return "｜".join(texts)
     monkeypatch.setattr(a, "_weave_ritual", fake_weave)
-    monkeypatch.setattr(a, "_adapt_schedule_to_user",
-                        lambda wh, now, out: out.append("作息挪一挪"))
+    # 真实 _adapt_schedule_to_user 有 day_key 每日一次去重，fake 必须同样只产一次
+    _adapted = []
+
+    def fake_adapt(wh, now, out):
+        if not _adapted:
+            _adapted.append(1)
+            out.append("作息挪一挪")
+    monkeypatch.setattr(a, "_adapt_schedule_to_user", fake_adapt)
     # 本地 8:00：+71min=9:11 仍在 morning 窗内（槽位不漂移）；合并窗口起点
     # 由 record 记真实时刻，注入判定用 abs 差——两点都满足
     t0 = datetime.datetime.combine(datetime.date.today(), datetime.time(8, 0))
@@ -332,7 +338,7 @@ def test_context_probe_flows_into_pool(tmp_path):
     a, _ = _probe_agent(tmp_path)
     woven = {}
     # 直接调 tick：morning/noon/evening 当前真实小时的桶 + probe 都在意
-    a._weave_ritual = lambda texts: (woven.__setitem__("t", texts), "｜".join(texts))[1]
+    a._weave_ritual = lambda texts, **kw: (woven.__setitem__("t", texts), "｜".join(texts))[1]
     now = _dt.datetime.now().replace(tzinfo=None, second=0, microsecond=0)
     msgs = a.tick_proactive(now=now)
     if woven.get("t"):

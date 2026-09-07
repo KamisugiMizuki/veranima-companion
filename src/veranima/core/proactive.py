@@ -23,14 +23,138 @@ logger = logging.getLogger(__name__)
 # （异步旁路源=睡醒公告/心跳/追问等不在此表：它们与 tick 消息撞车由
 #  proactive.merge_window_minutes 合并窗口错峰，窗口内素材不销毁、下轮并入。）
 RITUAL_SOURCES = (
-    "greeting",        # 时段问候（早/午/晚，每日每时段去重）
+    "greeting",        # 时段问候（早/午/晚，每日每时段去重）——longing 攒着时并入
     "context_probe",   # 当下情境推测（联想 B 类：TA 此刻在干嘛；日 ≤2）
     "sleep_hint",      # 26h 无作息报告轻提示（每日一次）
     "occasion",        # 节庆/纪念日（每日一次）
     "schedule_adapt",  # 角色作息向用户偏移的理由消息（每日一次）
     "meal",            # 三餐提醒（每餐当日一次）
     "thread",          # 牵挂自述（M1 自我发起源：TA 自己心里有事想说，非刺激驱动）
+    "longing",         # M2 想念驱力：静默×依恋攒过阈值——「没事，就是想看看你在」
+    "care_need",       # M2 求照顾驱力：她自己的疲劳/低落——示弱（低频，卡人设门槛）
 )
+
+
+class DesireLedger:
+    """M2 驱力池（MIND_LOOP_SPEC 3.2，纯算术零 LLM）：心里攒出事才开口。
+
+    - longing：用户静默时长 × 依恋系数逐 tick 累积；用户回话即泄洪清零。
+      过阈值=一句「也没什么事」——问候从时刻表变成性格（Q1 裁决：时刻表
+      降为原料：到点的问候若 longing 在场，把成分并进织文不各说各话）。
+    - care_need：她的疲劳（energy 低）/低落残响累积；被用户关心（正向互动）
+      即缓。低频（阈值高、日限 1）+卡人设门槛（卡 extensions.veranima.
+      care_need=false 的卡不产——示弱不是人人设都吃这套）。
+    - 持久化=relationship 快照 desires 键（{名: [level, date]}）——MIUI 杀
+      后台存活；跨日 level 减半（一天没说话不该攒到天荒地老）。
+    share/nag/express 的演进脚本归 M3 夜眠消化（spec：随 reflection v2）。
+    """
+
+    _LONG_RATE = 0.055   # 每静默分钟 × attachment → 0.055*60≈3.3h×0.8依恋过阈
+    _CARE_RATE = 0.02    # 每低精力/低落分钟累积
+    _LONG_TH = 1.0
+    _CARE_TH = 1.6
+    _LONG_LINES = ("也没什么事，就是想看看你在不在。",
+                   "闲下来才发现你半天没声了。忙你的，我就是念叨一句。")
+    _CARE_LINES = ("今天有点扛不住了，跟你说一声，不用你安慰，就是想让你知道。",
+                   "我这边状态一般，晚上可能早点缴。不是要你管，报备一下。")
+
+    def __init__(self, agent: "Agent") -> None:  # noqa: F821
+        self.agent = agent
+        self._d: dict[str, list] = {}
+        self._anchor_ts = 0.0   # 最后一条 user 消息时刻（泄洪锚）
+        self._last_ts = 0.0     # 上次评估时刻（增量基准）
+
+    def restore(self, snap) -> None:
+        if isinstance(snap, dict):
+            self._d = {str(k): [float(v[0] or 0.0), str(v[1] or "")]
+                       for k, v in snap.items()
+                       if isinstance(v, (list, tuple)) and len(v) >= 2}
+
+    def to_dict(self) -> dict:
+        return {k: [round(v[0], 3), v[1]] for k, v in self._d.items()}
+
+    def _level(self, name: str) -> float:
+        return self._d.get(name, [0.0, ""])[0]
+
+    def _set(self, name: str, val: float) -> None:
+        fired = self._d.get(name, [0.0, ""])[1]
+        self._d[name] = [max(0.0, min(2.0, val)), fired]
+
+    def _fired_today(self, name: str, today: str) -> bool:
+        return self._d.get(name, [0.0, ""])[1] == today
+
+    def _mark_fired(self, name: str, today: str) -> None:
+        self._d[name] = [0.0, today]  # 泄洪：产料后归零，只留当日已发标记
+
+    def tick(self, now) -> None:
+        import datetime as _dt
+        now = (now if isinstance(now, _dt.datetime)
+               else _dt.datetime.fromtimestamp(now or _dt.datetime.now().timestamp()))
+        now = self.agent._naive_local(now) if now.tzinfo else now
+        today = now.date().isoformat()
+        a = self.agent
+        try:
+            last_user = None
+            for row in reversed(a._recent_msgs(limit=10)):
+                if row.get("role") == "user":
+                    last_user = _dt.datetime.fromisoformat(
+                        str(row.get("created_at")).replace("Z", "+00:00"))
+                    break
+            if last_user is None:
+                return
+            last_user = a._naive_local(last_user)
+            # 跨日半衰（隔夜不该攒到天荒地老）
+            for name in list(self._d):
+                if self._d[name][1] and self._d[name][1] != today:
+                    self._d[name] = [self._level(name) * 0.5, ""]
+            # longing：用户回话即泄洪（锚点=最后一条 user 的时刻，变新即重置）；
+            # 静默期间按「距上次评估的分钟数 × 依恋」累积。
+            lu_ts = last_user.timestamp()
+            if lu_ts != self._anchor_ts:
+                self._anchor_ts = lu_ts
+                self._d["longing"] = [0.0, self._d.get("longing", [0, today])[1] if self._fired_today("longing", today) else ""]
+            else:
+                dt_min = max(0.0, (now.timestamp() - self._last_ts) / 60) if self._last_ts else 0.0
+                if dt_min > 0 and not self._fired_today("longing", today):
+                    self._set("longing", self._level("longing") + self._LONG_RATE * dt_min * a.state.attachment)
+            # care_need：低精力/低落时段累积（断档 >4h 按 4h 封顶，进程蒸发补偿）
+            if a.state.energy < 45 or a.state.mood == "低落":
+                dt_min = min(240.0, (now.timestamp() - self._last_ts) / 60) if self._last_ts else 0.0
+                if dt_min > 0 and not self._fired_today("care_need", today):
+                    self._set("care_need", self._level("care_need") + self._CARE_RATE * dt_min)
+            self._last_ts = now.timestamp()
+        except Exception:
+            logger.debug("desire tick failed", exc_info=True)
+
+    def soothe(self, positive: bool) -> None:
+        """被关心即缓（spec 表）：正向互动压 care_need。"""
+        if positive:
+            self._set("care_need", self._level("care_need") * 0.4)
+
+    def material(self, now) -> dict | None:
+        """过阈值→带原料进待织池（合并窗口/织文原样复用）。日限各 1。"""
+        import datetime as _dt
+        now = (now if isinstance(now, _dt.datetime)
+               else _dt.datetime.fromtimestamp(now or _dt.datetime.now().timestamp()))
+        today = (self.agent._naive_local(now) if now.tzinfo else now).date().isoformat()
+        a = self.agent
+        if a.state.user_asleep:
+            return None
+        if (self._level("longing") >= self._LONG_TH
+                and not self._fired_today("longing", today)):
+            self._mark_fired("longing", today)
+            pick = self._LONG_LINES[sum(map(ord, today)) % len(self._LONG_LINES)]
+            return {"source": "longing", "text": pick}
+        cfg = (a.card.veranima or {})
+        if cfg.get("care_need", True) is False:
+            return None  # 卡人设门槛：这角色不吃示弱
+        energy_ok = a.state.energy < 45 or a.state.mood == "低落"
+        if (energy_ok and self._level("care_need") >= self._CARE_TH
+                and not self._fired_today("care_need", today)):
+            self._mark_fired("care_need", today)
+            pick = self._CARE_LINES[sum(map(ord, today)) % len(self._CARE_LINES)]
+            return {"source": "care_need", "text": pick}
+        return None
 
 MEAL_SLOTS = {
     "breakfast": (8, "到饭点了，先去吃点早饭。"),
@@ -86,6 +210,24 @@ def veto_from_keywords(text: str) -> tuple[str, int] | None:
             days = n * 7 if m.group(2) == "周" else n * 30 if m.group(2) != "天" else n
         return src, days
     return None
+
+
+# 池排干顺序=易腐度（09-07 M2 第一砖「人不会把四件事缝成一段小作文」）：
+# 过时作废的先出（问候/饭点/节庆），账本托底的缓事咽回池等下窗（牵挂/联想）。
+# longing/care_need=半易腐（素材依赖「此刻还在静默/还在低落」，同 probe 档）；
+# thread 最缓（mind_threads 账本托底，咽回去明晚还在）。
+POOL_PERISH = ("greeting", "meal", "occasion", "sleep_hint",
+               "schedule_adapt", "context_probe", "longing", "care_need",
+               "thread")
+
+
+def pool_take(pending: list[dict], cap: int) -> list[dict]:
+    """从池中按易腐度取 ≤cap 条，其余留池（原地更新 pending）。"""
+    order = {s: i for i, s in enumerate(POOL_PERISH)}
+    pending.sort(key=lambda m: order.get(m.get("source"), 9))
+    pool, rest = pending[:max(1, cap)], pending[max(1, cap):]
+    pending[:] = rest
+    return pool
 
 
 def meal_word(hour: int) -> str:

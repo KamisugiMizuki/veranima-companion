@@ -237,3 +237,94 @@ def test_recall_evidence_block(tmp_path):
     assert "【翻到的聊天记录】" in blk and "m记" in blk and "你：" in blk
     assert "lin" not in blk and "记下了" not in blk   # 跨会话隔离
     assert "没有找到" in a._recall_evidence_block("火锅店")
+
+
+# ---------- 池预算排干 + 驱力池（M2 第一二砖，09-07「人怎么处理长文本」） ----------
+
+def test_weave_pool_budget_drains_by_perishability(tmp_path):
+    """cap=2（默认·平静）时 3 素材同窗：易腐（greeting/meal）先缝一条，
+    缓事（thread）咽回池等下窗——不丢信、不缝小作文（人一次只说「正事+顺便」）。
+    凌晨 3 点=全收集器静默时窗，池里只有手工注入的 3 条，断言不被真收集器污染。"""
+    a = _agent(tmp_path)
+    a.state.attachment = 0.2          # 挡 probe
+    a.state.last_sleep_report_at = "2026-08-02T20:00:00+00:00"  # 挡 sleep_hint
+    now = datetime.datetime(2026, 8, 3, 3, 0)
+    a._ritual_pending[:] = [
+        {"source": "thread", "text": "你之前说初稿，我记着呢。", "ts": now.timestamp(), "role": a.card.name},
+        {"source": "meal", "text": "到饭点了。", "meal": "lunch", "cid": "meal:t", "ts": now.timestamp(), "role": a.card.name},
+        {"source": "greeting", "text": "中午好。", "ts": now.timestamp(), "role": a.card.name},
+    ]
+    msgs = a.tick_proactive(now=now)
+    assert len(msgs) == 1                                   # 缝 2 条=一条消息
+    assert [m["source"] for m in a._ritual_pending] == ["thread"]  # 缓事留池
+    # 留池≠丢失：下次取池它还在、且按易腐度轮到它出（下窗真实时刻由
+    # 合并窗+gate 防刷屏决定，本测试不闯 gate——只验池语义）
+    from veranima.core.proactive import pool_take
+    nxt = pool_take(a._ritual_pending, 2)
+    assert [m["source"] for m in nxt] == ["thread"] and not a._ritual_pending
+
+
+def test_desire_ledger_accumulates_and_fires(tmp_path):
+    """静默×依恋逐 tick 攒 longing → 过阈产一条「想你在不在」；回话泄洪；
+    care_need 只在低精力产、日限 1。纯算术零 LLM。"""
+    a = _agent(tmp_path)
+    a.state.attachment = 1.0
+    t0 = datetime.datetime(2026, 8, 3, 10, 0)
+    a.memory.store_message("user", "先去忙了", 80, "平静")
+    a.memory.con.execute("UPDATE messages SET created_at=? WHERE id=(SELECT max(id) FROM messages)",
+                         ((t0 - datetime.timedelta(hours=1)).isoformat(),))
+    a.memory.con.commit()
+    for i in range(30):   # 30 tick × 60min（注入时钟大步走）× 依恋1.0 × 0.055 → 过阈
+        a.desires.tick(t0 + datetime.timedelta(hours=1, minutes=i * 5))
+    m = a.desires.material(t0 + datetime.timedelta(hours=4))
+    assert m and m["source"] == "longing"
+    assert a.desires.material(t0 + datetime.timedelta(hours=4)) is None  # 日限
+    # 泄洪：新一条用户消息把 longing 清零
+    a.memory.store_message("user", "回来啦")
+    a.desires.tick(t0 + datetime.timedelta(hours=5))
+    assert a.desires._level("longing") == 0.0
+    # care_need：低落+低精力才攒；卡门槛 care_need=false 不产
+    a.state.energy, a.state.mood = 20.0, "低落"
+    for i in range(60):
+        a.desires.tick(t0 + datetime.timedelta(hours=6, minutes=i * 5))
+    assert a.desires._level("care_need") > 0
+    a.card.veranima = {"care_need": False}
+    assert (a.desires.material(t0 + datetime.timedelta(hours=12)) or {}).get("source") != "care_need"
+
+
+def test_desires_persist_across_restart(tmp_path):
+    a = _agent(tmp_path)
+    a.desires._d["longing"] = [0.7, ""]
+    a._persist_state()
+    b = _agent(tmp_path)
+    assert abs(b.desires._level("longing") - 0.7) < 1e-6
+
+
+def test_judges_consequential_decisions_logged(tmp_path):
+    """Q3 裁决：六类有后果的裁决进 decisions；闲聊轮（全默认值）不记。"""
+    a = _agent(tmp_path)
+    j = MessageJudgment(veto_source="meal", recall_evidence="体检", thread_candidate="答辩",
+                        thread_closed=1, sleep_report="sleeping", conflict=None)
+    a._log_judge_decisions(j, "别老提醒我吃饭了，我这周五答辩要体检")
+    kinds = [r[0] for r in a.memory.con.execute(
+        "select kind from decisions where kind like 'judge:%'")]
+    assert {"judge:veto", "judge:recall", "judge:thread_open",
+            "judge:sleep_report", "judge:thread_close"} <= set(kinds)
+    # 闲聊轮全默认值 → 零新账
+    n0 = a.memory.con.execute("select count(*) from decisions where kind like 'judge:%'").fetchone()[0]
+    a._judgment = None
+    a.turn_judgment("今天天气一般")
+    assert a.memory.con.execute("select count(*) from decisions where kind like 'judge:%'").fetchone()[0] == n0
+
+
+# ---------- D4 回放（HARNESS §6.4）：账本→可读流 ----------
+
+def test_replay_timeline_readable(tmp_path):
+    from veranima.tools.replay import load, stats_text, timeline
+    a = _agent(tmp_path)
+    a.memory.log_decision("xumian", "ritual:thread", "sent", reason="池织发 1 素材", digest="初稿写了吗")
+    a.memory.log_decision("xumian", "ritual_item:meal", "vetoed", reason="饭点已过两小时")
+    rows = load(a.memory.con, role="xumian")
+    t = timeline(rows)
+    assert "──" in t and "sent" in t and "vetoed" in t and "初稿写了吗" in t
+    assert "xumian" in stats_text(rows) and "vetoed" in stats_text(rows)
