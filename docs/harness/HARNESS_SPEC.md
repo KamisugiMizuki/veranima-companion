@@ -1,6 +1,6 @@
 # 陪伴心智 Harness（HARNESS_SPEC）
 
-状态：**D1-D4 全部落地（09-06/09-07）**。Q1=织文批量闸（规则层必过+LLM SKIP 否决入账，fail-open）；Q2=decisions 进备份；Q3=judges 六类有后果裁决落账（闲聊不记）；Q4=作息重合度驱动+阈值滞后（rhythm_overlap 落账，D4 可读为什么没动）。D4=账本可读化回放（cli `replay decisions|stats --db 导出件`）；spec 原文的「LLM 判断点重放差异表」离线不可复现，明确不做，回归面由 triage_check 真机增量覆盖。
+状态：**D1-D4 全部落地（09-06/09-07）**。D3 收口（09-07）：盘点实锤 heartbeat/late_reply/followup/notice/visual 五个旁路 D1 起就全走 record_proactive_message（唯一出口=留痕+合并窗记账），真正没收编的只有性格面——新增 `_speak_mood_ok`（低落或 energy<30 不自发开口）挂满全部旁路，late_reply/visual 的裸 energy 旧判据收编统一；触发器不重写进池（heartbeat 的到点生成语义进池=每 tick 生成的纯亏，spec 原文的「通知补发」实指 QQ _pending_proactive 延迟队列，同样已走唯一出口）。Q1=织文批量闸（规则层必过+LLM SKIP 否决入账，fail-open）；Q2=decisions 进备份；Q3=judges 六类有后果裁决落账（闲聊不记）；Q4=作息重合度驱动+阈值滞后（rhythm_overlap 落账，D4 可读为什么没动）。D4=账本可读化回放（cli `replay decisions|stats --db 导出件`）；spec 原文的「LLM 判断点重放差异表」离线不可复现，明确不做，回归面由 triage_check 真机增量覆盖。
 一句话：把「角色内部状态」从散落在各模块的私有实现，收拢成统一操作的
 对象层——记忆、睡眠、牵挂、动态、画像都是同一类东西：**带时间线的事实源，
 经判断点决定是否产出对外行为，产出必须留痕**。

@@ -328,3 +328,103 @@ def test_replay_timeline_readable(tmp_path):
     t = timeline(rows)
     assert "──" in t and "sent" in t and "vetoed" in t and "初稿写了吗" in t
     assert "xumian" in stats_text(rows) and "vetoed" in stats_text(rows)
+
+
+# ---------- M3 夜眠消化（MIND §3.5）：入睡门 + 同调用四格 + 校验式应用 ----------
+
+class _NS:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+def _seed_episodes(a, n=3):
+    for i, txt in enumerate(("周一加班到十一点", "周二继续改方案", "周三终于提测了")[:n]):
+        mid = a.memory.store_message("user", txt)
+        a._store_candidate({"kind": "shared_episode", "content": txt,
+                            "source_message_id": mid, "confidence": 0.9,
+                            "subject": "user", "source": "rule_extract"})
+
+
+def test_digest_sleep_gate(tmp_path):
+    """有虚拟日程的角色只在睡着那段消化；同周期只一次（跨午夜不重跑）。"""
+    import json as _json
+    llm = _FakeDigestLLM(_json.dumps({"content": "摘要", "portrait": "", "echo": "", "threads": []}))
+    a = _agent(tmp_path, llm=llm)
+    a.schedule_runtime = _NS(sleeping=False, state=_NS(sleep_cycle_id="x:1"))
+    _seed_episodes(a)
+    assert a.maybe_nightly_digest()["reason"] == "not_sleeping"
+    a.schedule_runtime.sleeping = True
+    assert a.maybe_nightly_digest()["created"] is True
+    assert a.maybe_nightly_digest()["reason"] == "already_digested_cycle"
+    # 无 runtime（CLI/测试）照旧每日撞一次
+    b = _agent(tmp_path / "b", llm=llm)
+    (tmp_path / "b").mkdir(exist_ok=True)
+    _seed_episodes(b)
+    assert b.maybe_nightly_digest()["created"] is True
+
+
+class _FakeDigestLLM(FakeLLM):
+    """digest 走 llm.chat 拿原始 JSON；greeting 走 parse_reply——raw 原样返回。"""
+
+
+def test_digest_applies_threads_with_validation(tmp_path):
+    """echo 存残响、threads 校验式应用：drop 砸强度、advance 写剧本步、
+    new 开 self 线、幻觉 id/表外 action 全丢，动作落 decisions 账。"""
+    import json as _json
+    tid = a0 = None
+    llm = FakeLLM(raw=_json.dumps({
+        "content": "摘要", "portrait": "", "echo": "还在替他担心导师没回消息",
+        "threads": [
+            {"id": 1, "action": "drop", "note": "提测完了，放下了"},
+            {"id": 999, "action": "advance", "beat_hours": 24, "note": "幻觉 id 必须丢"},
+            {"id": 1, "action": "nuke", "note": "表外动作必须丢"},
+            {"id": 2, "action": "advance", "beat_hours": 9999, "note": "越界钳 168"},
+            {"action": "new", "topic": "想查一下他体检报告挂哪个科"},
+        ]}))
+    a = _agent(tmp_path, llm=llm)
+    a.schedule_runtime = _NS(sleeping=True, state=_NS(sleep_cycle_id="x:9"))
+    a.threads.from_user("毕设初稿周五要交", intensity=0.8)
+    a.threads.from_user("下周体检复查", intensity=0.6)
+    _seed_episodes(a)
+    out = a.maybe_nightly_digest()
+    assert out["created"] is True
+    assert a._echo_note == "还在替他担心导师没回消息"
+    rows = {r["topic"][:4]: r for r in a.memory.thread_list(a.threads.role)}
+    assert float(rows["毕设初稿"]["intensity"]) == 0.3        # drop（999/nuke 被丢后 1 号仍是 drop 生效）
+    assert float(rows["下周体检"]["intensity"]) == 0.7       # 0.6+0.1 advance
+    nb = rows["下周体检"]["next_beat_at"]
+    hrs = (datetime.datetime.fromisoformat(nb) - datetime.datetime.now()).total_seconds() / 3600
+    assert 160 < hrs <= 168                                    # 9999 → 钳 168
+    assert any(r["origin"] == "self" for r in a.memory.thread_list(a.threads.role))  # new 开线
+    kinds = [r[0] for r in a.memory.con.execute(
+        "select kind from decisions where kind like 'reflect:%'").fetchall()]
+    assert kinds.count("reflect:thread") == 3 and "reflect:echo" in kinds
+
+
+def test_morning_greeting_weaves_echo_and_burns_it(tmp_path):
+    """明晨问候带残响（读后即焚）；午/晚问候不消费。"""
+    a = _agent(tmp_path)
+    a.memory.store_message("user", "毕设改稿卡住了")
+    a._echo_note = "他那个初稿到底写完没"
+    text = a.greeting_message("noon")
+    task = a.llm.calls[-1]["messages"][-1]["content"]
+    assert "他那个初稿" not in task            # 中午不带
+    assert a._echo_note == "他那个初稿到底写完没"  # 没被消费
+    a.greeting_message("morning")
+    task = a.llm.calls[-1]["messages"][-1]["content"]
+    assert "他那个初稿到底写完没" in task and "昨晚睡前在想" in task
+    assert a._echo_note == ""                  # 焚
+
+
+# ---------- D3 性格闸收编：旁路与池同一套心情 ----------
+
+def test_bypass_sources_respect_mood_gate(tmp_path):
+    a = _agent(tmp_path)
+    a.state.mood = "低落"
+    assert a.late_reply() == ""          # 旧版只查 energy<30，低落满血照发=两套性格
+    assert a.heartbeat() == ""
+    assert a.proactive_from_visual("刷B站") == ("", "")
+    a.state.mood = "平静"
+    a.state.energy = 10
+    assert a.late_reply() == ""          # 枯竭同样闸住（原判据不回归）
+

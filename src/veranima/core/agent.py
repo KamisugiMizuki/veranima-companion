@@ -310,6 +310,12 @@ class Agent:
         self.occasion.triggered.update(
             str(k) for k in (_rel_snap.get("occasions") or [])
             if str(k).startswith(_today_key + ":"))
+        # M3 心境残响（MIND 3.3）：夜眠消化产的一句「明天醒来还惦记的」，
+        # 只活一晚——明晨问候织进第一次就销毁。随快照复活（MIUI 杀后台≠失忆）。
+        _echo = _rel_snap.get("echo_note") or {}
+        self._echo_note = str(_echo.get("note") or "") if _echo else ""
+        # M3 夜眠消化周期戳（同睡眠周期只消化一次，跨午夜/重启不重跑）
+        self._digest_cycle = str(_rel_snap.get("digest_cycle") or "")
         # §12-C 否决台账（09-07 裁决）：{源名: 到期日 ISO}，到期日空=永久；
         # 随关系快照落库（per 角色），tick 收集端剔除，跨周不复发
         self._proactive_veto: dict[str, str] = {
@@ -908,6 +914,8 @@ class Agent:
             rel["proactive_veto"] = dict(getattr(self, "_proactive_veto", {}))
             rel["desires"] = self.desires.to_dict()  # M2 驱力账（重启续攒）
             rel["last_proactive_sent_at"] = getattr(self, "_last_proactive_sent_at", "")
+            rel["echo_note"] = {"note": getattr(self, "_echo_note", "")}  # M3 残响（一晚）
+            rel["digest_cycle"] = getattr(self, "_digest_cycle", "")  # M3 周期戳
             # 待织池随快照落盘（TTL 180min 读取端过滤，过期素材下次 restore 自然淘汰）
             rel["ritual_pending"] = list(self._ritual_pending)[-6:]
             # roster 落库：以 boot 读回的整张表为底刷新当前卡条目（rel 此时已完整）
@@ -2531,7 +2539,7 @@ class Agent:
         屏幕 focus.tag × 事件记忆模糊匹配：episodic 层含 tag 关键词 → 生成联想消息。
         无匹配 / 模型不可用 → 返回 ""。
         """
-        if not tag or self.state.energy < 30:
+        if not tag or not self._speak_mood_ok():  # D3 性格闸（旧裸 energy 判据收编）
             return "", ""
         old = str(matched_memory or "").strip()[:120]
         if not old:
@@ -2584,7 +2592,7 @@ class Agent:
 
         取最近对话（跨通道共享），生成「你刚才说…」衔接语；无历史/低精力返回 ""。
         """
-        if self.state.energy < 30:
+        if not self._speak_mood_ok():  # D3 性格闸
             return "", ""
         recent = self.memory.recent_messages(limit=6)
         # 找最近一条用户消息（可能是 QQ 通道的）
@@ -2684,6 +2692,16 @@ class Agent:
             return {"created": False, "reason": "no_llm"}
         if getattr(self, "_digest_retry_after", 0.0) > time.time():
             return {"created": False, "reason": "cooldown"}
+        # M3 触发时刻（spec 3.5：她的 circadian，不是固定闹钟）：有虚拟日程的
+        # 角色只在她真睡着的那段消化（睡前的事当天全了、醒来第一句接得上）；
+        # 无 runtime（CLI/测试/旧配置）照旧每日撞一次。
+        rt = getattr(self, "schedule_runtime", None)
+        if rt is not None:
+            if not rt.sleeping:
+                return {"created": False, "reason": "not_sleeping"}
+            cyc = str(rt.state.sleep_cycle_id or "")
+            if cyc and str(getattr(self, "_digest_cycle", "") or "") == cyc:
+                return {"created": False, "reason": "already_digested_cycle"}
         today = datetime.date.today().isoformat()
         already = self.memory.con.execute(
             "SELECT count(*) FROM memories WHERE json_valid(meta) AND json_extract(meta,'$.digest_date')=?",
@@ -2730,7 +2748,28 @@ class Agent:
             "≤80 字，只写从材料看得出的，写给以后的自己看（不是发给用户的话）。"
             "顺着三个固定角度想（有依据才写，没依据的角度跳过）：ta 什么时候最爱来找我、"
             "哪几类话题 ta 会回避或一笔带过、ta 反复提起的事有没有变化。\n"
-            f"\n只输出 JSON：{{\"content\":\"概括\",\"portrait\":\"我眼中的你\"}}。\n{chr(10).join(lines)}"
+        )
+        # M3 夜眠消化（spec 3.5）：同一次调用多消化两格——牵挂演进+明晨残响。
+        # 日程微调按裁决归 M4 不做；长期记忆条目=content 格本身。
+        open_rows = self.threads.top(n=5) if hasattr(self, "threads") else []
+        if open_rows:
+            tl = "; ".join(f"id={r['id']}「{r['topic'][:30]}」"
+                           f"（{'刚挂上' if float(r['intensity']) >= 0.6 else '放了阵子'}）"
+                           for r in open_rows)
+            task += (
+                f"\n你心里现在挂着这些事：{tl}。睡前消化一遍：想通的放下(drop)、"
+                "有新动向的推进(advance 并写 beat_hours=几小时后再惦记，24-72 常见)、"
+                "从今天的材料里冒出新的心事(new，带 20 字内的 topic)。"
+                "没有要动的就不写。只写列出的 id，不许发明 id。\n"
+                '"threads":[{"id":1,"action":"advance","beat_hours":24,"note":"一句话依据"}]\n'
+            )
+        task += (
+            "再写一格\"echo\"：今晚睡前留在你心里的一个具体念头（≤40 字，第一人称，"
+            "明早醒来问候时会自然想起它的那种——只从上面材料和牵挂里来，没有真惦记的"
+            "就写空串，不许硬编）。"
+            f"\n只输出 JSON：{{\"content\":\"概括\",\"portrait\":\"我眼中的你\","
+            "\"echo\":\"\",\"threads\":[]}}。"
+            f"\n材料：\n{chr(10).join(lines)}"
         )
         try:
             # 与 _short_task 相同的 system 锚定，但保留原始输出（JSON 协议，
@@ -2739,8 +2778,9 @@ class Agent:
             # chat(256) 被 reasoning 烧空 → finish_reason=length 每分钟重试
             # 一次，白烧 API 还刷日志——预算与冷却双收口）。
             system = build_system_prompt(self.card, self.state, self.memory) + "\n" + self._time_context_instruction()
-            # 输出两格（content+portrait）：下限翻倍，防 reasoning 吃预算截断 JSON
-            budget = 2 * max(256, int((self.config.get("llm", {}) or {}).get("short_task_max_tokens", 1024)))
+            # 输出四格（content+portrait+echo+threads）：下限×4，防 reasoning
+            # 吃预算截断 JSON
+            budget = 4 * max(256, int((self.config.get("llm", {}) or {}).get("short_task_max_tokens", 1024)))
             raw = self.llm.chat(
                 [
                     {"role": "system", "content": system},
@@ -2754,10 +2794,16 @@ class Agent:
             return {"created": False, "reason": "llm_failed"}
         content = ""
         portrait = ""
+        echo = ""
+        thread_ops: list = []
         try:
             data = _json.loads((raw or "").strip())
             content = str(data.get("content") or "").strip()
             portrait = str(data.get("portrait") or "").strip()
+            echo = str(data.get("echo") or "").strip()[:80]
+            to = data.get("threads")
+            if isinstance(to, list):
+                thread_ops = [x for x in to if isinstance(x, dict)]
         except _json.JSONDecodeError:
             content = ""
         if not content:
@@ -2797,9 +2843,80 @@ class Agent:
         if portrait:
             rid = self._schedule_role_id() or self.role_key or self.card.name
             self.memory.usermodel.set_portrait(rid, portrait)
+        # M3 牵挂演进应用（id 只认列过的、action 闭集、beat 钳 2-168h——
+        # LLM 输出永远当输入过校验，不是命令）
+        applied = self._apply_thread_ops(thread_ops, open_rows)
+        # M3 心境残响：只活一晚，明晨问候织进第一次即销毁
+        self._echo_note = echo
+        if echo or applied:
+            self._persist_state()
+        role = self.role_key or self.card.name
+        for op in applied:
+            self.memory.log_decision(role, "reflect:thread", op["action"],
+                                     reason=op.get("note", ""),
+                                     object_ref="thread:" + str(op["id"]),
+                                     digest=op.get("topic", ""))
+        if echo:
+            self.memory.log_decision(role, "reflect:echo", "recorded",
+                                     reason="明日问候残响", digest=echo)
         logger.info("nightly digest stored (%d episodes -> summary)", len(episodes))
+        if rt is not None:
+            self._digest_cycle = str(rt.state.sleep_cycle_id or "")
+            self._persist_state()  # 周期戳立刻落盘（下次 tick 不再重跑）
         return {"created": True, "episodes": len(episodes)}
 
+
+    def _apply_thread_ops(self, ops: list, listed_rows: list) -> list:
+        """M3：夜眠消化产出的牵挂演进 → 账本执行（校验式消费，全 fail-open）。
+
+        id 必须在送判清单里（防幻觉 id 改他角色/别的线）；action 闭集；
+        beat_hours 钳 2-168。返回实际应用的 op 列表（供落账）。
+        """
+        import datetime as _dt
+        valid = {int(r["id"]): r for r in listed_rows}
+        applied: list = []
+        for op in ops[:5]:  # 一晚上最多动 5 条线（防清单式狂改）
+            action = str(op.get("action") or "").strip().lower()
+            if action not in ("advance", "drop", "new"):
+                continue
+            note = str(op.get("note") or "")[:80]
+            if action == "new":  # 新事没有 id（id 校验只针对改旧线，防幻觉改别人的账）
+                topic = str(op.get("topic") or "").strip()
+                if len(topic) < 6:
+                    continue
+                self.threads.agent.memory.thread_add(
+                    self.threads.role, topic[:60], "self", intensity=0.5)
+                applied.append({"id": 0, "action": "new", "note": "nightly new: " + note,
+                                "topic": topic[:60]})
+                continue
+            try:
+                tid = int(op.get("id"))
+            except (TypeError, ValueError):
+                continue
+            row = valid.get(tid)
+            if row is None:
+                continue
+            if action == "drop":
+                self.threads.agent.memory.thread_update(tid, intensity=0.3, next_beat_at="")
+            elif action == "advance":
+                try:
+                    bh = min(168.0, max(2.0, float(op.get("beat_hours") or 24)))
+                except (TypeError, ValueError):
+                    bh = 24.0
+                nxt = (_dt.datetime.now() + _dt.timedelta(hours=bh)).isoformat(timespec="seconds")
+                self.threads.agent.memory.thread_update(
+                    tid, intensity=min(1.0, float(row["intensity"]) + 0.1), next_beat_at=nxt)
+            applied.append({"id": tid, "action": action, "note": note,
+                            "topic": str(row["topic"])[:60]})
+        return applied
+
+    def _take_echo_note(self) -> str:
+        """残响读取即销毁（一晚只说一次；杀后台重启若没说过仍能捞回——快照在）。"""
+        note = str(getattr(self, "_echo_note", "") or "")
+        if note:
+            self._echo_note = ""
+            self._persist_state()
+        return note
 
     def status(self) -> dict:
         return {
@@ -3152,6 +3269,12 @@ class Agent:
             stamp = datetime.datetime.fromtimestamp(stamp, datetime.timezone.utc)
         self._last_proactive_sent_at = stamp.astimezone().isoformat(timespec="seconds")
 
+    def _speak_mood_ok(self) -> bool:
+        """自发开口的性格闸（D3 收编的最后一块，09-07）：低落或精力枯竭时
+        不心跳/不破冰/不追问/不联想——池这边 weave_cap 咽到只剩 1 条，旁路
+        那边却照常连发=人格分裂（「频率闸从调度器变成性格」的反面病灶）。"""
+        return not (self.state.mood == "低落" or self.state.energy < 30)
+
     def proactive_merge_open(self, now=None) -> bool:
         """问候族合并窗口（2026-09-01 用户反馈：07:09 睡醒公告与 07:11 时段问候
         两条"早安"背靠背）：任何一条问候族消息发出后的窗口期内，其余问候族
@@ -3210,6 +3333,8 @@ class Agent:
             now = now.replace(tzinfo=datetime.timezone.utc)
         if not self.proactive_merge_open(now):
             return ""  # 问候族合并窗口（2026-09-01）：刚发过别的主动消息，追问排队
+        if not self._speak_mood_ok():
+            return ""  # D3 性格闸：低落的人不追话（期待不过期作废，账还在，明天缓了再问）
         try:
             rows = self.memory.recent_proactive_feedback(limit=100)
         except Exception:
@@ -3298,6 +3423,8 @@ class Agent:
         # 问候族合并窗口（2026-09-01）：刚发过任何问候族消息 → 破冰让位
         if not self.proactive_merge_open():
             return ""
+        if not self._speak_mood_ok():
+            return ""  # D3：低落/枯竭不破冰（性格闸，旁路与池同款）
         recent = self._recent_msgs(limit=8)
         if not recent or recent[-1]["role"] != "assistant":
             return ""  # 用户刚说完话或有未闭合对话，不需要破冰
@@ -3358,10 +3485,11 @@ class Agent:
         触发约束（2026-08 修复夜间轰炸）：
         - 对话必须未闭合：最近一条消息必须是 user（bot 还没回应完），
           若最后一条是 assistant（对话已闭合/自问自答）则不触发；
-        - 低精力不触发（energy < 30）；
+        - 性格闸 _speak_mood_ok（D3 收编，09-07）：低落/枯竭不迟回（旧版只
+          查 energy<30，低落满血照发=旁路与池两套性格）；
         - LLM 降级模板池：排除最近已发过的模板，避免同一条连发刷屏。
         """
-        if self.state.energy < 30:
+        if not self._speak_mood_ok():
             return ""
         # R4 闸门：shared_episode 来源（针对之前话题，R4_SPEC 3 中）
         cand = ProactiveCandidate(
@@ -3816,6 +3944,11 @@ class Agent:
                 return base
             ctx = "\n".join(user_msgs[:3])
             asleep = self.state.user_asleep
+            # M3 心境残响：昨晚睡前惦记的事，今早的问候自然带一句（读后即焚；
+            # 只在早晨问候用——午/晚问候不是「醒来第一句」）
+            echo = self._take_echo_note() if slot == "morning" else ""
+            if echo:
+                ctx += f"\n（你昨晚睡前在想：{echo}——今早自然带一句，像自言自语被听到）"
             task = (
                 f"现在是{'早晨' if slot == 'morning' else '中午' if slot == 'noon' else '晚上'}。"
                 + (f"用户此刻在睡觉（他昨晚说去睡了），发一条轻的、不期待回复的问候，"
