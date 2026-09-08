@@ -1,6 +1,6 @@
 # 内心生活闭环（MIND_LOOP_SPEC）
 
-状态：v1 定稿（§8 四项用户裁决已回填，2026-09-04）。M1/M1b/M1c/M3 已落地；**M2 第一二砖已落地（09-07）**=驱力池 DesireLedger（longing/care_need 纯算术、随快照持久化、过阈进待织池）+池预算排干（pool_take 易腐度序、weave_cap 心境系数：低落 1/平静 2/开心 3，缓事留池等下窗）——时刻表降原料=Q1 语义由「素材源照常产、出池受预算与驱力调」承接。**M3 夜眠消化已落地（09-07）**=digest 触发改「角色真睡着才消化」（schedule_runtime.sleeping 门+周期戳去重，无 runtime 照旧每日一次），同一次 LLM 调用四格产出：content/portrait（原有）+ echo（明晨问候残响，读后即焚、随快照复活）+ threads（牵挂演进 advance/drop/new，校验式应用：id 只认送判清单、beat 钳 2-168h、new 走 origin=self，动作全落 decisions 账 reflect:*）——闲时反思并入 digest 不另起进程，日程微调(③)归 M4 未做。share/nag/express 三驱力演进脚本未做（spec 归 M3 但按最小切口推后，见 §8 追加裁决）。
+状态：v1 定稿（§8 四项用户裁决已回填，2026-09-04）。M1/M1b/M1c/M3 已落地；**M4 已落地（2026-09-09）**=digest 第五格 `schedule` 写明日程（deviation_policy 闸 + 窗口装得下 + 待并入池随快照持久化 + decisions `reflect:schedule` 账），并修掉三处让它不可见/不可跑的根因（偏移炸 advance、夜间杀进程后双门永久关闭、明日计划差一天）。**M2 第一二砖已落地（09-07）**=驱力池 DesireLedger（longing/care_need 纯算术、随快照持久化、过阈进待织池）+池预算排干（pool_take 易腐度序、weave_cap 心境系数：低落 1/平静 2/开心 3，缓事留池等下窗）——时刻表降原料=Q1 语义由「素材源照常产、出池受预算与驱力调」承接。**M3 夜眠消化已落地（09-07）**=digest 触发改「角色真睡着才消化」（schedule_runtime.sleeping 门+周期戳去重，无 runtime 照旧每日一次），同一次 LLM 调用四格产出：content/portrait（原有）+ echo（明晨问候残响，读后即焚、随快照复活）+ threads（牵挂演进 advance/drop/new，校验式应用：id 只认送判清单、beat 钳 2-168h、new 走 origin=self，动作全落 decisions 账 reflect:*）——闲时反思并入 digest 不另起进程；日程微调(③)已由 M4 承接。share/nag/express 三驱力演进脚本未做（spec 归 M3 但按最小切口推后，见 §8 追加裁决）。
 定位：全局表现层架构——把角色从「刺激→输出的状态机」升级为「有持续内心生活的人」。
 与既有模块的关系：不推翻任何一条管道，而是把它们接成闭环；待织池、动态引擎、
 虚拟日程、记忆 digest、关系七维全部复用，新增的是它们中间那个「会自己想的脑」。
@@ -97,8 +97,10 @@ beat_script, status open/dormant/done, created_at, updated_at)
 ### 3.4 生活反应性（schedule write-back）
 
 牵挂与反思可以**修改明天的日程**（拟真闭环最重的一块）：
-- 权限边界：只动 outline 里 `mutable` 非 required 块（改时长/换活动/加一条杂事）；
-  锚点块（工作/睡眠）永不改。
+- 权限边界（2026-09-09 落地口径；`mutable` 字段从未存在）：由 `deviation_policy` 说了算——
+  延后要 allow_shift、加长要 allow_extend、缩短/跳过要 allow_skip，且改完仍须落在该块
+  preferred_window 内；`sleep_window` 类锚点块一律免疫。过不了闸的微调直接丢弃，
+  不做部分修正（真机卡实拍：required=true ≠ 不可动，通勤/晚饭这类 required 块本来就可动）。
 - 例：改签焦虑到点→明天中午加「改签处理」；想你到阈值→下周末挂
   「去你那的高铁」意向块（悬置线在世界里真的推进）；低落→明天推掉一个社交块。
 - 修改本身产生日终事件→又成素材。这样「你们的关系」会改变「她怎么活」，
@@ -110,6 +112,10 @@ beat_script, status open/dormant/done, created_at, updated_at)
 输入=今日事件流+对话要点+开放牵挂+当前心境 → 输出：
 ① 牵挂演进（推进/挂新/放下，写 next_beat 与时间）② 明日心境基调
 ③ 日程微调（3.4 权限内）④ 值得入长期记忆的条目（喂现有 digest）。
+- 补账（2026-09-09）：睡窗里进程不在（安卓夜间被杀）→ 醒来补一次当日计划并放行一次
+  夜眠消化（素材窗按 24h 取，否则跨零点后永远 not_enough_material）；按 cycle 去重不重放。
+- 计划生成口径：明日计划 = **醒来那天**（`when + target_sleep_minutes` 的本地日期）。
+  旧口径 `when+1day` 对凌晨睡的角色差一天，醒来当天全落在 gap（真机 09-05 起断档实锤）。
 她睡着后「变了样一点」，醒来第一句话能接上昨天的自己。晚安从台词变成真边界。
 
 ---
@@ -165,13 +171,18 @@ beat_script, status open/dormant/done, created_at, updated_at)
   `health_notes` 保留（长期体质描述≠事件；要区分「我身体一直不好」与「周三有复查」）。
 - **M2 驱力池**：五驱力算术+时刻表降为原料+心境进预算。主动面貌换代。
 - **M3 夜眠消化+心境残响**：反射闭环与情感连续性。
-- **M4 生活反应性**：牵挂/反思写明日程。最后接（依赖 M1/M3 成熟）。
+- **M4 生活反应性（✅ 已落地 2026-09-09）**：digest 第五格 `schedule` → 过闸
+  （`queue_schedule_tweaks`：deviation_policy + 窗口装得下 + sleep_window 免疫）→
+  入待并入池（随快照持久化）→ 下次生成计划时按 rule_id 并入 → 落 decisions `reflect:schedule`。
+  同时修掉三处让它「永远看不到效果」的根因：偏移卡 sleep 块炸 advance、夜间杀进程后
+  计划/消化双门永久关闭、明日计划日期差一天。
 每相独立可验收、可回滚；M1 落地即可肉眼感到差别。
 
 ## 8. 裁决记录（2026-09-04 用户拍板）
 
 - **Q1** 时刻表降为驱力原料，判断点在场时全权。
 - **Q2** 日程写回权限=仅 mutable 且非 required 的块。
+  → **2026-09-09 修正**：`mutable` 字段从未存在；实际闸门=deviation_policy（见 §3.4）。
 - **Q3** 牵挂账本现阶段不上 UI；远期做「她最近的状态」模糊卡（只给氛围，
   不摊开条目——摊开等于剧透「被表演」）。
 - **Q4** 分期节奏=M1 先行，肉眼验收后再下相。

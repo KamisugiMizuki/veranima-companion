@@ -336,6 +336,13 @@ class _NS:
     def __init__(self, **kw):
         self.__dict__.update(kw)
 
+    # digest 会问这两件事（M4 日程微调）；桩默认「没有可动的块」
+    def adjustable_blocks(self, when):
+        return []
+
+    def queue_schedule_tweaks(self, tweaks, when):
+        return []
+
 
 def _seed_episodes(a, n=3):
     for i, txt in enumerate(("周一加班到十一点", "周二继续改方案", "周三终于提测了")[:n]):

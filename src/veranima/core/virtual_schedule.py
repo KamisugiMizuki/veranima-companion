@@ -201,6 +201,11 @@ class ScheduleRuntime:
         self.space_preference: str = "stable"
         self.pending_scene_event: str = ""
         self.day_route: DayRoute | None = None
+        # M4：夜眠消化写回的日程微调（已过 deviation_policy 闸），下次生成计划时并入。
+        self._schedule_tweaks: list[dict] = []
+        # 离线错过睡窗 → 醒来补一次夜眠消化的凭据（cycle id；消化成功后由 agent 的
+        # _digest_cycle 兜住去重，所以这里只写不清）。
+        self.missed_digest_cycle: str = ""
 
     @property
     def sleeping(self) -> bool:
@@ -230,6 +235,8 @@ class ScheduleRuntime:
             "scene_state": self.scene_state,
             "space_preference": self.space_preference,
             "pending_scene_event": self.pending_scene_event,
+            "missed_digest_cycle": self.missed_digest_cycle,
+            "schedule_tweaks": list(self._schedule_tweaks),
         }
         if self._next_day_plan is not None:
             data["next_plan_date"] = self._next_day_plan.local_date.isoformat()
@@ -272,6 +279,8 @@ class ScheduleRuntime:
         }
         runtime.current_item_id = str(snapshot.get("current_item_id") or "")
         runtime.last_sleep_cycle_id = str(snapshot.get("last_sleep_cycle_id") or "")
+        runtime.missed_digest_cycle = str(snapshot.get("missed_digest_cycle") or "")
+        runtime._schedule_tweaks = [dict(item) for item in snapshot.get("schedule_tweaks", []) if isinstance(item, dict)]
         runtime.current_place_id = snapshot.get("current_place_id") if isinstance(snapshot.get("current_place_id"), str) else None
         runtime.previous_place_id = snapshot.get("previous_place_id") if isinstance(snapshot.get("previous_place_id"), str) else None
         runtime.target_place_id = snapshot.get("target_place_id") if isinstance(snapshot.get("target_place_id"), str) else None
@@ -377,6 +386,17 @@ class ScheduleRuntime:
             "interruption_minutes": sum(item.get("interruption_minutes", 0) for item in summaries),
         }
 
+    def _offset_fits(self, block: "ScheduleBlock", shift: int) -> bool:
+        """整体偏移后仍落在该块偏好窗口内？（与 build_day_plan 的校验同口径）"""
+        zone = ZoneInfo(self.outline.timezone)
+        day = dt.date(2000, 1, 1)
+        start = _local_time(day, block.window_start, zone)
+        end = _local_time(day, block.window_end, zone)
+        if end <= start:
+            end += dt.timedelta(days=1)
+        shifted = start + dt.timedelta(minutes=shift)
+        return shifted >= start and shifted + dt.timedelta(minutes=block.duration_min) <= end
+
     def generate_next_day(self, when: dt.datetime, llm_output: dict | None = None) -> DayPlan:
         candidate = llm_output or {}
         profile_id = str(candidate.get("day_profile") or self.outline.default_day_profile)
@@ -391,17 +411,32 @@ class ScheduleRuntime:
             )
             for item in raw_items
         )
-        # Invalid structured output never mutates the plan; deterministic fallback wins.
-        offset_adjustments = [
-            {"rule_id": block.id, "operation": "shift", "shift_minutes": self.schedule_offset_minutes,
-             "activity_key": block.activity_pool[0], "duration_minutes": block.duration_min}
-            for block in self.outline.blocks if self.schedule_offset_minutes
-        ]
         active_profile = self.profile_override or self.outline.default_day_profile
-        plan = self.outline.build_day_plan(
-            when, day_profile=active_profile, adjustments=offset_adjustments or None,
-            space_preference=self.space_preference,
-        )
+        # 偏移=整体平移：只要有一块装不下（sleep 这类锚点填满窗口）就整体不偏移。
+        # 单独放行「装得下」的块会与未偏移的邻居重叠 → build_day_plan 抛
+        # 「items overlap」沿 advance 上抛（真机 09-08 实锤：offset 衰减到 70 时
+        # wake 位移、commute_in 未位移，撞车）。锚点钉死 ⇒ 这天就按模板走。
+        profile_ids = set(
+            (self.outline.day_profiles.get(active_profile) or {}).get("allowed_block_ids") or ())
+        shift_blocks = [b for b in self.outline.blocks if not profile_ids or b.id in profile_ids]
+        offset_adjustments: list[dict] = []
+        if self.schedule_offset_minutes and all(
+                self._offset_fits(block, self.schedule_offset_minutes) for block in shift_blocks):
+            offset_adjustments = [
+                {"rule_id": block.id, "operation": "shift", "shift_minutes": self.schedule_offset_minutes,
+                 "activity_key": block.activity_pool[0], "duration_minutes": block.duration_min}
+                for block in shift_blocks
+            ]
+        try:
+            plan = self.outline.build_day_plan(
+                when, day_profile=active_profile, adjustments=offset_adjustments or None,
+                space_preference=self.space_preference,
+            )
+        except ScheduleTemplateError as exc:
+            # 兜底：偏移/模板不兼容也绝不让计划生成炸掉 tick（tick 崩=计划+消化双丢）
+            logger.warning("schedule adjustments unusable (%s) → template plan", exc)
+            plan = self.outline.build_day_plan(
+                when, day_profile=active_profile, space_preference=self.space_preference)
         if plan is None:
             raise ScheduleTemplateError("cannot generate a plan from a disabled outline")
         if not valid:
@@ -494,6 +529,9 @@ class ScheduleRuntime:
                 )
                 self.pending_notice = "woke"
                 self.recover_offset(when)
+        # 睡窗里进程不在（安卓夜间被杀）→ 醒来补账：当日计划 + 放行一次夜眠消化。
+        if self.state.state == "awake" and self._next_day_plan is None:
+            self.catch_up_after_offline_sleep(when)
         plan = self._next_day_plan or self.outline.build_day_plan(
             when, day_profile=self.profile_override or None,
             space_preference=self.space_preference,
@@ -717,14 +755,20 @@ class ScheduleRuntime:
         # planner 失败（真机实锤 2026-09-04：DeepSeek 截断异常沿 advance 上抛）
         # =本轮无 LLM 微调、确定性计划照常——它不该炸掉 tick 循环，更不该
         # 连带吞掉用户轮次（07:09「堂堂起床」登记成功但回复+落库全丢 116min）。
+        # 「明日计划」= 醒来那天：when + target_sleep_minutes 的本地日期。
+        # 旧口径 when+1day 对凌晨入睡的角色（xumian 01:00 睡）生成的是后天计划
+        # → 醒来当天全程落 gap（真机实锤 09-05 起 activity_spans 断档）。
+        sleep_minutes = int(getattr(self.outline.circadian, "target_sleep_minutes", 420) or 420)
+        plan_when = when + dt.timedelta(minutes=max(60, sleep_minutes))
         output = None
         if self.planner is not None:
             try:
                 output = self.planner(when)
             except Exception as e:
                 logger.warning("schedule planner failed (deterministic plan kept): %s", e)
+        output = self._merge_pending_tweaks(output)
         if self.calendar is not None:
-            day = self.calendar.day((when + dt.timedelta(days=1)).astimezone(ZoneInfo(self.outline.timezone)).date())
+            day = self.calendar.day(plan_when.astimezone(ZoneInfo(self.outline.timezone)).date())
             if output is None:
                 output = {}
             profile = day.day_type
@@ -732,13 +776,149 @@ class ScheduleRuntime:
                 profile = "rest_like"
             if profile in self.outline.day_profiles:
                 output["day_profile"] = profile
-        self._next_day_plan = self.generate_next_day(when + dt.timedelta(days=1), output)
+        self._next_day_plan = self.generate_next_day(plan_when, output)
         self._next_day_adjustments = [
             {**item, "shift_minutes": int(item.get("shift_minutes", 0)) + self.schedule_offset_minutes}
             for item in (output or {}).get("items", []) if isinstance(item, dict)
         ]
         self._next_day_profile = self._next_day_plan.day_profile or self.outline.default_day_profile
         return self._next_day_plan
+
+    def catch_up_after_offline_sleep(self, when: dt.datetime) -> str:
+        """睡窗里进程不在（安卓夜间被杀）→ 补账：当日计划 + 放行一次夜眠消化。
+
+        真机实锤（09-08 导出件）：state 由「用户报睡」写入、计划生成只活在 advance()，
+        进程一死 → advance 再没在 sleeping 上跑过 → next_plan_* 恒缺席、reflect:* 为 0。
+        返回补上的 cycle id（agent 拿它放行一次 digest）；无需补账时返回 ""。
+        """
+        circ = self.outline.circadian
+        if circ is None or self.state.state != "awake" or self._next_day_plan is not None:
+            return ""
+        if not (self.last_sleep_cycle_id or self.state.sleep_cycle_id):
+            return ""                                    # 全新安装，没睡过就别补
+        zone = ZoneInfo(self.outline.timezone)
+        local = when.astimezone(zone)
+        start = _local_time(local.date(), circ.sleep_start, zone)
+        end = _local_time(local.date(), circ.sleep_end, zone)
+        if end <= start:
+            end += dt.timedelta(days=1)
+        if local < end:
+            return ""                                    # 睡窗还没过完，正常路径自己会生成
+        cycle = f"{self.outline.role_id}:{start.astimezone(dt.timezone.utc).date().isoformat()}"
+        output = None
+        if self.planner is not None:
+            try:
+                output = self.planner(when)
+            except Exception as e:
+                logger.warning("schedule planner failed (catch-up, deterministic plan kept): %s", e)
+        output = self._merge_pending_tweaks(output)
+        self._next_day_plan = self.generate_next_day(when, output)
+        self._next_day_adjustments = [
+            {**item, "shift_minutes": int(item.get("shift_minutes", 0)) + self.schedule_offset_minutes}
+            for item in (output or {}).get("items", []) if isinstance(item, dict)
+        ]
+        self._next_day_profile = self._next_day_plan.day_profile or self.outline.default_day_profile
+        self.missed_digest_cycle = cycle
+        logger.info("schedule catch-up after offline sleep: plan=%s digest_cycle=%s",
+                    self._next_day_plan.local_date, cycle)
+        return cycle
+
+    def queue_schedule_tweaks(self, tweaks, when: dt.datetime) -> list[dict]:
+        """M4：夜眠消化的日程微调过闸，返回真正落库的条目。
+
+        闸门口径（2026-09-09 真机卡实拍）：required=true ≠ 不可动，真权限在
+        deviation_policy —— shift 要 allow_shift、加时要 allow_extend、减时要 allow_skip；
+        sleep_window 类锚点块一律免疫（作息归 circadian 管，不归牵挂管）。
+        没过的条目直接丢，不做部分修正。
+        """
+        zone = ZoneInfo(self.outline.timezone)
+        local_date = when.astimezone(zone).date()
+        profile = self.outline.day_profiles.get(self.profile_override or self.outline.default_day_profile) or {}
+        allowed = set(profile.get("allowed_block_ids") or ())
+        by_id = {block.id: block for block in self.outline.blocks}
+        accepted: list[dict] = []
+        for raw in tweaks or []:
+            if not isinstance(raw, dict):
+                continue
+            block = by_id.get(str(raw.get("rule_id") or ""))
+            if block is None or block.category == "sleep_window" or (allowed and block.id not in allowed):
+                continue
+            policy = block.deviation_policy or {}
+            operation = str(raw.get("operation") or "shift")
+            shift = int(raw.get("shift_minutes", 0) or 0)
+            duration = int(raw.get("duration_minutes", block.duration_min) or block.duration_min)
+            if operation == "shift":
+                if not policy.get("allow_shift") or shift == 0:
+                    continue
+            elif operation == "resize":
+                if duration > block.duration_min and not policy.get("allow_extend"):
+                    continue
+                if duration < block.duration_min and not policy.get("allow_skip"):
+                    continue
+            else:
+                continue
+            if not block.duration_min <= duration <= block.duration_max:
+                continue
+            activity_key = str(raw.get("activity_key") or block.activity_pool[0])
+            if activity_key not in block.activity_pool:
+                continue
+            start = _local_time(local_date, block.window_start, zone)
+            end = _local_time(local_date, block.window_end, zone)
+            if end <= start:
+                end += dt.timedelta(days=1)
+            planned_start = start + dt.timedelta(minutes=shift)
+            if planned_start < start or planned_start + dt.timedelta(minutes=duration) > end:
+                continue
+            accepted.append({
+                "rule_id": block.id, "operation": operation,
+                "shift_minutes": shift if operation == "shift" else 0,
+                "duration_minutes": duration, "activity_key": activity_key,
+                "reason": str(raw.get("reason") or "")[:120],
+            })
+        if accepted:
+            self._schedule_tweaks = (self._schedule_tweaks + accepted)[-4:]
+        return accepted
+
+    def _merge_pending_tweaks(self, output: dict | None) -> dict | None:
+        """M4：把待并入的微调叠到 planner 输出上（同 rule_id 覆盖），取走即清。"""
+        if not self._schedule_tweaks:
+            return output
+        merged = {str(item.get("rule_id")): dict(item)
+                  for item in (output or {}).get("items", []) if isinstance(item, dict)}
+        for tweak in self._schedule_tweaks:
+            rule_id = str(tweak.get("rule_id") or "")
+            if rule_id:
+                merged[rule_id] = {**merged.get(rule_id, {}), **tweak}
+        self._schedule_tweaks = []
+        return {**(output or {}), "items": list(merged.values())}
+
+    def adjustable_blocks(self, when: dt.datetime, limit: int = 8) -> list[dict]:
+        """M4：digest 能动的块（过 deviation_policy 闸），给它当选项表——不许它自己发明块。"""
+        zone = ZoneInfo(self.outline.timezone)
+        plan = self._next_day_plan or self.outline.build_day_plan(
+            when, day_profile=self.profile_override or None, space_preference=self.space_preference)
+        if plan is None:
+            return []
+        profile = self.outline.day_profiles.get(
+            self.profile_override or self.outline.default_day_profile) or {}
+        allowed = set(profile.get("allowed_block_ids") or ())
+        by_id = {block.id: block for block in self.outline.blocks}
+        out: list[dict] = []
+        for item in plan.items:
+            block = by_id.get(item.rule_id)
+            if block is None or block.category == "sleep_window" or (allowed and block.id not in allowed):
+                continue
+            policy = block.deviation_policy or {}
+            if not (policy.get("allow_shift") or policy.get("allow_extend") or policy.get("allow_skip")):
+                continue
+            out.append({
+                "rule_id": block.id,
+                "now": f"{item.planned_start.astimezone(zone):%H:%M}-{item.planned_end.astimezone(zone):%H:%M}",
+                "shift_ok": bool(policy.get("allow_shift")),
+                "extend_ok": bool(policy.get("allow_extend")),
+                "max_minutes": block.duration_max,
+            })
+        return out[:limit]
 
 
 @dataclass(frozen=True)

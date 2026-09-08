@@ -2810,11 +2810,18 @@ class Agent:
         # 角色只在她真睡着的那段消化（睡前的事当天全了、醒来第一句接得上）；
         # 无 runtime（CLI/测试/旧配置）照旧每日撞一次。
         rt = getattr(self, "schedule_runtime", None)
+        catchup_cycle = ""
         if rt is not None:
-            if not rt.sleeping:
+            if rt.sleeping:
+                cyc = str(rt.state.sleep_cycle_id or "")
+            else:
+                # 睡窗里进程不在（安卓夜间被杀）→ 醒来补账放行一次夜眠消化；
+                # 成功消化后 _digest_cycle 记住这个 cycle，不会重放。
+                cyc = str(getattr(rt, "missed_digest_cycle", "") or "")
+                catchup_cycle = cyc
+            if not cyc:
                 return {"created": False, "reason": "not_sleeping"}
-            cyc = str(rt.state.sleep_cycle_id or "")
-            if cyc and str(getattr(self, "_digest_cycle", "") or "") == cyc:
+            if str(getattr(self, "_digest_cycle", "") or "") == cyc:
                 return {"created": False, "reason": "already_digested_cycle"}
         today = datetime.date.today().isoformat()
         already = self.memory.con.execute(
@@ -2829,6 +2836,11 @@ class Agent:
         from .tension import is_tension_ledger
         day_start = datetime.datetime.now(datetime.timezone.utc).replace(
             hour=0, minute=0, second=0, microsecond=0).isoformat(timespec="seconds")
+        if catchup_cycle:
+            # 补账消化：醒来时昨晚的材料已跨 UTC 零点，按 24h 窗取——否则
+            # not_enough_material 让补账永远空转（真机 09-08 导出件即此形态）。
+            day_start = (datetime.datetime.now(datetime.timezone.utc)
+                         - datetime.timedelta(hours=24)).isoformat(timespec="seconds")
         episodes = [
             e for e in self.memory.list_layer("episodic", limit=200)
             if e.created_at >= day_start and not is_tension_ledger(e)
@@ -2865,8 +2877,8 @@ class Agent:
             "顺着三个固定角度想（有依据才写，没依据的角度跳过）：ta 什么时候最爱来找我、"
             "哪几类话题 ta 会回避或一笔带过、ta 反复提起的事有没有变化。\n"
         )
-        # M3 夜眠消化（spec 3.5）：同一次调用多消化两格——牵挂演进+明晨残响。
-        # 日程微调按裁决归 M4 不做；长期记忆条目=content 格本身。
+        # M3 夜眠消化（spec 3.5）：同一次调用多消化两格——牵挂演进+明晨残响；
+        # M4（3.4 ③）再搭一格 schedule：牵挂写明日程（过闸才生效）。
         open_rows = self.threads.top(n=5) if hasattr(self, "threads") else []
         if open_rows:
             tl = "; ".join(f"id={r['id']}「{r['topic'][:30]}」"
@@ -2883,8 +2895,27 @@ class Agent:
             "再写一格\"echo\"：今晚睡前留在你心里的一个具体念头（≤40 字，第一人称，"
             "明早醒来问候时会自然想起它的那种——只从上面材料和牵挂里来，没有真惦记的"
             "就写空串，不许硬编）。"
+        )
+        # M4（spec 3.4 ③）：牵挂/反思写明日程——选项表只给「能动」的块，
+        # 闸门在 ScheduleRuntime.queue_schedule_tweaks（deviation_policy + 窗口装得下）。
+        sched_opts = (rt.adjustable_blocks(datetime.datetime.now(datetime.timezone.utc))
+                      if rt is not None else [])
+        if sched_opts:
+            opts = "; ".join(
+                f"{o['rule_id']}({o['now']}"
+                f"{'，可延后' if o['shift_ok'] else ''}"
+                f"{'，可拉长到' + str(o['max_minutes']) + '分钟' if o['extend_ok'] else ''})"
+                for o in sched_opts)
+            task += (
+                "\n再写一格\"schedule\"：明天你想动哪处日程就写哪处（最多 2 条，不想动就空数组）。"
+                f"只许动这些块：{opts}。"
+                "每条形如 {\"rule_id\":\"supper\",\"operation\":\"shift\",\"shift_minutes\":30,"
+                "\"reason\":\"一句话依据\"}（拉长用 operation=resize + duration_minutes）。"
+                "依据只能来自上面的材料和牵挂，不许凭空编；拿不准就空数组。"
+            )
+        task += (
             f"\n只输出 JSON：{{\"content\":\"概括\",\"portrait\":\"我眼中的你\","
-            "\"echo\":\"\",\"threads\":[]}}。"
+            "\"echo\":\"\",\"threads\":[],\"schedule\":[]}}。"
             f"\n材料：\n{chr(10).join(lines)}"
         )
         try:
@@ -2915,6 +2946,7 @@ class Agent:
         portrait = ""
         echo = ""
         thread_ops: list = []
+        sched_ops: list = []
         try:
             data = _json.loads((raw or "").strip())
             content = str(data.get("content") or "").strip()
@@ -2923,6 +2955,9 @@ class Agent:
             to = data.get("threads")
             if isinstance(to, list):
                 thread_ops = [x for x in to if isinstance(x, dict)]
+            sc = data.get("schedule")
+            if isinstance(sc, list):
+                sched_ops = [x for x in sc if isinstance(x, dict)]
         except _json.JSONDecodeError:
             content = ""
         if not content:
@@ -2966,9 +3001,15 @@ class Agent:
         # M3 牵挂演进应用（id 只认列过的、action 闭集、beat 钳 2-168h——
         # LLM 输出永远当输入过校验，不是命令）
         applied = self._apply_thread_ops(thread_ops, open_rows)
+        # M4 日程微调（spec 3.4 ③）：过闸（deviation_policy + 窗口装得下）才入池，
+        # 下次生成计划时并入——这次消化写的是「明天」。
+        tweaks: list[dict] = []
+        if rt is not None and sched_ops:
+            tweaks = rt.queue_schedule_tweaks(
+                sched_ops[:2], datetime.datetime.now(datetime.timezone.utc))
         # M3 心境残响：只活一晚，明晨问候织进第一次即销毁
         self._echo_note = echo
-        if echo or applied:
+        if echo or applied or tweaks:
             self._persist_state()
         role = self.role_key or self.card.name
         for op in applied:
@@ -2979,10 +3020,16 @@ class Agent:
         if echo:
             self.memory.log_decision(role, "reflect:echo", "recorded",
                                      reason="明日问候残响", digest=echo)
+        for t in tweaks:
+            self.memory.log_decision(role, "reflect:schedule", t["operation"],
+                                     reason=t.get("reason", ""),
+                                     object_ref="block:" + t["rule_id"],
+                                     digest=f"{t['rule_id']} {t['operation']} "
+                                            f"shift={t['shift_minutes']}min dur={t['duration_minutes']}min")
         self._refresh_self_model_chapter()
         logger.info("nightly digest stored (%d episodes -> summary)", len(episodes))
         if rt is not None:
-            self._digest_cycle = str(rt.state.sleep_cycle_id or "")
+            self._digest_cycle = cyc
             self._persist_state()  # 周期戳立刻落盘（下次 tick 不再重跑）
         return {"created": True, "episodes": len(episodes)}
 
