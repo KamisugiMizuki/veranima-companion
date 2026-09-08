@@ -175,7 +175,9 @@ beat_script, status open/dormant/done, created_at, updated_at)
   （`queue_schedule_tweaks`：deviation_policy + 窗口装得下 + sleep_window 免疫）→
   入待并入池（随快照持久化）→ 下次生成计划时按 rule_id 并入 → 落 decisions `reflect:schedule`。
   同时修掉三处让它「永远看不到效果」的根因：偏移卡 sleep 块炸 advance、夜间杀进程后
-  计划/消化双门永久关闭、明日计划日期差一天。
+  计划/消化双门永久关闭、明日计划日期差一天。偏移与微调的关系定死：偏移是**整体**口径
+  （任一块装不下就整体不偏移），且装不下时不得再叠到微调上——否则微调会被叠成装不下、
+  整份计划回退模板，微调静默失效（MuMu 实锤：supper +30 落库成 120）。
 每相独立可验收、可回滚；M1 落地即可肉眼感到差别。
 
 ## 8. 裁决记录（2026-09-04 用户拍板）

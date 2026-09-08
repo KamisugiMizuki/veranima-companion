@@ -397,6 +397,19 @@ class ScheduleRuntime:
         shifted = start + dt.timedelta(minutes=shift)
         return shifted >= start and shifted + dt.timedelta(minutes=block.duration_min) <= end
 
+    def _offset_blocks(self) -> list:
+        """参与整体偏移的块（受当日 day_profile 限制）。"""
+        profile_ids = set(
+            (self.outline.day_profiles.get(self.profile_override or self.outline.default_day_profile) or {})
+            .get("allowed_block_ids") or ())
+        return [b for b in self.outline.blocks if not profile_ids or b.id in profile_ids]
+
+    def _offset_applies(self) -> bool:
+        """整体偏移是否装得下（装不下=整体不偏移，口径见 generate_next_day 注释）。"""
+        blocks = self._offset_blocks()
+        return bool(self.schedule_offset_minutes and blocks) and all(
+            self._offset_fits(block, self.schedule_offset_minutes) for block in blocks)
+
     def generate_next_day(self, when: dt.datetime, llm_output: dict | None = None) -> DayPlan:
         candidate = llm_output or {}
         profile_id = str(candidate.get("day_profile") or self.outline.default_day_profile)
@@ -416,16 +429,12 @@ class ScheduleRuntime:
         # 单独放行「装得下」的块会与未偏移的邻居重叠 → build_day_plan 抛
         # 「items overlap」沿 advance 上抛（真机 09-08 实锤：offset 衰减到 70 时
         # wake 位移、commute_in 未位移，撞车）。锚点钉死 ⇒ 这天就按模板走。
-        profile_ids = set(
-            (self.outline.day_profiles.get(active_profile) or {}).get("allowed_block_ids") or ())
-        shift_blocks = [b for b in self.outline.blocks if not profile_ids or b.id in profile_ids]
         offset_adjustments: list[dict] = []
-        if self.schedule_offset_minutes and all(
-                self._offset_fits(block, self.schedule_offset_minutes) for block in shift_blocks):
+        if self._offset_applies():
             offset_adjustments = [
                 {"rule_id": block.id, "operation": "shift", "shift_minutes": self.schedule_offset_minutes,
                  "activity_key": block.activity_pool[0], "duration_minutes": block.duration_min}
-                for block in shift_blocks
+                for block in self._offset_blocks()
             ]
         try:
             plan = self.outline.build_day_plan(
@@ -442,12 +451,16 @@ class ScheduleRuntime:
         if not valid:
             return DayPlan(plan.plan_id, plan.role_id, plan.local_date, plan.timezone, plan.items,
                            plan.interaction_profiles, source="deterministic_fallback", day_profile=plan.day_profile)
+        # 偏移是整体口径：装不下就整体不偏移——也包括不加到 planner items 上，否则
+        # M4 微调（supper +30）会被再叠一个装不下的偏移 → build 抛 → 整份计划回退模板、
+        # 微调静默失效（MuMu 09-17 实锤：微调 30 落库成 120）。
+        effective_offset = self.schedule_offset_minutes if offset_adjustments else 0
         try:
             return self.outline.build_day_plan(
                 when,
                 day_profile=profile_id,
                 adjustments=[
-                    {**item, "shift_minutes": int(item.get("shift_minutes", 0)) + self.schedule_offset_minutes}
+                    {**item, "shift_minutes": int(item.get("shift_minutes", 0)) + effective_offset}
                     for item in candidate.get("items", [])
                 ],
                 source="llm_structured_template",
@@ -778,7 +791,8 @@ class ScheduleRuntime:
                 output["day_profile"] = profile
         self._next_day_plan = self.generate_next_day(plan_when, output)
         self._next_day_adjustments = [
-            {**item, "shift_minutes": int(item.get("shift_minutes", 0)) + self.schedule_offset_minutes}
+            {**item, "shift_minutes": int(item.get("shift_minutes", 0))
+             + (self.schedule_offset_minutes if self._offset_applies() else 0)}
             for item in (output or {}).get("items", []) if isinstance(item, dict)
         ]
         self._next_day_profile = self._next_day_plan.day_profile or self.outline.default_day_profile
@@ -814,7 +828,8 @@ class ScheduleRuntime:
         output = self._merge_pending_tweaks(output)
         self._next_day_plan = self.generate_next_day(when, output)
         self._next_day_adjustments = [
-            {**item, "shift_minutes": int(item.get("shift_minutes", 0)) + self.schedule_offset_minutes}
+            {**item, "shift_minutes": int(item.get("shift_minutes", 0))
+             + (self.schedule_offset_minutes if self._offset_applies() else 0)}
             for item in (output or {}).get("items", []) if isinstance(item, dict)
         ]
         self._next_day_profile = self._next_day_plan.day_profile or self.outline.default_day_profile

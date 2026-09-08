@@ -174,6 +174,54 @@ def _seed(a, n=3):
                             "subject": "user", "source": "rule_extract"})
 
 
+def test_digest_schedule_slot_queues_tweak_and_logs_decision(tmp_path):
+    """M4 生产者：digest 第五格 → 过闸入池 → reflect:schedule 账。"""
+    payload = json.dumps({
+        "content": "摘要", "portrait": "", "echo": "", "threads": [],
+        "schedule": [{"rule_id": "supper", "operation": "shift", "shift_minutes": 30,
+                      "reason": "她晚上想留出说话的时间"}]}, ensure_ascii=False)
+    a = _agent(tmp_path, FakeLLM(payload))
+    rt = _runtime()
+    rt.state = ScheduleRuntimeState(
+        state="sleeping", sleep_started_at=_local(2026, 9, 5, 1, 30),
+        sleep_cycle_id="xumian:2026-09-04")
+    a.schedule_runtime = rt
+    _seed(a)
+    assert a.maybe_nightly_digest()["created"] is True
+    assert [t["rule_id"] for t in rt._schedule_tweaks] == ["supper"]
+    assert rt._schedule_tweaks[0]["shift_minutes"] == 30
+    rows = a.memory.con.execute(
+        "select kind, verdict from decisions where kind='reflect:schedule'").fetchall()
+    assert len(rows) == 1
+
+
+def test_schedule_notice_text_survives_llm_truncation(tmp_path):
+    """短任务抛异常（实机 reasoning 烧空预算 → LLMTruncatedError）不能拖垮 tick。"""
+
+    class _Boom(FakeLLM):
+        def chat(self, messages, **kw):
+            raise RuntimeError("completion truncated (finish_reason=length)")
+
+    a = _agent(tmp_path, _Boom())
+    a.schedule_runtime = _runtime()
+    assert a.schedule_notice_text("sleep_preparing") == ""
+
+
+def test_tweak_not_contaminated_by_infeasible_offset():
+    """偏移装不下（整体不偏移）时不得再叠到 M4 微调上——否则 build 抛 → 回退模板、微调失效。"""
+    rt = _runtime(offset=100)
+    assert rt.queue_schedule_tweaks(
+        [{"rule_id": "supper", "operation": "shift", "shift_minutes": 30, "reason": "留时间"}],
+        _local(2026, 9, 6, 2, 0))
+    rt.state = ScheduleRuntimeState(state="sleeping", sleep_started_at=_local(2026, 9, 6, 1, 30),
+                                    sleep_cycle_id="xumian:2026-09-05")
+    plan = rt.generate_next_day_after_sleep(_local(2026, 9, 6, 2, 0))
+    by = {i.rule_id: i for i in plan.items}
+    assert by["supper"].planned_start.astimezone(CST).strftime("%H:%M") == "22:00"
+    sup = [it for it in rt._next_day_adjustments if it["rule_id"] == "supper"]
+    assert sup and sup[0]["shift_minutes"] == 30
+
+
 def test_digest_runs_once_for_missed_cycle(tmp_path):
     llm = FakeLLM(json.dumps({"content": "摘要", "portrait": "", "echo": "",
                               "threads": [], "schedule": []}, ensure_ascii=False))

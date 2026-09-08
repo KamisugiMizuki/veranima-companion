@@ -39,6 +39,18 @@ MATERIAL = [
 ]
 
 
+def _active_entry(data):
+    """活跃角色的账在 relationship.roster[卡名] 里（顶层那份是影子，boot 时被
+    roster 条目覆盖——09-09 实测：只改顶层 → 冷启后 offset 回 0）。"""
+    owner = str(data.get("owner") or "")
+    roster = data.get("roster") if isinstance(data.get("roster"), dict) else {}
+    if owner and isinstance(roster.get(owner), dict):
+        return roster[owner]
+    if len(roster) == 1:
+        return next(iter(roster.values()))
+    return data
+
+
 def rel():
     out = drv.sh(["shell", f"su 0 sqlite3 {drv.DB} \"select hex(relationship) from agent_state\""])
     raw = out.strip().splitlines()[-1]
@@ -46,19 +58,26 @@ def rel():
 
 
 def set_rel(data):
-    hexs = json.dumps(data, ensure_ascii=False).encode("utf-8").hex()
-    drv.sh(["shell", f"su 0 sqlite3 {drv.DB} \"update agent_state set relationship=cast(x'{hexs}' as text)\""])
+    """写回 relationship：adb 命令行有长度上限（hex 化 4KB JSON 直接超限，
+    09-09 实测被截断→App 读到坏 JSON 回退默认态）。改用设备侧 .read。"""
+    sql = "UPDATE agent_state SET relationship='{}';\n".format(
+        json.dumps(data, ensure_ascii=False).replace("'", "''"))
+    local = r"C:\Users\Kamisugi\AppData\Local\Temp\_mumu_rel_upd.sql"
+    with open(local, "w", encoding="utf-8") as fh:
+        fh.write(sql)
+    drv.sh(["push", local, "/data/local/tmp/_rel_upd.sql"])
+    drv.sh(["shell", f"su 0 sqlite3 {drv.DB} '.read /data/local/tmp/_rel_upd.sql'"])
     back = rel()
     assert back.get("virtual_schedule_runtime"), "回写失败"
     return back
 
 
 def rt_state():
-    return (rel().get("virtual_schedule_runtime") or {})
+    return (_active_entry(rel()).get("virtual_schedule_runtime") or {})
 
 
 def decisions(kind=None):
-    q = "select kind, action, substr(coalesce(digest,''),1,40) from decisions"
+    q = "select ts, kind, verdict, substr(coalesce(digest,''),1,40) from decisions"
     if kind:
         q += f" where kind like '{kind}%'"
     q += " order by id desc limit 8"
@@ -74,35 +93,60 @@ def tick(wait=75):
     time.sleep(wait)
 
 
+HOLD = {"target": None}
+
+
+def _hold_loop():
+    """MuMu 的 NTP 会把钟打回真实时间 → 每 45s 重设当前阶段目标（跟随 HOLD）。"""
+    while True:
+        t = HOLD["target"]
+        if t is not None:
+            drv.clock_set(t - datetime.timedelta(hours=8))   # 同 clock_set 的本地→UTC 口径
+        time.sleep(45)
+
+
+def clock_set(target):
+    """drv.clock_set 把 naive 目标写成 UTC → 设备本地会 +8h；这里先减回本地口径。"""
+    HOLD["target"] = target
+    drv.clock_set(target - datetime.timedelta(hours=8))
+
+
+def _patch_rt(mutate):
+    """改活跃角色 roster 条目里的 runtime（顶层影子不用管）。"""
+    data = rel()
+    entry = _active_entry(data)
+    r = entry.setdefault("virtual_schedule_runtime", {})
+    mutate(r)
+    back = set_rel(data)
+    return (_active_entry(back).get("virtual_schedule_runtime") or {})
+
+
 def cmd_prep():
     drv.ensure_apk()
-    drv.clock_hold(30)
     drv.sh(["shell", "am force-stop " + drv.PKG])
     time.sleep(2)
-    data = rel()
-    r = data.setdefault("virtual_schedule_runtime", {})
-    r["schedule_offset_minutes"] = 100
-    r["state"] = "awake"
-    r["sleep_started_at"] = None
-    r["grace_deadline"] = None
-    r["next_plan_date"] = None
-    r["missed_digest_cycle"] = None
-    r["schedule_tweaks"] = []
-    set_rel(data)
-    print("[prep] offset=100 已注入；state=awake，计划清空")
-    drv.clock_set(T_NIGHT_EVE)
+
+    def _mut(r):
+        r.update({"schedule_offset_minutes": 100, "state": "awake",
+                  "sleep_started_at": None, "grace_deadline": None,
+                  "next_plan_date": None, "missed_digest_cycle": None,
+                  "schedule_tweaks": []})
+    st = _patch_rt(_mut)
+    assert st.get("schedule_offset_minutes") == 100, f"注入没落库: {st.get('schedule_offset_minutes')}"
+    print("[prep] offset=100 已注入 roster[许眠]（回读确认）")
+    clock_set(T_NIGHT_EVE)
     drv.sh(["shell", f"am start -n {drv.PKG}/.MainActivity"])
     tick(75)
     st = rt_state()
-    print("[prep] state=", st.get("state"), "offset=", st.get("schedule_offset_minutes"),
-          "plan=", st.get("next_plan_date"))
+    print("[prep] 设备钟=", drv.get_clock(), "state=", st.get("state"),
+          "offset=", st.get("schedule_offset_minutes"), "plan=", st.get("next_plan_date"))
 
 
 def cmd_night():
-    drv.clock_set(T_SLEEP_PREP)
+    clock_set(T_SLEEP_PREP)
     tick(80)
     print("[night] 01:20 →", rt_state().get("state"), "plan=", rt_state().get("next_plan_date"))
-    drv.clock_set(T_SLEEP)
+    clock_set(T_SLEEP)
     tick(90)
     st = rt_state()
     print("[night] 02:00 → state=", st.get("state"), "plan=", st.get("next_plan_date"),
@@ -114,11 +158,11 @@ def cmd_night():
 
 
 def cmd_wake():
-    drv.clock_set(T_WAKE)
+    clock_set(T_WAKE)
     tick(80)
     st = rt_state()
     print("[wake] state=", st.get("state"), "plan=", st.get("next_plan_date"))
-    drv.clock_set(T_MATERIAL)
+    clock_set(T_MATERIAL)
     for text in MATERIAL:
         base = drv.send(text)
         drv.wait_reply(base, timeout=180)
@@ -128,7 +172,7 @@ def cmd_wake():
 def cmd_catchup():
     drv.sh(["shell", "am force-stop " + drv.PKG])
     time.sleep(2)
-    drv.clock_set(T_MISSED_MORNING)
+    clock_set(T_MISSED_MORNING)
     drv.sh(["shell", f"am start -n {drv.PKG}/.MainActivity"])
     tick(150)
     st = rt_state()
@@ -146,17 +190,18 @@ def cmd_catchup():
 def cmd_tweak():
     drv.sh(["shell", "am force-stop " + drv.PKG])
     time.sleep(2)
-    data = rel()
-    r = data["virtual_schedule_runtime"]
-    r["schedule_tweaks"] = [{"rule_id": "supper", "operation": "shift", "shift_minutes": 30,
-                             "duration_minutes": 20, "activity_key": "supper_variant",
-                             "reason": "验收注入"}]
-    set_rel(data)
+
+    def _mut(r):
+        r["schedule_tweaks"] = [{"rule_id": "supper", "operation": "shift", "shift_minutes": 30,
+                                 "duration_minutes": 20, "activity_key": "supper_variant",
+                                 "reason": "验收注入"}]
+    st = _patch_rt(_mut)
+    assert st.get("schedule_tweaks"), "微调注入没落库"
     print("[tweak] 已注入待并入微调（supper +30min）")
-    drv.clock_set(T_NEXT_SLEEP)
+    clock_set(T_NEXT_SLEEP)
     drv.sh(["shell", f"am start -n {drv.PKG}/.MainActivity"])
     tick(90)
-    drv.clock_set(datetime.datetime(2026, 9, 17, 2, 0))
+    clock_set(datetime.datetime(2026, 9, 17, 2, 0))
     tick(90)
     st = rt_state()
     adj = st.get("next_plan_adjustments") or []
@@ -179,14 +224,117 @@ def cmd_inspect():
     print(logcat_tail() or "  （无）")
 
 
+def cmd_more():
+    """补素材：digest 要 ≥3 条非张力账本的 episodic；judges 只对 event/commitment
+    类判词落 episodic，所以补几条明确事件。"""
+    extra = ["周六要去医院拿体检报告", "下周要把工位搬到十二楼",
+             "昨天室友搬走了，家里一下安静了", "这周五要交季度总结"]
+    for text in extra:
+        base = drv.send(text)
+        drv.wait_reply(base, timeout=180)
+    q = ("select count(*) from memories where layer='episodic' "
+         "and created_at >= '2026-09-15T01:30:00' and coalesce(meta,'') not like '%relational_tension%'")
+    print("[more] 窗口内非账本 episodic =", drv.sql(q))
+
+
+def cmd_produce():
+    """补测 M4 生产者：真素材喂够 → 下一夜 digest 第五格 → 过闸入池。"""
+    drv.ensure_apk()
+    clock_set(datetime.datetime(2026, 9, 17, 9, 30))
+    tick(80)
+    print("[produce] 醒后 state=", rt_state().get("state"))
+    for text in ["明晚我八点就到家了，想跟你多聊会儿",
+                 "下周三来杭州，晚上八点以后都有空",
+                 "这周五交完季度总结就能歇两天",
+                 "最近睡太晚了，明天开始想十一点就躺下"]:
+        base = drv.send(text)
+        drv.wait_reply(base, timeout=180)
+    q = ("select count(*) from memories where layer='episodic' "
+         "and created_at >= '2026-09-17T00:00:00' and coalesce(meta,'') not like '%relational_tension%'")
+    print("[produce] 09-17 窗口内非账本 episodic =", drv.sql(q))
+    clock_set(datetime.datetime(2026, 9, 18, 1, 20))
+    tick(80)
+    clock_set(datetime.datetime(2026, 9, 18, 2, 0))
+    tick(100)
+    tick(150)
+    r = rt_state()
+    print("[produce] state=", r.get("state"), "plan=", r.get("next_plan_date"),
+          "tweaks=", json.dumps(r.get("schedule_tweaks"), ensure_ascii=False))
+    print("[produce] reflect:* 最新：")
+    print(drv.sql("select ts, kind, verdict, substr(coalesce(digest,''),1,60) from decisions "
+                  "where kind like 'reflect%' order by id desc limit 5"))
+    out = drv.sh(["logcat", "-d", "-t", "900"])
+    for ln in out.splitlines():
+        if "schedule slot" in ln or "schedule accepted" in ln or "nightly digest" in ln:
+            print("[log]", ln[-220:])
+
+
+def cmd_produce2():
+    """M4 生产者二轮：先喂到窗口内 ≥3 条真实 episodic（首轮 4 条消息只留 1 条，
+    其余被判词行/粒度闸吃掉），再看下一夜 digest 的 schedule 格。"""
+    drv.ensure_apk()
+    clock_set(datetime.datetime(2026, 9, 18, 10, 0))
+    tick(80)
+    print("[p2] 醒后 state=", rt_state().get("state"), "clock=", drv.get_clock())
+    more = [
+        "今天下班路上碰到大学室友，他刚搬到杭州，约我周末去他家吃饭",
+        "我妈今天打电话问过年回不回家，我说还没定，她在那头沉默了几秒",
+        "楼下那只猫今天生了四只小猫，我蹲那儿看了半小时，被蚊子咬了一腿",
+        "公司楼下新开了家面馆，老板是陕西人，辣椒油香得我每天中午都想去",
+    ]
+    for m in more:
+        base = drv.send(m)
+        drv.wait_reply(base, timeout=150)
+    n = drv.sql("select count(*) from memories where layer='episodic' "
+                "and created_at >= '2026-09-18T00:00:00' and content not like '%判断点%'")
+    print("[p2] 窗口内真实 episodic =", n)
+    clock_set(datetime.datetime(2026, 9, 19, 1, 20))
+    tick(80)
+    print("[p2] 01:20 →", rt_state().get("state"))
+    clock_set(datetime.datetime(2026, 9, 19, 2, 0))
+    tick(130)
+    st = rt_state()
+    print("[p2] 02:00 → state=", st.get("state"), "plan=", st.get("next_plan_date"),
+          "src=", st.get("next_plan_source"))
+    tick(150)
+    st = rt_state()
+    print("[p2] tweaks=", json.dumps(st.get("schedule_tweaks") or [], ensure_ascii=False)[:300])
+    print("[p2] adj=", json.dumps(st.get("next_plan_adjustments") or [], ensure_ascii=False)[:300])
+    log = drv.sh(["shell", f"su 0 tail -n 500 /data/data/{drv.PKG}/files/logs/core.log"])
+    hits = [ln for ln in log.splitlines()
+            if any(k in ln for k in ("digest", "reflect:schedule", "schedule slot", "nightly"))]
+    print("[p2] digest 日志：")
+    print("\n".join(hits[-16:]) or "  （无）")
+    print("[p2] reflect 账：")
+    print(decisions("reflect:"))
+
+
+def cmd_consume():
+    """M4 消费者收口：digest 入池的微调 → 下一次生成计划并入 → 池清空。"""
+    st = rt_state()
+    print("[consume] 入池前 tweaks=", json.dumps(st.get("schedule_tweaks") or [], ensure_ascii=False))
+    clock_set(datetime.datetime(2026, 9, 20, 1, 20))
+    tick(80)
+    clock_set(datetime.datetime(2026, 9, 20, 2, 0))
+    tick(120)
+    st = rt_state()
+    print("[consume] plan=", st.get("next_plan_date"),
+          "adj=", json.dumps(st.get("next_plan_adjustments") or [], ensure_ascii=False))
+    print("[consume] 池=", json.dumps(st.get("schedule_tweaks") or [], ensure_ascii=False))
+
+
 def cmd_restore():
     drv.clock_restore()
 
 
 def main():
+    import threading
+    threading.Thread(target=_hold_loop, daemon=True).start()
     cmd = sys.argv[1] if len(sys.argv) > 1 else "inspect"
     {"prep": cmd_prep, "night": cmd_night, "wake": cmd_wake, "catchup": cmd_catchup,
-     "tweak": cmd_tweak, "inspect": cmd_inspect, "restore": cmd_restore}[cmd]()
+     "tweak": cmd_tweak, "more": cmd_more, "produce": cmd_produce, "produce2": cmd_produce2,
+     "consume": cmd_consume,
+     "inspect": cmd_inspect, "restore": cmd_restore}[cmd]()
 
 
 if __name__ == "__main__":

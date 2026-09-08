@@ -490,7 +490,13 @@ class Agent:
             care = self._sleep_care_note()
             if care:
                 task += f"睡前顺带想到：{care}。把这个意思自然地融进同一句话里，像随口一想，不要提醒口吻。"
-        text = self._short_task(task)
+        try:
+            text = self._short_task(task)
+        except Exception as e:
+            # 短任务异常不能拖垮 tick（09-18 实机：reasoning 烧空预算 → LLMTruncatedError
+            # 沿 _tick_loop 上抛 = 整个 proactive tick 失败，通知/联想全丢）。
+            logger.warning("schedule notice text failed (%s): %s", notice, e)
+            text = ""
         # 睡醒公告=角色自己说的"早安"（2026-09-01 用户反馈 07:09 公告+07:11 时段
         # 问候双早安）：它吃掉当前时段问候位，本时段 ritual 问候不再重复招呼
         if text and notice == "woke":
@@ -2958,6 +2964,8 @@ class Agent:
             sc = data.get("schedule")
             if isinstance(sc, list):
                 sched_ops = [x for x in sc if isinstance(x, dict)]
+            if sched_ops:
+                logger.info("nightly digest schedule slot: %r", sched_ops[:2])
         except _json.JSONDecodeError:
             content = ""
         if not content:
@@ -3007,6 +3015,7 @@ class Agent:
         if rt is not None and sched_ops:
             tweaks = rt.queue_schedule_tweaks(
                 sched_ops[:2], datetime.datetime.now(datetime.timezone.utc))
+            logger.info("nightly digest schedule accepted=%d/%d", len(tweaks), len(sched_ops))
         # M3 心境残响：只活一晚，明晨问候织进第一次即销毁
         self._echo_note = echo
         if echo or applied or tweaks:
