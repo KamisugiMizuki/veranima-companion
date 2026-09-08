@@ -155,3 +155,65 @@ def test_agent_reflection_counter_grows(tmp_path):
     before = a._reflection_counters["persona_candidates"]
     a.handle("我认为活着就是产生秩序和美")
     assert a._reflection_counters["persona_candidates"] > before
+
+
+# ---------- P-5 LLM 反思 + 跨重启触发（09-08：链从没跑过） ----------
+
+def _ev():
+    return [{"id": 11, "kind": "shared_meaning",
+             "content": "上次一起看的那部片子，我觉得他是想找个借口多待一会儿",
+             "confidence": 0.8}]
+
+
+def test_propose_llm_parses_first_person():
+    from veranima.core.reflection import propose_reflection_llm
+    r = propose_reflection_llm(_ev(), lambda p: '{"observed_change": "他最近话变多了",'
+                                                ' "self_belief": "我好像开始期待他每天开口", "confidence": 0.7}')
+    assert r is not None
+    assert r.evidence_ids == [11]
+    assert "我" in r.self_model_update["learned_beliefs"][0]
+    assert r.confidence == 0.7
+
+
+def test_propose_llm_rejects_third_person():
+    from veranima.core.reflection import propose_reflection_llm
+    raw = '{"observed_change": "用户最近话变多了", "self_belief": "我明白了", "confidence": 0.7}'
+    assert propose_reflection_llm(_ev(), lambda p: raw) is None  # 泄漏「用户」→ 回退规则版
+
+
+def test_propose_llm_bad_output_returns_none():
+    from veranima.core.reflection import propose_reflection_llm
+    assert propose_reflection_llm(_ev(), lambda p: "嗯。") is None          # 非 JSON
+    assert propose_reflection_llm(_ev(), lambda p: "") is None              # 空
+    assert propose_reflection_llm(_ev(), lambda p: 1 / 0) is None           # 抛异常不冒泡
+    assert propose_reflection_llm([], lambda p: "{}") is None               # 无证据
+
+
+def test_validate_reflection_str_taboos_not_char_scanned(tmp_path):
+    """角色卡 taboos 是一整段字符串时不能按字符遍历——单字「不/我/你」会毙掉一切。
+
+    09-08 实机：24 条假冲突把反思链整条挡在 apply 之前。
+    """
+    from veranima.core.reflection import PersonaReflection, validate_reflection
+    a = _agent(tmp_path)
+    a.card.veranima["taboos"] = "不查岗不盘问行踪；不开你现实社交圈的玩笑"
+    ok = PersonaReflection.from_dict({
+        "evidence_ids": [1], "confidence": 0.8,
+        "self_model_update": {"learned_beliefs": ["我明白了，他在用自己的方式靠近"]}})
+    assert validate_reflection(ok, a.card) == []
+    bad = PersonaReflection.from_dict({
+        "evidence_ids": [1], "confidence": 0.8,
+        "self_model_update": {"learned_beliefs": ["我打算不查岗不盘问行踪"]}})
+    assert validate_reflection(bad, a.card)  # 真复述禁忌条目 → 拦
+
+
+def test_reflection_due_persistent(tmp_path):
+    """触发不再只看内存计数器（冷启动清零）——自上次反思以来的消息数落库。"""
+    a = _agent(tmp_path)
+    assert a._reflection_due_persistent(0) is False    # 无消息
+    assert a._reflection_due_persistent(19) is False   # 未满 20
+    assert a._reflection_due_persistent(20) is True    # 首跑无快照 → 基准 0 → 立即触发
+    a.memory.store("core_profile", "自我模型 v2: x", confidence=0.7,
+                   meta={"kind": "self_model_snapshot", "version": 2, "at_total_messages": 20})
+    assert a._reflection_due_persistent(39) is False   # 距上次反思不足 20
+    assert a._reflection_due_persistent(40) is True    # 满 20 再触发

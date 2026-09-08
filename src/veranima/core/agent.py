@@ -2250,8 +2250,10 @@ class Agent:
         流程：due → propose（从人格证据）→ validate（核心兼容）→ apply（SelfModel 版本 +1）→
         存 self_model_snapshot（core_profile 版本链）。任何失败只记录，不阻断对话。
         """
-        from .reflection import apply_reflection, propose_reflection, reflection_due, validate_reflection
+        from .reflection import (apply_reflection, propose_reflection, propose_reflection_llm,
+                                 reflection_due, validate_reflection)
         counters = self._reflection_counters
+        total = self._state_total_messages()
         trigger = None
         if counters.get("user_corrections", 0) > 0:
             trigger = "user_correction"
@@ -2259,7 +2261,7 @@ class Agent:
         elif counters.get("high_emotion_events", 0) > 0:
             trigger = "high_emotion_event"
             counters["high_emotion_events"] = 0
-        elif reflection_due("persona_candidates_20", counters):
+        elif reflection_due("persona_candidates_20", counters) or self._reflection_due_persistent(total):
             trigger = "persona_candidates_20"
             counters["persona_candidates"] = 0
         if not trigger:
@@ -2271,7 +2273,8 @@ class Agent:
                 if (e.meta or {}).get("kind") in kinds and (e.meta or {}).get("needs_confirmation") is not True:
                     evidence.append({"id": e.id, "kind": (e.meta or {}).get("kind"),
                                      "content": e.content, "confidence": e.confidence})
-        r = propose_reflection(evidence[:5])
+        r = (propose_reflection_llm(evidence[:5], self._reflect_task)
+             or propose_reflection(evidence[:5]))
         if r is None:
             return
         issues = validate_reflection(r, self.card)
@@ -2291,21 +2294,67 @@ class Agent:
                 if (e.meta or {}).get("kind") == "self_model_snapshot":
                     old = e
                     break
+            beliefs = "；".join(str(x) for x in (sm.get("learned_beliefs") or []))
             if old is not None:
-                self.memory.update_latest(old.id, f"自我模型 v{sm['version']}: {sm.get('learned_beliefs', [])}",
+                self.memory.update_latest(old.id, f"自我模型 v{sm['version']}: {beliefs}",
                                           confidence=0.7, meta={**old.meta, "supersedes": old.id,
-                                                               "kind": "self_model_snapshot", "version": sm["version"]})
+                                                               "kind": "self_model_snapshot", "version": sm["version"],
+                                                               "at_total_messages": total})
             else:
-                self.memory.store("core_profile", f"自我模型 v{sm['version']}: {sm.get('learned_beliefs', [])}",
+                self.memory.store("core_profile", f"自我模型 v{sm['version']}: {beliefs}",
                                   confidence=0.7, meta={"kind": "self_model_snapshot", "version": sm["version"],
-                                                        "evidence_message_ids": r.evidence_ids})
+                                                        "evidence_message_ids": r.evidence_ids,
+                                                        "at_total_messages": total})
             self.memory.store_self_model_chapter(
                 title=f"自我模型阶段 {sm['version']}",
-                self_interpretation=str(sm.get("learned_beliefs", "")),
+                self_interpretation=beliefs,
                 key_events=list(r.evidence_ids),
                 relationship_changes=list((self.relationship.to_dict() or {}).get("open_relational_threads", [])),
             )
             logger.info("persona reflection applied (evidence=%s)", r.evidence_ids)
+
+    def _reflect_task(self, prompt: str) -> str:
+        """反思专用短任务：要**原始 JSON 文本**。
+
+        不能走 `_short_task`——那个出口过 `parse_reply`（对话解析会剥掉结构、
+        清洗成角色台词），实测拿回来的是文本不是 JSON（09-08 首跑实锤）。
+        """
+        system = (build_system_prompt(self.card, self.state, self.memory, **self._prompt_trim_kwargs())
+                  + "\n" + self._time_context_instruction())
+        # 不传 max_tokens：推理模型会把小预算烧在 reasoning 上返回空 content
+        # （09-08 实测 1024 → finish_reason=length / content_chars=0），走全局预算。
+        return self.llm.chat_structured(
+            [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
+        )
+
+    def _state_total_messages(self) -> int:
+        """agent_state.total_messages（跨重启单调递增，反思节流用）。"""
+        try:
+            return int((self.memory.load_state() or {}).get("total_messages") or 0)
+        except Exception:
+            return 0
+
+    def _last_reflect_total(self) -> int:
+        """上次反思时的 total_messages（存在 self_model_snapshot 的 meta 里）。"""
+        try:
+            for e in self.memory.list_layer("core_profile", limit=5, include_superseded=True):
+                meta = e.meta or {}
+                if meta.get("kind") == "self_model_snapshot":
+                    return int(meta.get("at_total_messages") or 0)
+        except Exception:
+            pass
+        return 0
+
+    def _reflection_due_persistent(self, total: int) -> bool:
+        """跨重启的反思兜底触发：自上次反思以来消息数 ≥20。
+
+        原触发只看内存计数器（__init__ 里清零），安卓端冷启动频繁 → 永远攒不到 20，
+        整条 P-5 链从没跑过（09-08 实机 self_model_chapters 0 行）。首跑无快照
+        → 基准 0 → 立即触发一次，正是想要的行为。
+        """
+        if total <= 0:
+            return False
+        return total - self._last_reflect_total() >= 20
 
     def _compact_history(self) -> None:
         """MEMORY_SPEC 9：历史超长时把最旧部分压成摘要（session 层 history_summary）。

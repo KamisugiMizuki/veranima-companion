@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -19,6 +20,15 @@ REFLEX_TRIGGERS = {
 
 # 稳定特征：禁止自动修改（PERSONA_LOOP_SPEC 7.3）
 PROTECTED_SELF_FIELDS = ("stable_traits", "identity_summary")
+
+# P-5 LLM 反思 prompt（角色第一人称；禁止「用户」二字）
+_REFLECT_PROMPT = """下面是你最近记下的几条东西，关于他，或者关于你们之间。
+
+{ev}
+
+用你自己的视角写两句话：你注意到他、或者你们之间有什么变化；你因此明白了什么。
+只输出 JSON：{{"observed_change": "你注意到的变化", "self_belief": "用「我」开头，你因此明白的", "confidence": 0.0-1.0}}
+只写你从上面真能看出来的，不要编。每条不超过 40 字，不要出现「用户」二字。"""
 
 
 @dataclass
@@ -106,6 +116,55 @@ def propose_reflection(evidence: list[dict]) -> PersonaReflection | None:
     )
 
 
+def propose_reflection_llm(evidence: list[dict], task_fn) -> PersonaReflection | None:
+    """P-5：LLM 版反思候选（角色第一人称）。task_fn(prompt) -> str。
+
+    规则版只是把置信度最高的记忆原文当 learned_belief——实机那几条吐出来的是
+    「用户计划将后端迁移至 hermes 系统」这类用户事务，不是角色对关系的理解。
+    反思要的是「我因此明白了什么」→ 交 LLM 写；失败或第三人称泄漏返回 None，
+    调用方回退规则版。
+    """
+    if not evidence or task_fn is None:
+        return None
+    ids = [int(e["id"]) for e in evidence if e.get("id") is not None]
+    if not ids:
+        return None
+    ev = "\n".join(f"{i}. {str(e.get('content', '')).strip()[:120]}"
+                   for i, e in enumerate(evidence, 1))
+    try:
+        raw = str(task_fn(_REFLECT_PROMPT.format(ev=ev)) or "")
+    except Exception as exc:  # 不阻断对话，回退规则版
+        logger.warning("reflection llm failed: %s", exc)
+        return None
+    try:
+        data = json.loads(raw.strip().strip("`").removeprefix("json").strip())
+    except (json.JSONDecodeError, TypeError):
+        logger.warning("reflection llm returned non-JSON; fallback to rule")
+        return None
+    if not isinstance(data, dict):
+        return None
+    belief = str(data.get("self_belief") or "").strip()[:120]
+    change = str(data.get("observed_change") or "").strip()[:120]
+    if not belief:
+        return None
+    # 第三人称泄漏防线：角色不该把用户叫「用户」（B1 同源）
+    if "用户" in belief or "用户" in change:
+        logger.warning("reflection llm leaked third person; fallback to rule")
+        return None
+    try:
+        conf = float(data.get("confidence", 0.6))
+    except (TypeError, ValueError):
+        conf = 0.6
+    return PersonaReflection(
+        evidence_ids=ids,
+        observed_change=change or f"基于 {len(ids)} 条人格证据形成新理解",
+        self_model_update={"learned_beliefs": [belief]},
+        confidence=max(0.0, min(1.0, conf)),
+        proposed_at=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+        status="proposed",
+    )
+
+
 def validate_reflection(reflection: PersonaReflection, card) -> list[str]:
     """P-5：程序校验（不依赖 LLM）。返回问题列表，空 = 通过。"""
     issues: list[str] = []
@@ -118,6 +177,12 @@ def validate_reflection(reflection: PersonaReflection, card) -> list[str]:
     # 核心兼容：learned_belief 与角色卡禁忌/价值观冲突
     ver = (card.veranima or {}) if card is not None else {}
     taboos = ver.get("taboos") or []
+    if isinstance(taboos, str):
+        # 角色卡的 taboos 常是一整段（分号/换行分隔）。直接 for 会遍历**字符**，
+        # 单字「不/我/你」命中一切 → 每条 belief 全判冲突（09-08 实测 24 条假
+        # 冲突把反思链整条毙掉）。按分隔符切条目后再做整条包含判定。
+        taboos = [s.strip() for s in taboos.replace("；", ";").replace("\n", ";").split(";")
+                  if s.strip()]
     for belief in reflection.self_model_update.get("learned_beliefs", []):
         for t in taboos:
             if isinstance(t, str) and t and t in str(belief):
