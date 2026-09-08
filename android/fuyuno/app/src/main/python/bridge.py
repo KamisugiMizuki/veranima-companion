@@ -473,6 +473,7 @@ def get_settings() -> str:
         cur = str(cfg.get("character_card") or "")
         active = Path(cur).parent.name if cur else ""
         return json.dumps({"ok": True, "fields": fields,
+                           "review_inbox": bool((cfg.get("memory") or {}).get("review_inbox_enabled")),
                            "search_provider": "bocha",
                            "characters": chars, "active_character": active,
                            # 目录名→显示名（通知标题兜底用；09-06 实锤标题
@@ -504,8 +505,19 @@ def set_setting(key: str, value: str) -> str:
                 if not card.exists():
                     raise ValueError(f"角色不存在: {value}")
                 cfg["character_card"] = str(card)
+            elif key == "memory_review_inbox":
+                # M-D 待审队列开关（布尔必须显式转换：yaml 里存 "0" 是真值字符串）
+                cfg.setdefault("memory", {})["review_inbox_enabled"] = \
+                    value.strip() not in ("", "0", "false", "False", "off")
             else:
                 raise ValueError(f"未知设置键: {key}")
+        # R0_SPEC 6：写入前范围校验（validate_config 此前零调用——设置页是
+        # 唯一外部写入口，越界值一旦落盘会在启动时炸核心）
+        from veranima.config import validate_config
+        issues = validate_config(cfg)
+        if issues:
+            return json.dumps({"ok": False, "error": "配置越界：" + "；".join(issues)},
+                              ensure_ascii=False)
         _save_cfg(root, cfg)
         return json.dumps({"ok": True, "restart_required": True})
     except Exception as e:
@@ -580,7 +592,11 @@ def role_export(role_id: str) -> str:
 
 
 def role_import() -> str:
-    """inbox/*.char → 解进 characters/（重名加 _2）。返回角色名列表。"""
+    """inbox/*.char → 解进 characters/（重名加 _2）。返回角色名列表 + 人格自检问题。
+
+    R0_SPEC 3：角色包是安卓唯一导入口，导入即跑 validate_character_prompt
+    （此前零调用），问题随返回值回 UI——不让坏卡静默进库。
+    """
     root = Path(getattr(boot, "root", "."))
     try:
         from veranima.core.character_archive import import_character
@@ -589,7 +605,18 @@ def role_import() -> str:
             dest = import_character(f, root / "characters")
             imported.append(dest.name)
             f.unlink()
-        return json.dumps({"ok": True, "imported": imported}, ensure_ascii=False)
+        issues: dict = {}
+        try:
+            from veranima.core.character import CharacterCard, validate_character_prompt
+            for name in imported:
+                card = CharacterCard.from_file(root / "characters" / name / "character.json")
+                found = validate_character_prompt(card, card.to_system_prompt())
+                if found:
+                    issues[name] = found
+        except Exception as e:
+            log.warning("角色自检失败（导入已完成）: %s", e)
+        return json.dumps({"ok": True, "imported": imported, "issues": issues},
+                          ensure_ascii=False)
     except Exception as e:
         return json.dumps({"ok": False, "error": str(e)})
 
@@ -624,13 +651,24 @@ def growth_report() -> str:
             log.debug("procedural list failed: %s", e)
         promises = []
         try:
+            # 09-08 修：MemoryEntry 没有 .get()，旧写法每次都 AttributeError 被吞
+            # → 承诺列表恒空。同时补 id（成长页兑现/取消按钮要用）。
             for p in agent.promises.open_promises(limit=8):
-                promises.append({"content": str(p.get("content", ""))[:60],
-                                 "status": str(p.get("status", ""))})
+                promises.append({"id": int(p.id), "content": str(p.content or "")[:60],
+                                 "status": str((p.meta or {}).get("status") or "open")})
         except Exception as e:
             log.debug("promises list failed: %s", e)
+        imprints = []
+        try:
+            from veranima.core.persona import IMPRINT_HINTS
+            for dim, scope in agent._imprints.active_imprints():
+                imprints.append({"dimension": dim, "scope": scope,
+                                 "hint": IMPRINT_HINTS.get(dim, "")})
+        except Exception as e:
+            log.debug("imprints unavailable: %s", e)
         return json.dumps({"ok": True, "relationship": rel, "stage": stage,
-                           "style": style, "skills": skills, "promises": promises},
+                           "style": style, "skills": skills, "promises": promises,
+                           "imprints": imprints},
                           ensure_ascii=False)
     except Exception as e:
         tb = traceback.format_exc(limit=4)
@@ -756,6 +794,87 @@ def memory_full(memory_id: int) -> str:
         if row is None:
             return json.dumps({"ok": False, "error": "记忆不存在"})
         return json.dumps({"ok": True, **{k: row[k] for k in row.keys()}}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+def memory_review_list() -> str:
+    """待复核候选（M-D 收件箱）：低置信候选等待人工批准/丢弃。
+
+    队列由 agent._store_candidate 在 memory.review_inbox_enabled 时写入；
+    此前进得去出不来（review_memory 零调用），现在 UI 能批。
+    """
+    agent = getattr(boot, "agent", None)
+    if agent is None:
+        return json.dumps({"ok": False, "error": "未初始化"})
+    try:
+        items = []
+        for it in agent.memory.list_review():
+            cand = it.get("candidate") or {}
+            items.append({"id": int(it["id"]), "kind": str(cand.get("kind") or ""),
+                          "content": str(cand.get("content") or "")[:200],
+                          "confidence": float(cand.get("confidence") or 0.0),
+                          "reason": str(it.get("reason") or ""),
+                          "created_at": str(it.get("created_at") or "")})
+        return json.dumps({"ok": True, "items": items}, ensure_ascii=False)
+    except Exception as e:
+        log.error("memory_review_list failed: %s", e)
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+def memory_review(review_id: int, approve) -> str:
+    """批准/丢弃一条待复核候选（走 agent.review_memory：批准=走既有校验入库）。"""
+    agent = getattr(boot, "agent", None)
+    if agent is None:
+        return json.dumps({"ok": False, "error": "未初始化"})
+    try:
+        ok = bool(agent.review_memory(int(review_id), bool(int(approve))))
+        return json.dumps({"ok": ok})
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+def promise_close(promise_id: int, action: str = "done") -> str:
+    """兑现/取消一条承诺（PromiseBook.mark_done / mark_cancelled，此前只开不关）。"""
+    agent = getattr(boot, "agent", None)
+    if agent is None:
+        return json.dumps({"ok": False, "error": "未初始化"})
+    try:
+        if str(action) == "cancel":
+            agent.promises.mark_cancelled(int(promise_id))
+        else:
+            agent.promises.mark_done(int(promise_id))
+        return json.dumps({"ok": True})
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+def relationship_pending(role: str = "") -> str:
+    """待确认关系事件（P-7：用户确认后才推动慢变量）。
+
+    数据源 = tension 推导的候选（高张力 + 已命名事件）；无候选返回 null。
+    """
+    agent = _agent_for(role)
+    if agent is None:
+        return json.dumps({"ok": False, "error": "未初始化"})
+    try:
+        cand = agent.relationship_event_candidate()
+        return json.dumps({"ok": True, "candidate": cand}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+def relationship_confirm(role: str = "", confirmed="1") -> str:
+    """确认/忽略待确认关系事件（confirm_relationship_event 此前零调用）。"""
+    agent = _agent_for(role)
+    if agent is None:
+        return json.dumps({"ok": False, "error": "未初始化"})
+    try:
+        cand = agent.relationship_event_candidate()
+        if not cand:
+            return json.dumps({"ok": False, "error": "没有待确认的关系事件"}, ensure_ascii=False)
+        ok = bool(agent.confirm_relationship_event(cand, confirmed=bool(int(confirmed))))
+        return json.dumps({"ok": ok})
     except Exception as e:
         return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
 
@@ -1211,10 +1330,18 @@ def mark_read(role: str) -> str:
 
 
 def avatar_path(role: str) -> str:
-    """列表页方头像：约定 characters/<role>/portrait.jpg（用户供图）；
-    缺→回退 portraits/ 目录首图（项目既有结构）；再缺=''→UI 首字母块。"""
+    """角色图统一解析器（列表头像 / 通知大图标 / 立绘舞台）：按优先级取第一张。
+
+    1. characters/<role>/portrait.jpg（用户供图）
+    2. characters/<role>/portraits/ 首图（项目既有结构）
+    3. filesDir/portraits/<含角色名>.jpg（assets 解出来的立绘，sync_assets.py）
+    全缺 → ''，UI 回退首字母块。
+    （2026-09-08：原 portrait_path 是同功能重复实现，已合并到此处。）
+    """
     try:
-        rd = Path(getattr(boot, "root", ".")) / "characters" / str(role)
+        role = str(role or "").strip()
+        root = Path(getattr(boot, "root", "."))
+        rd = root / "characters" / role
         f = rd / "portrait.jpg"
         if f.is_file():
             return str(f)
@@ -1224,6 +1351,12 @@ def avatar_path(role: str) -> str:
                   if x.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")]
             if fs:
                 return str(fs[0])
+        if role:
+            flat = root / "portraits"
+            if flat.is_dir():
+                for x in sorted(flat.iterdir()):
+                    if x.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp") and role in x.stem:
+                        return str(x)
         return ""
     except Exception:
         return ""
@@ -1436,41 +1569,6 @@ def roles_list() -> str:
     except Exception as e:
         log.exception("roles_list failed")
         return json.dumps({"ok": False, "error": str(e), "roles": []})
-
-
-def portrait_path(role: str = "") -> str:
-    """当前角色立绘的绝对路径（视觉小说舞台用；空串=无图，UI 回退纯色舞台）。
-
-    assets/portraits/<char>.jpg 由 Kotlin 在 boot 时解到 filesDir/portraits/
-    （见 sync_assets.py / MainActivity），这里按角色名匹配、目录唯一文件兜底。
-    """
-    try:
-        root = Path(getattr(boot, "root", "."))
-        role = str(role or "").strip()
-        if role:
-            own = root / "characters" / role / "portraits"
-            if own.is_dir():
-                fs = [f for f in sorted(own.iterdir())
-                      if f.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")]
-                if fs:
-                    return str(fs[0])
-        d = root / "portraits"
-        if not d.is_dir():
-            return ""
-        char = role
-        if not char:
-            try:
-                char = (boot.config or {}).get("active_character", "") or ""
-            except Exception:
-                pass
-        for f in sorted(d.iterdir()):
-            if char and char in f.stem:
-                return str(f)
-        files = [f for f in sorted(d.iterdir()) if f.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")]
-        return str(files[0]) if files else ""
-    except Exception:
-        log.exception("portrait_path failed")
-        return ""
 
 
 def history(limit: int = 80, role: str = "", before_id: int = 0) -> str:

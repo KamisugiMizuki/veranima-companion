@@ -46,7 +46,7 @@
 ### 2.1 立绘入包与分发
 
 - `android/fuyuno/app/src/main/assets/portraits/lin.jpg` ← 构建期从 `characters/lin/portraits/lin_halfbody.jpg` 拷入（`tools/sync_assets.py`，一个 shutil.copy 脚本，gen_config 同目录同风格）。
-- `bridge.portrait_path() -> str`：boot 时把 assets 立绘解到 `filesDir/portraits/<char>.jpg`（已存在且同大小则跳过），返回绝对路径；角色卡有真实差分图时（未来）优先用角色目录的图。**无图返回空串，UI 回退纯色舞台**——长宽比兜底不依赖立绘存在。
+- `bridge.avatar_path(role) -> str`：角色图统一解析器（2026-09-08 合并原 portrait_path）——`characters/<role>/portrait.jpg` → `characters/<role>/portraits/` 首图 → `filesDir/portraits/<含角色名>.jpg`（boot 时由 assets 解出）。**无图返回空串，UI 回退首字母块/纯色舞台**。
 
 ### 2.2 逐条回复情绪（tone）——轻量分类调用
 
@@ -169,7 +169,7 @@
 
 | 阶段 | 内容 | 验收锚点 |
 |---|---|---|
-| P1 舞台 | 立绘入包+portrait_path、层序布局、呼吸、打字机、面板两态拖拽+立绘联动上移、图片 0.6 宽+点击放大、设置页风格统一、Coil/Haze 接入 | MuMu：立绘呼吸可见；上滑出历史且**立绘上移不被遮**；设置页与聊天页同奶油风；历史图片仍在 |
+| P1 舞台 | 立绘入包+avatar_path、层序布局、呼吸、打字机、面板两态拖拽+立绘联动上移、图片 0.6 宽+点击放大、设置页风格统一、Coil/Haze 接入 | MuMu：立绘呼吸可见；上滑出历史且**立绘上移不被遮**；设置页与聊天页同奶油风；历史图片仍在 |
 | P2 情绪 | tone 分类调用、tone_at 列、标签渲染、环境光表、图片主色 | MuMu：真远程链路发"我今天超开心"→暖色光+对应标签；DB 可查 tone_at |
 | P3 氛围 | 思考粒子、拍立得预览、触感、夜间模式 | MuMu：发送等待时粒子可见；系统深色切夜 |
 

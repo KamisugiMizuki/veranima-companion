@@ -75,6 +75,14 @@ REALITY_BOUNDARY = (
     "真机：对大四学生说『你们公司聚餐』被当场质问）。"
 )
 
+# R0 能力匹配层（DESIGN 4.3）：话题落在卡里「略知/完全不懂」的领域 → 注入姿态。
+# 措辞交给模型按语境写（固定话术池会让回复僵化；四型=好奇/共情/关联/承认，作为可选姿态）。
+CAPABILITY_STANCE = {
+    "略知": "【话题边界】这个话题你只懂个大概——别装懂，也别一口回绝。可以好奇追问、"
+            "共情、扯到相近的事，或者干脆承认不懂；选最自然的一种，不要每轮都用同一招。",
+    "完全不懂": "【话题边界】这个话题你完全不懂，坦诚说不会，不要硬撑也不要编。",
+}
+
 # 交互回复统一结构化输出：按通道选择可见/语音字段，thinking 等字段不消费
 IM_STRUCTURED_OUTPUT_INSTRUCTION = (
     "【输出格式·文字聊天】你的回复必须只输出 JSON，不要输出思考过程、分析步骤、草稿、规则核对或 Markdown。"
@@ -135,10 +143,18 @@ def build_system_prompt(
 
     channel 注入通道语境（DESIGN 4.8 通道感知）：im=打字聊天（利落/去填充词），tts=语音（口语化/允许填充词）。
     """
-    parts = [card.to_system_prompt()]
+    # 关键指令首置（指令稀释：首尾服从度最高）：现实行动边界是不可协商的硬约束，
+    # 压最前；输出格式指令压尾（见下方 format_block）；记忆/画像等数据块留中段。
+    parts = [REALITY_BOUNDARY, card.to_system_prompt()]
+    query_hint = _latest_query(memory)
     parts.append(state.to_prompt_block())
     parts.append(CHANNEL_CONTEXT.get(channel, CHANNEL_CONTEXT["im"]))
-    parts.append(REALITY_BOUNDARY)
+    # R0 能力匹配层（DESIGN 4.3）：话题熟悉度 → 姿态（能力事实在卡里，措辞交给模型）
+    if query_hint:
+        from .capability import capability_level
+        _stance = CAPABILITY_STANCE.get(capability_level(card, query_hint), "")
+        if _stance:
+            parts.append(_stance)
     # R2：tts 通道注入表情词表 + 结构化输出要求（R2_SPEC 2）
     # 输出格式指令不在此处注入——它是最高优先级的可验证指令，统一压到 parts 末尾
     # （prompt 中段是模型服从度最弱的位置；记忆/画像等数据留中段）。
@@ -155,7 +171,6 @@ def build_system_prompt(
 
     # E. 相关记忆（MEMORY_SPEC 10.4：Context Brief 统一预算，完整 item 截断）
     from ..memory.brief import build_brief, format_brief
-    query_hint = _latest_query(memory)
 
     # P-4（PERSONA_LOOP_SPEC 8）：PersonaBrief 单一接入口（如何理解与回应）
     if relationship is not None:

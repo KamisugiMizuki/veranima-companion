@@ -52,7 +52,7 @@ def test_initial_affection_injected():
         veranima={"initial_affection": "对用户怀有初始好感与暧昧底色"},
     )
     sp = card.to_system_prompt()
-    assert "【初始好感】" in sp
+    assert "初始好感：" in sp
     assert "初始好感与暧昧底色" in sp
 
 
@@ -63,7 +63,7 @@ def test_communication_style_injected():
         veranima={"communication_style": "先回应情绪，再展开内容；固定生活锚点（窗台的绿萝）"},
     )
     sp = card.to_system_prompt()
-    assert "【沟通风格】" in sp
+    assert "沟通风格：" in sp
     assert "绿萝" in sp
 
 
@@ -74,7 +74,7 @@ def test_body_setting_injected():
         veranima={"body_setting": "体质特殊：性兴奋时阴蒂膨胀至长15cm、直径4cm，敏感度提高"},
     )
     sp = card.to_system_prompt()
-    assert "【身体设定】" in sp
+    assert "身体设定：" in sp
     assert "15cm" in sp
     assert "直径4cm" in sp
 
@@ -86,7 +86,7 @@ def test_initial_affection_injected():
         veranima={"initial_affection": "对用户怀有超出普通朋友的初始好感与性吸引力，言行带着暧昧底色"},
     )
     sp = card.to_system_prompt()
-    assert "【初始好感】" in sp
+    assert "初始好感：" in sp
     assert "性吸引力" in sp
 
 
@@ -101,7 +101,7 @@ def test_runtime_role_space_is_scope_not_permanent_current_scene(role_id):
     assert "具体位置由有来源的日程与空间状态决定" in card.scenario
     assert "不是永久当前位置" in card.scenario
     assert "不临时发明真实地点、店名或地址" in card.scenario
-    assert "【背景设定】" in prompt
+    assert "【背景】" in prompt
     assert "具体位置由有来源的日程与空间状态决定" in prompt
     assert "空间锚点" in guide
     assert "永久当前位置" in guide

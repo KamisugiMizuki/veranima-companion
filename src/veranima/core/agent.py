@@ -1924,6 +1924,10 @@ class Agent:
         profile_block = self._profile_block()
         if profile_block:
             extra_blocks.append(profile_block)
+        # P-9 印记 / P-7 未闭合冲突：此前只写不读（active_imprints / open_conflicts 零消费）
+        for _blk in (self._imprint_block(), self._conflict_block()):
+            if _blk:
+                extra_blocks.append(_blk)
         system = build_system_prompt(
             self.card, self.state, self.memory,
             core_profile_budget=self.config.get("memory", {}).get("core_profile_budget", 1200),
@@ -2094,6 +2098,7 @@ class Agent:
             pass
         self._capture_nickname_feedback(user_text)
         self._capture_proactive_veto(user_text, judgment)
+        self._note_conflict_from_reply(reply, judgment)
 
         # 8.5 MVP2 学习：隐式反馈 → 风格参数 + 语言镜像 + 承诺识别
         prev_reply = self._history[-3]["content"] if len(self._history) >= 3 else ""
@@ -2107,9 +2112,24 @@ class Agent:
                 sig.correction = bool(judgment.feedback_dislike) and any(
                     w in user_text for w in ("不对", "错了", "不是", "理解错", "没听懂"))
         self._last_reply_ts = time.time()
+        # M2/P-8/P-7 记账（此前 soothe / note_negative / note_repair_turn 零调用）：
+        # 正向互动缓 care_need；负面反馈进打断自愈；正常轮推进关系修复（band 退出用）
+        try:
+            if sig.positive:
+                self.desires.soothe(True)
+            if sig.negative:
+                self.interrupt_decider.note_negative()
+            self.tension.note_repair_turn(not generation_failed and not sig.negative)
+        except Exception as e:
+            logger.debug("turn bookkeeping failed: %s", e)
         self.style.observe(sig, user_text)   # M-6：feedback 快变量 + 文风画像慢变量
         self.mirror.observe(user_text)
-        self.promises.record(user_text)
+        if self.promises.record(user_text):
+            # M1：承诺同时开一条牵挂线（答应的事也压心头；夜眠/主动都能捞）
+            try:
+                self.threads.from_promise(user_text)
+            except Exception:
+                logger.debug("promise thread link failed", exc_info=True)
         # P-9：表层人格印记（正反馈 → candidate；纠正 → 拒绝方向）
         if sig.positive:
             self._imprints.note("depth", 1.0, user_msg_id, scope="对话")
@@ -2433,7 +2453,10 @@ class Agent:
         from ..memory.store import validate_candidate
         issues = validate_candidate(cand)
         if issues:
-            logger.debug("candidate rejected: %s", issues)
+            # 人工批准路径静默丢弃过（批准按钮点了、库里没东西、日志还说 stored）——升级为 warning
+            (logger.warning if cand.get("source") == "manual" else logger.debug)(
+                "candidate rejected: %s", issues
+            )
             return
         # MEMORY_BACKEND_EVAL M-D：收件箱开启时，低置信候选先入队待审（不写入 memories）
         mem_cfg = ((getattr(self, "config", None) or {}).get("memory") or {})
@@ -2674,7 +2697,7 @@ class Agent:
         except Exception as e:
             logger.warning("review approve store failed: %s", e)
             return False
-        logger.info("review approved and stored: id=%s kind=%s", review_id, cand.get("kind"))
+        logger.info("review approved: id=%s kind=%s", review_id, cand.get("kind"))
         return True
 
     # ---------- MEMORY_BACKEND_EVAL M-C：夜间整理（kiwi-mem Dream 借鉴） ----------
@@ -2869,12 +2892,27 @@ class Agent:
         if echo:
             self.memory.log_decision(role, "reflect:echo", "recorded",
                                      reason="明日问候残响", digest=echo)
+        self._refresh_self_model_chapter()
         logger.info("nightly digest stored (%d episodes -> summary)", len(episodes))
         if rt is not None:
             self._digest_cycle = str(rt.state.sleep_cycle_id or "")
             self._persist_state()  # 周期戳立刻落盘（下次 tick 不再重跑）
         return {"created": True, "episodes": len(episodes)}
 
+
+    def _refresh_self_model_chapter(self) -> None:
+        """自我模型章节刷新（update_self_model_chapter 此前零调用）：最新一章收口到
+        今日并记下当前牵挂——人物档案页看到的是活的章节，不是只增不改的死档。"""
+        try:
+            chapters = self.memory.list_self_model_chapters(limit=1)
+            if not chapters:
+                return
+            rows = self.memory.thread_list(self.threads.role)[:5]
+            self.memory.update_self_model_chapter(
+                int(chapters[0]["id"]), period_end=datetime.date.today().isoformat(),
+                open_threads=[str(r.get("topic") or "")[:60] for r in rows])
+        except Exception as e:
+            logger.debug("self_model chapter refresh failed: %s", e)
 
     def _apply_thread_ops(self, ops: list, listed_rows: list) -> list:
         """M3：夜眠消化产出的牵挂演进 → 账本执行（校验式消费，全 fail-open）。
@@ -2949,6 +2987,73 @@ class Agent:
         if any(c["status"] == "boundary_held" for c in open_c):
             return source != "commitment"
         return source in heavy
+
+    def _imprint_block(self) -> str:
+        """P-9：已生效的表层印记进 prompt（active 才注入，只调表层倾向）。
+
+        active_imprints 此前零消费——candidate 与 active 在行为上没差别，
+        印记攒够阈值等于白攒。
+        """
+        try:
+            active = self._imprints.active_imprints()
+        except Exception:
+            return ""
+        if not active:
+            return ""
+        from .persona import IMPRINT_HINTS
+        hints = [IMPRINT_HINTS.get(dim) or f"在「{scope or dim}」这件事上你更放得开"
+                 for dim, scope in active]
+        return "【相处里长出来的】" + "；".join(hints)
+
+    def _conflict_block(self) -> str:
+        """P-7：未闭合冲突进 prompt（状态不同说法不同）。
+
+        ConflictTracker 此前只写不读——acknowledged / boundary_held 与 open
+        在行为上毫无区别，状态机白转。
+        """
+        try:
+            opens = self._conflicts.open_conflicts()
+        except Exception:
+            return ""
+        if not opens:
+            return ""
+        lines = []
+        for c in opens[:2]:
+            cause = str(c.get("cause") or "一件没消化的事")[:40]
+            status = c.get("status")
+            if status == "acknowledged":
+                lines.append(f"{cause}——你已经认了这件事，别反复道歉，用行动补。")
+            elif status == "boundary_held":
+                lines.append(f"{cause}——这件事你立场不变，别松口，也别翻旧账。")
+            elif status == "clarifying":
+                lines.append(f"{cause}——正在澄清，别急着下结论或翻篇。")
+            else:
+                lines.append(f"{cause}——还没说开。")
+        return "【没消化的事】" + "".join(lines)
+
+    def _note_conflict_from_reply(self, reply: str, judgment) -> None:
+        """P-7：把角色自己的表态接进冲突状态机（此前 acknowledge / hold_boundary 零调用）。
+
+        - 回复里认了/道歉了 → open → acknowledged（"承认具体行为"）
+        - 用户越界且角色不让步 → boundary_held（守界不松口）
+        ponytail: 触发是词面（角色侧无 LLM 裁决）；误判代价=多一条 prompt 提示。
+        """
+        try:
+            if not reply:
+                return
+            opens = [c for c in self._conflicts.open_conflicts() if c.get("status") == "open"]
+            if not opens:
+                return
+            if any(w in reply for w in ("对不起", "抱歉", "是我", "我错")):
+                for c in opens:
+                    self._conflicts.acknowledge(c["id"])
+                return
+            if getattr(judgment, "conflict", None) == "violation" and any(
+                    w in reply for w in ("不行", "不能", "我不", "这不行", "不接受")):
+                for c in opens:
+                    self._conflicts.hold_boundary(c["id"])
+        except Exception as e:
+            logger.debug("conflict reply note failed: %s", e)
 
     def tick_proactive(self, now=None, *, commit: bool = True, persist: bool | None = None) -> list[str]:
         """定时问候 + 节庆纪念检查（每日去重）。

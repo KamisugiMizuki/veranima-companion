@@ -875,6 +875,11 @@ def render_authenticity(text: str, authenticity: dict, channel: str) -> dict:
 
 IMPRINT_ACTIVE_THRESHOLD = 3  # 同方向跨场景反馈次数
 
+# 印记维度 → 表达倾向（active 才注入 prompt；只调表层，不动角色核心）
+IMPRINT_HINTS = {
+    "depth": "聊到专业问题时你更愿意往深里说——只在这个场景里这样，日常闲聊照旧。",
+}
+
 
 class ImprintTracker:
     """P-9：表层人格印记（candidate → active/rejected）。

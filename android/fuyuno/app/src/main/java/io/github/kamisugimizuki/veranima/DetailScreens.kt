@@ -22,6 +22,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -96,6 +97,16 @@ internal val IconUserModel: ImageVector by lazy {
         moveTo(19.2f, 3.4f); lineTo(19.8f, 5f); lineTo(21.4f, 5.6f)
         lineTo(19.8f, 6.2f); lineTo(19.2f, 7.8f); lineTo(18.6f, 6.2f)
         lineTo(17f, 5.6f); lineTo(18.6f, 5f); close()
+    }
+}
+
+internal val IconGrowth: ImageVector by lazy {
+    // 一株小树：主干 + 两枝 + 地面线（成长树页入口图标）
+    vectorPath("growth") {
+        moveTo(12f, 20f); lineTo(12f, 11f)
+        moveTo(12f, 11.5f); lineTo(6.5f, 6.5f)
+        moveTo(12f, 13.5f); lineTo(17.5f, 8.5f)
+        moveTo(7f, 20f); lineTo(17f, 20f)
     }
 }
 
@@ -213,11 +224,13 @@ fun MemoryDetailScreen(onBack: () -> Unit) {
     var mems by remember { mutableStateOf<JSONArray?>(null) }
     var openId by remember { mutableStateOf<Int?>(null) }
     var detail by remember { mutableStateOf<JSONObject?>(null) }
+    var reviews by remember { mutableStateOf<JSONArray?>(null) }
     var reloadTick by remember { mutableStateOf(0) }
 
     suspend fun load() {
         stats = bridgeJson("memory_stats")
         mems = bridgeJson("memories_list", "", "", 200).optJSONArray("memories")
+        reviews = bridgeJson("memory_review_list").optJSONArray("items")
     }
     LaunchedEffect(reloadTick) { load() }
     // 条目点击 → 拉完整文本（列表 content 截断 120，弹窗要原文全量）
@@ -269,6 +282,41 @@ fun MemoryDetailScreen(onBack: () -> Unit) {
                                     GalaxyLegend("短期", "$shortN", AccentSage)
                                     GalaxyLegend("待归档", "$pendN", AccentTaupe)
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+            // 待复核（M-D 收件箱）：低置信候选批准后才进记忆库；无条目整块不渲染
+            val rv = reviews
+            if (rv != null && rv.length() > 0) {
+                item(key = "review") {
+                    GalaxyCard(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                        Text("待复核（${rv.length()}）", fontSize = 14.sp,
+                            fontWeight = FontWeight.Medium, color = gxTextPrimary(dark))
+                        Text("低置信候选，批准后才进记忆库", fontSize = 10.sp, color = gxTextSecondary(dark))
+                        (0 until rv.length()).map { rv.getJSONObject(it) }.forEach { r ->
+                            Row(verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(top = 8.dp)) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(r.optString("content").take(36), fontSize = 13.sp,
+                                        color = gxTextPrimary(dark), maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis)
+                                    Text("${r.optString("kind")} · 置信 ${r.optDouble("confidence")}",
+                                        fontSize = 10.sp, color = gxTextSecondary(dark))
+                                }
+                                TextButton(onClick = {
+                                    scope.launch {
+                                        bridgeJson("memory_review", r.optInt("id"), 1)
+                                        reloadTick++
+                                    }
+                                }) { Text("通过", color = AccentSage, fontSize = 13.sp) }
+                                TextButton(onClick = {
+                                    scope.launch {
+                                        bridgeJson("memory_review", r.optInt("id"), 0)
+                                        reloadTick++
+                                    }
+                                }) { Text("丢弃", color = AccentTaupe, fontSize = 13.sp) }
                             }
                         }
                     }
@@ -382,8 +430,13 @@ private fun Modifier.border1(dark: Boolean): Modifier =
 @Composable
 fun RelationshipDetailScreen(onBack: () -> Unit, role: String = "") {
     val dark = androidx.compose.foundation.isSystemInDarkTheme()
+    val scope = rememberCoroutineScope()
     var data by remember { mutableStateOf<JSONObject?>(null) }
-    LaunchedEffect(role) { data = bridgeJson("relationship_trend", role) }
+    var pending by remember { mutableStateOf<JSONObject?>(null) }
+    LaunchedEffect(role) {
+        data = bridgeJson("relationship_trend", role)
+        pending = bridgeJson("relationship_pending", role).optJSONObject("candidate")
+    }
 
     GalaxyPage(title = "羁绊图谱", onBack = onBack) {
         val d = data
@@ -393,6 +446,27 @@ fun RelationshipDetailScreen(onBack: () -> Unit, role: String = "") {
         val role = d.optString("role", "")
         val series = d.optJSONArray("series") ?: JSONArray()
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+            // 待确认关系事件（P-7：确认后才推动慢变量；无候选不渲染）
+            pending?.let { c ->
+                GalaxyCard(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                    Text("待确认的关系事件", fontSize = 14.sp, fontWeight = FontWeight.Medium,
+                        color = gxTextPrimary(dark))
+                    Spacer(Modifier.height(4.dp))
+                    Text(c.optString("content"), fontSize = 13.sp, color = gxTextPrimary(dark),
+                        lineHeight = 20.sp)
+                    Text("确认后计入关系账；不确认就放着，张力会自己淡", fontSize = 10.sp,
+                        color = gxTextSecondary(dark), modifier = Modifier.padding(top = 4.dp))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        TextButton(onClick = {
+                            scope.launch {
+                                bridgeJson("relationship_confirm", role, 1)
+                                pending = null
+                                data = bridgeJson("relationship_trend", role)
+                            }
+                        }) { Text("确认", color = AccentBlue, fontSize = 13.sp) }
+                    }
+                }
+            }
             // 顶部角色状态区（无立绘版：圆形+名字首字母，纯黑线条勾勒）
             Column(Modifier.fillMaxWidth().padding(top = 28.dp),
                 horizontalAlignment = Alignment.CenterHorizontally) {
@@ -577,6 +651,118 @@ fun SleepDetailScreen(onBack: () -> Unit) {
                     GalaxyLegend("睡眠≥7h", "", AccentBlue)
                     GalaxyLegend("睡眠<7h", "", AccentTaupe)
                     GalaxyLegend("清醒", "", if (dark) GxNightHairline else Color(0xFFEFEFEF))
+                }
+            }
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+// ==================== 页面4：成长树 Growth ====================
+// 数据面 bridge.growth_report（DESIGN §11-A）：阶段/七维 + 相处风格四维 +
+// 一起攒下的事（procedural 技能点）+ 承诺（可兑现/取消）+ 已生效印记。
+
+@Composable
+fun GrowthScreen(onBack: () -> Unit) {
+    val dark = androidx.compose.foundation.isSystemInDarkTheme()
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var data by remember { mutableStateOf<JSONObject?>(null) }
+    var tick by remember { mutableStateOf(0) }
+    LaunchedEffect(tick) { data = bridgeJson("growth_report") }
+
+    GalaxyPage(title = "成长树", onBack = onBack) {
+        val d = data
+        if (d == null) { LoadingBlock(); return@GalaxyPage }
+        if (!d.optBoolean("ok")) { ErrorOr("读取失败：${d.optString("error")}"); return@GalaxyPage }
+        val rel = d.optJSONObject("relationship") ?: JSONObject()
+        val style = d.optJSONObject("style") ?: JSONObject()
+        val skills = d.optJSONArray("skills") ?: JSONArray()
+        val promises = d.optJSONArray("promises") ?: JSONArray()
+        val imprints = d.optJSONArray("imprints") ?: JSONArray()
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+            // 当前阶段 + 三个主维度环
+            GalaxyCard(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                Text("当前阶段", fontSize = 12.sp, color = gxTextSecondary(dark))
+                Spacer(Modifier.height(4.dp))
+                Text(d.optString("stage", "初识"), fontSize = 30.sp, fontWeight = FontWeight.Bold,
+                    color = AccentBlue)
+                Spacer(Modifier.height(14.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    GalaxyRing(rel.optDouble("intimacy", 0.0).toFloat(), "亲密度", AccentBlue)
+                    GalaxyRing(rel.optDouble("trust", 0.0).toFloat(), "信任", AccentSage)
+                    GalaxyRing(rel.optDouble("familiarity", 0.0).toFloat(), "理解", AccentTaupe)
+                }
+            }
+            // 相处风格四维（StyleLearner 学出来的参数）
+            GalaxyCard(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                Text("相处风格", fontSize = 14.sp, fontWeight = FontWeight.Medium, color = gxTextPrimary(dark))
+                Text("从每次反馈里学出来的（0=少，1=多）", fontSize = 10.sp, color = gxTextSecondary(dark))
+                Spacer(Modifier.height(6.dp))
+                listOf("reply_length" to "话量", "formality" to "正式度",
+                    "humor" to "玩笑", "topic_follow" to "话题跟随").forEach { (k, label) ->
+                    val v = style.optDouble(k, 0.5).toFloat().coerceIn(0f, 1f)
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 6.dp)) {
+                        Text(label, fontSize = 12.sp, color = gxTextSecondary(dark),
+                            modifier = Modifier.width(64.dp))
+                        Box(Modifier.weight(1f).height(4.dp).background(
+                            if (dark) GxNightHairline else Color(0xFFE8E8E8), RoundedCornerShape(2.dp))) {
+                            Box(Modifier.fillMaxWidth(v).height(4.dp)
+                                .background(gxTextPrimary(dark), RoundedCornerShape(2.dp)))
+                        }
+                        Text("${(v * 100).toInt()}%", fontSize = 11.sp, color = gxTextSecondary(dark),
+                            modifier = Modifier.width(36.dp), textAlign = TextAlign.End)
+                    }
+                }
+            }
+            // 一起攒下的事（procedural 技能点）
+            GalaxyCard(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                Text("一起攒下的事（${skills.length()}）", fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium, color = gxTextPrimary(dark))
+                if (skills.length() == 0) {
+                    Text("还没有沉淀下来的习惯或约定", fontSize = 12.sp, color = gxTextSecondary(dark),
+                        modifier = Modifier.padding(vertical = 10.dp))
+                }
+                (0 until skills.length()).map { skills.getJSONObject(it) }.take(12).forEach { s ->
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
+                        GalaxyTag("#${s.optString("kind").ifBlank { "习惯" }}", AccentSage)
+                        Spacer(Modifier.width(8.dp))
+                        Text(s.optString("content"), fontSize = 13.sp, color = gxTextPrimary(dark),
+                            maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                    }
+                }
+            }
+            // 承诺（可兑现/取消——此前只开不关）
+            GalaxyCard(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                Text("我答应过你的事（${promises.length()}）", fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium, color = gxTextPrimary(dark))
+                if (promises.length() == 0) {
+                    Text("暂时没有挂着的承诺", fontSize = 12.sp, color = gxTextSecondary(dark),
+                        modifier = Modifier.padding(vertical = 10.dp))
+                }
+                (0 until promises.length()).map { promises.getJSONObject(it) }.forEach { p ->
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 6.dp)) {
+                        Text(p.optString("content"), fontSize = 13.sp, color = gxTextPrimary(dark),
+                            maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                        TextButton(onClick = {
+                            scope.launch { bridgeJson("promise_close", p.optInt("id"), "done"); tick++ }
+                        }) { Text("兑现", color = AccentSage, fontSize = 13.sp) }
+                        TextButton(onClick = {
+                            scope.launch { bridgeJson("promise_close", p.optInt("id"), "cancel"); tick++ }
+                        }) { Text("取消", color = AccentTaupe, fontSize = 13.sp) }
+                    }
+                }
+            }
+            // 相处里长出来的（P-9 已生效印记）
+            if (imprints.length() > 0) {
+                GalaxyCard(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                    Text("相处里长出来的", fontSize = 14.sp, fontWeight = FontWeight.Medium,
+                        color = gxTextPrimary(dark))
+                    (0 until imprints.length()).map { imprints.getJSONObject(it) }.forEach { im ->
+                        Text("· " + im.optString("hint").ifBlank {
+                            "在「${im.optString("scope").ifBlank { im.optString("dimension") }}」这件事上更放得开"
+                        }, fontSize = 12.sp, color = gxTextSecondary(dark),
+                            lineHeight = 18.sp, modifier = Modifier.padding(top = 6.dp))
+                    }
                 }
             }
             Spacer(Modifier.height(24.dp))

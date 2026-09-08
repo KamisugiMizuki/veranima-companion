@@ -489,6 +489,7 @@ fun RoleSpaceScreen(role: String, onBack: () -> Unit) {
     val sub = remember { mutableStateOf<String?>(null) }
     when (sub.value) {
         "bond" -> { RelationshipDetailScreen(onBack = { sub.value = null }, role = role); return }
+        "growth" -> { GrowthScreen(onBack = { sub.value = null }); return }
     }
     // 安卓返回键=退出角色私产页（子页优先，2026-09-01 用户反馈各页面均需支持）
     androidx.activity.compose.BackHandler(onBack = onBack)
@@ -538,6 +539,10 @@ fun RoleSpaceScreen(role: String, onBack: () -> Unit) {
             GalaxyNavRow(icon = IconBond, title = "羁绊图谱",
                 subtitle = "亲密度 / 信任 / 理解 · TA 与你的关系账",
                 onClick = { sub.value = "bond" })
+            Spacer(Modifier.height(8.dp))
+            GalaxyNavRow(icon = IconGrowth, title = "成长树",
+                subtitle = "相处风格 / 一起攒下的事 / 承诺",
+                onClick = { sub.value = "growth" })
             Spacer(Modifier.height(8.dp))
             // 角色当前作息卡（自用户睡眠报告页迁入，裁决 UI-1）
             RoleRhythmCard(rhythm, name)
@@ -783,7 +788,7 @@ private fun NickField(initial: String, onSave: (String) -> Unit) {
 
 /** 行为设置行：标题+副题左，开关右（Galaxy 黑白：选中=反色） */
 @Composable
-private fun SettingSwitch(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+internal fun SettingSwitch(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
     Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(label, fontSize = 14.sp, color = PrimaryInk(), modifier = Modifier.weight(1f))
         Switch(checked, onCheckedChange = onChange,

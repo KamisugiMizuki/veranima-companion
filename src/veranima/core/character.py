@@ -135,18 +135,40 @@ class CharacterCard:
         card.source_path = "" if source == "<memory>" else str(source)
         return card
 
+    # 卡内字段 → 语义组（2026-09-08 指令稀释治理：22 个【】块 → 6 组，
+    # 信息一字不减，只减标签切换；组内行首保留字段名）
+    _FIELD_GROUPS = {
+        "人格概述": "人格", "性格细节": "人格",
+        "背景设定": "背景", "虚拟身份背景": "背景", "居住设定": "背景",
+        "生活状态": "背景", "身体设定": "背景",
+        "沟通风格": "表达", "语言风格": "表达", "癖好": "表达",
+        "禁忌话题": "底线", "恐惧/回避": "底线", "价值观底线": "底线",
+        "长期驱动力": "内核", "价值排序": "内核", "内在张力": "内核",
+        "长期欲求": "内核", "关系期许": "内核", "初始好感": "内核",
+    }
+
     def to_system_prompt(self, extra: str = "") -> str:
-        """组装人格部分系统 prompt（身份认知 + 角色卡 + 可选附加）。"""
+        """组装人格部分系统 prompt（身份认知 + 角色卡 + 可选附加）。
+
+        块结构：身份硬约束（头）→ 5 个语义组（人格/背景/表达/底线/内核）→
+        对话示例 → extra。组内每行保留原字段名（信息无损，标签数从 22 降到 6）。
+        """
         parts = [IDENTITY_BLOCK]
-        v = self.veranima
         if self.name:
             parts.append(f"你的名字是 {self.name}。")
+        groups: dict[str, list[str]] = {}
+
+        def _add(group: str, label: str, value) -> None:
+            text = value if isinstance(value, str) else (
+                "、".join(str(x) for x in value) if isinstance(value, (list, tuple)) else str(value))
+            groups.setdefault(group, []).append(f"{label}：{text}")
+
         if self.description:
-            parts.append(f"【人格概述】{self.description}")
+            _add("人格", "概述", self.description)
         if self.personality:
-            parts.append(f"【性格细节】{self.personality}")
+            _add("人格", "性格", self.personality)
         if self.scenario:
-            parts.append(f"【背景设定】{self.scenario}")
+            _add("背景", "设定", self.scenario)
         # veranima 专属字段（兼容模板中文键与 JSON 英文键）
         # 英文键优先，中文键兜底（CHARACTER_TEMPLATE.md 的 YAML 用中文键）
         v = self.veranima
@@ -173,8 +195,8 @@ class CharacterCard:
                 # P-0：list[dict] 特殊格式化（left / right；多组用分号）
                 tensions = self.core_profile["inner_tensions"]
                 if tensions:
-                    rendered = "；".join(f"{t['left']} / {t['right']}" for t in tensions)
-                    parts.append(f"【内在张力】{rendered}")
+                    _add("内核", label,
+                         "；".join(f"{t['left']} / {t['right']}" for t in tensions))
                 continue
             if label == "语言风格":
                 # 聚合多个语言细节字段（句长/语气词/表情/修辞）
@@ -185,15 +207,17 @@ class CharacterCard:
                         # float（如 initial_affection: 0.5）不是 list——直接 str
                         subs.append(val if isinstance(val, str) else ("、".join(str(x) for x in val) if isinstance(val, (list, tuple)) else str(val)))
                 if subs:
-                    parts.append(f"【{label}】{'；'.join(subs)}")
+                    _add(self._FIELD_GROUPS.get(label, "人格"), label, "；".join(subs))
                 continue
             for k in keys:
                 val = v.get(k)
                 if val:
-                    parts.append(f"【{label}】{val if isinstance(val, str) else ('、'.join(str(x) for x in val) if isinstance(val, (list, tuple)) else str(val))}")
+                    _add(self._FIELD_GROUPS.get(label, "人格"), label, val)
                     break
         if self.tones:
-            parts.append(f"【语气标签】可用语气：{'/'.join(self.tones)}。")
+            _add("表达", "可用语气", "/".join(self.tones) + "。")
+        for group, lines in groups.items():
+            parts.append(f"【{group}】" + "\n".join(lines))
         if self.mes_example:
             parts.append(f"【对话示例】\n{self.mes_example}")
         if extra:

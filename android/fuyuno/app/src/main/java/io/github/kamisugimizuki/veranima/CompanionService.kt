@@ -70,7 +70,12 @@ class CompanionService : Service() {
 
     private fun roleBigIcon(role: String): android.graphics.Bitmap? = try {
         if (role.isBlank()) null
-        else BitmapFactory.decodeFile(java.io.File(filesDir, "characters/$role/portrait.jpg").absolutePath)
+        else {
+            // 统一走 bridge.avatar_path（角色目录立绘 → portraits/ → filesDir/portraits/），
+            // 不再硬拼单一路径——旧 portrait_path 已合并进它
+            val p = Python.getInstance().getModule("bridge").callAttr("avatar_path", role).toString()
+            if (p.isBlank()) null else BitmapFactory.decodeFile(p)
+        }
     } catch (e: Exception) { null }
 
     private fun notifyProactive(text: String, name: String = "", role: String = "") {

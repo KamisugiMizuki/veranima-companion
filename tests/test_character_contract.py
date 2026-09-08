@@ -65,8 +65,8 @@ def test_system_prompt_contains_identity_and_name():
     prompt = card.to_system_prompt()
     assert "你是 Veranima" in prompt          # 系统硬边界
     assert "你的名字是 Yuki。" in prompt       # 角色名
-    assert "【性格细节】" in prompt
-    assert "【语气标签】可用语气：中性/调侃/疲惫。" in prompt
+    assert "性格：" in prompt
+    assert "可用语气：中性/调侃/疲惫。" in prompt
 
 
 def test_validate_ok():

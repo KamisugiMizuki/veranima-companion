@@ -67,22 +67,26 @@ class PromiseBook:
     # ---------- 检索与注入 ----------
 
     def open_promises(self, limit: int = 10) -> list:
-        """未兑现承诺（procedural 层 promise 标记且最新版本 status=open）。
+        """未兑现承诺（procedural 层 promise 标记、未被版本链取代、status=open）。
 
-        版本链语义：同 provenance 记录取 version 最大者（最新状态）。
+        2026-09-08 修：旧实现按 provenance 取 max(version)——所有承诺共用
+        provenance='promise-book'，一旦某条 mark_done 升到 v2，max=2 就把其余
+        v1 承诺全部挤出清单（兑现一条=清单清空）。改为按 _superseded_ids 判 current。
         """
+        superseded = self.memory._superseded_ids()
         rows = self.memory.con.execute(
-            """SELECT * FROM memories m WHERE layer='procedural'
-               AND version = (SELECT max(version) FROM memories
-                              WHERE layer='procedural' AND provenance = m.provenance)
-               ORDER BY id DESC LIMIT ?""",
-            (limit,),
-        ).fetchall()
+            "SELECT * FROM memories WHERE layer='procedural' AND category='promise'"
+            " ORDER BY id DESC LIMIT ?", (max(int(limit) * 4, 20),)).fetchall()
         out = []
         for r in rows:
             e = self.memory._row_to_entry(r)
-            if e.meta.get("promise") and e.meta.get("status") == "open":
-                out.append(e)
+            if e.id in superseded or not e.meta.get("promise"):
+                continue
+            if e.meta.get("status") != "open":
+                continue
+            out.append(e)
+            if len(out) >= limit:
+                break
         return out
 
     def to_prompt_block(self, query_hint: str = "") -> str:

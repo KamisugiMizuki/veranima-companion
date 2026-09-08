@@ -48,12 +48,15 @@ fun SettingsMainScreen(nav: NavHostController) {
     val ctx = LocalContext.current
     var f by remember { mutableStateOf<JSONObject?>(null) }
     var activeChar by remember { mutableStateOf("") }
+    var reviewOn by remember { mutableStateOf(false) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
     LaunchedEffect(Unit) {
         runCatching {
             val o = JSONObject(withContext(Dispatchers.IO) { bridge.callAttr("get_settings").toString() })
             if (o.optBoolean("ok")) {
                 f = o.getJSONObject("fields")
                 activeChar = o.getString("active_character")
+                reviewOn = o.optBoolean("review_inbox")
             }
         }
     }
@@ -83,6 +86,15 @@ fun SettingsMainScreen(nav: NavHostController) {
         GalaxyNavRow(icon = IconUserModel, title = "用户画像（UserModel）",
             subtitle = "角色眼中的你 · 13 项可编辑 · 锁定的不被自动改写",
             onClick = { nav.navigate("usermodel_detail") })
+        Spacer(Modifier.height(8.dp))
+        SettingSwitch("记忆待复核队列", reviewOn) { on ->
+            reviewOn = on
+            scope.launch {
+                withContext(Dispatchers.IO) {
+                    bridge.callAttr("set_setting", "memory_review_inbox", if (on) "1" else "0")
+                }
+            }
+        }
         Spacer(Modifier.height(14.dp))
         TextButton(onClick = { openBatterySettings(ctx) }) { Text("电池优化白名单", color = Muted()) }
         TextButton(onClick = { openUsageAccess(ctx) }) { Text("使用情况访问（前台感知联想用；需手动授权）", color = Muted()) }

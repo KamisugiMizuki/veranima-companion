@@ -39,7 +39,7 @@ def test_role_prompt_has_core_and_no_other_role_name():
     for role_id, other in (("zima", "水上由岐"), ("yuki", "Зима")):
         card = CharacterCard.from_file(ROOT / "characters" / role_id / "character.json")
         prompt = card.to_system_prompt()
-        assert "【长期驱动力】" in prompt
-        assert "【内在张力】" in prompt
+        assert "长期驱动力：" in prompt
+        assert "内在张力：" in prompt
         assert other not in prompt
         assert validate_character_prompt(card, prompt) == []

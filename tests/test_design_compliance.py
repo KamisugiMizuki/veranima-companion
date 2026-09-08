@@ -139,6 +139,17 @@ def test_output_format_instruction_is_last_block():
         assert sp.rstrip().endswith(marker.rstrip()), f"{ch} 通道输出格式指令未压尾"
 
 
+def test_reality_boundary_is_first_block():
+    """现实行动边界是硬约束，按「首尾服从度最高」压最前（与输出格式指令压尾成对）。"""
+    from veranima.core.prompts import build_system_prompt, REALITY_BOUNDARY
+    from veranima.core.state import AgentState
+
+    card = CharacterCard(name="小V", first_mes="你好")
+    mem = MemoryStore(db_path=":memory:", config={}, provider=FakeEmbed())
+    sp = build_system_prompt(card, AgentState(), mem, channel="im")
+    assert sp.startswith(REALITY_BOUNDARY), "现实行动边界未压最前"
+
+
 def test_hard_directive_count_regression_line():
     """硬指令（必须/不要/不得/只能）行数回归上限：新功能往 prompt 加规则时超线即红。
 

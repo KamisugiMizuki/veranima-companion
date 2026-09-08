@@ -2,7 +2,7 @@
 
 chaquopy 的 python 读不了 Android assets，故立绘的解包在 Kotlin 侧
 （MainActivity boot 时 assets → filesDir/portraits/），本脚本只负责
-把源图放进 assets，文件名=角色名（bridge.portrait_path 按目录唯一文件返回）。
+把源图放进 assets，文件名=角色名（bridge.avatar_path 按角色名匹配返回）。
 """
 import shutil
 from pathlib import Path

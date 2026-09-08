@@ -69,22 +69,22 @@ def test_inner_tensions_non_string_items_dropped():
 def test_prompt_injects_core_profile_once_each():
     card = _card(_full_veranima())
     prompt = card.to_system_prompt()
-    assert "【长期驱动力】想理解用户，但不愿无条件顺从" in prompt
-    assert "【价值排序】关系诚实、独立判断、保护重要的人" in prompt
-    assert "【内在张力】渴望靠近 / 害怕失去边界" in prompt
-    assert "【长期欲求】成为能共同生活和创作的长期伙伴" in prompt
-    assert "【关系期许】亲密但保留彼此独立性" in prompt
-    # 每个标签只出现一次
+    assert "长期驱动力：想理解用户，但不愿无条件顺从" in prompt
+    assert "价值排序：关系诚实、独立判断、保护重要的人" in prompt
+    assert "内在张力：渴望靠近 / 害怕失去边界" in prompt
+    assert "长期欲求：成为能共同生活和创作的长期伙伴" in prompt
+    assert "关系期许：亲密但保留彼此独立性" in prompt
+    # 每个字段只出现一次（块合并后字段名降为行首前缀，不再是独立【】块）
     for label in ("长期驱动力", "价值排序", "内在张力", "长期欲求", "关系期许"):
-        assert prompt.count(f"【{label}】") == 1
+        assert prompt.count(f"{label}：") == 1
 
 
 def test_prompt_no_core_profile_when_empty():
     prompt = _card({}).to_system_prompt()
-    assert "【长期驱动力】" not in prompt
-    assert "【价值排序】" not in prompt
-    assert "【内在张力】" not in prompt
-    assert "【长期欲求】" not in prompt
+    assert "长期驱动力：" not in prompt
+    assert "价值排序：" not in prompt
+    assert "内在张力：" not in prompt
+    assert "长期欲求：" not in prompt
 
 
 def test_identity_block_has_no_character_words():
