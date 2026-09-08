@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import hashlib
 import logging
+import re
 import datetime as dt
 from zoneinfo import ZoneInfo
 from dataclasses import dataclass, field, replace
@@ -25,6 +26,26 @@ _ALLOWED_IMPACTS = {"none", "mild", "inconvenient", "unavailable"}
 _ALLOWED_SHARE_POLICIES = {"never", "low_pressure", "normal", "high_value"}
 _ALLOWED_CHRONOTYPES = {"day_aligned", "evening_aligned", "night_aligned", "irregular"}
 _ALLOWED_PROFILES = {"short_precise", "normal", "drowsy", "fragmented"}
+
+
+def _looks_arrived(text: str) -> bool:
+    """用户是否在回答「到了吗」——短确认即可，不认死字面。
+
+    09-08：旧实现是 `{"到了", "我到了", "已到", "算到了", "继续按到了算"}` 白名单，
+    最后一条是某次聊天的原话。根因是「上下文已经问过到了没」→ 短回复+含「到」
+    就是确认，否定词另判（「还没到」不算）。
+    """
+    t = str(text).strip().strip("。.!！~～、,， ")
+    if not t or len(t) > 12 or _ARRIVE_NEG.search(t):
+        return False
+    if t in _ARRIVE_AFFIRM:
+        return True
+    return bool(_ARRIVE_YES.search(t))
+
+
+_ARRIVE_NEG = re.compile(r"(没|不|未)到|还没|没去")
+_ARRIVE_YES = re.compile(r"到(了|啦|咯|达|站|家|学校|公司)|刚到|已到|抵达")
+_ARRIVE_AFFIRM = {"嗯", "嗯嗯", "对", "是", "是的", "好", "好嘞", "行"}
 
 
 def _local_time(day: dt.date, value: str, zone: ZoneInfo) -> dt.datetime:
@@ -679,7 +700,7 @@ class ScheduleRuntime:
     def reconcile_from_user(self, text: str, when: dt.datetime) -> bool:
         if self.scene_state not in {"unknown_after_downtime", "reconciling"} or not self.target_place_id:
             return False
-        if str(text).strip() not in {"到了", "我到了", "已到", "算到了", "继续按到了算"}:
+        if not _looks_arrived(text):
             return False
         self.reconcile_after_downtime(when, arrived=True)
         return True

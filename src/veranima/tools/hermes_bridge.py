@@ -83,7 +83,7 @@ class HermesExecutionBridge:
     # ---------- 阶段 3：worktree 能力探针 ----------
 
     CODE_TASK_MARKERS = ("代码", "重构", "修复 bug", "修 bug", "实现功能", "跑测试",
-                         "改代码", "commit", "git ", "pytest", ".py", ".js", ".ts")
+                         "改代码", "commit", "git", "pytest", ".py", ".js", ".ts")
 
     def probe_worktree_isolation(self) -> tuple[bool, str]:
         """行为探针（SPEC 阶段 3 第 3 步）：提交一个只读探针 run，

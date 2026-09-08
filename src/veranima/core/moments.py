@@ -94,7 +94,7 @@ _ACT_LABELS = {
     "model_training_work": "盯着训练跑", "late_takeout_dinner": "吃夜宵外卖",
     "meme_archiving": "收藏表情包", "video_with_you": "等你一起看片", "blog_browsing": "刷博客",
 }
-_TAIL_PAT = re.compile(r"(你在吗|你知道吗|你在干嘛呢.*发出来|@你)")  # 喊话检查（重生成一次即止损）
+_TAIL_PAT = re.compile(r"(@|你(在吗|在么|在干嘛|干嘛呢|知道吗|看到了吗|看到没|回我|帮我)|在吗|回我|帮我(看|查|写|弄))")  # 喊话检查（重生成一次即止损）
 
 
 class MomentsEngine:

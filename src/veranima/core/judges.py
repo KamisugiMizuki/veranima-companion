@@ -31,6 +31,7 @@ class MessageJudgment:
     user_state: str | None = None         # QQ 用户状态机信号
     tension: str | None = None            # answered/skipped/low_investment（需上轮问句语境）
     conflict: str | None = None           # apology/violation
+    tease: bool | None = None             # 用户在调戏/撩/拿角色打趣（情绪起伏的触发面）
     memory_kind: str = "none"             # event/preference/commitment/none
     emotion: str = "none"                 # happy/sad/angry/anxious/none
     clarification: bool | None = None     # 追问细节（R1 精确值开关）
@@ -80,6 +81,8 @@ def build_judge_prompt(text: str, prev_assistant: str, open_threads: list | None
         '（含变体如"无辣不欢""一口就劝退"）/"commitment"约定或要求提醒/'
         '"none"不值得记,\n'
         '  "emotion": 用户情绪："happy"/"sad"/"angry"/"anxious"焦虑压力/"none",\n'
+        '  "tease": 用户是否在调戏/撩/逗你——拿你开玩笑、故意说暧昧话、戳你反应'
+        '（含变体如"想我了没""吃醋了？"）；正经提问/真心夸= false,\n'
         '  "clarification": 用户是否在对助手刚才的模糊/错误回答追问精确细节,\n'
         '  "wants_remember": 用户是否想和助手共同回忆往事（"还记得…"类，含变体）,\n'
         '  "sleep_report": 用户是否在自己即刻要睡了/刚睡醒——"sleeping"现在就去睡、'
@@ -133,6 +136,8 @@ def _coerce(raw: dict) -> MessageJudgment:
     j.tension = tv if tv in _VALID_TENSION else None
     cf = str(raw.get("conflict") or "")
     j.conflict = cf if cf in _VALID_CONFLICT else None
+    if isinstance(raw.get("tease"), bool):
+        j.tease = raw["tease"]
     mk = str(raw.get("memory") or "")
     j.memory_kind = mk if mk in _VALID_MEMORIES else "none"
     em = str(raw.get("emotion") or "")

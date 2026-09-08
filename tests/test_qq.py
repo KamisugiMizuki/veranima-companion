@@ -132,7 +132,7 @@ def test_busy_mixed_reply_preserves_complete_visible_text(adapter, agent):
     )
     run(adapter._handle_private({"user_id": 10001, "message_type": "private", "message": "已严肃开始学习"}))
     sent = adapter.bot.sent[0][1]
-    assert sent == visible
+    assert sent == visible.rstrip("。")  # render_im 09-08 起删句尾句号
     assert "（我这边有点忙，回头细说）" not in sent
     assert len(sent) > 40
 
@@ -142,7 +142,7 @@ def test_busy_reply_obj_preserves_complete_structured_text(adapter, agent):
     agent.llm.reply = '{"segments":[{"text":"' + full_text + '"}]}'
     run(adapter._handle_private({"user_id": 10001, "message_type": "private", "message": "已严肃开始学习"}))
     sent = adapter.bot.sent[0][1]
-    assert sent == full_text
+    assert sent == full_text.rstrip("。")  # render_im 09-08 起删句尾句号
 
 
 def test_qq_proactive_rejects_unanchored_reference(adapter):
@@ -194,7 +194,7 @@ def test_qq_meal_reminder_uses_gate_and_persists_after_send(adapter, monkeypatch
     # 本测试断言闸门+持久化链路；文案的 LLM 改写属 core 路径（test_humanity_gaps 覆盖）
     monkeypatch.setattr(adapter.agent, "_meal_message", lambda meal, text: text)
     assert run(adapter._send_due_meal_reminder_async(now)) is True
-    assert adapter.bot.sent[-1][1]["message"] == "到饭点了，先去吃午饭。"
+    assert adapter.bot.sent[-1][1]["message"] == "到饭点了，先去吃午饭"  # 句尾句号被渲染器删
     feedback = adapter.agent.memory.recent_proactive_feedback(source="meal", channel="qq", limit=1)
     assert feedback and feedback[0]["candidate_id"] == "meal:2026-08-24:lunch"
 

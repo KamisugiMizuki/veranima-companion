@@ -707,7 +707,12 @@ class Agent:
             "【事实边界】你只可以把你确实知道的事（用户提过/画像记录）当既定事实说。"
             "对用户的情况不确定时，猜测要猜出声：用问句猜（「是论文吗？」「你们组会要交？」），"
             "绝不能把没听用户说过的东西当真的——「记得你还有论文」这种句式不行，"
-            "除非你确定 ta 亲口说过。"
+            "除非你确定 ta 亲口说过。\n"
+            "【状态一致】用户已经交代过结果的事不要再问一遍：说了「吃完了/吃过了」"
+            "就是这顿已经过去（东西没到不可能被吃完），说了「到了/收到了」就别再追问到没到；"
+            "任何提醒或旧素材和最近对话冲突时，以最近对话为准，宁可不说。\n"
+            "【别虚报自己】别声称自己「刚才/昨天/之前说过」某句话，除非最近的对话里确实有——"
+            "记不清就说记不清，或者直接重新问。"
         )
 
     @classmethod
@@ -1777,6 +1782,10 @@ class Agent:
         except Exception as e:
             logger.debug("persona reuse/plan skipped: %s", e)
         self._turn_n += 1
+        try:
+            self._update_affect(judgment)   # 判词 → PAD（09-08：情绪起伏接线）
+        except Exception:
+            logger.debug("affect update failed", exc_info=True)
         extra_blocks = [
             self.style.to_prompt_block(
                 channel=channel,
@@ -1784,6 +1793,7 @@ class Agent:
             ),  # M-6：参数 + 通道化 StyleBrief；最终计划覆盖统计长度
             self.mirror.to_prompt_block(),
             self.promises.to_prompt_block(query_hint=query_hint),
+            self._affect_block(),
         ]
         try:
             self.threads.tick(interaction_now)   # 开口前先推进状态（纯算术零成本）
@@ -3087,6 +3097,11 @@ class Agent:
         ref_ts = (now if isinstance(now, datetime.datetime)
                   else datetime.datetime.fromtimestamp(now or time.time())).timestamp()
         pending[:] = [m for m in pending if ref_ts - m["ts"] < 180 * 60]  # TTL：早招呼不拖到午后
+        # 饭点素材时效 30min（09-08 用户 Q1 实锤：16:05 收的午饭素材卡在合并窗口里，
+        # 17:02 才出窗织发，而用户 16:27 已说「早吃完了」→ 角色反问「外卖到了就吱一声」，
+        # 拿已被推翻的前提说话。迟到半小时以上的饭点提醒=噪音，直接丢）
+        pending[:] = [m for m in pending
+                      if m.get("source") != "meal" or ref_ts - m["ts"] < 30 * 60]
         # 联想素材保鲜闸（09-03 真机实锤：15:01 生成「三个小时没动静」进池，
         # 用户 15:21 已回话，15:36 出窗照发）：素材生成后又说过话=猜测已破产，
         # 再提=「哪个平行宇宙的三个小时」。只挡 context_probe（饭点/问候不依赖
@@ -3124,10 +3139,16 @@ class Agent:
             pool = pool_take(pending, self._weave_cap())
             pool_kind = "+".join(dict.fromkeys(m.get("source", "?") for m in pool))[:40]
             if len(pool) == 1 and pool[0]["source"] == "meal":
-                # 单条饭点走原有口语化改写
-                msgs.append(self._meal_message(pool[0]["meal"], pool[0]["text"]))
-                msg_kinds.append((f"ritual:{pool_kind}",
-                                  f"餐槽 {pool[0].get('meal','')}", pool[0].get("cid", "")))
+                # 单条饭点走原有口语化改写；改写自我否决（前提已被对话推翻）→ 不发
+                _meal_msg = self._meal_message(pool[0]["meal"], pool[0]["text"])
+                if _meal_msg:
+                    msgs.append(_meal_msg)
+                    msg_kinds.append((f"ritual:{pool_kind}",
+                                      f"餐槽 {pool[0].get('meal','')}", pool[0].get("cid", "")))
+                else:
+                    self.memory.log_decision(
+                        self.role_key or self.card.name, f"ritual:{pool_kind}", "vetoed",
+                        reason="饭点素材前提已被对话推翻", digest=str(pool[0].get("text", ""))[:120])
             else:
                 woven = self._weave_ritual([m["text"] for m in pool],
                                            sources=[m.get("source", "?") for m in pool])
@@ -3227,7 +3248,9 @@ class Agent:
             + "\n".join(f"{i + 1}. {t.strip()}" for i, t in enumerate(texts))
             + ("\n先自查：有没有哪件已经过时（说出来会露馅：时间点不对、情况已变、"
                "或与刚发生的事自相矛盾）？有则输出行 `[SKIP 编号 一句话理由]`（可多行），"
-               "这些不用织进消息。没有 SKIP 行=全部成立。" if judged else "")
+               "这些不用织进消息。没有 SKIP 行=全部成立。"
+               "（例：素材说『等外卖/还没吃饭』，但用户刚说『早吃完了』→ 该条 SKIP）"
+               if judged else "")
             + "\n把剩下的事合成一条自然连贯的消息，像一个人的连续口吻一次说完："
               "有事由和先后，用『对了』『顺便』『正好』这类过渡把话题串起来，"
               "不要编号、不要分段并列、不要漏掉任何一件（被 SKIP 的除外）。"
@@ -3290,6 +3313,58 @@ class Agent:
         不心跳/不破冰/不追问/不联想——池这边 weave_cap 咽到只剩 1 条，旁路
         那边却照常连发=人格分裂（「频率闸从调度器变成性格」的反面病灶）。"""
         return not (self.state.mood == "低落" or self.state.energy < 30)
+
+    # ---- P-3 情绪起伏（09-08 用户裁决：许眠太平稳）---------------------------
+    # apply_emotion_event 此前只有单测在调、生产零调用 → valence/arousal 永远
+    # 0.5，prompt 里「情绪中等」写死每轮，人设只剩稳定没有起伏。
+    _AFFECT_DELTA = {
+        "happy":   {"valence": 0.12, "arousal": 0.10},
+        "sad":     {"valence": -0.12, "arousal": -0.06},
+        "angry":   {"valence": -0.10, "arousal": 0.16},
+        "anxious": {"valence": -0.08, "arousal": 0.12},
+    }
+
+    def _update_affect(self, judgment) -> None:
+        """每轮一次 PAD 更新（judges 统一判断点顺带产出，零额外调用）。
+
+        先向基线回归再叠事件：连续同向情绪会积累成「上头」，断了自然平复。
+        """
+        from .persona import apply_emotion_event
+        apply_emotion_event(self.state, {"type": "decay"})
+        delta = dict(self._AFFECT_DELTA.get(
+            str(getattr(judgment, "emotion", "") or ""), {}))
+        if getattr(judgment, "tease", None):
+            # 被调戏=激动+嘴上不认（唤醒拉满，效价微升）
+            delta["arousal"] = min(0.2, delta.get("arousal", 0.0) + 0.18)
+            delta["valence"] = delta.get("valence", 0.0) + 0.04
+        if str(getattr(judgment, "conflict", "") or "") == "violation":
+            delta["valence"] = delta.get("valence", 0.0) - 0.15
+            delta["arousal"] = min(0.2, delta.get("arousal", 0.0) + 0.12)
+        if not delta:
+            return
+        apply_emotion_event(self.state, {
+            "type": "user_turn",
+            "cause": ("tease" if getattr(judgment, "tease", None)
+                      else str(getattr(judgment, "emotion", "") or "emotion")),
+            "delta": delta,
+        })
+
+    def _affect_block(self) -> str:
+        """PAD → 表达约束：情绪必须落到可见文本形态上，否则「起伏」只是内部数字。"""
+        v = float(getattr(self.state, "valence", 0.5))
+        a = float(getattr(self.state, "arousal", 0.5))
+        if a >= 0.68:
+            tone = ("你现在情绪上来了（被撩/被气到）：话变短，标点变多（？！可以连用），"
+                    "该嘴硬就嘴硬、该结巴就结巴，允许把一句拆成两三条连发，"
+                    "也允许「气气气」「……」「啧」这种出声；别解释自己的情绪，别写成小说。")
+        elif a >= 0.58:
+            tone = "你此刻有点起伏：句子比平时短一点，语气词和标点可以多一点，别太端着。"
+        elif v <= 0.35:
+            tone = "你此刻情绪偏低：话更少更平，别主动展开话题，也不用强撑热情。"
+        else:
+            return ""
+        return f"【当下语气】{tone}"
+
 
     def proactive_merge_open(self, now=None) -> bool:
         """问候族合并窗口（2026-09-01 用户反馈：07:09 睡醒公告与 07:11 时段问候
@@ -3937,9 +4012,17 @@ class Agent:
             task = (
                 f"到了该吃{cn}的时间点。用你自己的口吻提醒用户去吃饭，一句话，"
                 f"不要说「到饭点了」这种模板话，别解释为什么提醒。{ctx}\n"
-                "如果这些话里能自然接上（比如 ta 之前说忙/没吃/睡过头），就顺着提，别硬扯。"
+                "如果这些话里能自然接上（比如 ta 之前说忙/没吃/睡过头），就顺着提，别硬扯。\n"
+                "先自查最近这些话：用户已经交代过结果的，就别再当没发生——"
+                "ta 说「吃完了/吃过了/不用了」就是这顿已经过去，别再提醒吃饭、"
+                "更别追问外卖到没到（东西没到不可能被吃完）；"
+                "这种情况只回空字符串，宁可这条不发。"
             )
-            return self._short_task(task, max_tokens=120) or fallback
+            out = (self._short_task(task, max_tokens=120) or "").strip()
+            if out in {"", "''", '""', "空字符串"}:
+                logger.info("meal rewrite self-vetoed (premise already resolved)")
+                return ""   # 显式自我否决：不退回模板（模板同样会催饭）
+            return out or fallback
         except Exception as e:
             logger.debug("meal LLM failed, fallback: %s", e)
             return fallback

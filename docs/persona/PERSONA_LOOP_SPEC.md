@@ -883,6 +883,7 @@ persona_candidate_to_memory(candidate, source_message_id) -> dict | None
 - 初始值：兼容现有 `initial_affection/initial_attachment=0.5`；它只能作为 intimacy/familiarity 先验，不自动提高 trust/safety/reciprocity。
 - 测试：普通消息不升级、共同项目/确认/修复事件更新、越界降低 safety、时间衰减、旧 SQLite 默认值迁移。
 - 完成：重启后状态恢复；同一事件重复应用幂等或有明确去重键。
+- **落地注记（2026-09-08 用户裁决「许眠情绪太平稳」）**：`apply_emotion_event` 此前只有单测在调、生产零调用 → valence/arousal 恒 0.5。现接线：judges 统一判断点新增 `tease`（被调戏/撩/逗），每轮 `Agent._update_affect` = 先向基线衰减再叠 `emotion/tease/conflict` 事件（增量钳 0.2，同 apply_emotion_event 不变式）；表达面由 `Agent._affect_block` 把高唤醒映射成可见文本形态（短句/标点重复/连发/嘴硬），进 turn 的 extra_blocks。事件源仍只有判断点一处，不新增 LLM 调用。
 
 ### P-4 Persona Brief
 

@@ -41,7 +41,7 @@ def test_im_reply_strips_think_tags():
 
 def test_render_im_is_final_safety_net_for_raw_thinking_trace():
     raw = "1. **分析输入**：用户困了。\n\n6. **最终调整**：早点睡吧。\n\n早点睡吧。"
-    assert render_im(raw, AgentState()) == "早点睡吧。"
+    assert render_im(raw, AgentState()) == "早点睡吧"  # 09-08 起句尾句号也删
 
 
 def test_render_im_reply_signature():
@@ -49,8 +49,8 @@ def test_render_im_reply_signature():
     st = AgentState(attachment=0.5)
     r = _reply(ReplySegment(text="好的呀～那明天见～"))
     out = render_im(r, st)
-    assert "～" not in out  # 亲密度 <0.8 波浪号替换
-    assert "。" in out
+    assert "～" not in out  # 亲密度 <0.8 波浪号删除（不替换成句号）
+    assert out == "好的呀那明天见"
     # 高亲密度保留波浪号
     st2 = AgentState(attachment=0.85)
     out2 = render_im(_reply(ReplySegment(text="好的呀～那明天见～")), st2)

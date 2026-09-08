@@ -58,7 +58,10 @@ def check_duplicates(con, since):
 def check_internal_leak(con, since):
     """内部术语/协议残片出现在可见消息（08-28 raw JSON、08-31 依恋度/敬语刀实锤）。"""
     kw = ("依恋度", "敬语刀", "raw JSON", "不要输出思考过程", "PersonaBrief",
-          "memory_candidates", "tension 值", "判断点）", "candidate_id")
+          "memory_candidates", "tension 值", "判断点）", "candidate_id",
+          # 09-08 补：QQ 表情协议残片（用户侧 inbound 合法、assistant 侧=复读残留）、
+          # RAG 指令外溢（08-22 实锤）、方向句标签外溢
+          "[QQ表情：", "使用规则", "证据支持", "【状态一致】", "【当下语气】")
     like = " OR ".join("content LIKE ?" for _ in kw)
     rows = con.execute(
         f"SELECT content, created_at FROM messages WHERE role='assistant'"

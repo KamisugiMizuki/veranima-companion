@@ -263,3 +263,12 @@ def test_ta_word_boundary_still_kills_monologue():
     """词边界不能放过真独白：'ta 应该…' 仍要杀。"""
     assert parse_reply("ta 应该先安抚用户再解释", channel="im").text == ""
     assert parse_reply("用户现在应该更想要安抚", channel="im").text == ""
+
+
+def test_direction_block_label_echo_is_killed():
+    """09-08 新增方向句块（【状态一致】等）：模型复读标签=指令外溢，必须杀掉；
+    普通方括号用法（角色自己起的小标题）不受影响。"""
+    assert parse_reply("【状态一致】用户已经交代过的事不要再问", channel="im").text == ""
+    assert parse_reply("【当下语气】话变短，标点变多", channel="im").text == ""
+    kept = parse_reply("【今日份】给你看看我的午饭", channel="im").text
+    assert "今日份" in kept

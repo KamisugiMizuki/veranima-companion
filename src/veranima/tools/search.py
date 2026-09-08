@@ -502,17 +502,32 @@ def event_type_for(intent: SearchIntent) -> str:
     return intent.event_type or "活动"
 
 
-def _candidate_entities(results: list[SearchResult]) -> tuple[str, ...]:
+def _candidate_entities(results: list[SearchResult], query: str = "") -> tuple[str, ...]:
+    """从结果里抽候选实体。
+
+    查询回声（查什么就排除什么）与通用页面词走规则判定——09-08：旧实现把
+    「明日方舟」「当前开启」写死进黑名单，等于给一次检索做了特判。
+    """
     out: list[str] = []
+    q = (query or "").strip()
     for item in results:
         corpus = f"{item.title} {item.snippet}"
         values = re.findall(r"[《「『“\"]([^》」』”\"]{2,60})[》」』”\"]", corpus)
         values += re.findall(r"([\w一-龥][\w一-龥·_-]{1,40})(?:复刻活动|活动公告|活动)", corpus)
         for value in values:
             value = value.strip()
-            if value and value not in out and value not in {"明日方舟", "当前开启"}:
-                out.append(value)
+            if not value or value in out:
+                continue
+            if len(q) >= 2 and (value in q or q in value):
+                continue
+            if _GENERIC_ENTITY.fullmatch(value):
+                continue
+            out.append(value)
     return tuple(out[:5])
+
+
+# 公告标题里的通用 UI 词（不是实体）
+_GENERIC_ENTITY = re.compile(r"(当前|正在|即将|限时|最新)?(开启|开启中|进行中|活动中|活动期间|活动时间)")
 
 
 def _coerce_time_range(
@@ -633,7 +648,7 @@ class EvidencePack:
             if len(clean) >= 5:
                 break
         stamp = reference.isoformat(timespec="seconds")
-        candidates = _candidate_entities(clean)
+        candidates = _candidate_entities(clean, topic)
         return cls(topic[:160], stamp, tuple(clean), 15, normalized_range, intent_kind, candidates)
 
     def to_prompt(self, *, channel: str = "im") -> str:

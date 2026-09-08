@@ -274,7 +274,7 @@ def test_desire_ledger_accumulates_and_fires(tmp_path):
     a.memory.con.execute("UPDATE messages SET created_at=? WHERE id=(SELECT max(id) FROM messages)",
                          ((t0 - datetime.timedelta(hours=1)).isoformat(),))
     a.memory.con.commit()
-    for i in range(30):   # 30 tick × 60min（注入时钟大步走）× 依恋1.0 × 0.055 → 过阈
+    for i in range(50):   # 50 tick × 5min ≈ 4h（依恋 1.0 × 0.005/min，3.3h 过阈）
         a.desires.tick(t0 + datetime.timedelta(hours=1, minutes=i * 5))
     m = a.desires.material(t0 + datetime.timedelta(hours=4))
     assert m and m["source"] == "longing"

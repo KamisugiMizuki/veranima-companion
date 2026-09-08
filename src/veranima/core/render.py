@@ -1,10 +1,16 @@
 """IM 通道渲染器（DESIGN 4.8）：发送前机械规则后处理。
 
 prompt 引导负责「生成时就带通道风格」，这里只做机械可逆的修正：
-- 感叹号限频（每段最多 1 个，多余降级为句号）
-- 波浪号亲密度阈值（attachment < 0.8 时替换为句号）
+- 感叹号限频（默认每段最多 1 个；arousal 高=情绪激动时放宽到 3 个）
+- 波浪号亲密度阈值（attachment < 0.8 时删掉）
+- 句尾句号删除（网络聊天不打句尾句号——09-08 实测角色 91% 消息带句尾标点、
+  用户 17%，句号是「书面腔」最大来源）
 - 连续换行压缩（3+ 空行压成 1 个——禁止用空行模拟「正在输入」）
 - 表情限频（emoji_frequency=never 时全删；low/high 靠 prompt 引导）
+
+09-08 用户裁决「情绪太平稳」后的修正：限频只删不替换。旧实现把多余的
+感叹号/波浪号降级成句号，等于把情绪改写成书面语——与「多用标点、气气气」
+的表达目标相反。
 
 纯函数、无 IO、无状态，R2 只有 IM 渲染器；TTS 渲染器见 R2_SPEC 3.Renderer 接口。
 """
@@ -22,34 +28,48 @@ _EMOJI = re.compile(
 )
 _URL = re.compile(r"https?://[^\s)）]+")
 
+# arousal ≥ 此值视为「情绪激动」：感叹号限频放宽（09-08 Q2）
+_HOT_AROUSAL = 0.62
 
-def _limit_exclamations(text: str) -> str:
-    """每段（\n\n 分割）最多保留 1 个感叹号，多余替换为句号。"""
+
+def _limit_exclamations(text: str, keep: int = 1) -> str:
+    """每段（\\n\\n 分割）最多保留 keep 个感叹号，多余的直接删掉。
+
+    只删不替换：旧版降级成句号会把情绪改成书面腔（09-08 实锤）。
+    """
     out = []
     for para in text.split("\n\n"):
-        if para.count("！") + para.count("!") <= 1:
-            out.append(para)
-            continue
-        seen = False
+        seen = 0
         chars = []
         for ch in para:
             if ch in ("！", "!"):
-                if seen:
-                    chars.append("。")
-                else:
-                    seen = True
-                    chars.append(ch)
-            else:
-                chars.append(ch)
+                seen += 1
+                if seen > keep:
+                    continue
+            chars.append(ch)
         out.append("".join(chars))
     return "\n\n".join(out)
 
 
 def _strip_tildes_below_threshold(text: str, attachment: float) -> str:
-    """波浪号仅亲密度 ≥0.8 允许（DESIGN 4.8 亲密度阈值差异化）。"""
+    """波浪号仅亲密度 ≥0.8 允许；不达标直接删（旧版替换成句号=书面腔）。"""
     if attachment >= 0.8:
         return text
-    return _TILDE.sub("。", text)
+    return _TILDE.sub("", text)
+
+
+def _trim_trailing_period(text: str) -> str:
+    """删掉每行末尾的句号。
+
+    网络聊天几乎不打句尾句号；保留「。。」这类情绪重复。
+    """
+    lines = []
+    for line in text.split("\n"):
+        stripped = line.rstrip()
+        if stripped.endswith("。") and not stripped.endswith("。。"):
+            stripped = stripped[:-1]
+        lines.append(stripped)
+    return "\n".join(lines)
 
 
 def _compress_newlines(text: str) -> str:
@@ -67,14 +87,16 @@ def render_im(reply, state=None, **old_kwargs) -> str:
 
     兼容旧调用 `render_im(text, attachment=..., emoji_frequency=...)`：
     传 Reply 时读 reply.text + state.attachment + 角色卡 emoji_frequency。
-    规则顺序：换行压缩 → 波浪号 → 感叹号 → 表情。
+    规则顺序：换行压缩 → 波浪号 → 感叹号 → 句尾句号 → 表情。
     只做可逆清理，不随机改写事实（R2_SPEC 3）。
     """
     from .reply import Reply, strip_echoed_time_prefixes, strip_internal_prompt_leak, strip_thinking_trace
 
+    hot = False
     if isinstance(reply, Reply):
         text = reply.text
         attachment = state.attachment if state is not None else 0.5
+        hot = float(getattr(state, "arousal", 0.5) or 0.5) >= _HOT_AROUSAL if state is not None else False
         emoji_frequency = "low"
         try:
             emoji_frequency = (reply._card.veranima or {}).get("emoji_frequency", "low") \
@@ -89,7 +111,8 @@ def render_im(reply, state=None, **old_kwargs) -> str:
 
     t = strip_thinking_trace(strip_internal_prompt_leak(strip_echoed_time_prefixes(_compress_newlines(text))))
     t = _strip_tildes_below_threshold(t, float(attachment))
-    t = _limit_exclamations(t)
+    t = _limit_exclamations(t, keep=3 if hot else 1)
+    t = _trim_trailing_period(t)
     if emoji_frequency == "never":
         t = _strip_emoji(t)
     return t.strip()

@@ -1079,9 +1079,10 @@ class MemoryStore:
         self.con.commit()
 
     def last_conversation_turn(self, role_id: str) -> dict | None:
-        """该角色会话的最后一条消息（漏回追补判定用）。"""
+        """该角色会话的最后一条消息（漏回追补判定用）。带 id：补回时
+        handle(pre_stored_msg_id=...) 复用已落库的那行，不重复落一条 user。"""
         row = self.con.execute(
-            "SELECT role, content, created_at FROM messages WHERE role_id=? ORDER BY id DESC LIMIT 1",
+            "SELECT id, role, content, created_at FROM messages WHERE role_id=? ORDER BY id DESC LIMIT 1",
             (role_id,)).fetchone()
         return dict(row) if row else None
 

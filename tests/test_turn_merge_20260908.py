@@ -121,3 +121,37 @@ def test_chat_batch_empty_batch_is_rejected(bridge, monkeypatch):
     monkeypatch.setattr(bridge, "_agent_for", lambda role: SimpleNamespace())
     out = json.loads(bridge.chat_batch("[]", "lin"))
     assert out["ok"] is False and out["error"] == "空消息"
+
+
+# ---------- 3) 漏回补回：复用已落库的 user 行 ----------
+
+def test_catch_up_reuses_stored_row_without_duplicate(bridge, monkeypatch, tmp_path):
+    """进程死在 handle 中间（chat_batch 已落 user 行）→ 补回走 pre_stored_msg_id，
+    不得再落一条重复 user（09-08 导出筛查「重复用户消息」同型病灶）。"""
+    from datetime import datetime, timedelta, timezone
+
+    store = MemoryStore(str(tmp_path / "db.sqlite"), config={}, provider=Embed())
+    mid = store.store_message("user", "在吗", 0.7, "平静", role_id="lin")
+    store.con.execute("UPDATE messages SET created_at=? WHERE id=?",
+                      ((datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat(), mid))
+    store.con.commit()
+    seen = {}
+
+    class FakeAgent:
+        role_key = "lin"
+
+        def __init__(self):
+            self.memory = store
+
+        def handle(self, text, **kw):
+            seen["text"] = text
+            seen.update(kw)
+            return SimpleNamespace(reply="嗯。")
+
+    monkeypatch.setattr(bridge.boot, "agents", {"lin": FakeAgent()}, raising=False)
+    out = json.loads(bridge.catch_up_replies())
+
+    assert out["handled"] == 1
+    assert seen["pre_stored_msg_id"] == mid
+    users = [m for m in store.recent_messages(limit=50) if m["role"] == "user"]
+    assert len(users) == 1

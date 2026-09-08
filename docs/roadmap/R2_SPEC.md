@@ -58,6 +58,9 @@ render_tts(reply: Reply, state: AgentState) -> list[SpeechSegment]
 
 IM 只做可逆清理：感叹号上限、连续空行、角色卡 emoji 频率、亲密度阈值。不得随机改写事实。
 
+09-08 修订（用户裁决「情绪太平稳」）：限频**只删不替换**（旧版把多余感叹号/波浪号降级成句号=书面腔），
+`arousal ≥ 0.62` 时感叹号上限放宽到 3；每行末尾的句号删除（网络聊天不打句尾句号）。
+
 TTS 生成 `SpeechSegment(text, tone, portrait, display_text)`。`display_text` 与语音必须同一 segment，禁止整段中文/单句日文错配。
 
 ## 4. 角色表达配置

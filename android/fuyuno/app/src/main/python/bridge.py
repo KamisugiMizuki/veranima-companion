@@ -209,7 +209,10 @@ def catch_up_replies() -> str:
             if not (120 <= ago <= 2400):
                 continue
             log.info("catch-up reply for %s (unanswered %.0fmin)", role, ago / 60)
-            agent.handle(last["content"], channel="im")
+            # 复用已落库的那行（chat_batch 落库先于 handle，进程死在中间=库里已有 user 行；
+            # 不传 id 会再落一条重复 user——09-08 导出筛查里的「重复用户消息」同型）
+            agent.handle(last["content"], channel="im",
+                         pre_stored_msg_id=int(last.get("id") or 0) or None)
             n += 1
         except Exception:
             log.exception("catch_up failed for %s", role)
