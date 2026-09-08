@@ -32,7 +32,9 @@ def test_electron_creates_window_before_background_services():
     main = (ROOT / "pet/main.js").read_text(encoding="utf-8")
     block = main[main.index("app.whenReady().then"):]
     assert block.index("createWindow()") < block.index("startCore()")
-    assert block.index("createWindow()") < block.index("startTTS()")
+    # 2026-08-29 起 TTS/STT 改按需启停（聊天活动 → touchVoice），不再随启动拉起
+    assert "startTTS()" not in block
+    assert "touchVoice" in main
 
 
 def test_tts_expected_stop_does_not_restart():
