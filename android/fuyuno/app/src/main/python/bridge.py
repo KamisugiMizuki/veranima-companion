@@ -6,6 +6,7 @@
 import json
 import logging
 import shutil
+import threading
 import traceback
 from pathlib import Path
 
@@ -14,6 +15,11 @@ from veranima.app import create_agent  # 多角色注册表与 boot 共用（P1�
 log = logging.getLogger("fuyuno.bridge")
 
 _pending: list[dict] = []  # tick 产出的主动消息（{role,name,text}），Kotlin 轮询取走
+
+# boot 串行化（09-08 实锤）：MainActivity.onCreate 的 lifecycleScope、CompanionService
+# onCreate、drive 路径三处并发调 boot，`_done` 检查无锁 → 双 store 抢写 sqlite
+# （backfill_categories/store_message 报 database is locked，启动后立刻发消息即复现）。
+_boot_lock = threading.Lock()
 
 # 即时投递钩子（2026-09-02 用户反馈：主动消息要即时进对话框）：Kotlin 侧
 # set_flush_hook 注入「发 ACTION_PROACTIVE 广播」闭包；每条主动消息进
@@ -221,15 +227,21 @@ def drain_pending() -> str:
 
 
 def boot(files_dir: str) -> str:
+    """幂等入口：并发冷启动串行化（_boot_lock），已完成直接返回缓存状态。"""
+    with _boot_lock:
+        if getattr(boot, "_done", False):
+            return json.dumps({"ok": True, "already": True})
+        return _boot_impl(files_dir)
+
+
+def _boot_impl(files_dir: str) -> str:
     """首次调用：捡 inbox → 配置 → create_agent（远程 LLM + 远程 embedding，全链无本地模型）。
 
     inbox/ 是调试投递口（adb push /data/local/tmp + run-as cp 送进私有目录）：
     config.yaml / characters/ / backup.zip 各自捡到位，backup.zip 仅当本机库为空才导入，
     导入后改名 backup.zip.done 防重复。
-    幂等：重复调用返回缓存状态。返回 {ok, ...诊断}。
+    幂等：重复调用返回缓存状态。返回 {ok, ...诊断}。调用方必须先持 _boot_lock。
     """
-    if getattr(boot, "_done", False):
-        return json.dumps({"ok": True, "already": True})
     try:
         root = Path(files_dir)
         inbox = root / "inbox"
