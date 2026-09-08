@@ -260,3 +260,67 @@ def test_backfill_drops_hypothetical_promise(tmp_path):
     out = a.maybe_distill_backfill(limit=5)
     assert out["dropped"] == 1 and not calls
     assert a.memory.get(e.id) is None
+
+
+# ---------- 写入即打标：存量回填不二次概括（09-08 导入/重跑场景） ----------
+
+def _counting(llm_map: dict):
+    calls: list[int] = []
+
+    class CountingLLM(DistillLLM):
+        def chat_structured(self, messages, **kw):
+            calls.append(1)
+            return super().chat_structured(messages, **kw)
+
+    return CountingLLM(llm_map), calls
+
+
+def test_write_time_distill_stamps_so_backfill_skips(tmp_path):
+    """写入侧过了粒度闸的条目带 distilled_at → 回填一次都不碰（否则每 tick 重蒸）。"""
+    llm, calls = _counting({"我特别喜欢下雨天": "用户喜欢下雨天"})
+    a = _agent(tmp_path, llm=llm)
+    a._maybe_extract_events("我特别喜欢下雨天", _judgment("preference"))
+    rows = a.memory.list_layer("semantic", limit=10)
+    assert [r.content for r in rows] == ["用户喜欢下雨天"]
+    assert rows[0].meta.get("distilled_at")
+
+    calls.clear()
+    out = a.maybe_distill_backfill(limit=5)
+    assert out == {"rewritten": 0, "dropped": 0, "skipped": 0, "pending": 0}
+    assert not calls
+    assert [r.content for r in a.memory.list_layer("semantic", limit=10)] == ["用户喜欢下雨天"]
+
+
+def test_rule_candidate_stamp_blocks_backfill(tmp_path):
+    a = _agent(tmp_path, llm=DistillLLM({"我特别喜欢下雨天": "用户喜欢下雨天"}))
+    a._store_candidate({"kind": "user_fact", "content": "我特别喜欢下雨天", "confidence": 0.8,
+                        "importance": 0.6, "source": "rule_extract",
+                        "source_message_id": 1, "subject": "user"})
+    rows = a.memory.list_layer("semantic", limit=10)
+    assert rows[0].meta.get("distilled_at")
+    assert a.maybe_distill_backfill(limit=5)["rewritten"] == 0
+    assert [r.content for r in rows] == ["用户喜欢下雨天"]
+
+
+def test_llm_and_manual_candidates_stamped(tmp_path):
+    """非规则来源本就是成句内容 → 打标，回填不再概括。"""
+    for source in ("llm_extract", "manual"):
+        a = _agent(tmp_path / source, llm=DistillLLM({}))
+        a._store_candidate({"kind": "user_fact", "content": "用户是浙大生仪的学生",
+                            "confidence": 0.9, "importance": 0.8, "source": source,
+                            "source_message_id": 1, "subject": "user"})
+        rows = a.memory.list_layer("semantic", limit=10)
+        assert rows and rows[0].meta.get("distilled_at"), source
+        assert a.maybe_distill_backfill(limit=5)["rewritten"] == 0
+        assert [r.content for r in rows] == ["用户是浙大生仪的学生"]
+
+
+def test_offline_raw_row_not_stamped_so_backfill_retries(tmp_path):
+    """离线未裁决存的原话不打标 → 回填下次接手（这条不能被上面的修复顺手堵死）。"""
+    a = _agent(tmp_path)  # FakeLLM：蒸馏抛 AttributeError = 未裁决
+    a._maybe_extract_events("我特别喜欢下雨天", _judgment("preference"))
+    assert not a.memory.list_layer("semantic", limit=10)[0].meta.get("distilled_at")
+
+    a.llm = DistillLLM({"我特别喜欢下雨天": "用户喜欢下雨天"})
+    assert a.maybe_distill_backfill(limit=5)["rewritten"] == 1
+    assert [r.content for r in a.memory.list_layer("semantic", limit=10)] == ["用户喜欢下雨天"]

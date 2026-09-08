@@ -2528,6 +2528,7 @@ class Agent:
             return
         # 记忆粒度（2026-09-08）：规则命中的原话先蒸馏成第三人称事实句再入库；
         # 无记忆价值（「不是，没反应了？」这类词面误命中）直接丢弃，也不进收件箱。
+        stamp = datetime.datetime.now().isoformat(timespec="seconds")
         if cand.get("source") == "rule_extract":
             distilled, decided = self._distill_for_memory(
                 str(cand.get("content") or ""), str(cand.get("kind") or ""),
@@ -2537,7 +2538,12 @@ class Agent:
                     logger.debug("rule candidate distilled to nothing, dropped: %s",
                                  str(cand.get("content"))[:30])
                     return
-                cand = {**cand, "content": distilled}
+                cand = {**cand, "content": distilled, "distilled_at": stamp}
+            # decided=False（离线）→ 不打标：存量回填下次接手，不丢原话
+        else:
+            # 非规则来源（LLM 抽取/人工批准/人格候选）本就是成句内容，
+            # 打标免得被存量回填再概括一遍（09-08）
+            cand = {**cand, "distilled_at": stamp}
         # MEMORY_BACKEND_EVAL M-D：收件箱开启时，低置信候选先入队待审（不写入 memories）
         mem_cfg = ((getattr(self, "config", None) or {}).get("memory") or {})
         if mem_cfg.get("review_inbox_enabled"):
@@ -2595,6 +2601,7 @@ class Agent:
             "user_confirmed": bool(cand.get("user_confirmed", False)),
             "role_compatible": bool(cand.get("role_compatible", True)),
             "evidence_message_ids": cand.get("evidence_message_ids"),
+            "distilled_at": cand.get("distilled_at"),
         }
         meta = {k: v for k, v in meta.items() if v is not None and v is not False}
         # 去重：同层已有高度重叠记忆
@@ -3943,7 +3950,7 @@ class Agent:
             for hit in self.memory.recall(text[:100], top_k=3, layer=layer):
                 if self._bigram_sim(hit.content, text) >= 0.5:
                     self.memory.update_latest(hit.id, text[:100], confidence=0.95,
-                                              meta={"relearned": True})
+                                              meta={"relearned": True, **(meta or {})})
                     logger.info("memory relearned (version bump): #%s", hit.id)
                     return
         except Exception as e:
@@ -4207,11 +4214,16 @@ class Agent:
             logger.debug("memory extraction distilled to nothing (kind=%s): %s", kind, user_text[:30])
             return
         content = distilled if decided else user_text[:100]
+        # 粒度闸记账（09-08）：过了闸的条目打标，存量回填不再二次概括；
+        # 离线未裁决存的原话不打标 → 回填下次接手
+        stamp = ({"distilled_at": datetime.datetime.now().isoformat(timespec="seconds")}
+                 if decided and distilled else {})
         if kind in ("event", "commitment") or (kind == "none" and any(s in user_text for s in strong)):
             _meta = {"emotion": emotion} if emotion else {}
             # 在场角色（2026-09-04 审计#2）：共享记忆库里 episode 必须记
             # "这事发生在谁和谁的对话里"——否则许眠会拿凛的对话脑补"我翻过你记录"
             _meta["present"] = self.card.name
+            _meta.update(stamp)
             entry = self.memory.store(
                 "episodic",
                 content,
@@ -4227,7 +4239,8 @@ class Agent:
             # 而非堆重复条目（缺口③"遗忘后重新学习"的写侧落点）
             self._relearn_or_store("semantic", content, importance=0.7,
                                    category="preference",
-                                   meta={"emotion": emotion} if emotion else None)
+                                   meta={**({"emotion": emotion} if emotion else {}),
+                                         **stamp} or None)
 
     @staticmethod
     def _detect_emotion(user_text: str, judgment: str = "none") -> str | None:
