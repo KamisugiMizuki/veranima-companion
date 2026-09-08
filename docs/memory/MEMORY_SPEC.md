@@ -620,7 +620,7 @@ memory:
   llm_extraction_enabled: false
   recall_top_k: 5
   recall_candidate_k: 20
-  recall_threshold: 0.30
+  recall_threshold: 0.45
   max_injected_chars: 5600
   core_profile_budget: 1200
   procedural_budget: 1000

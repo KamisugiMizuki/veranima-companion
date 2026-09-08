@@ -126,7 +126,7 @@ state.apply(event="user_message|assistant_reply|time_decay|scene_change|user_fee
 ```yaml
 memory:
   recall_top_k: 5
-  recall_threshold: 0.30
+  recall_threshold: 0.45
   max_injected_chars: 5600
   candidate_extraction: rules
   correction_enabled: true

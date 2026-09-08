@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import logging
+
 from .character import CharacterCard
 from .state import AgentState
 from ..memory.store import MemoryStore
+
+logger = logging.getLogger(__name__)
 
 # 层 → prompt 标签与预算（DESIGN.md：core_profile 1200 / 段落 1600 / session 600）
 LAYER_LABELS = {
@@ -138,6 +142,9 @@ def build_system_prompt(
     clarification: bool = False,  # R1 可逆性：用户追问细节 → 记忆行不模糊化（R1_SPEC 3）
     relationship=None,  # P-4（PERSONA_LOOP_SPEC）：PersonaBrief 接入口；None=不注入
     reuse_action: str = "",  # P-6：本轮回用动作（extend/contrast/question/apply/remember）
+    recall_top_k: int = 5,      # R1_SPEC 6：召回条数（config memory.recall_top_k）
+    recall_floor: float = 0.0,  # 动态裁剪：相关度地板（config memory.recall_threshold）；0=不裁
+    max_brief_chars: int = 0,   # 动态裁剪：记忆注入总预算（config memory.max_injected_chars）；0=不限
 ) -> str:
     """按预算组装系统 prompt。记忆按层注入，超出预算截断。extra_blocks 为附加块（学习参数/镜像/承诺）。
 
@@ -192,12 +199,19 @@ def build_system_prompt(
             if action_guide:
                 parts.append(f"【回用动作】{action_guide}（不要逐字复述用户原句）")
 
+    # 动态裁剪：总预算取「各层之和」与 config 上限的较小值——层预算写死为和值时
+    # 总预算永不生效（旧写法 total_budget = 各层之和，等于没限制）。
+    total_budget = core_profile_budget + procedural_budget + section_budget * 2 + session_budget
+    if max_brief_chars > 0:
+        total_budget = min(total_budget, max_brief_chars)
     brief_items = build_brief(
         core_profile=memory.list_layer("core_profile", limit=20),
         procedural=memory.list_layer("procedural", limit=20),
-        semantic=memory.recall(query_hint, top_k=5, layer="semantic") if query_hint else [],
+        semantic=memory.recall(query_hint, top_k=recall_top_k, layer="semantic",
+                               min_score=recall_floor) if query_hint else [],
         episodic=_annotate_present(
-            memory.recall(query_hint, top_k=5, layer="episodic") if query_hint else [], card),
+            memory.recall(query_hint, top_k=recall_top_k, layer="episodic",
+                          min_score=recall_floor) if query_hint else [], card),
         session=memory.list_layer("session", limit=10),
         budgets={
             "core_profile": core_profile_budget,
@@ -206,7 +220,7 @@ def build_system_prompt(
             "episodic": section_budget,
             "session": session_budget,
         },
-        total_budget=core_profile_budget + procedural_budget + section_budget * 2 + session_budget,
+        total_budget=total_budget,
     )
     # DESIGN 4.4 / R1_SPEC 3：低确信条目模糊化（精确日期/时长→模糊表达）；
     # 用户正在追问细节时跳过（给精确值——可逆性）
@@ -230,7 +244,14 @@ def build_system_prompt(
     if format_block:
         parts.append(format_block)
 
-    return "\n".join(parts)
+    prompt = "\n".join(parts)
+    # 可解释性：每轮记录块数/字符数与裁剪参数——动态裁剪调参看这条，不靠猜
+    logger.debug(
+        "system prompt: %d blocks, %d chars, brief=%d items/%d chars (top_k=%d floor=%.2f cap=%d)",
+        len(parts), len(prompt), len(brief_items), len(brief_text),
+        recall_top_k, recall_floor, max_brief_chars,
+    )
+    return prompt
 
 
 def _annotate_present(entries, card):

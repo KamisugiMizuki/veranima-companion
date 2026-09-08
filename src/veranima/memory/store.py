@@ -1252,8 +1252,13 @@ class MemoryStore:
 
     # ---------- 混合检索 ----------
 
-    def recall(self, query: str, *, top_k: int = 5, layer: str | None = None) -> list[MemoryEntry]:
+    def recall(self, query: str, *, top_k: int = 5, layer: str | None = None,
+               min_score: float = 0.0) -> list[MemoryEntry]:
         """混合检索（R1_SPEC 4 排序公式）。
+
+        min_score：轮内相关度地板（动态裁剪，config memory.recall_threshold）。
+        按**语义相似度**裁：低于地板的条目不返回——既不进 prompt，也不吃
+        last_access/strength 强化。sim 不可得（无 embedding / 纯 FTS 命中）时不裁。
 
         score = 0.35*semantic_sim + 0.20*FTS + 0.15*temporal + 0.10*subject
                 + 0.05*(freshness + importance + confidence + strength)
@@ -1345,6 +1350,15 @@ class MemoryStore:
                                    intent=intent, query=query)
             for mid, (entry, sim) in pool.items()
         }
+        if min_score > 0.0:
+            # 动态裁剪：composite 被新鲜度/重要性压进 0.38~0.61 的窄带，切不出无关项；
+            # sim 才分得开（09-08 真库 123 条实测：无关 ≤0.46、相关 ≥0.49 → 默认 0.45）。
+            _before = len(scored)
+            scored = {mid: s for mid, s in scored.items()
+                      if pool[mid][1] is None or pool[mid][1] >= min_score}
+            if _before - len(scored):
+                logger.info("recall trim: layer=%s 裁掉 %d/%d 条（sim<%.2f）",
+                            layer or "-", _before - len(scored), _before, min_score)
         ranked = sorted(scored.items(), key=lambda kv: kv[1], reverse=True)[:top_k]
         # 更新访问时间 + 召回命中强化（MEMORY_BACKEND_EVAL M-A：常用记忆保持强度）
         now = _now()

@@ -14,7 +14,7 @@
 | 全文检索 | FTS5 `memories_fts`（trigram） | 显式同步，非触发器（外部内容表模式实测会损坏库，已弃用） |
 | 向量检索 | `memory_embedding` 归一化 blob 表 + Python 暴力余弦（方案 B，2026-08-29 vec0 退役） | 无扩展依赖，双端同一代码路径；老库 vec0 一次性迁移 |
 | Embedding | 本地 bge-m3（fastembed ONNX / Ollama 可选），1024 维 | 无远程依赖 |
-| 召回 | 混合：FTS + 向量 + 时间/重要性加权 | `recall_top_k=5`，`recall_threshold=0.3` |
+| 召回 | 混合：FTS + 向量 + 时间/重要性加权 | `recall_top_k=5`，`recall_threshold=0.45`（语义相似度地板，动态裁剪；09-08 真库 123 条实测：无关 ≤0.46 / 相关 ≥0.49。composite 分被新鲜度/重要性压进 0.38~0.61 的窄带，切不出无关项，故地板按 sim 而非 composite） |
 | 契约 | 五层记忆、ADD-only 候选、版本链、`source_message_id` 追溯、事件生命周期、预算注入 | `MEMORY_SPEC.md` |
 
 已有且不可丢失的能力：证据追溯、冲突不覆盖（新版本链）、隐私擦除（erase 级联）、行为级测试基线（478+ 通过）。

@@ -210,3 +210,82 @@ def test_self_model_chapter_refresh_records_open_threads(tmp_path):
     chapter = a.memory.list_self_model_chapters(limit=1)[0]
     assert any("答辩" in t for t in chapter["open_threads"])
     assert chapter["period_end"]  # 收口到今日
+
+
+# ---------- ⑩ 动态裁剪（R1_SPEC 6 / MEMORY_SPEC 16 三个配置项接线） ----------
+
+def _trim_store(tmp_path):
+    store = MemoryStore(db_path=str(tmp_path / "t.db"), config={"embedding_model": "none"})
+    store.store("episodic", "用户上个月通过了考试", importance=0.9)
+    return store
+
+
+def test_recall_min_score_is_a_relevance_floor(tmp_path):
+    class _P:                      # 假 embedding provider：让 sim 通道走通（venv 无 fastembed）
+        dim = 4
+
+        def embed(self, texts):
+            return [[0.0] * 4 for _ in texts]
+
+    store = MemoryStore(db_path=str(tmp_path / "t.db"), config={}, provider=_P())
+    store.store("episodic", "用户上个月通过了考试", importance=0.9)
+    store.store("episodic", "用户昨天加班到十一点", importance=0.6)
+    ids = [e.id for e in store.list_layer("episodic", limit=10)]
+    store._knn = lambda vec, k: [(ids[0], 0.9), (ids[1], 0.1)]  # 只有第一条与 query 相关
+
+    kept = store.recall("考试", top_k=5, layer="episodic", min_score=0.45)
+    assert [e.id for e in kept] == [ids[0]]                          # 0.1 < 0.45 → 裁掉
+    assert len(store.recall("考试", top_k=5, layer="episodic")) == 2  # 地板关 → 全留
+    assert len(store.recall("考试", top_k=5, layer="episodic", min_score=0.05)) == 2  # 地板低 → 不误伤
+
+
+def test_build_prompt_forwards_trim_knobs(tmp_path):
+    from veranima.core import prompts as P
+    from veranima.core.state import AgentState
+
+    store = _trim_store(tmp_path)
+    store.store("core_profile", "用户是浙大生仪学院的研究生，正在做毕业设计。" * 2, importance=0.9)
+
+    class _Recorder:  # 记录 recall 参数，其余透传真库
+        def __init__(self, inner):
+            self.inner, self.calls = inner, []
+
+        def recall(self, q, *, top_k=5, layer=None, min_score=0.0):
+            self.calls.append((layer, top_k, min_score))
+            return self.inner.recall(q, top_k=top_k, layer=layer, min_score=min_score)
+
+        def recent_messages(self, limit=20, channel=None, **kw):
+            return [{"role": "user", "content": "考试"}]
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+    rec = _Recorder(store)
+    card, state = CharacterCard(name="测试卡"), AgentState()
+    full = P.build_system_prompt(card, state, rec, channel="im",
+                                 recall_top_k=2, recall_floor=0.4)
+    assert ("semantic", 2, 0.4) in rec.calls and ("episodic", 2, 0.4) in rec.calls
+    capped = P.build_system_prompt(card, state, rec, channel="im", max_brief_chars=1)
+    assert "浙大生仪学院" in full            # 默认总预算 → 常驻档案注入
+    assert "浙大生仪学院" not in capped      # 总预算压到 1 字 → 整条丢弃
+
+
+def test_sibling_prompt_paths_consume_same_trim_config(tmp_path):
+    """prompt 三个调用点共用 _prompt_trim_kwargs。
+
+    09-08 实锤：只有 handle 接了 config，digest / _short_task 直调
+    build_system_prompt 走默认值（MuMu 日志 floor=0.00 cap=0，配置改了不生效）。
+    """
+    from veranima.core.agent import Agent
+
+    store = _trim_store(tmp_path)
+    store.store("core_profile", "用户是浙大生仪学院的研究生，正在做毕业设计。" * 2, importance=0.9)
+    llm = _RecLLM("{}")
+    agent = Agent(card=CharacterCard(name="测试卡"), memory=store, llm=llm, state=None,
+                  config={"memory": {"max_injected_chars": 0}})
+    agent._short_task("写一句问候")
+    assert any("浙大生仪学院" in s for s in _systems(llm))
+    llm.calls.clear()
+    agent.config["memory"] = {"max_injected_chars": 1}   # 上限 1 字 → 画像整条裁掉
+    agent._short_task("写一句问候")
+    assert not any("浙大生仪学院" in s for s in _systems(llm))

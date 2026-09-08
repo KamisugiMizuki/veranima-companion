@@ -1541,6 +1541,22 @@ class Agent:
             logger.debug("monologue judge failed (fail-open): %s", e)
             return text
 
+    def _prompt_trim_kwargs(self) -> dict:
+        """记忆预算 + 动态裁剪参数（prompt 组装三个调用点共用）。
+
+        09-08 实锤：只有 handle 那条路接了 config，digest / _short_task 走默认值
+        ——配置改了对另外两条路不生效（floor 恒 0.00、cap 恒 0）。"""
+        mem = self.config.get("memory", {}) or {}
+        return {
+            "core_profile_budget": mem.get("core_profile_budget", 1200),
+            "procedural_budget": mem.get("procedural_budget", 1000),
+            "section_budget": mem.get("section_budget", 2400),
+            "session_budget": mem.get("session_budget", 600),
+            "recall_top_k": mem.get("recall_top_k", 5),
+            "recall_floor": mem.get("recall_threshold", 0.0),
+            "max_brief_chars": mem.get("max_injected_chars", 0),
+        }
+
     def handle(self, user_text: str, images: list[str] | None = None, channel: str = "im",
                attachments: str = "", now: datetime.datetime | None = None,
                pre_stored_msg_id: int | None = None) -> TurnResult:
@@ -1930,15 +1946,12 @@ class Agent:
                 extra_blocks.append(_blk)
         system = build_system_prompt(
             self.card, self.state, self.memory,
-            core_profile_budget=self.config.get("memory", {}).get("core_profile_budget", 1200),
-            procedural_budget=self.config.get("memory", {}).get("procedural_budget", 1000),
-            section_budget=self.config.get("memory", {}).get("section_budget", 2400),
-            session_budget=self.config.get("memory", {}).get("session_budget", 600),
             channel=channel,
             clarification=is_clarification(user_text, getattr(judgment, "clarification", None) if judgment else None),  # R1 可逆性：追问 → 精确值（R1_SPEC 3）
             extra_blocks=extra_blocks,
             relationship=self.relationship,  # P-4：PersonaBrief 接入口
             reuse_action=reuse_action,       # P-6：本轮回用动作
+            **self._prompt_trim_kwargs(),    # 记忆预算 + 动态裁剪（三个调用点共用，勿再单点直写）
         )
 
         # 4. 组装对话（历史 + 当前）；当前轮含图时用多模态 content 数组
@@ -2806,7 +2819,7 @@ class Agent:
             # 预算走 short_task 下限（2026-09-02 真机第 4 次实锤：这里直调
             # chat(256) 被 reasoning 烧空 → finish_reason=length 每分钟重试
             # 一次，白烧 API 还刷日志——预算与冷却双收口）。
-            system = build_system_prompt(self.card, self.state, self.memory) + "\n" + self._time_context_instruction()
+            system = build_system_prompt(self.card, self.state, self.memory, **self._prompt_trim_kwargs()) + "\n" + self._time_context_instruction()
             # 四格任务=digest 里最重的思考（09-08 MuMu 实锤：×4=4096 仍被
             # reasoning 烧空 finish_reason=length）——顶到模型输出上限 8K；
             # DeepSeek 按实际 token 计费，抬上限不涨价
@@ -3783,7 +3796,7 @@ class Agent:
                   '直接输出最终答案的 JSON，禁止输出草稿、多个选项、思考过程、'
                   '解释或对指令的复述——只要一段 JSON，不要 markdown 代码块。'
             )
-        system = build_system_prompt(self.card, self.state, self.memory) + "\n" + self._time_context_instruction()
+        system = build_system_prompt(self.card, self.state, self.memory, **self._prompt_trim_kwargs()) + "\n" + self._time_context_instruction()
         reply = self.llm.chat(
             [
                 {"role": "system", "content": system},

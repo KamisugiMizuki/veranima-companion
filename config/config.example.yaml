@@ -108,7 +108,7 @@ memory:
   #   ollama:bge-m3              → Ollama embedding
   embedding_model: "local:data/models/bge-m3"   # 默认本地（多数远程 API 不提供 embeddings 接口；需先放置模型或从 object_design 拷贝）
   recall_top_k: 5
-  recall_threshold: 0.3
+  recall_threshold: 0.45                # 动态裁剪：语义相似度地板（真库实测无关 ≤0.46 / 相关 ≥0.49）
   max_injected_chars: 5600              # R1：记忆注入总预算（R1_SPEC 4）
   candidate_extraction: rules           # R1：候选记忆提取模式（rules=规则提取，llm=LLM 提取）
   correction_enabled: true              # R1：用户纠正写新版本链（R1_SPEC 3）

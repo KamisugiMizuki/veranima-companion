@@ -125,7 +125,7 @@ window.pet.getConfig().then((cfg) => {
   set('tts-base', tts.base_url); set('tts-model', tts.model); set('tts-voice', tts.voice);
   set('stt-base', stt.base_url); set('stt-model', stt.model); set('stt-language', stt.language); bool('stt-enabled', stt.enabled ?? true);
   if ($('stt-device')) loadAudioDevices(stt.input_device_id);
-  set('mem-embedding', mem.embedding_model); num('mem-top-k', mem.recall_top_k, 5); num('mem-threshold', mem.recall_threshold, 0.3); num('mem-total-budget', mem.max_injected_chars, 5600); num('mem-curator-turns', mem.curator_turns, 8); bool('mem-decay', mem.decay_enabled);
+  set('mem-embedding', mem.embedding_model); num('mem-top-k', mem.recall_top_k, 5); num('mem-threshold', mem.recall_threshold, 0.45); num('mem-total-budget', mem.max_injected_chars, 5600); num('mem-curator-turns', mem.curator_turns, 8); bool('mem-decay', mem.decay_enabled);
   $('mem-status').textContent = `数据库：${mem.db_path || 'data/veranima.db'}`; $('mem-db').textContent = mem.db_path || 'data/veranima.db';
   set('mem-db-path', mem.db_path || 'data/veranima.db'); $('mem-effective').textContent = mem.embedding_model || '未配置';
   bool('att-enabled', att.enabled ?? true); bool('att-paused', att.paused); num('att-scan', att.global_scan_sec, 5); num('att-budget', att.observe_daily_budget, 120);
@@ -242,7 +242,7 @@ $('save').addEventListener('click', async () => {
   const data = {
     tts: { base_url: $('tts-base').value.trim(), model: $('tts-model').value.trim(), voice: $('tts-voice').value.trim() },
     stt: { enabled: $('stt-enabled').value === 'true', base_url: $('stt-base').value.trim(), model: $('stt-model').value.trim(), language: $('stt-language').value.trim(), input_device_id: $('stt-device').value },
-    memory: { embedding_model: $('mem-embedding').value.trim(), db_path: $('mem-db-path').value.trim(), recall_top_k: Number($('mem-top-k').value) || 5, recall_threshold: Number($('mem-threshold').value) || 0.3, max_injected_chars: Number($('mem-total-budget').value) || 5600, curator_turns: Number($('mem-curator-turns').value) || 8, decay_enabled: $('mem-decay').value === 'true' },
+    memory: { embedding_model: $('mem-embedding').value.trim(), db_path: $('mem-db-path').value.trim(), recall_top_k: Number($('mem-top-k').value) || 5, recall_threshold: Number($('mem-threshold').value) || 0.45, max_injected_chars: Number($('mem-total-budget').value) || 5600, curator_turns: Number($('mem-curator-turns').value) || 8, decay_enabled: $('mem-decay').value === 'true' },
     attention: { enabled: $('att-enabled').value === 'true', paused: $('att-paused').value === 'true', global_scan_sec: Number($('att-scan').value) || 5, observe_daily_budget: Number($('att-budget').value) || 120 },
     search: { enabled: $('search-enabled').value === 'true', base_url: $('search-base').value.trim(), timeout_seconds: Number($('search-timeout').value) || 8, cache_ttl_seconds: Number.isFinite(Number($('search-cache').value)) ? Number($('search-cache').value) : 900, allow_implicit_freshness_search: $('search-implicit').value === 'true', semantic_locator_enabled: $('search-semantic').value === 'true', fetch_pages: $('search-pages').value === 'true' },
     proactive: { enabled: $('pro-enabled').value === 'true', quiet_hours_enabled: $('pro-quiet').value === 'true', channels: { qq: { max_per_day: Number($('pro-qq-max').value) || 2, min_gap_minutes: Number($('pro-qq-gap').value) || 120 }, pet: { max_per_day: Number($('pro-pet-max').value) || 2, min_gap_minutes: Number($('pro-pet-gap').value) || 30 } } },
