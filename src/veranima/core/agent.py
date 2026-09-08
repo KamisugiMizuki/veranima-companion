@@ -38,7 +38,7 @@ from .character import CharacterCard
 from .learning import LanguageMirror, StyleLearner, extract_feedback
 from .proactive import (GreetingScheduler, OccasionChecker, RITUAL_SOURCES,
                         pool_take, veto_from_keywords)
-from .promises import PromiseBook
+from .promises import PromiseBook, is_hypothetical
 from .review import MonthlyReview
 from .state import AgentState
 from .tension import RelationalTension, event_meta_from_memory
@@ -130,6 +130,9 @@ class Agent:
         self.role_key = _src.split("/")[-2] if _src.endswith("character.json") and _src.count("/") >= 2 else ""
         self._history: list[dict] = []
         self._last_reply_ts: float | None = None  # 上一条回复时间（延迟信号用）
+        # 记忆蒸馏同轮去重（2026-09-08 粒度修复）：规则命中与判断点常撞同一句，
+        # 一条文本一轮只调一次模型。值=(蒸馏句|None, 是否已裁决)
+        self._distill_cache: dict[str, tuple[str | None, bool]] = {}
         self._last_search_request: dict[str, str] | None = None
         self.schedule_outline = self._load_schedule_outline()
         schedule_cfg = self.config.get("virtual_schedule", {}) or {}
@@ -2428,11 +2431,14 @@ class Agent:
         (("以后提醒", "下次记得", "你答应", "说好了", "别忘了提醒", "记得提醒"), "commitment", 0.85),
     )
     # 显式纠正（MEMORY_SPEC 8.2 correction：必须新版本 + 提升置信度）
+    # 2026-09-08 粒度修复：裸词「不是/错了」在中文对话里出现率过高——真库 12 条
+    # 常识垃圾里 11 条来自它（「不是，没反应了？」「好吧好吧我错了」被当纠正
+    # 存成用户事实）。只认纠正句式：不是X（而）是Y / 我说的是 / 记错了。
     _CORRECTION_RULES = (
-        ("不是", "user_fact"),
+        (r"不是[^，。！？,.!?]{1,20}[，,]?\s*(?:而)?是", "user_fact"),
         ("其实是", "user_fact"),
         ("我说的是", "user_fact"),
-        ("错了", "user_fact"),
+        ("记错了", "user_fact"),
         ("纠正一下", "user_fact"),
         ("不是我们", "shared_episode"),
     )
@@ -2470,7 +2476,7 @@ class Agent:
             })
         # 显式纠正：检测到纠正 → 追加高置信候选（无论是否命中常规规则）
         for marker, kind in self._CORRECTION_RULES:
-            if marker in user_text:
+            if re.search(marker, user_text):
                 content = user_text.strip()[:200]
                 if content:
                     candidates.append({
@@ -2520,6 +2526,18 @@ class Agent:
                 "candidate rejected: %s", issues
             )
             return
+        # 记忆粒度（2026-09-08）：规则命中的原话先蒸馏成第三人称事实句再入库；
+        # 无记忆价值（「不是，没反应了？」这类词面误命中）直接丢弃，也不进收件箱。
+        if cand.get("source") == "rule_extract":
+            distilled, decided = self._distill_for_memory(
+                str(cand.get("content") or ""), str(cand.get("kind") or ""),
+            )
+            if decided:
+                if not distilled:
+                    logger.debug("rule candidate distilled to nothing, dropped: %s",
+                                 str(cand.get("content"))[:30])
+                    return
+                cand = {**cand, "content": distilled}
         # MEMORY_BACKEND_EVAL M-D：收件箱开启时，低置信候选先入队待审（不写入 memories）
         mem_cfg = ((getattr(self, "config", None) or {}).get("memory") or {})
         if mem_cfg.get("review_inbox_enabled"):
@@ -4072,6 +4090,98 @@ class Agent:
             lines.append("- 当前表达强度=偏热情：更舍得表达想念和在意，主动分享频率略升。")
         return "\n".join(lines)
 
+    _DISTILL_CACHE_MAX = 64
+    # 存量逐条处理时跳过的 kind：夜间整理（已蒸馏）、判断点第三人称短句、张力账本
+    _DISTILL_SKIP_KINDS = ("shared_meaning", "conversation_event", "relational_tension_event")
+
+    def _distill_for_memory(self, text: str, kind: str = "") -> tuple[str | None, bool]:
+        """原话 → 第三人称记忆句。返回 (内容, 是否已裁决)。
+
+        - (句, True)    → 入库
+        - (None, True)  → 无记忆价值（词面误命中/闲聊），调用方跳过写入
+        - (None, False) → LLM 未裁决（离线/报错），调用方回退旧行为存原话
+
+        同一句一轮只调一次（规则命中与判断点常撞同一条消息）。
+        """
+        from .distill import distill
+
+        hit = self._distill_cache.get(text)
+        if hit is not None:
+            return hit
+        try:
+            result: tuple[str | None, bool] = (distill(text, kind=kind, llm=self.llm), True)
+        except Exception as e:
+            logger.debug("memory distill unavailable, fall back to raw: %s", e)
+            return (None, False)
+        if len(self._distill_cache) >= self._DISTILL_CACHE_MAX:
+            self._distill_cache.pop(next(iter(self._distill_cache)))
+        self._distill_cache[text] = result
+        return result
+
+    def maybe_distill_backfill(self, limit: int = 2) -> dict:
+        """存量记忆逐条按写入时的蒸馏处理（2026-09-08 用户拍板：不清库、逐条修）。
+
+        只碰"原话直存"的条目（规则提取 user_fact / 判断点偏好事件 / 承诺），
+        夜间整理与判断点第三人称短句不动。逐条：
+        - 蒸馏出内容 → update_latest 走版本链（原话留在链上可审计）
+        - 判定无记忆价值 → erase（写入路径本来就不会建这条）
+        - LLM 未裁决 → 原样留待下次（幂等，不丢事实）
+
+        处理过的打 meta.distilled_at，重跑不再调模型；每次最多处理 limit 条，
+        给 tick 留预算。
+        """
+        done = {"rewritten": 0, "dropped": 0, "skipped": 0, "pending": 0}
+        entries: list = []
+        for layer in ("episodic", "semantic", "procedural"):
+            try:
+                entries.extend(self.memory.list_layer(layer, limit=200))
+            except Exception as e:
+                logger.debug("distill backfill list %s failed: %s", layer, e)
+        now = datetime.datetime.now().isoformat(timespec="seconds")
+        for entry in entries:
+            if done["rewritten"] + done["dropped"] >= limit:
+                break
+            meta = entry.meta or {}
+            kind = str(meta.get("kind") or "")
+            if meta.get("distilled_at") or kind in self._DISTILL_SKIP_KINDS:
+                continue
+            raw = str(entry.content or "")
+            is_promise = entry.provenance == "promise-book" or raw.startswith("承诺：")
+            if not (kind in ("user_fact", "user_framework", "shared_episode", "commitment")
+                    or entry.provenance in ("auto-extract", "promise-book")):
+                done["skipped"] += 1
+                continue
+            body = raw[3:] if raw.startswith("承诺：") else raw
+            if is_promise and is_hypothetical(body):
+                # 写入侧 extract 就不会收的假设句（09-08）：存量按同一套处理 → 整链删
+                self.memory.erase(memory_id=entry.id)
+                done["dropped"] += 1
+                logger.info("distill backfill dropped hypothetical promise #%s", entry.id)
+                continue
+            distilled, decided = self._distill_for_memory(
+                body, kind or ("commitment" if is_promise else ""),
+            )
+            if not decided:
+                done["pending"] += 1
+                continue
+            if not distilled:
+                self.memory.erase(memory_id=entry.id)
+                done["dropped"] += 1
+                logger.info("distill backfill dropped #%s: %s", entry.id, raw[:40])
+                continue
+            new_content = f"承诺：{distilled}" if is_promise else distilled
+            if new_content == raw:
+                self.memory.annotate(entry.id, distilled_at=now)
+            else:
+                self.memory.update_latest(
+                    entry.id, new_content,
+                    confidence=float(entry.confidence or 0.75),
+                    meta={**meta, "distilled_at": now, "distilled_from": raw[:200]},
+                )
+            done["rewritten"] += 1
+            logger.info("distill backfill #%s: %s → %s", entry.id, raw[:24], new_content[:24])
+        return done
+
     def _maybe_extract_events(self, user_text: str, judgment=None) -> None:
         """事件/偏好记忆提取（2026-08-31 判断点清算：memory_kind 有裁决
         以语义为准，"无辣不欢/下周去复查"这类变体不再依赖词表；
@@ -4087,6 +4197,16 @@ class Agent:
         strong = ["记住", "生日", "纪念", "重要", "考试", "辞职", "生病", "难忘"]
         prefer = ["我特别喜欢", "我很喜欢", "我特别", "我最爱", "我最喜欢", "我喜欢", "我讨厌", "我害怕",
                   "我是", "我的", "我住在", "我在", "我养", "我爱"]
+        # 记忆粒度（2026-09-08 用户拍板）：原话先蒸馏成第三人称事实句再入库；
+        # 判定无记忆价值 → 不写（真库 25/35 条原话直存是"太具体"的来源）。
+        distilled, decided = self._distill_for_memory(
+            user_text,
+            kind if kind != "none" else ("event" if any(s in user_text for s in strong) else "preference"),
+        )
+        if decided and not distilled:
+            logger.debug("memory extraction distilled to nothing (kind=%s): %s", kind, user_text[:30])
+            return
+        content = distilled if decided else user_text[:100]
         if kind in ("event", "commitment") or (kind == "none" and any(s in user_text for s in strong)):
             _meta = {"emotion": emotion} if emotion else {}
             # 在场角色（2026-09-04 审计#2）：共享记忆库里 episode 必须记
@@ -4094,7 +4214,7 @@ class Agent:
             _meta["present"] = self.card.name
             entry = self.memory.store(
                 "episodic",
-                user_text[:100],
+                content,
                 importance=0.8,
                 confidence=0.8 if kind != "none" else 0.6,  # 语义裁决比词表命中更可信
                 provenance="auto-extract",
@@ -4105,7 +4225,7 @@ class Agent:
         elif kind == "preference" or (kind == "none" and any(s in user_text for s in prefer)):
             # 偏好类走重学路径：同一件事再说一遍 → 版本链刷新+置信拉回，
             # 而非堆重复条目（缺口③"遗忘后重新学习"的写侧落点）
-            self._relearn_or_store("semantic", user_text, importance=0.7,
+            self._relearn_or_store("semantic", content, importance=0.7,
                                    category="preference",
                                    meta={"emotion": emotion} if emotion else None)
 

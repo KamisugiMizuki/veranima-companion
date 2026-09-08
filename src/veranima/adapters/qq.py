@@ -683,6 +683,8 @@ class QQAdapter:
                         await self._flush_pending_proactive_async()
                     # MEMORY_BACKEND_EVAL M-C：每日一次夜间整理（内部有当日去重）
                     await asyncio.to_thread(self.agent.maybe_nightly_digest)
+                    # 存量记忆逐条蒸馏（2026-09-08 粒度修复，每次最多 2 条）
+                    await asyncio.to_thread(self.agent.maybe_distill_backfill, 2)
             except asyncio.CancelledError:
                 raise
             except Exception:

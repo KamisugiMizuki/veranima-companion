@@ -163,6 +163,10 @@ def _tick_loop(interval: float = 60.0) -> None:
             digest = getattr(agent, "maybe_nightly_digest", None)
             if callable(digest):
                 digest()
+            # 记忆粒度修复（2026-09-08）：存量原话条目逐条蒸馏，每 tick 最多 2 条
+            backfill = getattr(agent, "maybe_distill_backfill", None)
+            if callable(backfill):
+                backfill(limit=2)
             # 好友动态（P2）：活跃角色实时闸控生成；只入库，不通知不占未读
             if getattr(agent, "moments", None) is not None:
                 agent.moments.tick()

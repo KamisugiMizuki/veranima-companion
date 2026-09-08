@@ -1030,6 +1030,23 @@ class MemoryStore:
         walk(memory_id, 0)
         return [chain[k] for k in sorted(chain)]
 
+    def annotate(self, memory_id: int, **meta) -> bool:
+        """就地补 meta 字段，不产生新版本。
+
+        给"只是记账"的标注用（如蒸馏已处理标记 distilled_at）：内容没变的
+        条目不该为打标记多长一个版本，否则版本链被噪音撑爆。
+        """
+        entry = self.get(memory_id)
+        if entry is None:
+            return False
+        merged = {**(entry.meta or {}), **{k: v for k, v in meta.items() if v is not None}}
+        self.con.execute(
+            "UPDATE memories SET meta=?, updated_at=? WHERE id=?",
+            (json.dumps(merged, ensure_ascii=False), _now(), memory_id),
+        )
+        self.con.commit()
+        return True
+
     def list_layer(self, layer: str, limit: int = 100, include_superseded: bool = False) -> list[MemoryEntry]:
         rows = self.con.execute(
             "SELECT * FROM memories WHERE layer=? ORDER BY updated_at DESC LIMIT ?",

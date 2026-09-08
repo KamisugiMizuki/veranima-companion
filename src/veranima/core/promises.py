@@ -23,8 +23,18 @@ PROMISE_PATTERNS = [
     r"你(?:要|得|可以|能).{0,20}(?:记住|提醒|记着)",
 ]
 
+# 假设句不构成承诺（2026-09-08 粒度修复）：「如果你能帮我记住的话我会很开心的」
+# 曾被存成一条承诺——真库那条假承诺的来源。只认明确的条件式，不误伤祈使句。
+_HYPOTHETICAL = re.compile(r"(?:如果|要是|假如|若是).{0,12}(?:的话|就)")
+
 # 承诺检索关键词（触发相关话题时提醒）
 PROMISE_TRIGGER_HINT = "我答应过你的事"
+
+
+def is_hypothetical(text: str) -> bool:
+    """假设句不算承诺——写入侧与存量回填共用同一判据。"""
+    return bool(_HYPOTHETICAL.search(text or ""))
+
 
 
 class PromiseBook:
@@ -37,6 +47,8 @@ class PromiseBook:
 
     def extract(self, user_text: str) -> str | None:
         """从用户消息识别承诺意图，返回承诺文本（规范化）或 None。"""
+        if _HYPOTHETICAL.search(user_text):  # 假设句不是请求（09-08 假承诺修复）
+            return None
         for pat in PROMISE_PATTERNS:
             m = re.search(pat, user_text)
             if m:
