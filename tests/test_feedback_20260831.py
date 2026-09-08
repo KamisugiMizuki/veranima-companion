@@ -910,6 +910,17 @@ def test_thread_prompt_block_and_material(tmp_path):
     assert m and m["source"] == "thread"
     assert m["text"].startswith("你之前说")       # user 起源=替你记着句式（成品话）
     assert a.threads.ritual_material() is None     # 同线重复取材被 12h 窗口挡
+    # 跨实例仍挡（09-08 实机实锤：进程内存态在安卓端被杀即丢，同条裸发 5 次）
+    assert a.threads.__class__(a).ritual_material() is None
+
+def test_thread_spoken_third_person_fix(tmp_path):
+    """存量画像键迁移值带第三人称（「用户正在赶毕设改稿」）→ 出口纠正为「你」。
+    09-08 实机实锤：该值被裸发 5 次，角色把用户叫成「用户」。"""
+    a, mem = _moment_agent(tmp_path / "th6")
+    a.threads.from_user("用户正在赶毕设改稿", intensity=0.9)
+    r = mem.thread_list("xumian")[0]
+    line = a.threads.spoken(r)
+    assert "用户" not in line and "你正在赶毕设改稿" in line
 
 def test_thread_moment_d08(tmp_path):
     """动态 D08：牵挂是最自然的动态素材。"""
@@ -928,7 +939,6 @@ def test_thread_closure_by_judgment(tmp_path):
     """#M1b 完结标记：宣告做完→强度砸到 0.3（自发阈值下）+剧本冻结；
     未完结语料（"还没做完"）不许误关；序号按送判快照映射。"""
     a, mem = _moment_agent(tmp_path / "tc")
-    a.threads._last_material = {}
     tid = a.threads.from_user("周三的述职答辩", intensity=0.8)
     rows = mem.thread_list("xumian")
     ids = tuple(r["id"] for r in rows)

@@ -1062,7 +1062,7 @@ class MemoryStore:
         return [dict(r) for r in self.con.execute(q + " ORDER BY intensity DESC, id ASC", (role_id,))]
 
     def thread_update(self, thread_id: int, **fields) -> None:
-        cols = [k for k in fields if k in ("intensity", "status", "beat_step", "next_beat_at")]
+        cols = [k for k in fields if k in ("intensity", "status", "beat_step", "next_beat_at", "last_spoken_at")]
         if not cols:
             return
         sets = ", ".join(f"{c}=?" for c in cols)

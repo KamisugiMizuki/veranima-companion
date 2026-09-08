@@ -124,6 +124,9 @@ class ThreadLedger:
         单条素材走 _weave_ritual 直返路径，指令体漏发=机器文本泄漏）。"""
         topic = str(r.get("topic") or "").strip()
         if r.get("origin") == "user":
+            # 存量画像键迁移值带第三人称（09-08 实机实锤：裸发 5 次
+            # 「用户正在赶毕设改稿」，角色把用户叫成「用户」）。
+            topic = topic.replace("用户", "你")
             return f"你之前说「{topic[:24]}」，我一直替你记着呢。"
         return topic
 
@@ -137,11 +140,14 @@ class ThreadLedger:
             return None
         pick = rows[0]
         now = now or dt.datetime.now(dt.timezone.utc)
-        key = f"thread:{pick['id']}:{pick['beat_step']}"
-        last = getattr(self, "_last_material", {})
-        if last.get("key") == key and (now - last.get("at", now)).total_seconds() < 12 * 3600:
+        # 同线 12h 不重复：落库而非进程内存（安卓端进程被系统回收即丢，
+        # 09-08 实机实锤同一条牵挂 12h 内裸发 5 次）。
+        now_n = _naive(now.isoformat()) or now.replace(tzinfo=None)
+        last = _naive(pick.get("last_spoken_at") or "")
+        if last and (now_n - last).total_seconds() < 12 * 3600:
             return None
-        self._last_material = {"key": key, "at": now}
+        self.agent.memory.thread_update(int(pick["id"]),
+                                        last_spoken_at=now_n.isoformat(timespec="seconds"))
         line = self.spoken(pick)
         return {"source": "thread", "text": line}
 

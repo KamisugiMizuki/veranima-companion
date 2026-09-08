@@ -217,6 +217,7 @@ CREATE TABLE IF NOT EXISTS mind_threads (
     status       TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','done')),
     beat_step    INTEGER NOT NULL DEFAULT 0,
     next_beat_at TEXT NOT NULL DEFAULT '',
+    last_spoken_at TEXT NOT NULL DEFAULT '',
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL
 );
@@ -369,6 +370,14 @@ def init_db(db_path: str | Path, dim: int = EMBEDDING_DIM, provider=None) -> sql
         )
     except Exception as e:
         logger.warning("virtual_life_events migration check failed: %s", e)
+    # 牵挂发送窗口落库（09-08：原 _last_material 是进程内存态，安卓端进程被
+    # 系统回收即丢——同一条牵挂 12h 内裸发 5 次）。
+    try:
+        thread_cols = {r["name"] for r in con.execute("PRAGMA table_info(mind_threads)").fetchall()}
+        if "last_spoken_at" not in thread_cols:
+            con.execute("ALTER TABLE mind_threads ADD COLUMN last_spoken_at TEXT NOT NULL DEFAULT ''")
+    except Exception as e:
+        logger.warning("mind_threads migration check failed: %s", e)
     # M-3 迁移：memories_fts 已建但旧记忆行未索引 → 全量重建（独立表，普通 DELETE/INSERT 安全）
     try:
         fts_count = con.execute("SELECT count(*) FROM memories_fts").fetchone()[0]
