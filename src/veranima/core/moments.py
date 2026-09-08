@@ -282,7 +282,12 @@ class MomentsEngine:
         # 每次拒前白烧 2 条 LLM=整夜 API 风暴）——账本反查，次日新素材自然再战
         try:
             failed = self.agent.memory.moment_failed_refs_today(role)
-            mats = [m for m in mats if m[2] not in failed]
+            if failed:
+                mats = [m for m in mats if m[2] not in failed]
+            # ref 落库为空时上面等于空转（实机 824 条只有 4 条带 ref）→ kind 兜底
+            exhausted = self.agent.memory.moment_failed_kinds_today(role)
+            if exhausted:
+                mats = [m for m in mats if m[0] not in exhausted]
         except Exception:
             logger.debug("moment failure-ledger filter failed", exc_info=True)
         if not mats:

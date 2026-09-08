@@ -3288,7 +3288,10 @@ class Agent:
         """
         channel = channel or self.message_channel
         text = self._strip_time_echo(text)  # 短任务链（followup/heartbeat/digest）同样可能回显前缀
-        mid = self.memory.store_message("assistant", text, self.state.energy, self.state.mood, channel=channel, role_id=self.role_key)
+        # 主动消息也标情绪：实机 tone_at 空缺 57% 里大头就是这里——立绘表情
+        # 靠 tone 驱动，主动开口没标签就只能回退三档 mood，等于白发一条。
+        tone = self._classify_tone(text) if channel == "im" else ""
+        mid = self.memory.store_message("assistant", text, self.state.energy, self.state.mood, channel=channel, role_id=self.role_key, tone=tone)
         self._append_history_message("assistant", text)
         self._mark_proactive_sent(now)  # 测试注入同一时间线；生产 None=真实时刻
         self.memory.log_decision(self.role_key or self.card.name, kind, "sent",
@@ -3456,10 +3459,16 @@ class Agent:
         """PAD → 表达约束：情绪必须落到可见文本形态上，否则「起伏」只是内部数字。"""
         v = float(getattr(self.state, "valence", 0.5))
         a = float(getattr(self.state, "arousal", 0.5))
-        if a >= 0.68:
-            tone = ("你现在情绪上来了（被撩/被气到）：话变短，标点变多（？！可以连用），"
-                    "该嘴硬就嘴硬、该结巴就结巴，允许把一句拆成两三条连发，"
-                    "也允许「气气气」「……」「啧」这种出声；别解释自己的情绪，别写成小说。")
+        if a >= 0.68 and v >= 0.55:
+            tone = ("你现在情绪上来了（正高兴/被撩到）：话变密，标点变多，"
+                    "该嘴硬就嘴硬、该得意就得意，允许把一句拆成两三条连发，"
+                    "也允许「哈哈」「草」这种出声；别解释自己的情绪，别写成小说。")
+        elif a >= 0.68:
+            # 高唤醒 + 低效价 = 烦躁/上火，措辞跟「被撩到」必须分开——09-08 实测
+            # 焦虑场景（v=0.445 a=0.809）拿到「被撩/被气到」的文案，情绪方向是反的。
+            tone = ("你现在情绪上来了（被气到/正烦躁）：话变短，标点变多（？！可以连用），"
+                    "带刺、不解释，允许把一句拆成两三条连发，也允许「啧」「……」这种出声；"
+                    "别解释自己的情绪，别写成小说。")
         elif a >= 0.58:
             tone = "你此刻有点起伏：句子比平时短一点，语气词和标点可以多一点，别太端着。"
         elif v <= 0.35:

@@ -21,14 +21,15 @@ from dataclasses import dataclass, field
 from typing import Any
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
-_ECHOED_TIME_PREFIX_RE = re.compile(
-    r"^(?:\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:[+-]\d{2}:?\d{2})?\]\s*)+"
-)
+# 星期后缀是 2026-09-05 起加的（agent._format_history_content），历史泄漏
+# 全部形如 [2026-09-07 13:12:40 周一]，旧正则只认纯时间戳 → 漏网。
+_TS = r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:[+-]\d{2}:?\d{2})?(?:\s*周[一二三四五六日天])?\]"
+_ECHOED_TIME_PREFIX_RE = re.compile(r"^(?:" + _TS + r"\s*)+")
 _TRANSCRIPT_CONTINUATION_RE = re.compile(
     r"(?<=[。！？!?…])\s*"
-    r"(?P<first>\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:[+-]\d{2}:?\d{2})?\])\s*"
+    r"(?P<first>" + _TS + r")\s*"
     r"[^\[]+?"
-    r"(?P<second>\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:[+-]\d{2}:?\d{2})?\])"
+    r"(?P<second>" + _TS + r")\s*"
 )
 
 

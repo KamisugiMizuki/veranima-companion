@@ -800,6 +800,10 @@ class ScheduleOutline:
         path = role_dir / "virtual_schedule.json"
         role_id = role_dir.name
         if not path.is_file():
+            # 静默降级藏了 13 天（09-01 实机角色目录只有 character.json，日程整条链
+            # 死掉却无任何日志）——缺模板必须留痕，否则只能靠翻库反推。
+            logger.warning(
+                "virtual_schedule.json 缺失：%s → 该角色日程禁用（角色目录不完整）", role_dir)
             return cls(role_id, False, 0, "", "", {}, (), None, {}, {}, {}, None, None)
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))

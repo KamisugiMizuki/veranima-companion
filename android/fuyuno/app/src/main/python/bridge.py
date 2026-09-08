@@ -758,8 +758,13 @@ def memory_stats() -> str:
         per_layer = {}
         last_updated = ""
         for lyr in ("core_profile", "semantic", "episodic", "procedural", "session"):
+            # 排除张力账本（relational_tension_event）：实机 episodic 87 条里 60+ 条
+            # 是「用户认真回应了直接问题」类判词，数据保留供 tension.restore，但不进
+            # 用户可见的记忆库总数——否则记忆库顶部卡数字虚高六成。
             row = con.execute(
-                "SELECT count(*) n, max(updated_at) t FROM memories WHERE layer=?", (lyr,)).fetchone()
+                "SELECT count(*) n, max(updated_at) t FROM memories WHERE layer=? "
+                "AND (json_valid(meta)=0 OR COALESCE(json_extract(meta,'$.kind'),'')"
+                "!='relational_tension_event')", (lyr,)).fetchone()
             per_layer[lyr] = int(row["n"] or 0)
             if (row["t"] or "") > last_updated:
                 last_updated = str(row["t"])

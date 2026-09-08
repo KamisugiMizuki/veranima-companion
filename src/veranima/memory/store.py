@@ -793,19 +793,44 @@ class MemoryStore:
         return str(row[0] or "")
 
     def moment_failed_refs_today(self, role_id: str) -> set:
-        """今日已「织文失败/硬闸拒绝」的动态素材 ref 集合（D4 账本现物，零新表）。
+        """今日已「织文失败/硬闸拒绝/撞去重」的动态素材 ref 集合（D4 账本现物，零新表）。
 
         重试风暴根因修复（09-08 MuMu 实锤：纯数字报表素材每 90s 重选一次、
         每次拒前白烧 2 条 LLM 调用整夜不停）：dedupe_key 只挡发布挡不住
-        发布前的织文，失败的素材次日（新 day_close_summary）自然再战。"""
+        发布前的织文，失败的素材次日（新 day_close_summary）自然再战。
+
+        `deduped` 同类：素材已发过 → 每 tick 仍会走到 `_compose` 白烧一次
+        （09-08 实测 95% decisions 都是它），故一并计入。素材 ref 自带日期/小时
+        粒度，次日自然换 key，不会永久封杀。"""
         try:
             from datetime import timedelta
             cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(timespec="seconds")
             rows = self.con.execute(
                 "SELECT object_ref FROM decisions WHERE role_id=? AND kind LIKE 'moment:%' "
-                "AND verdict IN ('rejected','failed') AND ts>=?",
+                "AND verdict IN ('rejected','failed','deduped') AND ts>=?",
                 (role_id, cutoff)).fetchall()
             return {str(r[0] or "")[4:] for r in rows if str(r[0] or "").startswith("ref:")}
+        except Exception:
+            return set()
+
+    def moment_failed_kinds_today(self, role_id: str, threshold: int = 2) -> set:
+        """今日同 kind 已失败/拒绝 ≥threshold 次 → 该 kind 今日不再选（ref 兜底）。
+
+        实机实测（09-08 导出库）：824 条 moment 决策只有 4 条 object_ref 带 `ref:`
+        前缀，`moment_failed_refs_today` 按 ref 过滤等于空转——D01 这类素材
+        （日终统计报表）永远织不出合格动态，每 tick 重选一次、每次白烧 LLM。
+        按 kind 计数不依赖 ref 落库，是这条链的保险丝。
+
+        阈值 2：单次失败可能是 LLM 偶发抽风，连着两次说明素材类型本身不合格。"""
+        try:
+            from datetime import timedelta
+            cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(timespec="seconds")
+            rows = self.con.execute(
+                "SELECT kind FROM decisions WHERE role_id=? AND kind LIKE 'moment:%' "
+                "AND verdict IN ('rejected','failed') AND ts>=? "
+                "GROUP BY kind HAVING COUNT(*)>=?",
+                (role_id, cutoff, max(1, int(threshold)))).fetchall()
+            return {str(r[0] or "")[7:] for r in rows}
         except Exception:
             return set()
 
@@ -1059,7 +1084,15 @@ class MemoryStore:
 
     def thread_list(self, role_id: str, *, open_only: bool = True) -> list[dict]:
         q = "SELECT * FROM mind_threads WHERE role_id=?" + (" AND status='open'" if open_only else "")
-        return [dict(r) for r in self.con.execute(q + " ORDER BY intensity DESC, id ASC", (role_id,))]
+        rows = [dict(r) for r in self.con.execute(q + " ORDER BY intensity DESC, id ASC", (role_id,))]
+        # 数据卫生：存量画像键迁移值带第三人称（09-08 实机实锤「用户正在赶毕设改稿」
+        # 被裸发 5 次 + 进 prompt 喂给模型）。角色视角里没有「用户」这个称呼，
+        # 出口统一转第二人称——五个读取点（prompt_block/top/日终摘要/moments/织文）
+        # 一次覆盖，别在每个出口各写一遍 replace。
+        for r in rows:
+            if r.get("origin") == "user":
+                r["topic"] = str(r.get("topic") or "").replace("用户", "你")
+        return rows
 
     def thread_update(self, thread_id: int, **fields) -> None:
         cols = [k for k in fields if k in ("intensity", "status", "beat_step", "next_beat_at", "last_spoken_at")]

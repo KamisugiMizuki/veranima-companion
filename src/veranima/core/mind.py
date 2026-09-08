@@ -124,9 +124,7 @@ class ThreadLedger:
         单条素材走 _weave_ritual 直返路径，指令体漏发=机器文本泄漏）。"""
         topic = str(r.get("topic") or "").strip()
         if r.get("origin") == "user":
-            # 存量画像键迁移值带第三人称（09-08 实机实锤：裸发 5 次
-            # 「用户正在赶毕设改稿」，角色把用户叫成「用户」）。
-            topic = topic.replace("用户", "你")
+            # 第三人称已在 store.thread_list 出口统一清洗（09-08 实机实锤），此处不重复。
             return f"你之前说「{topic[:24]}」，我一直替你记着呢。"
         return topic
 

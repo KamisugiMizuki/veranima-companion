@@ -307,6 +307,19 @@ def unit_blob(vec: Sequence[float]) -> bytes:
     return array("f", (x / n for x in vec)).tobytes()
 
 
+def _drop_vec0_shadows(con: sqlite3.Connection) -> None:
+    """清 sqlite-vec 的 vec0 影子表（rowids/chunks）。
+
+    主表 memory_vec 被 DROP 后影子表仍会单独残留（实机 177 行 rowids + 1 行 chunks），
+    它们是 vec0 的内部索引，脱离 memory_vec 后毫无用处、只占体积。
+    """
+    for shadow in ("memory_vec_rowids", "memory_vec_chunks"):
+        try:
+            con.execute(f"DROP TABLE IF EXISTS {shadow}")
+        except Exception as e:
+            logger.debug("drop %s failed: %s", shadow, e)
+
+
 def migrate_vec0(con: sqlite3.Connection) -> int:
     """一次性迁移：老库的 vec0 虚拟表 → memory_embedding（读原始 blob 归一化重存）。
 
@@ -314,6 +327,9 @@ def migrate_vec0(con: sqlite3.Connection) -> int:
     扩展不可用但 vec0 表存在时跳过：备份导入路径会全量重铸，不静默丢数据。
     """
     if not con.execute("SELECT count(*) FROM sqlite_master WHERE name='memory_vec'").fetchone()[0]:
+        # 主表不在也可能是「迁移已完成、影子表残留」——顺手清一次
+        _drop_vec0_shadows(con)
+        con.commit()
         return 0
     try:
         con.enable_load_extension(True)
@@ -334,6 +350,7 @@ def migrate_vec0(con: sqlite3.Connection) -> int:
         )
         copied += 1
     con.execute("DROP TABLE memory_vec")
+    _drop_vec0_shadows(con)
     con.commit()
     logger.info("migrated %d vec0 embeddings to memory_embedding", copied)
     return copied
