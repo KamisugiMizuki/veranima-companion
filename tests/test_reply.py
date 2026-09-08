@@ -247,3 +247,19 @@ def test_im_extracts_bounded_conversation_event_candidate():
         "follow_up_days": 3,
         "confidence": 0.82,
     }]
+
+
+def test_latin_word_containing_ta_is_not_monologue():
+    """09-08 实锤：'delta' 含裸子串 'ta' → 整段被判独白删光 → reply_obj 空段
+    → bridge json.dumps(Reply) TypeError。词边界修复后必须原样保留。"""
+    raw = "delta，第四个。行，您这是打算一个字母一个字母地报给我听"
+    reply = parse_reply(raw, channel="im")
+
+    assert reply.text == raw
+    assert not reply.degraded
+
+
+def test_ta_word_boundary_still_kills_monologue():
+    """词边界不能放过真独白：'ta 应该…' 仍要杀。"""
+    assert parse_reply("ta 应该先安抚用户再解释", channel="im").text == ""
+    assert parse_reply("用户现在应该更想要安抚", channel="im").text == ""

@@ -58,3 +58,27 @@ def test_handle_accepts_channel_param():
     sig = inspect.signature(Agent.handle)
     assert "channel" in sig.parameters
     assert sig.parameters["channel"].default == "im"
+
+
+def test_bridge_render_never_returns_non_str():
+    """09-08 实锤：reply_obj 空段 + `render_im(...) or text` 回退 → 把 Reply 对象
+    当返回值 → bridge json.dumps TypeError。契约：任何入参都返回 str。"""
+    import importlib.util
+    from pathlib import Path
+
+    from veranima.core.reply import Reply, ReplySegment
+
+    path = Path(__file__).resolve().parents[1] / "android/fuyuno/app/src/main/python/bridge.py"
+    spec = importlib.util.spec_from_file_location("fuyuno_bridge_render_test", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    class _Agent:
+        card = None
+
+        class state:
+            attachment = 0.5
+
+    assert mod._render(_Agent(), Reply()) == ""
+    assert mod._render(_Agent(), Reply(), "delta 你好") == "delta 你好"
+    assert isinstance(mod._render(_Agent(), Reply(segments=[ReplySegment(text="你好")])), str)

@@ -289,7 +289,10 @@ internal fun ChatScreen(role: String, onBack: () -> Unit, onOpenSpace: () -> Uni
     val status = remember { mutableStateOf("") }
     val charName = remember { mutableStateOf(role) }
     val input = remember { mutableStateOf("") }
-    val busy = remember { mutableStateOf(false) }
+    // 连发合并 worker（TURN_MERGE_SPEC）：进程级单例，切页不丢队列；
+    // busy 只做「正在酝酿」指示器，不再是发送闸
+    val worker = remember(role) { TurnQueue.of(role) }
+    val busy = worker.thinking.collectAsState()
     val pendingImages = remember { mutableStateOf(listOf<String>()) }
     val zoom = remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
@@ -407,26 +410,23 @@ internal fun ChatScreen(role: String, onBack: () -> Unit, onOpenSpace: () -> Uni
         }
         return "[聊天记录]\n$head\n$body\n———————"
     }
-    // 真正发送（引用/合并转发/普通输入共用一个出口）
+    // 真正发送（引用/合并转发/普通输入共用一个出口）——入队即返回，永不阻塞输入
     val sendText = fun(text: String, imgs: List<String>) {
-        if ((text.isEmpty() && imgs.isEmpty()) || busy.value) return
+        if (text.isEmpty() && imgs.isEmpty()) return
         msgs.add(Msg(tmpId[0]--, true, text, imgs))
         focusManager.clearFocus()
-        busy.value = true
         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-        scope.launch {
-            val r = withContext(Dispatchers.IO) {
-                bridge.callAttr("chat", text, org.json.JSONArray(imgs).toString(), role).toString()
-            }
-            val o = JSONObject(r)
-            if (o.optBoolean("ok")) {
-                msgs.add(Msg(tmpId[0]--, false, o.getString("reply"), emptyList(), "", o.optString("tone"), ""))
-                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-            } else status.value = "chat 失败: ${o.optString("error")}"
-            busy.value = false
+        worker.enqueue(TurnQueue.Item(text, imgs))
+    }
+    // 回复不直接回到本页（页面可能已销毁）：worker 每轮结束 revision+1 → 重载历史 + 已读
+    LaunchedEffect(worker) {
+        worker.revision.collect { if (it > 0L) {
             loadHistory()
             withContext(Dispatchers.IO) { bridge.callAttr("mark_read", role) }
-        }
+        } }
+    }
+    LaunchedEffect(worker) {
+        worker.error.collect { if (it.isNotEmpty()) status.value = it }
     }
     val send = fun() {
         val typed = input.value.trim()
@@ -662,8 +662,7 @@ internal fun ChatScreen(role: String, onBack: () -> Unit, onOpenSpace: () -> Uni
                 keyboardActions = KeyboardActions(onSend = { send() })
             )
             Spacer(Modifier.width(8.dp))
-            if (busy.value) CircularProgressIndicator(Modifier.size(28.dp), color = PrimaryInk())
-            else Button(onClick = { send() },
+            Button(onClick = { send() },
                     colors = ButtonDefaults.buttonColors(InvertSurface(), OnInvert()),
                     shape = MaterialTheme.shapes.small) { Text("发送") }
         }

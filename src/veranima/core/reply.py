@@ -213,14 +213,17 @@ _INTERNAL_TERMS = ("依恋度", "attachment", "PersonaBrief", "回用动作", "�
 #   永远不会合法使用 → 确定性硬杀（不是面向样例，是杀自己漏出去的词源）。
 # 角色卡派生的开放元词（风格标签/人设描述）不进硬杀——台词可能合法出现，
 # 交给出口 LLM 判定（agent._sanitize_monologue）。
+# "ta" 是拼音缩写，必须词边界：delta/data/status 都含 "ta"（09-08 实锤——
+# 整段被当独白删光 → reply_obj 空段 → bridge json.dumps TypeError）。
+_TA_RE = re.compile(r"\bta\b", re.I)
 _MONOLOGUE_RULE_RE = re.compile(
-    r"(?:用户|ta|TA)"                                  # 第三人称把用户当对象谈
+    r"(?:用户|\bta\b)"                                 # 第三人称把用户当对象谈
     r".{0,40}(可以|应该|最好|适合|不妨|得|要|计划|打算)"  # + 计划/评价语气
     r"|"
     r"(?:可以|应该|最好|适合|不妨)(?:比之前|再|稍微|亲一些|亲切|长一些|短一些)"
 )
 # 送 LLM 判定的"可疑"结构：同句里第三人称指用户 + 第一人称自我叙述（台词罕见形态）
-_SUSPECT_THIRD = ("用户", "ta", "TA", "他", "她")
+_SUSPECT_THIRD = ("用户", "他", "她")
 _SUSPECT_META = ("敬语刀", "人设", "口癖", "角色卡", "吐槽", "问候", "台词")
 
 
@@ -237,7 +240,7 @@ def _is_monologue_suspect(line: str) -> bool:
     交给一次 LLM 语义判定裁决（agent._sanitize_monologue）。"""
     if _looks_monologue(line):
         return False  # 已被规则杀，不必再判
-    has_third = any(t in line for t in _SUSPECT_THIRD)
+    has_third = _TA_RE.search(line) is not None or any(t in line for t in _SUSPECT_THIRD)
     has_self = any(t in line for t in ("我", "自己"))
     has_meta = any(t in line for t in _SUSPECT_META)
     return (has_third and has_self) or has_meta

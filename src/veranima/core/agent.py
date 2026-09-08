@@ -1553,7 +1553,8 @@ class Agent:
             return text
 
     def handle(self, user_text: str, images: list[str] | None = None, channel: str = "im",
-               attachments: str = "", now: datetime.datetime | None = None) -> TurnResult:
+               attachments: str = "", now: datetime.datetime | None = None,
+               pre_stored_msg_id: int | None = None) -> TurnResult:
         """处理一条用户消息，返回回复。
 
         images: 图片 data URL 列表（如 data:image/png;base64,...），
@@ -1562,6 +1563,9 @@ class Agent:
         记忆/历史用 [图片] 占位（避免 base64 撑爆上下文与 FTS5）。
         channel: 通道标识（im/tts，DESIGN 4.8 通道感知），注入 system prompt 的通道语境。
         now: 注入交互时间（测试用固定时钟；生产 None=真实当前时间）。
+        pre_stored_msg_id: 调用方已把用户消息落库时传末条 user 行 id（连发合并：
+        bridge.chat_batch 逐条落库后合成一轮）——本函数不再重复 store，
+        副作用（tension/info gap/睡眠归档）沿用该 id。None=旧行为。
         """
         user_text = user_text.strip()
         images = [str(x) for x in (images or []) if isinstance(x, str)][:4]
@@ -1609,12 +1613,15 @@ class Agent:
                     schedule_runtime.start_activity(context.item_id, interaction_now)
                 schedule_runtime.interrupt_activity(interaction_now)
         if schedule_runtime is not None and schedule_runtime.sleeping:
-            message_id = self.memory.store_message(
-                "user", user_text + (" [图片]" * len(images) if images else ""),
-                self.state.energy, self.state.mood,
-                channel="pet" if channel == "tts" else self.message_channel,
-                attachments=attachments, role_id=self.role_key,
-            )
+            if pre_stored_msg_id is not None:
+                message_id = pre_stored_msg_id  # 连发合并：调用方已逐条落库
+            else:
+                message_id = self.memory.store_message(
+                    "user", user_text + (" [图片]" * len(images) if images else ""),
+                    self.state.energy, self.state.mood,
+                    channel="pet" if channel == "tts" else self.message_channel,
+                    attachments=attachments, role_id=self.role_key,
+                )
             scope = resolved_scope
             self.memory.archive_sleep_message(
                 role_id=schedule_runtime.outline.role_id,
@@ -1712,11 +1719,14 @@ class Agent:
             logger.info("interrupt L%d (topic count=%d)", interrupt_level, topic_count)
 
         # 2. 零开销摄入：消息立即入库（FTS5 同步索引）
-        user_msg_id = self.memory.store_message(
-            "user", store_text, self.state.energy, self.state.mood,
-            channel="pet" if channel == "tts" else self.message_channel, attachments=attachments,
-            role_id=self.role_key,
-        )
+        if pre_stored_msg_id is not None:
+            user_msg_id = pre_stored_msg_id  # 连发合并：调用方已逐条落库（TURN_MERGE_SPEC）
+        else:
+            user_msg_id = self.memory.store_message(
+                "user", store_text, self.state.energy, self.state.mood,
+                channel="pet" if channel == "tts" else self.message_channel, attachments=attachments,
+                role_id=self.role_key,
+            )
         self._process_tension_user_message(store_text, channel=channel, message_id=user_msg_id)
         self._capture_user_info_gap(user_text, user_msg_id, channel, resolved_scope)
 

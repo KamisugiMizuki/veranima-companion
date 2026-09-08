@@ -52,18 +52,26 @@ def _flush() -> None:
         log.debug("flush hook failed", exc_info=True)
 
 
-def _render(agent, text: str) -> str:
+def _render(agent, *candidates) -> str:
     """IM 通道统一出口（与 QQ _send_to_all 同构）：换行/波浪号/感叹号/emoji
-    规则 + 内部提示词/思考痕迹剥离。渲染失败回退原文（宁可不修饰不能不发）。"""
-    if not text:
+    规则 + 内部提示词/思考痕迹剥离。渲染失败回退原文（宁可不修饰不能不发）。
+
+    candidates 按优先级取第一个有文本的（Reply 对象或 str）：reply_obj 空段时
+    退到 res.reply——绝不把对象本身当返回值（09-08 json.dumps TypeError 实锤）。"""
+    raw = ""
+    for cand in candidates:
+        raw = cand if isinstance(cand, str) else getattr(cand, "text", "") or ""
+        if raw:
+            break
+    if not raw:
         return ""
     try:
         from veranima.core.render import render_im
         emoji_freq = (agent.card.veranima or {}).get("emoji_frequency", "low") if agent.card else "low"
-        return render_im(text, attachment=agent.state.attachment, emoji_frequency=emoji_freq) or text
+        return render_im(raw, attachment=agent.state.attachment, emoji_frequency=emoji_freq) or raw
     except Exception:
         log.exception("render_im failed, raw fallback")
-        return text
+        return raw
 
 
 def _advance_schedule(agent) -> str:
@@ -1479,6 +1487,34 @@ def history(limit: int = 80, role: str = "", before_id: int = 0) -> str:
         return json.dumps({"ok": False, "error": str(e), "messages": []})
 
 
+def _save_images(paths) -> tuple[list[str], list[str]]:
+    """本地图片路径 → (data URL 列表, photos/ 落盘文件名列表)，≤4 张。
+
+    make_image_payload 校验（类型/大小/炸弹检测）；附件写 filesDir/photos/
+    （cacheDir 随时被系统清，历史重载会变黑块）。
+    """
+    from veranima.core.image_payload import make_image_payload
+    import time as _t
+    images: list[str] = []
+    names: list[str] = []
+    paths = [str(p) for p in (paths or [])][:4]
+    if not paths:
+        return images, names
+    photos = Path(getattr(boot, "root", ".")) / "photos"
+    photos.mkdir(exist_ok=True)
+    for pth in paths:
+        raw = Path(pth).read_bytes()
+        payload = make_image_payload(raw, source=pth)
+        images.append(payload.data_url)
+        # 文件名带扩展名（按 content_type 推；历史重载按文件读，扩展名只为人可读）
+        ext = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif",
+               "image/webp": "webp"}.get(payload.content_type, "bin")
+        name = f"{int(_t.time() * 1000000)}.{ext}"
+        (photos / name).write_bytes(raw)
+        names.append(name)
+    return images, names
+
+
 def chat(text: str, image_paths: str = "[]", role: str = "") -> str:
     """一轮对话（同步阻塞——真 UI 阶段换协程+回调）。
 
@@ -1494,30 +1530,61 @@ def chat(text: str, image_paths: str = "[]", role: str = "") -> str:
     import time as _t
     boot._last_user_activity = _t.time()  # 离线思考的静默窗口锚点
     try:
-        paths = [str(p) for p in json.loads(image_paths or "[]")][:4]
-        images: list[str] = []
-        names: list[str] = []
-        if paths:
-            from veranima.core.image_payload import make_image_payload
-            photos = Path(getattr(boot, "root", ".")) / "photos"
-            photos.mkdir(exist_ok=True)
-            for pth in paths:
-                raw = Path(pth).read_bytes()
-                payload = make_image_payload(raw, source=pth)
-                images.append(payload.data_url)
-                # 文件名带扩展名（按 content_type 推；历史重载按文件读，扩展名只为人可读）
-                ext = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif",
-                       "image/webp": "webp"}.get(payload.content_type, "bin")
-                name = f"{int(_t.time() * 1000000)}.{ext}"
-                (photos / name).write_bytes(raw)
-                names.append(name)
+        images, names = _save_images(json.loads(image_paths or "[]"))
         attachments = json.dumps(names, ensure_ascii=False) if names else ""
         res = agent.handle(text, images=images or None, channel="im", attachments=attachments)
         # 与 QQ 统一出口一致：Reply 对象优先、渲染后才可见（防内部痕迹外漏）
-        out = {"ok": True, "reply": _render(agent, res.reply_obj or res.reply), "portrait": res.portrait,
+        out = {"ok": True, "reply": _render(agent, res.reply_obj, res.reply), "portrait": res.portrait,
                "energy": round(res.energy, 2), "tone": res.tone or ""}
         return json.dumps(out, ensure_ascii=False)
     except Exception as e:
         tb = traceback.format_exc(limit=6)
         log.error("chat failed:\n%s", tb)
+        return json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}", "trace": tb}, ensure_ascii=False)
+
+
+def chat_batch(batch_json: str, role: str = "") -> str:
+    """连发合并轮（docs/android/TURN_MERGE_SPEC.md，2026-09-08）：worker 攒够一批后调用。
+
+    batch_json = [{"text": str, "images": [本地路径]}...]：逐条 store_message
+    （各自 [图片] 占位 + 各自 attachments，顺序/搜索/重载与单发一致），
+    合并成一次 agent.handle —— 一次 LLM、一条回复（真人不对每条都回）。
+    pre_stored_msg_id=末条 user 行 id：core 不再重复落库，tension/info gap
+    副作用沿用该 id；未跑完的轮由 catch_up_replies 兜底。
+    """
+    agent = _agent_for(role)
+    if agent is None:
+        return json.dumps({"ok": False, "error": "未初始化"})
+    import time as _t
+    boot._last_user_activity = _t.time()
+    try:
+        batch = json.loads(batch_json or "[]")
+        texts: list[str] = []
+        images: list[str] = []
+        ids: list[int] = []
+        for item in batch:
+            item = item or {}
+            text = str(item.get("text") or "").strip()
+            got, names = _save_images(item.get("images") or [])
+            images.extend(got)
+            store_text = text + (" [图片]" * len(got) if got else "")
+            if not store_text:
+                continue
+            ids.append(agent.memory.store_message(
+                "user", store_text, agent.state.energy, agent.state.mood,
+                channel=getattr(agent, "message_channel", "im"),
+                attachments=json.dumps(names, ensure_ascii=False) if names else "",
+                role_id=agent.role_key,
+            ))
+            texts.append(text or "[图片]")
+        if not ids:
+            return json.dumps({"ok": False, "error": "空消息"}, ensure_ascii=False)
+        res = agent.handle("\n".join(texts), images=images[:4] or None,
+                           channel="im", pre_stored_msg_id=ids[-1])
+        out = {"ok": True, "reply": _render(agent, res.reply_obj, res.reply), "portrait": res.portrait,
+               "energy": round(res.energy, 2), "tone": res.tone or "", "ids": ids}
+        return json.dumps(out, ensure_ascii=False)
+    except Exception as e:
+        tb = traceback.format_exc(limit=6)
+        log.error("chat_batch failed:\n%s", tb)
         return json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}", "trace": tb}, ensure_ascii=False)
