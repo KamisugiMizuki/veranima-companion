@@ -67,32 +67,6 @@ def test_interrupt_prompt_content():
     assert "新" in _interrupt_prompt(2)
 
 
-# ---------- 历史表达瑕疵（新设计非目标，待 R2 清理） ----------
-
-def test_withdraw_skipped_high_energy():
-    """高精力/高确信 → 不撤回。"""
-    from veranima.core.agent import _maybe_withdraw
-    class S: energy = 80; confidence = 0.9
-    assert _maybe_withdraw("今天天气不错，适合出门走走看看", S(), 0.01) == "今天天气不错，适合出门走走看看"
-
-
-def test_withdraw_low_energy_probability():
-    """低精力 + 长回复 + 概率命中 → 撤回追加。"""
-    from veranima.core.agent import _maybe_withdraw
-    class S: energy = 20; confidence = 0.9
-    reply = "我觉得这件事应该从长计议，先看看数据再说，不能急着下结论"
-    out = _maybe_withdraw(reply, S(), 0.05)
-    assert "撤回" in out
-    assert out.startswith(reply)
-
-
-def test_withdraw_short_reply_skip():
-    """短回复（无具体细节）不触发。"""
-    from veranima.core.agent import _maybe_withdraw
-    class S: energy = 10; confidence = 0.5
-    assert _maybe_withdraw("嗯", S(), 0.01) == "嗯"
-
-
 # ---------- R1 无缝衔接（R1_SPEC 4.召回） ----------
 
 def test_seamless_greeting_uses_last_user_msg(agent, monkeypatch):
@@ -191,20 +165,6 @@ def test_clarification_detection():
     assert is_clarification("具体是几点来着") is True
     assert is_clarification("啥事？") is True
     assert is_clarification("今天天气不错") is False
-
-
-def test_format_memory_clarification_gives_exact():
-    """追问时低确信记忆不模糊化（R1_SPEC 2.2 可逆性）。"""
-    from veranima.core.prompts import format_memory_line
-    from veranima.memory.store import MemoryEntry
-    e = MemoryEntry(id=1, layer="episodic", content="三天前下午三点在星巴克见面", importance=0.5,
-                    confidence=0.5, provenance="test", version=1, strength=0.5,
-                    category=None, meta={}, created_at=0, updated_at=0)
-    fuzzy = format_memory_line(e)
-    exact = format_memory_line(e, clarification=True)
-    assert "那阵子" in fuzzy  # 模糊化生效（3 天 → 那阵子）
-    assert "三天前下午三点在星巴克见面" in exact  # 追问给精确值
-    assert "细节全糊了" not in exact
 
 
 def test_tts_interrupt_on_new_message(monkeypatch):

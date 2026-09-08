@@ -19,10 +19,10 @@ from typing import Literal
 
 from ..llm.client import LLMClient, LLMTimeoutError, LLMUnavailableError
 from .prompts import build_system_prompt, is_clarification
+from ..memory.brief import HistorySummary
 from .virtual_schedule import ScheduleContext, ScheduleOutline, ScheduleRuntime
 from .holiday_calendar import HolidayCalendar
 from .reply import is_failure_fallback_reply, is_internal_reply
-from .segments import extract_segments
 from .ambient import ChannelActivityTracker, ProactiveCandidate, ProactiveGate, SceneLock
 from .interrupt import InterruptDecider, TopicFrequency
 from ..memory.store import MemoryStore
@@ -104,22 +104,6 @@ def _interrupt_prompt(level: int) -> str:
         "之后本轮回复转为工作模式：极简、就事论事、不投入情绪（比如'嗯。''知道了。'级别的短句）。"
         "但必须继续回复——沉默会被当成你挂了。"
     )
-
-
-def _maybe_withdraw(reply: str, state, rand: float) -> str:
-    """历史功能：表达瑕疵撤回（限频 15~25%）；新设计非目标「随机错误模拟器」（DESIGN.md §1），待 R2 清理。
-
-    条件：低确信（<0.6）或低精力（<40）且回复含具体细节（长度 > 20）且概率命中。
-    """
-    low_confidence = getattr(state, "confidence", 1.0) < 0.6
-    low_energy = getattr(state, "energy", 100) < 40
-    if not (low_confidence or low_energy):
-        return reply
-    if len(reply) < 20:
-        return reply  # 无具体细节不触发
-    if rand > 0.2:
-        return reply  # 限频 15~25%（20% 概率）
-    return reply + "（撤回一下，我刚才打错了，应该是想说……算了，意思你懂就行）"
 
 
 class Agent:
@@ -2333,12 +2317,12 @@ class Agent:
                     f"【更早的对话】{summary[:400]}",
                     importance=0.4,
                     confidence=0.7,
-                    meta={
-                        "kind": "history_summary",
-                        "from_message_id": from_msg,
-                        "to_message_id": to_msg,
-                        "source_count": len(old_part) // 2,
-                    },
+                    meta=HistorySummary(
+                        summary=summary[:400],
+                        from_message_id=from_msg,
+                        to_message_id=to_msg,
+                        source_count=len(old_part) // 2,
+                    ).to_session_meta(),
                 )
             except Exception as e:
                 logger.warning("history summary store failed: %s", e)
@@ -3253,8 +3237,9 @@ class Agent:
                if judged else "")
             + "\n把剩下的事合成一条自然连贯的消息，像一个人的连续口吻一次说完："
               "有事由和先后，用『对了』『顺便』『正好』这类过渡把话题串起来，"
-              "不要编号、不要分段并列、不要漏掉任何一件（被 SKIP 的除外）。"
-              "消息本身之外只允许 SKIP 行。"
+              "不要编号、不要列表式罗列、不要漏掉任何一件（被 SKIP 的除外）；"
+              "句子长短不限——短句塞不下就用长句，或者几条语义连贯的短句接着发，"
+              "说全、说顺比说短重要。消息本身之外只允许 SKIP 行。"
         )
         woven = ""
         # 素材多条→思考量更大：首试默认预算，被截断则加倍重试一次（仍败=拼接回退）
@@ -3757,7 +3742,7 @@ class Agent:
                           meta: dict | None = None) -> None:
         """遗忘后重新学习（2026-08-31 自检缺口③）：用户再次告知同一件事时，
         不插新条目，而是沿版本链更新旧记忆并把置信度拉回高段——
-        表达层由此自动从"我记得好像…"（_fuzzy_ify 只作用于低确信档）
+        表达层由此自动从「置信度:低」标签（brief 低确信档）
         恢复为肯定引用，等效于"啊对，我想起来了"。无相似旧事则照旧新增。
         """
         try:
@@ -4061,15 +4046,6 @@ class Agent:
         except Exception as e:
             logger.debug("greeting LLM failed, fallback: %s", e)
             return base
-
-    def _try_proactive(self) -> str:
-        """R4 已废弃：无理由主动（idle/fatigue 类）按 R4_SPEC 3 关闭。
-
-        所有主动发起必须携带 ProactiveCandidate（shared_episode/commitment/
-        scene/ritual/attention）并经 ProactiveGate 9 闸门；本函数保留签名
-        返回空串，避免外部残留调用崩溃，下一轮清理。
-        """
-        return ""
 
     # ---------- 8.6.3 表情包标注 ----------
 

@@ -114,19 +114,6 @@ def test_memory_version_chain(tmp_path):
     assert store.get(e1.id) is not None  # 旧版本保留
 
 
-def test_format_memory_line_prefix():
-    from veranima.core.prompts import format_memory_line
-    from veranima.memory.store import MemoryEntry
-    e = MemoryEntry(id=1, layer="semantic", content="用户喜欢下雨天", strength=0.9,
-                    meta={"kind": "user_fact"})
-    line = format_memory_line(e)
-    assert line.startswith("[用户事实|置信度:高]")
-    e2 = MemoryEntry(id=2, layer="episodic", content="一起看过烟花", strength=0.6,
-                     meta={"kind": "shared_episode", "event_time": "上周"})
-    line2 = format_memory_line(e2)
-    assert line2.startswith("[共同经历|置信度:中|时间:上周]")
-
-
 def test_conversation_event_uses_versioned_lifecycle(tmp_path):
     store = _store(tmp_path)
     agent = object.__new__(Agent)

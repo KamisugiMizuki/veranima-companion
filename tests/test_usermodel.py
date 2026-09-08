@@ -80,9 +80,9 @@ def test_migrate_from_old_table(tmp_path):
     s1.con.close()
     assert not (tmp_path / "usermodel.json").exists()         # json 尚未诞生、表里有数据
     s2 = MemoryStore(db_path=db, config={}, provider=FakeEmbed())
-    assert s2.profile_get("city")["value"] == "杭州"
+    assert s2.profile_all()["city"]["value"] == "杭州"
     s2.profile_set("city", "北京", source="dialog", confidence=0.9)
-    assert s2.profile_get("city")["value"] == "杭州"           # 迁移后规则照旧
+    assert s2.profile_all()["city"]["value"] == "杭州"           # 迁移后规则照旧
     s2.con.close()
 
 
@@ -172,11 +172,11 @@ def test_bridge_usermodel_endpoints(tmp_path):
     assert r["ok"] and r["path"].endswith("usermodel.json")
     assert bridge.usermodel_set("city", "杭州", "1") and json.loads(
         bridge.usermodel_get())["profile"]["city"]["value"] == "杭州"
-    assert agent.memory.profile_get("city")["pinned"] is True
+    assert agent.memory.profile_all()["city"]["pinned"] is True
     # pinned 键：对话提取端（_apply_profile_facts→dialog）拒写，锁定真生效
     class _J:
         profile = {"city": "上海"}
     agent._apply_profile_facts(_J())
-    assert agent.memory.profile_get("city")["value"] == "杭州"
+    assert agent.memory.profile_all()["city"]["value"] == "杭州"
     bridge.boot = None
     assert json.loads(bridge.usermodel_get())["ok"] is False

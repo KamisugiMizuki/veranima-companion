@@ -191,10 +191,6 @@ class MemoryEntry:
         return False
 
     @property
-    def chain_id(self) -> int:
-        return int(self.meta.get("chain_id") or self.id)
-
-    @property
     def status(self) -> str:
         return self.meta.get("status", "active")
 
@@ -717,9 +713,6 @@ class MemoryStore:
         return d
 
     # ---------- 用户画像（角色无关·单一真源=usermodel.json，闭集键在 UserModel）+ 称呼（按角色隔离） ----------
-
-    def profile_get(self, key: str) -> dict | None:
-        return self.usermodel.get_profile(key)
 
     def profile_all(self) -> dict[str, dict]:
         return self.usermodel.all_profile()
@@ -1792,12 +1785,6 @@ class MemoryStore:
             logger.warning("curate vector rebuild failed: %s", ex)
         ops["created"] += rebuilt
         return {"counts": self._layer_counts(), "ops": ops}
-
-    @property
-    def _deleted(self) -> set[int]:
-        if not hasattr(self, "_curate_deleted"):
-            self._curate_deleted = set()
-        return self._curate_deleted
 
     def _layer_counts(self) -> dict:
         counts = {}

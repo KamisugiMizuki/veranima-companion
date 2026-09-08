@@ -291,6 +291,23 @@ def test_weave_falls_back_to_concat(tmp_path, monkeypatch):
     assert a._weave_ritual(["只有一件"]) == "只有一件"
 
 
+def test_weave_allows_long_multi_sentence(tmp_path, monkeypatch):
+    """09-08 用户裁决：短句塞不下→允许长句或多条语义连续的短句，织出的文本原样返回不切分。"""
+    card, memory = _agent(tmp_path)
+    a = Agent(card=card, memory=memory, llm=FakeLLM(), state=AgentState(), config={})
+    seen = {}
+    long_reply = ("对了，你早上说的那个会开完了没，我这边刚忙完一阵；"
+                  "顺便提醒你下午三点有个约，别又忘了；"
+                  "还有你说想换的那台键盘我看了一眼，价格降了点。")
+    def fake_short(task, max_tokens=None, bilingual=False):
+        seen["task"] = task
+        return long_reply
+    monkeypatch.setattr(a, "_short_task", fake_short)
+    out = a._weave_ritual(["早。今天有什么打算？", "下午三点有约", "键盘降价了"])
+    assert out == long_reply                        # 不切分、不截断
+    assert "长句" in seen["task"] and "说全" in seen["task"]
+
+
 # ---------- 11. 联想四型（2026-09-01 设计文档落地） ----------
 
 def _probe_agent(tmp_path, gap_hours=3.0):
@@ -469,17 +486,17 @@ def test_profile_judgment_lands_in_store(tmp_path):
     from veranima.core.judges import _coerce
     j = _coerce({"profile": {"real_name": "林晓", "city": "杭州", "gender_guess": "脑补"}})
     a._apply_profile_facts(j)
-    assert memory.profile_get("real_name")["value"] == "林晓"
-    assert memory.profile_get("gender_guess") is None  # 闭集外不落
+    assert memory.profile_all()["real_name"]["value"] == "林晓"
+    assert "gender_guess" not in memory.profile_all()  # 闭集外不落
 
 def test_profile_user_source_not_overwritten(tmp_path):
     """用户自述级(user)不被对话推断级(dialog)覆盖；用户再自述可更新。"""
     _, memory = _agent(tmp_path)
     memory.profile_set("city", "杭州", source="user", confidence=1.0)
     memory.profile_set("city", "上海", source="dialog", confidence=0.7)
-    assert memory.profile_get("city")["value"] == "杭州"
+    assert memory.profile_all()["city"]["value"] == "杭州"
     memory.profile_set("city", "北京", source="user", confidence=1.0)
-    assert memory.profile_get("city")["value"] == "北京"
+    assert memory.profile_all()["city"]["value"] == "北京"
 
 def test_nickname_forbidden_per_role(tmp_path):
     """「别叫我宝宝」→ 只对当前角色记 forbidden，换角色不继承。"""

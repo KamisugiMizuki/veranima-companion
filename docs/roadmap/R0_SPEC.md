@@ -1,7 +1,7 @@
 # R0 专项：角色内核与统一 Reply
 
 > R0 是所有实现的入口。没有 R0，后续记忆、TTS、视觉和主动性都会变成给一个空壳模型接功能。
-> 现有复用：`core/character.py`, `core/prompts.py`, `core/segments.py`, `core/agent.py`, `llm/client.py`。
+> 现有复用：`core/character.py`, `core/prompts.py`, `core/agent.py`, `llm/client.py`。（09-08：`core/segments.py` 兼容 facade 已删——零调用，生产解析统一走 `core/reply.py`）
 > 角色核心扩展、角色自我模型与人格循环见 `docs/persona/PERSONA_LOOP_SPEC.md`；R0 只规定稳定角色真值和 Reply 协议。
 
 ## 1. 角色卡真值
@@ -74,7 +74,7 @@ G. 本轮任务要求
 
 ## 4. Reply 解析
 
-建议新增 `core/reply.py`，定义 `Reply`/`ReplySegment`；`core/segments.py` 作为兼容 facade。
+建议新增 `core/reply.py`，定义 `Reply`/`ReplySegment`。（09-08：`core/segments.py` 兼容 facade 已删——零调用，生产解析统一走 `core/reply.py`）
 
 ### IM
 

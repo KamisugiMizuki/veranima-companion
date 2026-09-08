@@ -277,3 +277,7 @@ unset PYTHONPATH
 - `docs/hermes/HERMES_AGENT_INTEGRATION_SPEC.md`
 
 README 的“已实现”只表示代码存在且有行为测试；Electron、NapCat、TTS、STT 和外部服务仍需各自的真实运行环境。
+
+## 许可
+
+MIT License — 见 [LICENSE](LICENSE)。

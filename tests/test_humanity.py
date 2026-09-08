@@ -7,7 +7,6 @@ import pytest
 from veranima.core.agent import Agent
 from veranima.core.character import CharacterCard
 from veranima.core.state import AgentState
-from veranima.core.prompts import format_memory_line
 from veranima.memory.store import MemoryStore
 
 
@@ -61,57 +60,6 @@ def test_dig_old_memory_returns_old_event(agent):
 
 def test_dig_old_memory_none_when_empty(agent):
     assert agent._dig_old_memory() is None
-
-
-def test_proactive_removed_by_r4(agent):
-    """R4_SPEC 3：idle/fatigue 类无理由主动已关闭（_try_proactive 返回空）。"""
-    agent.memory.store("episodic", "用户说想学吉他", importance=0.8, confidence=0.6)
-    msg = agent._try_proactive()
-    assert msg == ""
-
-
-def test_proactive_fallback_when_no_memory(agent):
-    """R4 已废弃路径：无理由主动不再生成（返回空，不调 LLM）。"""
-    llm = agent.llm
-    msg = agent._try_proactive()
-    assert msg == ""
-    assert llm.calls == 0
-
-
-# ---------- 8.7.2 记得感分级 ----------
-
-def test_format_memory_high_strength():
-    e = MemoryEntryStub(strength=0.9, content="你喜欢下雨天", meta={})
-    line = format_memory_line(e)
-    assert line.startswith("[记忆|置信度:高] 我记得")  # R1_SPEC 4 注入格式
-    assert "下雨天" in line
-
-
-def test_format_memory_tentative_strength():
-    e = MemoryEntryStub(strength=0.7, content="你喜欢下雨天", meta={})
-    line = format_memory_line(e)
-    assert line.startswith("[记忆|置信度:中] 我好像记得")
-    assert "记串了" in line
-
-
-def test_format_memory_fuzzy_strength():
-    e = MemoryEntryStub(strength=0.5, content="你上周三说加班3小时", meta={})
-    line = format_memory_line(e)
-    assert line.startswith("[记忆|置信度:低] 我记得好像有这么回事")
-    assert "细节全糊了" in line
-    assert "上周三" not in line  # 噪声注入：精确日期已模糊化
-    assert "3小时" not in line   # 噪声注入：精确时长已模糊化
-
-
-def test_format_memory_low_strength():
-    e = MemoryEntryStub(strength=0.3, content="你喜欢下雨天", meta={})
-    assert format_memory_line(e).startswith("[记忆|置信度:低] 我隐约记得")
-
-
-def test_format_memory_with_emotion():
-    e = MemoryEntryStub(strength=0.9, content="用户喜欢蓝色", meta={"emotion": "很开心"})
-    line = format_memory_line(e)
-    assert "很开心" in line
 
 
 # ---------- 8.7.2 情感色彩提取 ----------
@@ -240,12 +188,3 @@ def test_normal_energy_no_action_hint(agent):
     agent.state.energy = 60
     block = agent.state.to_prompt_block()
     assert "哈欠" not in block
-
-
-class MemoryEntryStub:
-    """format_memory_line 的轻量替身（只暴露用到的字段）。"""
-
-    def __init__(self, strength, content, meta):
-        self.strength = strength
-        self.content = content
-        self.meta = meta

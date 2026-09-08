@@ -1,4 +1,4 @@
-"""DESIGN 4.11 多角色 + 4.13 流式输出测试。"""
+"""DESIGN 4.11 多角色测试（断句工具供 pet_server 逐句 TTS）。"""
 import json
 
 import pytest
@@ -12,8 +12,6 @@ def test_llm_unconfigured_returns_hint():
     c = LLMClient({})
     reply = c.chat([{"role": "user", "content": "hi"}])
     assert "未配置" in reply or "config.yaml" in reply
-    chunks = c.stream_chat([{"role": "user", "content": "hi"}])
-    assert isinstance(chunks, list) and len(chunks) == 1
 
 
 # ---------- 多角色注册表 ----------
@@ -70,7 +68,7 @@ def test_active_role(monkeypatch, tmp_path):
     assert active["name"] == "Vera"
 
 
-# ---------- 流式输出 ----------
+# ---------- 断句（pet_server 逐句 TTS） ----------
 
 def test_split_sentences():
     assert _split_sentences("你好。今天好吗？很好！") == ["你好。", "今天好吗？", "很好！"]

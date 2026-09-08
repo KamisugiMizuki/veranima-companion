@@ -155,14 +155,4 @@ class HistorySummary:
             "source_count": self.source_count,
         }
 
-    @classmethod
-    def from_entry(cls, entry: MemoryEntry) -> "HistorySummary":
-        m = entry.meta
-        return cls(
-            summary=entry.content,
-            from_message_id=int(m.get("from_message_id", 0)),
-            to_message_id=int(m.get("to_message_id", 0)),
-            source_count=int(m.get("source_count", 0)),
-            created_at=entry.created_at,
-        )
 

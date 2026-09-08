@@ -1,7 +1,7 @@
 # R2 专项：同一个人的表达
 
 > 目标：同一角色在 IM 与 TTS 中表达不同，但事实、立场、关系和情绪一致。
-> 现有复用：`core/agent.py`, `core/segments.py`, `core/render.py`, `tts/client.py`, `pet_server.py`。
+> 现有复用：`core/agent.py`, `core/reply.py`, `core/render.py`, `tts/client.py`, `pet_server.py`。（09-08：`core/segments.py` 兼容 facade 已删——零调用，生产解析统一走 `core/reply.py`）
 > 最小新增：统一 Reply DTO、回复解析器、通道 renderer 契约和失败状态。
 
 ## 1. Reply 契约
@@ -41,7 +41,7 @@ class Reply:
 {"segments":[{"ja":"日语","zh":"中文","tone":"中性","portrait":"闲置"}]}
 ```
 
-`core/segments.py` 负责：去 markdown fence、解析、语言方向检查、tone/portrait 白名单、缺 ja 防御。失败顺序：
+`core/reply.py` 负责：去 markdown fence、解析、语言方向检查、tone/portrait 白名单、缺 ja 防御。失败顺序：
 
 1. 从 JSON/fence 提取可读文本。
 2. 有中文显示文本但无日语：静默文字降级，不送日语 TTS。

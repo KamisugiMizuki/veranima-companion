@@ -126,61 +126,6 @@ class LLMClient:
                 return self.chat(messages, max_tokens=budget, temperature=temperature)
             raise
 
-    def stream_chat(self, messages: list[dict], *, max_tokens: int | None = None,
-                    temperature: float | None = None) -> list[str]:
-        """流式对话生成（DESIGN 4.13）：按句分片返回（。！？…断句）。
-
-        返回句子列表（完整回复按句切分）；API 不支持 stream / 流中断时回退
-        一次性 chat（降级：单元素列表）。用于桌宠打字机 + TTS 逐句。
-        未配置 base_url：与 chat 一致返回缺省提示单句（不报错）。
-        """
-        if not self.base_url:
-            logger.info("LLM 未配置（config.yaml llm.base_url 留空）——流式返回缺省提示")
-            return ["（模型连接尚未配置：请在 config.yaml 填写 llm.base_url / llm.api_key）"]
-        payload = {
-            "model": self._model_for(messages),
-            "messages": messages,
-            "temperature": temperature if temperature is not None else self.temperature,
-            "max_tokens": max_tokens or self.max_tokens,
-            "stream": True,
-        }
-        chunks: list[str] = []
-        try:
-            with httpx.Client(timeout=self._timeout) as client:
-                with client.stream("POST", f"{self.base_url}/chat/completions",
-                                   json=payload, headers=self._headers()) as resp:
-                    resp.raise_for_status()
-                    for line in resp.iter_lines():
-                        if not line or not line.startswith("data:"):
-                            continue
-                        data = line[5:].strip()
-                        if data == "[DONE]":
-                            break
-                        try:
-                            import json as _json
-                            delta = _json.loads(data)["choices"][0]["delta"].get("content", "")
-                        except (KeyError, IndexError, _json.JSONDecodeError):
-                            continue
-                        if delta:
-                            chunks.append(delta)
-        except httpx.TimeoutException as e:
-            logger.error("LLM stream timed out: %s", e)
-            raise LLMTimeoutError(str(e)) from e
-        except httpx.ConnectError as e:
-            logger.error("LLM stream unavailable: %s", e)
-            raise LLMUnavailableError(str(e)) from e
-        except Exception as e:
-            # 流中断/协议异常 → 降级一次性（DESIGN 4.13 降级）
-            logger.warning("stream failed (%s), falling back to one-shot", e)
-            return [self.chat(messages, max_tokens=max_tokens, temperature=temperature)]
-
-        text = "".join(chunks).strip()
-        if not text:
-            # 空流 → 降级一次性（避免空回复）
-            logger.warning("stream empty, falling back to one-shot")
-            return [self.chat(messages, max_tokens=max_tokens, temperature=temperature)]
-        return _split_sentences(text)
-
     def observe_image(self, image_b64: str, *, prompt: str | None = None) -> str:
         """VISION_SPEC L3 大模型观察：截图 → 结构化理解。
 

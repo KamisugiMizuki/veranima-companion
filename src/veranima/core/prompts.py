@@ -19,7 +19,9 @@ CHANNEL_CONTEXT = {
     "im": "【当前场景】你正在用文字聊天软件打字。像平时私聊那样：一条只说一件事，"
           "一般几个字到一行，长内容拆成两三行连着发；句尾不加句号，少用完整复句和书面连接词；"
           "情绪落在标点和重复字上（？？？、……、气气气、啧），可以连打、可以一条只回一个词；"
-          "不要总结、不要解释自己刚说的话、不要括号补充、不要列表和 Markdown。",
+          "不要总结、不要解释自己刚说的话、不要括号补充、不要列表和 Markdown。"
+          "但一件事短句说不完时（比如把攒着的几件事一次说完），别为求短而漏信息："
+          "可以写成一句长句，也可以几条语义连贯的短句接着发——说全、说顺比说短重要。",
     "tts": "【当前场景】你正在用户旁边说话交流。可以口语化，允许「嗯…」「那个…」填充词、"
            "自我修正和重复；像面对面聊天一样自然。",
 }
@@ -41,6 +43,26 @@ def is_clarification(user_text: str, judgment: bool | None = None) -> bool:
     if judgment is not None:
         return bool(judgment)
     return any(p in user_text for p in CLARIFY_PATTERNS)
+
+def _fuzzy_ify(text: str) -> str:
+    """噪声注入（DESIGN 4.4）：精确数字/日期模糊化——「完美的精确度就是非人感」。
+
+    仅低确信档调用。规则覆盖常见时间/数量表达（阿拉伯数字 + 中文数字），保持语义可懂。
+    """
+    import re
+
+    t = text
+    # 上周三 / 三月五号 → 上次
+    t = re.sub(r"(上|这|前|大前|上上)(周|星期)([一二三四五六日天])", "上次", t)
+    # 3月5日 / 三月五日 → 上个月那几天
+    t = re.sub(r"[0-9一二两三四五六七八九十]+月[0-9一二两三四五六七八九十]+日?", "上个月那几天", t)
+    # 3小时 / 45分钟 / 2天 / 一周 / 3年 → 好一阵子 / 那阵子（含中文数字：三天/两周）
+    t = re.sub(r"[0-9一二两三四五六七八九十]+\s*(小时|分钟|秒钟?)", "好一阵子", t)
+    t = re.sub(r"[0-9一二两三四五六七八九十]+\s*(天|周|个月|年)", "那阵子", t)
+    # 3点20分 / 三点二十 / 3:20 → 那会儿
+    t = re.sub(r"[0-9一二两三四五六七八九十]+[:：][0-9一二两三四五六七八九十]+", "那会儿", t)
+    return t
+
 
 # 现实行动边界（DESIGN 4.8 修正版，sakura DESKTOP_PET_CONTEXT 借鉴）：
 # 守行为边界但不暴露身份——不声明"我是 AI/桌宠"，像真人一样自然拒绝/转移。
@@ -171,6 +193,12 @@ def build_system_prompt(
         },
         total_budget=core_profile_budget + procedural_budget + section_budget * 2 + session_budget,
     )
+    # DESIGN 4.4 / R1_SPEC 3：低确信条目模糊化（精确日期/时长→模糊表达）；
+    # 用户正在追问细节时跳过（给精确值——可逆性）
+    if channel == "im" and not clarification:
+        from dataclasses import replace
+        brief_items = [replace(it, text=_fuzzy_ify(it.text))
+                       if it.confidence_label == "低" else it for it in brief_items]
     brief_text = format_brief(brief_items)
     if brief_text:
         parts.append(brief_text)
@@ -199,84 +227,6 @@ def _annotate_present(entries, card):
         if pres and pres != name:
             e.content = f"（这是{pres}和ta之间的事，你只是听ta提起过）{e.content}"
     return entries
-
-
-def _fuzzy_ify(text: str) -> str:
-    """噪声注入（4.4）：精确数字/日期模糊化——「完美的精确度就是非人感」。
-
-    仅低确信档调用。规则覆盖常见时间/数量表达（阿拉伯数字 + 中文数字），保持语义可懂。
-    """
-    import re
-
-    t = text
-    # 上周三 / 三月五号 → 上次
-    t = re.sub(r"(上|这|前|大前|上上)(周|星期)([一二三四五六日天])", "上次", t)
-    # 3月5日 / 三月五日 → 上个月那几天
-    t = re.sub(r"[0-9一二两三四五六七八九十]+月[0-9一二两三四五六七八九十]+日?", "上个月那几天", t)
-    # 3小时 / 45分钟 / 2天 / 一周 / 3年 → 好一阵子 / 那阵子（含中文数字：三天/两周）
-    t = re.sub(r"[0-9一二两三四五六七八九十]+\s*(小时|分钟|秒钟?)", "好一阵子", t)
-    t = re.sub(r"[0-9一二两三四五六七八九十]+\s*(天|周|个月|年)", "那阵子", t)
-    # 3点20分 / 三点二十 / 3:20 → 那会儿
-    t = re.sub(r"[0-9一二两三四五六七八九十]+[:：][0-9一二两三四五六七八九十]+", "那会儿", t)
-    return t
-
-
-def format_memory_line(entry, *, clarification: bool = False) -> str:
-    """记忆行格式化（4.4 确信度分级）：按 strength 四档措辞 + 噪声注入。
-
-    - strength ≥0.85：自信调用「我记得你……」——**追问（clarification）时跳过模糊化直接给精确值**（R1_SPEC 2.2 可逆性）
-    - 0.6~0.85：试探性调用「我好像记得……是……吗？还是我记串了？」
-    - 0.35~0.6：模糊关联「我记得好像有这么回事……细节全糊了，你能再跟我说说吗？」+ 数字模糊化
-    - <0.35：隐约记得（基本不注入，build_system_prompt 已过滤）
-    - meta.emotion 存在时附加（"你提起时听起来很开心"）
-    """
-    if entry.strength >= 0.85:
-        conf = "高"
-        verb = "我记得"
-        content = entry.content
-    elif entry.strength >= 0.6:
-        conf = "中"
-        verb = "我好像记得"
-        content = entry.content + "……是……吗？还是我记串了？"
-    elif entry.strength >= 0.35:
-        conf = "低"
-        verb = "我记得好像有这么回事"
-        # R1 可逆性：追问细节时给精确值（不模糊化），否则模糊化
-        content = entry.content if clarification else _fuzzy_ify(entry.content)
-        content += "……细节全糊了，你能再跟我说说吗？" if not clarification else ""
-    else:
-        conf = "低"
-        verb = "我隐约记得"
-        content = entry.content
-    # R1_SPEC 4 注入格式：[类型|置信度|时间] 内容
-    kind = (entry.meta or {}).get("kind") or _kind_from_layer(getattr(entry, "layer", ""))
-    type_label = {
-        "identity": "身份档案",
-        "user_fact": "用户事实",
-        "shared_episode": "共同经历",
-        "commitment": "承诺",
-        "session": "本次会话",
-    }.get(kind, "记忆")
-    time_part = ""
-    event_time = (entry.meta or {}).get("event_time")
-    if event_time:
-        time_part = f"|时间:{event_time}"
-    line = f"[{type_label}|置信度:{conf}{time_part}] {verb}：{content}"
-    emotion = (entry.meta or {}).get("emotion")
-    if emotion:
-        line += f"（你提起时听起来{emotion}）"
-    return line
-
-
-def _kind_from_layer(layer: str) -> str:
-    """旧 layer → R1 类型标签（旧记忆无 kind meta 时推断）。"""
-    return {
-        "core_profile": "identity",
-        "semantic": "user_fact",
-        "episodic": "shared_episode",
-        "procedural": "commitment",
-        "session": "session",
-    }.get(layer, layer)
 
 
 def _latest_query(memory: MemoryStore) -> str:

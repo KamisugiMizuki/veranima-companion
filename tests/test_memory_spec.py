@@ -366,6 +366,21 @@ def test_system_prompt_uses_brief(tmp_path):
     assert "手冲咖啡" in sp
 
 
+def test_low_confidence_memory_fuzzy_unless_clarified(tmp_path):
+    """DESIGN 4.4 + R1_SPEC 3：低确信记忆行模糊化；用户追问细节时给精确值。"""
+    from veranima.core.prompts import build_system_prompt
+    from veranima.core.state import AgentState
+    s = _store(tmp_path)
+    s.store_message("user", "西湖那次挺开心的", 80, "平静")  # 提供查询提示
+    s.store("episodic", "我和用户3月5日去了西湖，走了苏堤",
+            confidence=0.4, meta={"kind": "shared_episode"})
+    card = CharacterCard(name="测试卡", veranima={})
+    sp = build_system_prompt(card, AgentState(), s, channel="im")
+    assert "上个月那几天" in sp and "3月5日" not in sp
+    sp2 = build_system_prompt(card, AgentState(), s, channel="im", clarification=True)
+    assert "3月5日" in sp2
+
+
 def test_turn_context_contract():
     """DESIGN 4.1 TurnContext 数据契约。"""
     from veranima.core.agent import TurnContext
