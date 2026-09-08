@@ -16,6 +16,8 @@ import hashlib
 import logging
 import re
 
+from .virtual_schedule import ACTIVITY_LABELS as _ACT_LABELS  # 活动键→人话（日程域持有，提示块同源）
+
 logger = logging.getLogger(__name__)
 
 # 角色设置默认值（P2 最小集；P3/P4 组随实现扩，merge 语义=浅合并顶层键）
@@ -86,14 +88,7 @@ def _looks_machine(t: str) -> bool:
 
 
 
-# 活动键→人话（喂 LLM 素材用；未收录原样——英文键 LLM 也懂，UI 那份 actMap 是显示用）
-_ACT_LABELS = {
-    "wake_routine": "起床收拾", "focused_practice": "专注做自己的事", "reset": "在路上",
-    "personal_interest_a": "待在自己的爱好里", "personal_interest_b": "待在自己的爱好里",
-    "quiet_rest": "歇着", "sleep": "睡着", "commute_transit": "挤通勤",
-    "model_training_work": "盯着训练跑", "late_takeout_dinner": "吃夜宵外卖",
-    "meme_archiving": "收藏表情包", "video_with_you": "等你一起看片", "blog_browsing": "刷博客",
-}
+# 活动键→人话见 virtual_schedule.ACTIVITY_LABELS（提示块与动态素材同源，勿在此另立一份）
 _TAIL_PAT = re.compile(r"(@|你(在吗|在么|在干嘛|干嘛呢|知道吗|看到了吗|看到没|回我|帮我)|在吗|回我|帮我(看|查|写|弄))")  # 喊话检查（重生成一次即止损）
 
 

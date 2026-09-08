@@ -20,7 +20,7 @@ from typing import Literal
 from ..llm.client import LLMClient, LLMTimeoutError, LLMUnavailableError
 from .prompts import build_system_prompt, is_clarification
 from ..memory.brief import HistorySummary
-from .virtual_schedule import ScheduleContext, ScheduleOutline, ScheduleRuntime
+from .virtual_schedule import ACTIVITY_LABELS, ScheduleContext, ScheduleOutline, ScheduleRuntime
 from .holiday_calendar import HolidayCalendar
 from .reply import is_failure_fallback_reply, is_internal_reply
 from .ambient import ChannelActivityTracker, ProactiveCandidate, ProactiveGate, SceneLock
@@ -608,6 +608,8 @@ class Agent:
                     summary=(f"当前虚拟地点：{after_scene.get('place_label')}" if after_scene.get("place_label") else "空间状态发生变化"),
                     source={**after_scene, "at": event["at"]},
                 )
+                # 她自己的生活事件 → 情绪（09-09；与留痕同点，零额外 LLM）
+                self._apply_life_affect(event["event_kind"])
                 runtime.last_scene_event_key = key
             if pending_kind:
                 runtime.pending_scene_event = ""
@@ -631,9 +633,12 @@ class Agent:
         place = f"当前虚拟地点={context.place_label}，" if context.place_label else ""
         environment = f"活动环境={ambient}。" if ambient else ""
         scene = f"场景状态={context.scene_state}。"
+        # 活动键是机器名（model_training_work）——提示里给人话
+        activity = (ACTIVITY_LABELS.get(context.activity_key, context.activity_key)
+                    if context.activity_key else "未指定")
         return (
             "【当前虚拟活动交互资源】这是角色虚拟日程的内部模拟状态，不是现实行动证据。"
-            f"当前阶段={context.phase}，活动类别={context.activity_category}，活动={context.activity_key or '未指定'}，{place}"
+            f"当前阶段={context.phase}，活动类别={context.activity_category}，活动={activity}，{place}"
             f"交互画像={context.interaction_profile}，可用度={context.availability:.2f}。"
             f"{scene}{environment}"
             f"回复约束：{budget or '按正常通道自然交流'}。"
@@ -895,9 +900,11 @@ class Agent:
                     # 结论：报表数字不是心事，被打断/没睡好才是）
                     try:
                         if summary["interruption_minutes"] >= 20:
+                            self._apply_life_affect("day_interrupted")
                             self.threads.from_schedule_event(
                                 "手头的事总被打断，有点烦", intensity=0.5)
                         elif summary["sleep_debt_minutes"] >= 30:
+                            self._apply_life_affect("sleep_debt")
                             self.threads.from_schedule_event(
                                 "最近没睡好，白天一直缓不过来", intensity=0.5)
                     except Exception:
@@ -3583,6 +3590,38 @@ class Agent:
             "cause": ("tease" if getattr(judgment, "tease", None)
                       else str(getattr(judgment, "emotion", "") or "emotion")),
             "delta": delta,
+        })
+
+    # 生活事件 → 情绪靶点 (valence, arousal, 归因)。09-09 用户裁决：此前 PAD 的
+    # 唯一驱动源是用户消息（judges 判词），她自己的日程/地点/事不改变心情——
+    # 行为层有生活、情绪层没有生活。每次事件向靶点拉一半：日常事件（到地方/
+    # 出门）靶点贴近基线几乎不显，真出岔子才顶到【当下语气】；同类事件重复只
+    # 收敛到靶点、不单向漂到边界，且用户每轮 decay 会把它带回来。零 LLM 调用。
+    # 只认结构事件、不认角色卡活动键——新角色零维护。
+    _LIFE_MOOD = {
+        "transition_started": (0.46, 0.60, "出门在路上"),
+        "place_entered": (0.54, 0.46, "到了地方"),
+        "transition_interrupted": (0.34, 0.70, "路上不顺"),
+        "place_unknown_after_downtime": (0.42, 0.60, "状态对不上"),
+        "place_reconciled": (0.56, 0.44, "位置终于对上了"),
+        "day_interrupted": (0.36, 0.58, "手头的事总被打断"),
+        "sleep_debt": (0.40, 0.36, "没睡够"),
+    }
+    _LIFE_PULL = 0.5
+
+    def _apply_life_affect(self, event_kind: str) -> None:
+        """她自己的生活事件 → PAD（有因波动；不落库，随下一次 _persist_state 走）。"""
+        target = self._LIFE_MOOD.get(str(event_kind))
+        if not target:
+            return
+        from .persona import apply_emotion_event
+        valence, arousal, cause = target
+        apply_emotion_event(self.state, {
+            "type": f"life:{event_kind}", "cause": cause,
+            "delta": {
+                "valence": (valence - float(getattr(self.state, "valence", 0.5))) * self._LIFE_PULL,
+                "arousal": (arousal - float(getattr(self.state, "arousal", 0.5))) * self._LIFE_PULL,
+            },
         })
 
     def _affect_block(self) -> str:

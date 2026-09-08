@@ -27,6 +27,15 @@ _ALLOWED_SHARE_POLICIES = {"never", "low_pressure", "normal", "high_value"}
 _ALLOWED_CHRONOTYPES = {"day_aligned", "evening_aligned", "night_aligned", "irregular"}
 _ALLOWED_PROFILES = {"short_precise", "normal", "drowsy", "fragmented"}
 
+# 活动键→人话（喂 LLM 提示/素材用；未收录原样——英文键 LLM 也懂，UI 那份 actMap 是显示用）
+ACTIVITY_LABELS = {
+    "wake_routine": "起床收拾", "focused_practice": "专注做自己的事", "reset": "在路上",
+    "personal_interest_a": "待在自己的爱好里", "personal_interest_b": "待在自己的爱好里",
+    "quiet_rest": "歇着", "sleep": "睡着", "commute_transit": "挤通勤",
+    "model_training_work": "盯着训练跑", "late_takeout_dinner": "吃夜宵外卖",
+    "meme_archiving": "收藏表情包", "video_with_you": "等你一起看片", "blog_browsing": "刷博客",
+}
+
 
 def _looks_arrived(text: str) -> bool:
     """用户是否在回答「到了吗」——短确认即可，不认死字面。

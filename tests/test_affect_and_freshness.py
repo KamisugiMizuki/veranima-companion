@@ -158,6 +158,78 @@ def test_turn_prompt_carries_affect_block(tmp_path, monkeypatch):
     assert any("【当下语气】" in s for s in systems)
 
 
+# ---------- 09-09：她自己的生活也驱动情绪（此前唯一驱动源=用户消息） ----------
+
+def test_life_event_moves_pad_and_shows_in_block(tmp_path):
+    """用户裁决（09-09）：日程/地点/路上出岔子必须留下情绪痕迹，且要落到可见
+    文本形态（【当下语气】）——否则「她有自己的生活」只是日程表在动。"""
+    a = _agent(tmp_path)
+    a._apply_life_affect("transition_interrupted")
+    assert a.state.valence < 0.45 and a.state.arousal > 0.58
+    assert a.state.last_cause == "路上不顺"
+    assert "【当下语气】" in a._affect_block()
+
+
+def test_life_affect_converges_not_drifts(tmp_path):
+    """同类事件重复只收敛到靶点：离场期间没有 per-turn decay，若写成加法会单向漂到边界。"""
+    a = _agent(tmp_path)
+    for _ in range(60):
+        a._apply_life_affect("transition_interrupted")
+    tv, ta, _ = Agent._LIFE_MOOD["transition_interrupted"]
+    assert abs(a.state.valence - tv) < 0.01 and abs(a.state.arousal - ta) < 0.01
+
+
+def test_life_affect_ignores_unknown_event(tmp_path):
+    """只认结构事件表——新增事件忘了登记时不许悄悄改状态。"""
+    a = _agent(tmp_path)
+    before = (a.state.valence, a.state.arousal, a.state.last_cause)
+    a._apply_life_affect("place_entered_v2")
+    assert (a.state.valence, a.state.arousal, a.state.last_cause) == before
+
+
+def test_schedule_block_speaks_human_not_machine_key(tmp_path):
+    """活动键是机器名（model_training_work），注入提示要给人话。"""
+    from veranima.core.virtual_schedule import ScheduleContext
+    ctx = ScheduleContext(plan_id="p", item_id="i", activity_category="obligation",
+                          phase="work", progress=0.2, interaction_profile="occupied",
+                          availability=0.2, reply_budget={}, share_allowed=False,
+                          curiosity_allowed=False, source_anchor={},
+                          activity_key="model_training_work", place_label="家")
+    block = Agent._format_schedule_context(ctx)
+    assert "盯着训练跑" in block and "model_training_work" not in block
+
+
+def test_scene_event_through_advance_moves_mood(tmp_path):
+    """真实链路：advance_schedule_async 留痕的那一次场景事件必须同时落到 PAD
+    （不是只有单元级调用能动状态）。"""
+    import asyncio
+    import datetime as _dt
+    import json as _json
+    from veranima.core.virtual_schedule import ScheduleOutline, ScheduleRuntime
+
+    role = tmp_path / "characters" / "life"
+    role.mkdir(parents=True)
+    (role / "virtual_schedule.json").write_text(_json.dumps({
+        "enabled": True, "schema_version": 1, "timezone": "Asia/Shanghai",
+        "default_day_profile": "base", "day_profiles": {"base": {"allowed_block_ids": []}},
+        "blocks": [], "interaction_profiles": {}, "autonomy": {},
+        "circadian": {"wake_window": {"start": "08:00", "end": "09:00"},
+                      "sleep_window": {"start": "22:00", "end": "23:00"},
+                      "chronotype": "day_aligned", "target_sleep_minutes": 480},
+        "sleep": {"grace_period_minutes": 0, "max_extension_minutes": 0},
+    }), encoding="utf-8")
+
+    a = _agent(tmp_path)
+    a.schedule_runtime = ScheduleRuntime(ScheduleOutline.from_role_dir(role))
+    a.schedule_runtime.pending_scene_event = "transition_interrupted"
+    when = _dt.datetime(2026, 8, 28, 10, 0, tzinfo=_dt.timezone.utc)  # 北京 18 点，醒着
+    asyncio.run(a.advance_schedule_async(when))
+
+    assert a.state.last_cause == "路上不顺" and a.state.valence < 0.45
+    kinds = [r[0] for r in a.memory.con.execute("SELECT event_kind FROM virtual_life_events")]
+    assert "transition_interrupted" in kinds
+
+
 # ---------- 常量：longing 是小时级 ----------
 
 def test_longing_threshold_is_hours_not_minutes(tmp_path):
