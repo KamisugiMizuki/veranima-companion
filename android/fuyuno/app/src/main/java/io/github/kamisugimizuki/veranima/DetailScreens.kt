@@ -550,8 +550,9 @@ fun RelationshipDetailScreen(onBack: () -> Unit, role: String = "") {
 }
 
 // ==================== 页面4：成长树 Growth ====================
-// 数据面 bridge.growth_report（DESIGN §11-A）：阶段/七维 + 相处风格四维 +
-// 一起攒下的事（procedural 技能点）+ 承诺（可兑现/取消）+ 已生效印记。
+// 数据面 bridge.growth_report：相处风格四维 + 一起攒下的事（procedural 技能点）
+// + 承诺（可兑现/取消）+ 已生效印记。（阶段/七维归羁绊图谱——两页冗余，
+// 2026-09-11 起本页不再展示。）
 
 @Composable
 fun GrowthScreen(onBack: () -> Unit) {
@@ -565,25 +566,14 @@ fun GrowthScreen(onBack: () -> Unit) {
         val d = data
         if (d == null) { LoadingBlock(); return@GalaxyPage }
         if (!d.optBoolean("ok")) { ErrorOr("读取失败：${d.optString("error")}"); return@GalaxyPage }
-        val rel = d.optJSONObject("relationship") ?: JSONObject()
         val style = d.optJSONObject("style") ?: JSONObject()
         val skills = d.optJSONArray("skills") ?: JSONArray()
         val promises = d.optJSONArray("promises") ?: JSONArray()
         val imprints = d.optJSONArray("imprints") ?: JSONArray()
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-            // 当前阶段 + 三个主维度环
-            GalaxyCard(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
-                Text("当前阶段", fontSize = 12.sp, color = gxTextSecondary(dark))
-                Spacer(Modifier.height(4.dp))
-                Text(d.optString("stage", "初识"), fontSize = 30.sp, fontWeight = FontWeight.Bold,
-                    color = AccentBlue)
-                Spacer(Modifier.height(14.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    GalaxyRing(rel.optDouble("intimacy", 0.0).toFloat(), "亲密度", AccentBlue)
-                    GalaxyRing(rel.optDouble("trust", 0.0).toFloat(), "信任", AccentSage)
-                    GalaxyRing(rel.optDouble("familiarity", 0.0).toFloat(), "理解", AccentTaupe)
-                }
-            }
+            // （原「当前阶段 + 三个主维度环」头卡已删：与羁绊图谱重复——关系度量归
+            //  RelationshipDetailScreen（含 delta 趋势与全维），本页只管「攒下的
+            //  东西」，2026-09-11 用户裁决）
             // 相处风格四维（StyleLearner 学出来的参数）
             GalaxyCard(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
                 Text("相处风格", fontSize = 14.sp, fontWeight = FontWeight.Medium, color = gxTextPrimary(dark))
