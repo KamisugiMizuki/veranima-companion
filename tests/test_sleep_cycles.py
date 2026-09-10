@@ -2,7 +2,8 @@
 
 覆盖：入睡/苏醒识别（LLM 确认+关键词回退）、sleep_cycles 落库、
 苏醒总结生成、三餐锚点随用户作息、角色作息适应用户（偏移+理由）、
-出现=醒来推断（2026-09-11 拍板：活动信号推断苏醒，报告取更早者校准）。
+出现=醒来推断（2026-09-11 拍板：活动集群维护 + 报告到达定案——
+报告与活动流相连取集群起点，孤立报告保守取报告时间）。
 """
 
 import json
@@ -167,29 +168,78 @@ def test_sleep_cycle_persist_roundtrip(agent, tmp_path):
     assert cycles[0]["woke_at"] == "2026-08-30T06:30:00"
 
 
-def test_presence_signal_infers_wake(agent):
-    """出现=醒来：睡眠态 + 距入睡 ≥4h 的首个活动信号 → 推断苏醒 + 松开 asleep。
+def test_presence_signal_tracks_cluster(agent):
+    """出现=醒来（二稿=集群）：睡眠窗口内 ≥4h 的信号维护活动集群。
 
-    ≥4h 前（还没睡着/起夜）不采信；同周期重复信号幂等。"""
+    首个有效信号松开 asleep（她知道但不说）；同集群内的后续信号只滚动
+    「最近信号」，不重开集群。"""
     agent._note_sleep_report("睡了", _utc(22, 0))
-    assert not agent.note_presence_signal(_utc(23, 30))     # 1.5h <4h，不采信
+    assert not agent.note_presence_signal(_utc(23, 30))       # 1.5h <4h，不采信
     assert agent.state.user_asleep
-    assert agent.note_presence_signal(_utc(7, 30, day=31))  # 跨夜 9.5h ≥4h → 推断
-    assert not agent.state.user_asleep                      # 守卫松开（她知道但不说）
-    assert agent.memory.sleep_state_row().get("inferred_woke_at") == "2026-08-31T07:30:00"
-    assert not agent.note_presence_signal(_utc(7, 40, day=31))  # 幂等：不重写
+    assert agent.note_presence_signal(_utc(7, 30, day=31))    # 跨夜 9.5h ≥4h → 集群
+    assert not agent.state.user_asleep                        # 守卫松开（她知道但不说）
+    row = agent.memory.sleep_state_row()
+    assert row.get("inferred_woke_at") == "2026-08-31T07:30:00"
+    assert agent.note_presence_signal(_utc(7, 40, day=31))    # 10min 内 → 延续
+    row = agent.memory.sleep_state_row()
+    assert row.get("inferred_woke_at") == "2026-08-31T07:30:00"  # 集群起点不变
+    assert row.get("last_signal_at") == "2026-08-31T07:40:00"    # 最近信号滚动
 
 
-def test_wake_report_uses_earlier_inferred_time(agent):
-    """报告晚到（刷手机才想起来通报）→ 醒来时间取推断与报告更早者。"""
+def test_wake_report_uses_cluster_when_flow_connected(agent):
+    """报告与活动流相连（醒后一直在用手机）→ 醒来=集群起点。
+
+    「睡醒刷了挺久手机才想起来通报」的形态：7:30 起活动、9:40 才报告，
+    醒来记 7:30 而不是报告时间。"""
     agent._note_sleep_report("睡了", _utc(22, 0))
-    agent.note_presence_signal(_utc(7, 30, day=31))
-    agent._note_sleep_report("醒了", _utc(9, 40, day=31))
+    for t in range(7 * 60 + 30, 9 * 60 + 36, 10):             # 7:30~9:35 持续活动
+        agent.note_presence_signal(_utc(t // 60, t % 60, day=31))
+    agent._note_sleep_report("醒了", _utc(9, 40, day=31))     # 报告晚到
     cycle = agent.memory.latest_closed_cycle()
     assert cycle is not None
-    assert cycle["woke_at"] == "2026-08-31T07:30:00"        # 推断更早 → 用推断
+    assert cycle["woke_at"] == "2026-08-31T07:30:00"          # 集群起点，不是 9:40
     assert not (agent.memory.sleep_state_row().get("inferred_woke_at") or "")  # 闭合后清空
     assert "早" in (cycle.get("summary") or "")
+
+
+def test_night_waking_not_mistaken_for_wake(agent):
+    """起夜回笼：>=4h 线后的起夜活动会被记录，但真醒来（新集群）覆盖定案。
+
+    2:30 起夜刷手机（>4h 线）→ 回笼 → 17:00 真醒 → 17:10 报告：
+    醒来=17:00（新集群），不是起夜段 2:30。"""
+    agent._note_sleep_report("睡了", _utc(22, 0))
+    for m in (30, 32, 35):                                    # 2:30 起夜一小段
+        agent.note_presence_signal(_utc(2, m, day=31))
+    assert agent.memory.sleep_state_row().get("inferred_woke_at") == "2026-08-31T02:30:00"
+    for m in (0, 2, 5):                                       # 17:00 真醒（距上次 >GAP → 新集群）
+        agent.note_presence_signal(_utc(17, m, day=31))
+    assert agent.memory.sleep_state_row().get("inferred_woke_at") == "2026-08-31T17:00:00"
+    agent._note_sleep_report("醒了", _utc(17, 10, day=31))
+    cycle = agent.memory.latest_closed_cycle()
+    assert cycle["woke_at"] == "2026-08-31T17:00:00"          # 起夜段被甩掉
+
+
+def test_isolated_report_keeps_report_time(agent):
+    """报告孤立（活动流早断）→ 保守取报告时间，宁晚勿错。
+
+    「起夜回笼」与「醒后长静默（办公熄屏）」在信号上不可区分，不猜。"""
+    agent._note_sleep_report("睡了", _utc(22, 0))
+    agent.note_presence_signal(_utc(7, 30, day=31))
+    agent.note_presence_signal(_utc(7, 35, day=31))
+    agent._note_sleep_report("醒了", _utc(18, 0, day=31))     # 全天无信号，晚上才报告
+    cycle = agent.memory.latest_closed_cycle()
+    assert cycle["woke_at"] == "2026-08-31T18:00:00"
+
+
+def test_daytime_sleep_symmetric(agent):
+    """白天睡（10:00 睡、20:00 醒）与跨夜对称：判据不看钟点，只看相对时间线。"""
+    agent._note_sleep_report("睡了", _utc(10, 0))
+    assert not agent.note_presence_signal(_utc(12, 0))        # 2h <4h，不采信
+    for m in (0, 2, 5):                                       # 20:00 醒（10h 后）
+        agent.note_presence_signal(_utc(20, m))
+    agent._note_sleep_report("醒了", _utc(20, 10))
+    cycle = agent.memory.latest_closed_cycle()
+    assert cycle["woke_at"] == "2026-08-30T20:00:00"
 
 
 def test_wake_report_without_signal_keeps_report_time(agent):
@@ -205,15 +255,20 @@ def test_presence_signal_noop_outside_sleep(agent):
     agent._note_sleep_report("睡了", _utc(22, 0))
     agent._note_sleep_report("醒了", _utc(7, 0, day=31))
     assert not agent.note_presence_signal(_utc(12, 0, day=31))
-    assert not (agent.memory.sleep_state_row().get("inferred_woke_at") or "")
+    row = agent.memory.sleep_state_row()
+    assert not (row.get("inferred_woke_at") or "")
+    assert not (row.get("last_signal_at") or "")
 
 
 def test_presence_signal_never_leaks_across_cycles(agent):
     """推断后用户又报「睡了」（回笼/误推断）→ 推断位清空，不跨段误配。"""
     agent._note_sleep_report("睡了", _utc(22, 0))
     agent.note_presence_signal(_utc(7, 30, day=31))
-    agent._note_sleep_report("睡了", _utc(10, 0, day=31))   # 回笼重报
-    assert not (agent.memory.sleep_state_row().get("inferred_woke_at") or "")
+    agent.note_presence_signal(_utc(7, 35, day=31))
+    agent._note_sleep_report("睡了", _utc(10, 0, day=31))     # 回笼重报
+    row = agent.memory.sleep_state_row()
+    assert not (row.get("inferred_woke_at") or "")
+    assert not (row.get("last_signal_at") or "")
     agent._note_sleep_report("醒了", _utc(12, 0, day=31))
     cycle = agent.memory.latest_closed_cycle()
-    assert cycle["woke_at"] == "2026-08-31T12:00:00"        # 早上的推断没有误配进来
+    assert cycle["woke_at"] == "2026-08-31T12:00:00"          # 早上的推断没有误配进来

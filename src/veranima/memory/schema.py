@@ -452,9 +452,10 @@ def init_db(db_path: str | Path, dim: int = EMBEDDING_DIM, provider=None) -> sql
             # 用户睡眠周期（2026-08-30 用户拍板）：user_asleep=用户当前是否在睡
             ("user_asleep", "INTEGER NOT NULL DEFAULT 0"),
             ("last_sleep_report_at", "TEXT NOT NULL DEFAULT ''"),
-            # 出现=醒来（2026-09-11 用户拍板）：活动信号推断的苏醒时刻，
-            # 报告到达时取二者更早。共享用户态家族，只走列级写
+            # 出现=醒来（2026-09-11 用户拍板）：活动信号维护的「最后活动集群起点」
+            # （滚动）+ 最近信号时刻；报告到达时取两者定案。共享用户态家族，只走列级写
             ("inferred_woke_at", "TEXT NOT NULL DEFAULT ''"),
+            ("last_signal_at", "TEXT NOT NULL DEFAULT ''"),
         ):
             if name not in cols:
                 con.execute(f"ALTER TABLE agent_state ADD COLUMN {name} {ddl}")

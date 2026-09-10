@@ -1249,11 +1249,11 @@ def visual_note(pkg: str, label: str) -> str:
 
 
 def wake_signal(ts_ms: object = 0) -> str:
-    """用户「出现」信号（前台活动轮询上报）→ 睡眠态下推断苏醒（出现=醒来）。
+    """用户「出现」信号（前台活动轮询上报）→ 睡眠窗口内维护活动集群（出现=醒来）。
 
-    2026-09-11 用户拍板：睡眠态 + 距入睡 ≥4h 的首个活动信号 = 他回来了。
-    判定/防误报逻辑在 Agent.note_presence_signal（可测）；本函数只做薄转发。
-    零可见输出（她知道但不说）；报告到达时醒来时间取二者更早。
+    2026-09-11 用户拍板；二稿=集群化：距入睡 ≥4h 的活动信号维护「最后活动
+    集群」，报告到达时定案（见 Agent.note_presence_signal / _note_sleep_report）。
+    零可见输出（她知道但不说）；本函数只做薄转发，判定在 Agent（可测）。
     """
     agent = getattr(boot, "agent", None)
     if agent is None:

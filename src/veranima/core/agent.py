@@ -1008,18 +1008,22 @@ class Agent:
             return "sleep"
         row = self.memory.sleep_state_row() or {}
         if action == "wake" and (self.state.user_asleep or row.get("inferred_woke_at")):
-            # 「出现=醒来」：活动信号可能已松开 asleep（note_presence_signal），
-            # 周期还开着——报告仍要闭合，醒来时间取推断与报告中更早者
-            # （报告的默认形态=晚：刷完手机才想起来通报）。
+            # 「出现=醒来」定案（二稿，见 note_presence_signal）：报告与活动流相连
+            # （间隔 ≤ 集群 GAP）→ 醒来取最后集群起点；报告孤立（长静默后）→
+            # 「起夜回笼」与「醒后长静默」信号上不可区分，宁晚勿错取报告时间。
             report_iso = now.isoformat(timespec="seconds")
             inferred = str(row.get("inferred_woke_at") or "")
-            woke_iso = self._earlier_iso(inferred, report_iso) if inferred else report_iso
+            last_sig = str(row.get("last_signal_at") or "")
+            woke_iso = report_iso
+            if inferred and self._presence_recent(last_sig, now):
+                woke_iso = inferred
             self.state.user_asleep = False
             self.state.last_sleep_report_at = report_iso
             self.memory.set_sleep_state(False, report_iso)
             cycle = self.memory.close_sleep_cycle(woke_iso)
             self.memory.clear_inferred_woke()
-            logger.info("user wake reported at %s (inferred=%s)", report_iso, inferred or "-")
+            logger.info("user wake reported at %s (cluster=%s last_signal=%s)",
+                        report_iso, inferred or "-", last_sig or "-")
             self._persist_state()
             if cycle:
                 # 长睡眠（≥4h）苏醒 → 角色口吻睡眠总结（LLM；失败静默，不影响主回复）
@@ -1045,36 +1049,42 @@ class Agent:
             return "wake"
         return ""
 
-    @staticmethod
-    def _earlier_iso(candidate: str, fallback: str) -> str:
-        """两个 ISO 时刻取更早（解析失败/不可比时回退 fallback=报告时间）。"""
-        import datetime as _dt
+    def _presence_recent(self, last_signal: str, now) -> bool:
+        """最近活动是否与 now 相连（间隔 ≤ 集群 GAP；解析失败=不相连，保守）。"""
+        import datetime
         try:
-            a = Agent._naive_local(_dt.datetime.fromisoformat(str(candidate)))
-            b = Agent._naive_local(_dt.datetime.fromisoformat(str(fallback)))
-            return str(candidate) if a <= b else str(fallback)
+            last = self._naive_local(
+                datetime.datetime.fromisoformat(str(last_signal)))
+            t = self._naive_local(now)
+            return 0 <= (t - last).total_seconds() <= self._PRESENCE_CLUSTER_GAP_S
         except Exception:
-            return str(fallback)
+            return False
 
-    # 出现=醒来（2026-09-11 用户拍板）：睡眠态下距入睡 ≥4h 的首个活动信号
-    # 视为苏醒——防报睡后没睡着/起夜误判（宁漏勿误；阈值是旋钮，有真实数据再调）
+    # 出现=醒来（2026-09-11 用户拍板）
+    # ≥4h：距入睡太近的活动不采信（报睡后没睡着/入睡后早期起夜——宁漏勿误；旋钮）
     _INFERRED_WAKE_MIN_ASLEEP_S = 4 * 3600
+    # 活动集群间隔：与上次信号相隔 >GAP 的信号开新集群（=「他重新出现」）。
+    # 90min=大于单次活动内的自然中断（看视频/吃饭），小于典型回笼时长（2h+）。
+    # 「起夜回笼」与「醒后长静默」在信号上不可区分，本值只移动二者的边界；旋钮。
+    _PRESENCE_CLUSTER_GAP_S = 90 * 60
 
     def note_presence_signal(self, now=None) -> bool:
-        """用户「出现」信号（安卓前台活动轮询上报）→ 睡眠态下推断苏醒。
+        """用户「出现」信号（安卓前台活动轮询上报）→ 睡眠窗口内维护活动集群。
 
-        语义（2026-09-11 用户拍板「出现=醒来」）：他回来了——记推断苏醒
-        时刻、松开 asleep（她知道但不说：零可见输出）；报告到达时醒来时间
-        取二者更早（报告的默认形态是晚）。报告不废：手机不在身边的日子它
-        仍是唯一来源。返回是否新记录。
+        语义（2026-09-11 用户拍板「出现=醒来」；二稿=集群化——用户作息不规则
+        （3am 睡 / 下午醒、倒班），首信号即定案会把起夜/中途活动误当醒来）：
+        - 未闭合睡眠周期 + 距入睡 ≥4h 的信号 = 「他还醒着」的证据；
+        - 与上次信号相隔 >GAP 的信号开新集群（cluster=now），否则延续（滚动）；
+        - 首个有效信号即松开 asleep（她知道但不说；「在不在」不依赖醒来时间精度）；
+        - 「醒来时间」定案在报告到达时做（_note_sleep_report）：报告与活动流
+          相连 → 用集群起点；报告孤立（长静默后）→ 取报告时间（保守）。
+        返回是否记录了本次信号。
         """
         import datetime
         try:
             row = self.memory.sleep_state_row()
-            if not row or not row.get("user_asleep"):
+            if not row:
                 return False
-            if str(row.get("inferred_woke_at") or ""):
-                return False  # 本周期已推断（幂等）
             cycle = self.memory.latest_open_cycle()
             if not cycle:
                 return False
@@ -1085,12 +1095,21 @@ class Agent:
             fell = self._naive_local(
                 datetime.datetime.fromisoformat(str(cycle.get("fell_asleep_at"))))
             if (ts - fell).total_seconds() < self._INFERRED_WAKE_MIN_ASLEEP_S:
-                return False  # 太早=还没睡着/起夜，不采信
-            if not self.memory.set_inferred_woke(ts.isoformat(timespec="seconds")):
-                return False
+                return False  # 太早=还没睡着/深夜起夜，不采信
+            cluster = str(row.get("inferred_woke_at") or "")
+            last = None
+            if str(row.get("last_signal_at") or ""):
+                last = self._naive_local(datetime.datetime.fromisoformat(
+                    str(row.get("last_signal_at"))))
+            if (last is None or
+                    (ts - last).total_seconds() > self._PRESENCE_CLUSTER_GAP_S):
+                cluster = ts.isoformat(timespec="seconds")  # 新集群
+            elif not cluster:
+                cluster = ts.isoformat(timespec="seconds")
+            self.memory.record_presence(cluster, ts.isoformat(timespec="seconds"))
             self.state.user_asleep = False
-            logger.info("presence signal: inferred wake at %s",
-                        ts.isoformat(timespec="seconds"))
+            logger.info("presence signal: cluster=%s last=%s",
+                        cluster, ts.isoformat(timespec="seconds"))
             return True
         except Exception as e:
             logger.debug("presence signal failed: %s", e)

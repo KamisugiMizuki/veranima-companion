@@ -693,34 +693,34 @@ class MemoryStore:
         self.con.commit()
 
     def sleep_state_row(self) -> dict:
-        """共享睡眠单行读取（user_asleep/last_sleep_report_at/inferred_woke_at）。
+        """共享睡眠单行读取（user_asleep/last_sleep_report_at/inferred_woke_at/last_signal_at）。
 
         与 set_sleep_state 同族=列级真相：读前取 DB 行、不信内存副本
         （多 Agent 各自内存会过期，见 save_state 注释）。无行/旧库异常返回 {}。"""
         try:
             row = self.con.execute(
-                "SELECT user_asleep, last_sleep_report_at, inferred_woke_at"
+                "SELECT user_asleep, last_sleep_report_at, inferred_woke_at, last_signal_at"
                 " FROM agent_state WHERE id=1"
             ).fetchone()
         except Exception:
             return {}
         return dict(row) if row else {}
 
-    def set_inferred_woke(self, at: str) -> bool:
-        """「出现=醒来」推断列级写（唯一正门）：置推断苏醒时刻 + 松开 asleep。
+    def record_presence(self, cluster_start: str, last_signal: str) -> None:
+        """「出现=醒来」活动集群滚动写（唯一正门）：集群起点+最近信号+松开 asleep。
 
-        原子防重入：仅当 inferred_woke_at 为空时写入（重复轮询只吃首个信号）。
-        不动 last_sleep_report_at——推断不是报告。返回是否写入。"""
-        cur = self.con.execute(
-            "UPDATE agent_state SET user_asleep=0, inferred_woke_at=?"
-            " WHERE id=1 AND (inferred_woke_at IS NULL OR inferred_woke_at='')",
-            (str(at or ""),))
+        滚动值（非原子防重入）：集群切分由调用方（Agent.note_presence_signal）
+        算好；重复轮询只滚动「最近信号」、不代表新集群。不动 last_sleep_report_at。"""
+        self.con.execute(
+            "UPDATE agent_state SET user_asleep=0, inferred_woke_at=?, last_signal_at=?"
+            " WHERE id=1",
+            (str(cluster_start or ""), str(last_signal or "")))
         self.con.commit()
-        return cur.rowcount == 1
 
     def clear_inferred_woke(self) -> None:
-        """清推断苏醒位：周期开/闭各清一次，防跨周期残留误配。"""
-        self.con.execute("UPDATE agent_state SET inferred_woke_at='' WHERE id=1")
+        """清推断位（集群起点+最近信号）：周期开/闭各清一次，防跨周期误配。"""
+        self.con.execute(
+            "UPDATE agent_state SET inferred_woke_at='', last_signal_at='' WHERE id=1")
         self.con.commit()
 
     def latest_open_cycle(self) -> dict | None:
