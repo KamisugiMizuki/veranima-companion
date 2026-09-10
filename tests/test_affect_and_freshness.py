@@ -142,6 +142,22 @@ def test_affect_negative_emotion_lowers_valence(tmp_path):
     assert a.state.valence < 0.5 and a.state.arousal > 0.5
 
 
+def test_negative_tiers_carry_labels_not_silence(tmp_path):
+    """09-11 读取偏好裁决：负面带标签（说清有/因），禁止无标签的冷与「不解释」。"""
+    a = _agent(tmp_path)
+    a._update_affect(MessageJudgment(emotion="sad"))
+    a._update_affect(MessageJudgment(emotion="sad"))     # 连发两条 → v≤0.35 低落档
+    cold = a._affect_block()
+    assert "【当下语气】" in cold and "让他猜" in cold
+    assert "别主动展开话题" not in cold                  # 隐含派写法不得复活
+    a.state.valence, a.state.arousal = 0.5, 0.5          # 归零重来
+    a._update_affect(MessageJudgment(emotion="angry"))
+    a._update_affect(MessageJudgment(emotion="angry"))   # → a≥0.68 烦躁档
+    hot = a._affect_block()
+    assert "【当下语气】" in hot and "让他猜" in hot
+    assert "不解释" not in hot
+
+
 def test_judge_tease_coercion():
     assert _coerce({"tease": True}).tease is True
     assert _coerce({"tease": False}).tease is False
