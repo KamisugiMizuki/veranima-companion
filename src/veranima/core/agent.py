@@ -1096,6 +1096,10 @@ class Agent:
                 datetime.datetime.fromisoformat(str(cycle.get("fell_asleep_at"))))
             if (ts - fell).total_seconds() < self._INFERRED_WAKE_MIN_ASLEEP_S:
                 return False  # 太早=还没睡着/深夜起夜，不采信
+            # 存储统一 UTC aware（库内惯例；fell/report 同面）——本地 naive 直存会让
+            # 「总结时长 = woke - fell」混面 TypeError 静默炸掉、总结永不产出
+            # （09-11 MuMu #2 实机抓到；单测两边同 naive 所以假阴性）
+            ts_store = ts.astimezone(datetime.timezone.utc).isoformat(timespec="seconds")
             cluster = str(row.get("inferred_woke_at") or "")
             last = None
             if str(row.get("last_signal_at") or ""):
@@ -1103,13 +1107,12 @@ class Agent:
                     str(row.get("last_signal_at"))))
             if (last is None or
                     (ts - last).total_seconds() > self._PRESENCE_CLUSTER_GAP_S):
-                cluster = ts.isoformat(timespec="seconds")  # 新集群
+                cluster = ts_store  # 新集群
             elif not cluster:
-                cluster = ts.isoformat(timespec="seconds")
-            self.memory.record_presence(cluster, ts.isoformat(timespec="seconds"))
+                cluster = ts_store
+            self.memory.record_presence(cluster, ts_store)
             self.state.user_asleep = False
-            logger.info("presence signal: cluster=%s last=%s",
-                        cluster, ts.isoformat(timespec="seconds"))
+            logger.info("presence signal: cluster=%s last=%s", cluster, ts_store)
             return True
         except Exception as e:
             logger.debug("presence signal failed: %s", e)
@@ -1150,18 +1153,22 @@ class Agent:
         woke = cycle.get("woke_at", "")
         try:
             from datetime import datetime
+            # 时长计算先 _naive_local 归一（混面相减会 TypeError 被静默吞掉——
+            # 09-11 MuMu #2 实锤：总结永空且无报错，最贵的一类 bug）
+            def _n(s):
+                return self._naive_local(datetime.fromisoformat(s))
             f = datetime.fromisoformat(fell).astimezone().strftime("%m-%d %H:%M") if fell else "?"
             w = datetime.fromisoformat(woke).astimezone().strftime("%m-%d %H:%M") if woke else "?"
             dur_h = ""
             if fell and woke:
-                dur_min = int((datetime.fromisoformat(woke) - datetime.fromisoformat(fell)).total_seconds() / 60)
+                dur_min = int((_n(woke) - _n(fell)).total_seconds() / 60)
                 if dur_min < 0:
                     dur_min += 24 * 60  # 跨天（22:00 → 次日 07:00）
                 dur_h = f"{dur_min // 60}小时{dur_min % 60}分"
             # 清醒时长=自上次苏醒到本次入睡（跨周期）
             awake = ""
             if prev and prev.get("woke_at") and fell:
-                am = int((datetime.fromisoformat(fell) - datetime.fromisoformat(prev["woke_at"])).total_seconds() / 60)
+                am = int((_n(fell) - _n(prev["woke_at"])).total_seconds() / 60)
                 awake = f"；清醒时长：{am // 60}小时{am % 60}分" if am > 0 else ""
             task = (
                 f"用户刚睡醒（现在当地时间 {w}）。入睡时刻：{f}；睡眠时长：{dur_h}{awake}。\n"

@@ -73,6 +73,13 @@ def _utc(hour: int, minute: int = 0, day: int = 30) -> datetime:
     return datetime(2026, 8, day, hour, minute)
 
 
+def _naive(s) -> datetime:
+    """ISO（带/不带时区）→ naive 本地：跨时区稳定的断言口径（生产存 UTC aware，
+    测试注入 naive，直接字符串断言会因面不同而脆）。"""
+    dt = datetime.fromisoformat(str(s))
+    return dt.astimezone().replace(tzinfo=None) if dt.tzinfo else dt
+
+
 def test_sleep_report_opens_cycle(agent):
     """用户说「我睡了」→ user_asleep=True + sleep_cycles 开周期。"""
     assert not agent.state.user_asleep
@@ -179,11 +186,11 @@ def test_presence_signal_tracks_cluster(agent):
     assert agent.note_presence_signal(_utc(7, 30, day=31))    # 跨夜 9.5h ≥4h → 集群
     assert not agent.state.user_asleep                        # 守卫松开（她知道但不说）
     row = agent.memory.sleep_state_row()
-    assert row.get("inferred_woke_at") == "2026-08-31T07:30:00"
+    assert _naive(row.get("inferred_woke_at")) == _utc(7, 30, day=31)
     assert agent.note_presence_signal(_utc(7, 40, day=31))    # 10min 内 → 延续
     row = agent.memory.sleep_state_row()
-    assert row.get("inferred_woke_at") == "2026-08-31T07:30:00"  # 集群起点不变
-    assert row.get("last_signal_at") == "2026-08-31T07:40:00"    # 最近信号滚动
+    assert _naive(row.get("inferred_woke_at")) == _utc(7, 30, day=31)  # 集群起点不变
+    assert _naive(row.get("last_signal_at")) == _utc(7, 40, day=31)    # 最近信号滚动
 
 
 def test_wake_report_uses_cluster_when_flow_connected(agent):
@@ -197,7 +204,7 @@ def test_wake_report_uses_cluster_when_flow_connected(agent):
     agent._note_sleep_report("醒了", _utc(9, 40, day=31))     # 报告晚到
     cycle = agent.memory.latest_closed_cycle()
     assert cycle is not None
-    assert cycle["woke_at"] == "2026-08-31T07:30:00"          # 集群起点，不是 9:40
+    assert _naive(cycle["woke_at"]) == _utc(7, 30, day=31)    # 集群起点，不是 9:40
     assert not (agent.memory.sleep_state_row().get("inferred_woke_at") or "")  # 闭合后清空
     assert "早" in (cycle.get("summary") or "")
 
@@ -210,13 +217,15 @@ def test_night_waking_not_mistaken_for_wake(agent):
     agent._note_sleep_report("睡了", _utc(22, 0))
     for m in (30, 32, 35):                                    # 2:30 起夜一小段
         agent.note_presence_signal(_utc(2, m, day=31))
-    assert agent.memory.sleep_state_row().get("inferred_woke_at") == "2026-08-31T02:30:00"
+    assert _naive(agent.memory.sleep_state_row().get("inferred_woke_at")) == \
+        _utc(2, 30, day=31)
     for m in (0, 2, 5):                                       # 17:00 真醒（距上次 >GAP → 新集群）
         agent.note_presence_signal(_utc(17, m, day=31))
-    assert agent.memory.sleep_state_row().get("inferred_woke_at") == "2026-08-31T17:00:00"
+    assert _naive(agent.memory.sleep_state_row().get("inferred_woke_at")) == \
+        _utc(17, 0, day=31)
     agent._note_sleep_report("醒了", _utc(17, 10, day=31))
     cycle = agent.memory.latest_closed_cycle()
-    assert cycle["woke_at"] == "2026-08-31T17:00:00"          # 起夜段被甩掉
+    assert _naive(cycle["woke_at"]) == _utc(17, 0, day=31)    # 起夜段被甩掉
 
 
 def test_isolated_report_keeps_report_time(agent):
@@ -239,7 +248,23 @@ def test_daytime_sleep_symmetric(agent):
         agent.note_presence_signal(_utc(20, m))
     agent._note_sleep_report("醒了", _utc(20, 10))
     cycle = agent.memory.latest_closed_cycle()
-    assert cycle["woke_at"] == "2026-08-30T20:00:00"
+    assert _naive(cycle["woke_at"]) == _utc(20, 0)
+
+
+def test_mixed_timezone_fell_does_not_break_summary(agent):
+    """混面回归（09-11 MuMu #2 实锤）：报告链的 now=UTC aware（生产面）+
+    活动信号=本地 naive——woke 存储面统一后，总结时长计算不得静默炸掉。
+    单测旧口径两边都是 naive 所以没抓到，这里刻意用生产面组合。"""
+    from datetime import timezone as _tz, timedelta as _td
+    aware_sleep = datetime(2026, 8, 30, 22, 0, tzinfo=_tz(_td(hours=8)))
+    agent._note_sleep_report("睡了", aware_sleep)
+    agent.note_presence_signal(_utc(7, 30, day=31))           # 本地 naive 信号
+    aware_wake = datetime(2026, 8, 31, 8, 0, tzinfo=_tz(_td(hours=8)))
+    agent._note_sleep_report("醒了", aware_wake)
+    cycle = agent.memory.latest_closed_cycle()
+    assert cycle is not None
+    assert _naive(cycle["woke_at"]) == _utc(7, 30, day=31)    # 集群起点（相连报告）
+    assert "早" in (cycle.get("summary") or "")               # 时长计算跑通=总结产出
 
 
 def test_wake_report_without_signal_keeps_report_time(agent):
