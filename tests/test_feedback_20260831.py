@@ -628,6 +628,12 @@ def _moment_agent(tmp_path, role="xumian"):
     return a, mem
 
 
+# 固定时钟（12:00 北京）：动态有睡窗闸（她睡着不发）——测试用真实时钟会在凌晨
+# 跑进许眠睡窗 → tick 恒 0（09-11 收口：测试时钟固定到清醒时段）
+_MOMENT_NOW = __import__("datetime").datetime(2026, 9, 10, 4, 0,
+                                              tzinfo=__import__("datetime").timezone.utc)
+
+
 def test_moment_publish_dedupe(tmp_path):
     """dedupe_key 撞 UNIQUE=静默 0：同素材永不二次成动态。"""
     a, mem = _moment_agent(tmp_path)
@@ -639,7 +645,7 @@ def test_moment_publish_dedupe(tmp_path):
 def test_moment_gate_and_tick(tmp_path):
     """发布链：素材→闸→入库；同 tick 幂等；开关关掉即停发。"""
     a, mem = _moment_agent(tmp_path)
-    now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+    now = _MOMENT_NOW
     n1 = a.moments.tick(now=now)
     assert n1 == 1                                   # FakeLLM 织文成功（"好的。"）
     assert mem.moments_count_today("xumian", now.date().isoformat()) == 1
@@ -660,7 +666,7 @@ def test_moment_llm_fail_fallback(tmp_path):
     """织文失败（LLMError）→ 素材原文降级入库：零丢失。"""
     a, mem = _moment_agent(tmp_path / "f")
     a._short_task = lambda *a_, **k_: (_ for _ in ()).throw(LLMError("boom"))
-    now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+    now = _MOMENT_NOW
     assert a.moments.tick(now=now) == 1
     row = mem.moments_recent_texts("xumian", limit=1)[0]
     assert len(row) > 2 and row != "好的。"            # 降级=素材文本非 LLM 假答
@@ -759,7 +765,7 @@ def test_moment_fallback_no_machine_text(tmp_path):
     """织文失败降级：发布的是第一人称骨架，绝不把素材指令（精力86%类）直录。"""
     a, mem = _moment_agent(tmp_path / "fb2")
     a._short_task = lambda *a_, **k_: ""     # 模拟 LLM 空返回（非异常）
-    now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+    now = _MOMENT_NOW
     assert a.moments.tick(now=now) == 1
     row = mem.moments_recent_texts("xumian", limit=1)[0]
     assert "精力" not in row and "情绪" not in row   # 机器口径零泄漏
