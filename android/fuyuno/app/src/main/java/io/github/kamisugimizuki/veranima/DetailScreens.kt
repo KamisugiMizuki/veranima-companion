@@ -189,9 +189,6 @@ private fun actMap(key: String): String = mapOf(
 
 private fun fmtThousand(n: Int): String = String.format("%,d", n)
 
-private fun fmtDur(min: Int): String =
-    if (min < 0) "—" else if (min < 60) "${min}m" else "${min / 60}h ${min % 60}m"
-
 private suspend fun bridgeJson(name: String, vararg args: Any): JSONObject = try {
     val bridge = Python.getInstance().getModule("bridge")
     JSONObject(withContext(Dispatchers.IO) {
@@ -548,112 +545,6 @@ fun RelationshipDetailScreen(onBack: () -> Unit, role: String = "") {
                     }
                 }
             }
-        }
-    }
-}
-
-// ==================== 页面3：睡眠报告 Sleep Monitor ====================
-
-@Composable
-fun SleepDetailScreen(onBack: () -> Unit) {
-    val dark = androidx.compose.foundation.isSystemInDarkTheme()
-    var data by remember { mutableStateOf<JSONObject?>(null) }
-    LaunchedEffect(Unit) { data = bridgeJson("sleep_status") }
-
-    GalaxyPage(title = "睡眠报告", onBack = onBack) {
-        val d = data
-        if (d == null) { LoadingBlock(); return@GalaxyPage }
-        if (!d.optBoolean("ok")) { ErrorOr("读取失败：${d.optString("error")}"); return@GalaxyPage }
-        val asleep = d.optBoolean("asleep")
-        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-            // 顶部实时状态胶囊（睡眠中=深灰底白字呼吸脉冲；清醒=白底黑字）
-            Box(Modifier.fillMaxWidth().padding(top = 24.dp), contentAlignment = Alignment.Center) {
-                BreathingPill(if (asleep) "深度睡眠中 💤" else "已唤醒 ☀️", night = asleep)
-            }
-            Spacer(Modifier.height(22.dp))
-            // 中部：睡眠总时长 + 质量评分
-            val last = d.optJSONObject("last")
-            GalaxyCard(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-                Text(if (asleep) "已入睡" else "最近一次睡眠", fontSize = 12.sp, color = gxTextSecondary(dark))
-                Spacer(Modifier.height(2.dp))
-                val minutes =
-                    if (asleep) d.optInt("current_minutes", -1)
-                    else last?.optInt("sleep_minutes", -1) ?: -1
-                Text(fmtDur(minutes), fontSize = 44.sp, fontWeight = FontWeight.Bold, color = gxTextPrimary(dark))
-                when {
-                    asleep -> Text("睡眠进行中，时长实时累计", fontSize = 11.sp, color = gxTextSecondary(dark))
-                    last != null && last.has("score") -> {
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
-                            Text("睡眠质量评分：", fontSize = 12.sp, color = gxTextSecondary(dark))
-                            Text("${last.optInt("score")} 分", fontSize = 14.sp,
-                                fontWeight = FontWeight.Bold, color = AccentTaupe)
-                        }
-                        Text("基于睡眠时长与入睡时刻估算", fontSize = 10.sp, color = gxTextSecondary(dark))
-                    }
-                    else -> Text("还没有已闭合的睡眠记录——对我说「我睡了」「醒了」就会开始记录。",
-                        fontSize = 12.sp, color = gxTextSecondary(dark))
-                }
-                if (last != null) {
-                    Spacer(Modifier.height(10.dp))
-                    Text("${fmtHm(last.optString("fell_asleep_at"))} 入睡 —— ${fmtHm(last.optString("woke_at"))} 醒来",
-                        fontSize = 14.sp, fontWeight = FontWeight.Medium, color = gxTextPrimary(dark))
-                    if (last.optString("summary").isNotEmpty()) {
-                        Spacer(Modifier.height(6.dp))
-                        Text(last.optString("summary"), fontSize = 12.sp, color = gxTextSecondary(dark),
-                            lineHeight = 18.sp)
-                    }
-                }
-            }
-            Spacer(Modifier.height(16.dp))
-            // 底部：分段分布条（设备无脑电分期→按实际入睡/苏醒绘占比；诚实文案注明）
-            val cycles = d.optJSONArray("cycles") ?: JSONArray()
-            GalaxyCard(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-                val shown = minOf(cycles.length(), 7)
-                Text("作息分布（近 $shown 天）", fontSize = 14.sp, fontWeight = FontWeight.Medium,
-                    color = gxTextPrimary(dark))
-                Spacer(Modifier.height(4.dp))
-                Text("设备未接睡眠分期监测，按你报告的入睡/苏醒绘实际占比",
-                    fontSize = 10.sp, color = gxTextSecondary(dark))
-                if (shown == 0) {
-                    Text("暂无记录", fontSize = 12.sp, color = gxTextSecondary(dark),
-                        modifier = Modifier.padding(vertical = 12.dp))
-                }
-                // cycles 已按入睡时刻倒序；图表要时序正序
-                val recent = (0 until shown).map { cycles.getJSONObject(it) }.reversed()
-                recent.forEach { c ->
-                    val f = parseIso(c.optString("fell_asleep_at"))
-                    val w = parseIso(c.optString("woke_at"))
-                    val sleepMin = if (f != null && w != null)
-                        ((w.time - f.time) / 60_000L).toInt().coerceIn(0, 24 * 60) else -1
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
-                        Text(fmtHm(c.optString("fell_asleep_at")), fontSize = 10.sp,
-                            color = gxTextSecondary(dark), modifier = Modifier.width(40.dp))
-                        // 分段条：睡眠段（≥7h 雾霾蓝 / <7h 暖灰褐）其余留底=清醒
-                        Box(Modifier.weight(1f).height(10.dp).background(
-                            if (dark) GxNightHairline else Color(0xFFEFEFEF), RoundedCornerShape(5.dp))) {
-                            if (sleepMin > 0) {
-                                Box(Modifier.fillMaxWidth(sleepMin / (24f * 60)).fillMaxHeight()
-                                    .background(if (sleepMin >= 420) AccentBlue else AccentTaupe,
-                                        RoundedCornerShape(5.dp)))
-                            }
-                        }
-                        Text(when {
-                                w != null -> fmtDur(sleepMin)          // 已闭合：0 分也显示实际值
-                                f != null -> "睡眠中"                   // 未闭合才是在睡
-                                else -> "—"
-                            }, fontSize = 10.sp,
-                            color = gxTextSecondary(dark), modifier = Modifier.width(46.dp),
-                            textAlign = TextAlign.End)
-                    }
-                }
-                Spacer(Modifier.height(12.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                    GalaxyLegend("睡眠≥7h", "", AccentBlue)
-                    GalaxyLegend("睡眠<7h", "", AccentTaupe)
-                    GalaxyLegend("清醒", "", if (dark) GxNightHairline else Color(0xFFEFEFEF))
-                }
-            }
-            Spacer(Modifier.height(24.dp))
         }
     }
 }

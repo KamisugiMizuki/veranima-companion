@@ -37,7 +37,7 @@ import org.json.JSONObject
 /**
  * 设置 tab（2026-09-01 UI-4 裁决）：主页=纯一列 GalaxyNavRow 零表单，
  * 大块内容收纳进二级页：API 配置 / 当前活跃角色 / 共享记忆备份 /
- * 共同记忆库 / 用户睡眠报告；系统权限两项行内直跳。行副标带当前值摘要。
+ * 共同记忆库 / 用户画像；系统权限两项行内直跳。行副标带当前值摘要。
  * 角色私产（羁绊/作息/导出/重置）不在这里——在聊天顶栏齿轮的角色私产页。
  */
 
@@ -78,10 +78,6 @@ fun SettingsMainScreen(nav: NavHostController) {
         GalaxyNavRow(icon = IconMemoryVault, title = "共同记忆库",
             subtitle = "向量记忆总览 · 密度分布 · 时间轴",
             onClick = { nav.navigate("memory_detail") })
-        Spacer(Modifier.height(8.dp))
-        GalaxyNavRow(icon = IconMoon, title = "用户睡眠报告",
-            subtitle = "你的作息 · 实时状态 · 时长分布",
-            onClick = { nav.navigate("sleep_detail") })
         Spacer(Modifier.height(8.dp))
         GalaxyNavRow(icon = IconUserModel, title = "用户画像（UserModel）",
             subtitle = "角色眼中的你 · 13 项可编辑 · 锁定的不被自动改写",

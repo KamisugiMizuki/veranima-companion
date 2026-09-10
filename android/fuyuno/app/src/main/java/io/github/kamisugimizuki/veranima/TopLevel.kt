@@ -476,7 +476,6 @@ fun SettingsTab() {
         composable("active_role") { ActiveRoleScreen(onBack = { nav.popBackStack() }) }
         composable("backup_detail") { BackupDetailScreen(onBack = { nav.popBackStack() }) }
         composable("memory_detail") { MemoryDetailScreen(onBack = { nav.popBackStack() }) }
-        composable("sleep_detail") { SleepDetailScreen(onBack = { nav.popBackStack() }) }
         composable("usermodel_detail") { UserModelScreen(onBack = { nav.popBackStack() }) }
     }
 }
@@ -544,7 +543,7 @@ fun RoleSpaceScreen(role: String, onBack: () -> Unit) {
                 subtitle = "相处风格 / 一起攒下的事 / 承诺",
                 onClick = { sub.value = "growth" })
             Spacer(Modifier.height(8.dp))
-            // 角色当前作息卡（自用户睡眠报告页迁入，裁决 UI-1）
+            // 角色当前作息卡（裁决 UI-1；原睡眠报告页已于 2026-09-11 下线）
             RoleRhythmCard(rhythm, name)
             Spacer(Modifier.height(8.dp))
             // ---- 行为设置（P2 最小集：主动/动态开关，写 role_settings） ----
@@ -820,7 +819,7 @@ private fun SettingSeg(label: String, options: List<String>, selected: Int, onSe
     }
 }
 
-/** 角色作息卡（从 SleepDetailScreen 整体迁入；数据源 rhythm_status(role)）。 */
+/** 角色作息卡（裁决 UI-1；原挂「睡眠报告」页，2026-09-11 该页下线）。数据源 rhythm_status(role)。 */
 @Composable
 fun RoleRhythmCard(rr: JSONObject?, name: String) {
     val d = rr ?: return
