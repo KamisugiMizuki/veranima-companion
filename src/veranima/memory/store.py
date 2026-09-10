@@ -692,6 +692,44 @@ class MemoryStore:
             (int(bool(asleep)), str(reported_at or "")))
         self.con.commit()
 
+    def sleep_state_row(self) -> dict:
+        """共享睡眠单行读取（user_asleep/last_sleep_report_at/inferred_woke_at）。
+
+        与 set_sleep_state 同族=列级真相：读前取 DB 行、不信内存副本
+        （多 Agent 各自内存会过期，见 save_state 注释）。无行/旧库异常返回 {}。"""
+        try:
+            row = self.con.execute(
+                "SELECT user_asleep, last_sleep_report_at, inferred_woke_at"
+                " FROM agent_state WHERE id=1"
+            ).fetchone()
+        except Exception:
+            return {}
+        return dict(row) if row else {}
+
+    def set_inferred_woke(self, at: str) -> bool:
+        """「出现=醒来」推断列级写（唯一正门）：置推断苏醒时刻 + 松开 asleep。
+
+        原子防重入：仅当 inferred_woke_at 为空时写入（重复轮询只吃首个信号）。
+        不动 last_sleep_report_at——推断不是报告。返回是否写入。"""
+        cur = self.con.execute(
+            "UPDATE agent_state SET user_asleep=0, inferred_woke_at=?"
+            " WHERE id=1 AND (inferred_woke_at IS NULL OR inferred_woke_at='')",
+            (str(at or ""),))
+        self.con.commit()
+        return cur.rowcount == 1
+
+    def clear_inferred_woke(self) -> None:
+        """清推断苏醒位：周期开/闭各清一次，防跨周期残留误配。"""
+        self.con.execute("UPDATE agent_state SET inferred_woke_at='' WHERE id=1")
+        self.con.commit()
+
+    def latest_open_cycle(self) -> dict | None:
+        """最近一个未闭合的睡眠周期（出现=醒来推断用；无则 None）。"""
+        row = self.con.execute(
+            "SELECT * FROM sleep_cycles WHERE woke_at IS NULL ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return dict(row) if row else None
+
     def load_state(self) -> dict | None:
         """读取持久化的 Agent 状态；无记录（新库/旧库未初始化）返回 None。"""
         import json as _json

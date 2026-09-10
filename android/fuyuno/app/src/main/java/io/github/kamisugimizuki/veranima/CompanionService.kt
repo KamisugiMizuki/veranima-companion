@@ -39,6 +39,9 @@ class CompanionService : Service() {
                     // 前台应用感知（UsageStats→包名+app名→LLM 判断动作）：仅授权后生效，内部有冷却
                     foregroundApp()?.let { (pkg, label) ->
                         bridge.callAttr("visual_note", pkg, label)
+                        // 出现=醒来：同一活动信号顺带上报睡眠推断（Python 侧判睡眠态，
+                        // 非睡眠态快速拒绝；距入睡 <4h 不采信）
+                        bridge.callAttr("wake_signal", System.currentTimeMillis())
                     }
                 } catch (e: Exception) {
                     // 核心未 boot / drain 失败：下轮再试，服务不死

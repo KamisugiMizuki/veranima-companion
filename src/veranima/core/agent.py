@@ -1001,15 +1001,25 @@ class Agent:
             self.memory.open_sleep_cycle(now.isoformat(timespec="seconds"))
             # 用户态列级写（#1 审计）：整行 upsert 不含这两列，防 stale agent 覆盖
             self.memory.set_sleep_state(True, now.isoformat(timespec="seconds"))
+            # 推断苏醒位不跨周期（出现=醒来；回笼重报时清，防误配到下一段）
+            self.memory.clear_inferred_woke()
             logger.info("user sleep reported at %s", now.isoformat(timespec="seconds"))
             self._persist_state()
             return "sleep"
-        if action == "wake" and self.state.user_asleep:
+        row = self.memory.sleep_state_row() or {}
+        if action == "wake" and (self.state.user_asleep or row.get("inferred_woke_at")):
+            # 「出现=醒来」：活动信号可能已松开 asleep（note_presence_signal），
+            # 周期还开着——报告仍要闭合，醒来时间取推断与报告中更早者
+            # （报告的默认形态=晚：刷完手机才想起来通报）。
+            report_iso = now.isoformat(timespec="seconds")
+            inferred = str(row.get("inferred_woke_at") or "")
+            woke_iso = self._earlier_iso(inferred, report_iso) if inferred else report_iso
             self.state.user_asleep = False
-            self.state.last_sleep_report_at = now.isoformat(timespec="seconds")
-            self.memory.set_sleep_state(False, now.isoformat(timespec="seconds"))
-            cycle = self.memory.close_sleep_cycle(now.isoformat(timespec="seconds"))
-            logger.info("user wake reported at %s", now.isoformat(timespec="seconds"))
+            self.state.last_sleep_report_at = report_iso
+            self.memory.set_sleep_state(False, report_iso)
+            cycle = self.memory.close_sleep_cycle(woke_iso)
+            self.memory.clear_inferred_woke()
+            logger.info("user wake reported at %s (inferred=%s)", report_iso, inferred or "-")
             self._persist_state()
             if cycle:
                 # 长睡眠（≥4h）苏醒 → 角色口吻睡眠总结（LLM；失败静默，不影响主回复）
@@ -1034,6 +1044,57 @@ class Agent:
                     logger.debug("sleep summary failed: %s", e)
             return "wake"
         return ""
+
+    @staticmethod
+    def _earlier_iso(candidate: str, fallback: str) -> str:
+        """两个 ISO 时刻取更早（解析失败/不可比时回退 fallback=报告时间）。"""
+        import datetime as _dt
+        try:
+            a = Agent._naive_local(_dt.datetime.fromisoformat(str(candidate)))
+            b = Agent._naive_local(_dt.datetime.fromisoformat(str(fallback)))
+            return str(candidate) if a <= b else str(fallback)
+        except Exception:
+            return str(fallback)
+
+    # 出现=醒来（2026-09-11 用户拍板）：睡眠态下距入睡 ≥4h 的首个活动信号
+    # 视为苏醒——防报睡后没睡着/起夜误判（宁漏勿误；阈值是旋钮，有真实数据再调）
+    _INFERRED_WAKE_MIN_ASLEEP_S = 4 * 3600
+
+    def note_presence_signal(self, now=None) -> bool:
+        """用户「出现」信号（安卓前台活动轮询上报）→ 睡眠态下推断苏醒。
+
+        语义（2026-09-11 用户拍板「出现=醒来」）：他回来了——记推断苏醒
+        时刻、松开 asleep（她知道但不说：零可见输出）；报告到达时醒来时间
+        取二者更早（报告的默认形态是晚）。报告不废：手机不在身边的日子它
+        仍是唯一来源。返回是否新记录。
+        """
+        import datetime
+        try:
+            row = self.memory.sleep_state_row()
+            if not row or not row.get("user_asleep"):
+                return False
+            if str(row.get("inferred_woke_at") or ""):
+                return False  # 本周期已推断（幂等）
+            cycle = self.memory.latest_open_cycle()
+            if not cycle:
+                return False
+            ts = now if now is not None else datetime.datetime.now()
+            if isinstance(ts, (int, float)):
+                ts = datetime.datetime.fromtimestamp(ts)
+            ts = self._naive_local(ts)
+            fell = self._naive_local(
+                datetime.datetime.fromisoformat(str(cycle.get("fell_asleep_at"))))
+            if (ts - fell).total_seconds() < self._INFERRED_WAKE_MIN_ASLEEP_S:
+                return False  # 太早=还没睡着/起夜，不采信
+            if not self.memory.set_inferred_woke(ts.isoformat(timespec="seconds")):
+                return False
+            self.state.user_asleep = False
+            logger.info("presence signal: inferred wake at %s",
+                        ts.isoformat(timespec="seconds"))
+            return True
+        except Exception as e:
+            logger.debug("presence signal failed: %s", e)
+            return False
 
     def _confirm_sleep_report(self, text: str, hit_sleep: bool, hit_wake: bool) -> str:
         """LLM 确认消息是否真是入睡/苏醒报告；失败回退关键词规则。"""

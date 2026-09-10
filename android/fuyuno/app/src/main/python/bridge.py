@@ -1248,6 +1248,32 @@ def visual_note(pkg: str, label: str) -> str:
         return json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"})
 
 
+def wake_signal(ts_ms: object = 0) -> str:
+    """用户「出现」信号（前台活动轮询上报）→ 睡眠态下推断苏醒（出现=醒来）。
+
+    2026-09-11 用户拍板：睡眠态 + 距入睡 ≥4h 的首个活动信号 = 他回来了。
+    判定/防误报逻辑在 Agent.note_presence_signal（可测）；本函数只做薄转发。
+    零可见输出（她知道但不说）；报告到达时醒来时间取二者更早。
+    """
+    agent = getattr(boot, "agent", None)
+    if agent is None:
+        return json.dumps({"ok": False, "error": "未就绪"})
+    try:
+        import datetime as _dt
+        when = None
+        try:
+            ms = float(ts_ms or 0)
+        except (TypeError, ValueError):
+            ms = 0.0
+        if ms > 0:
+            when = _dt.datetime.fromtimestamp(ms / 1000.0)
+        hit = agent.note_presence_signal(when)
+        return json.dumps({"ok": True, "detail": "inferred" if hit else "no-op"})
+    except Exception as e:
+        log.warning("wake_signal failed: %s", e)
+        return json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"})
+
+
 def _classify_foreground_action(pkg: str, label: str) -> str:
     """包名+app 名 → 动作短语（一次低成本 LLM 调用，失败回退 None→用 app 名）。"""
     try:
