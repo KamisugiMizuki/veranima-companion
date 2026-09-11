@@ -329,7 +329,10 @@ fun MemoryDetailScreen(onBack: () -> Unit) {
                             color = gxTextSecondary(dark),
                             modifier = Modifier.padding(start = 20.dp, top = 14.dp, bottom = 6.dp))
                     }
-                    items.forEach { m ->
+                    // 本组的条目：以前这里写成 items.forEach（全量列表）——每条记忆在
+                    // 每个日期组下重复发一遍，且 m-<id> 键重复 → 快滑时 LazyColumn
+                    // 撞重复键 IllegalArgumentException 崩进程（2026-09-11 真机实锤）。
+                    list.forEach { m ->
                         item(key = "m-${m.optInt("id")}") {
                             MemoryTimelineRow(m, onClick = { openId = m.optInt("id") })
                         }
