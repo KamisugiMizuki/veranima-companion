@@ -296,7 +296,7 @@ virtual_simulation
 
 ## 5. 角色目录中的空间模板
 
-v1 不新增 `virtual_world.json`。空间配置直接扩展现有角色日程模板：
+空间配置直接扩展现有角色日程模板（**2026-09-16 修订**：锚点 / 路线的**几何、路网与 POI** 数据按 `VIRTUAL_GEOGRAPHY_SPEC.md` 移入独立角色资产 `virtual_world.json`，在加载期合并；本文件定义的 places / routes 仍是运行期唯一消费面，锚点定义与手写 duration 仍以本文件为准）：
 
 ```text
 characters/<role_id>/virtual_schedule.json
