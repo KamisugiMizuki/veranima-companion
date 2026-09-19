@@ -11,6 +11,7 @@
 | `persona/` | 人格循环 | PERSONA_LOOP_SPEC（P-0~P-9）+ COMPANION_CONTINUITY_DESIGN（多端连续性）+ RELATIONAL_TENSION_SPEC（关系张力 TV）+ SHARED_CREATION_SPEC（共同创作） |
 | `proactive/` | 主动发言 | QQ_PROACTIVE_SPEC（QQ 时机引擎） |
 | `virtual_life/` | 虚拟日程与空间 | VIRTUAL_SCHEDULE_SPEC（作息/睡眠/日程）+ VIRTUAL_SPACE_SPEC（CurrentScene/地点）+ VIRTUAL_GEOGRAPHY_SPEC（世界文件/分级路网/POI 生态/段级流量/世界感自洽不变式/体裁双轨，v1.2 定稿） |
+| `world_card/` | 世界卡（新项目种子） | WORLD_CARD_SPEC（条目体系八层 / 独立世界钟 ＋ 消费侧对齐 / 世界事件引擎 / 实情双轨 / 多角色共享 / 自洽不变式 T1–T4 / 归属边界 / 接缝与承接清单，v0.2 草案，D1–D4 已裁决；独立项目「世界卡」的种子输入） |
 | `expression/` | 表达层 | STYLE_LEARNING_SPEC（文风学习）+ EXPRESSION_GENE_TRANSFER_SPEC（表达基因迁移） |
 | `vision/` | 视觉注意力 | VISION_SPEC（截屏观察→联想→主动） |
 | `search/` | 联网搜索 | WEB_SEARCH_SPEC（SearXNG/博查双后端、语义定位、EvidencePack） |
