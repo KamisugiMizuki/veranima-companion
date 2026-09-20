@@ -32,6 +32,10 @@ android {
 chaquopy {
     defaultConfig {
         version = "3.12"
+        // 构建用解释器必须与 version 同版，否则跳过 .pyc 预编译（本机 PATH 上是 3.14 →
+        // 每次都报 incompatible）。缺省给本机 uv 的 3.12；换机器用环境变量覆盖。
+        buildPython(System.getenv("VERANIMA_BUILD_PYTHON")
+            ?: "C:/Users/Kamisugi/AppData/Roaming/uv/python/cpython-3.12.12-windows-x86_64-none/python.exe")
         pip {
             // 核心运行面（ANDROID_SCOPE_SPEC 定稿）：torch/aiocqhttp 等已出局
             install("httpx")
