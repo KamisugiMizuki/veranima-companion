@@ -155,3 +155,70 @@ def test_catch_up_reuses_stored_row_without_duplicate(bridge, monkeypatch, tmp_p
     assert seen["pre_stored_msg_id"] == mid
     users = [m for m in store.recent_messages(limit=50) if m["role"] == "user"]
     assert len(users) == 1
+
+
+def test_catch_up_merges_the_whole_unanswered_batch(bridge, monkeypatch, tmp_path):
+    """2026-09-20 R11：未回的整批一起补，不是只补最后一条。
+
+    只拿最后一条时，同一批里前面几条的上下文全丢——「答非所问」的连发版本。
+    """
+    from datetime import datetime, timedelta, timezone
+
+    store = MemoryStore(str(tmp_path / "db.sqlite"), config={}, provider=Embed())
+    ids = [store.store_message("user", t, 0.7, "平静", role_id="lin")
+           for t in ("今天好累", "不想做饭了", "要不点外卖")]
+    store.con.execute("UPDATE messages SET created_at=? WHERE role_id='lin'",
+                      ((datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat(),))
+    store.con.commit()
+    seen = {}
+
+    class FakeAgent:
+        role_key = "lin"
+
+        def __init__(self):
+            self.memory = store
+
+        def handle(self, text, **kw):
+            seen["text"] = text
+            seen.update(kw)
+            return SimpleNamespace(reply="嗯。")
+
+    monkeypatch.setattr(bridge.boot, "agents", {"lin": FakeAgent()}, raising=False)
+    out = json.loads(bridge.catch_up_replies())
+
+    assert out["handled"] == 1
+    assert seen["text"] == "今天好累\n不想做饭了\n要不点外卖"
+    assert seen["pre_stored_msg_id"] == ids[-1]
+    assert len([m for m in store.recent_messages(limit=50) if m["role"] == "user"]) == 3
+
+
+def test_catch_up_over_window_is_recorded_not_silently_dropped(bridge, monkeypatch, tmp_path):
+    """超窗不自动补答（太久=用户早不需要），但必须留痕——不得静默吞掉。"""
+    from datetime import datetime, timedelta, timezone
+
+    store = MemoryStore(str(tmp_path / "db.sqlite"), config={}, provider=Embed())
+    mid = store.store_message("user", "在吗", 0.7, "平静", role_id="lin")
+    store.con.execute("UPDATE messages SET created_at=? WHERE id=?",
+                      ((datetime.now(timezone.utc) - timedelta(days=3)).isoformat(), mid))
+
+    called = []
+
+    class FakeAgent:
+        role_key = "lin"
+
+        def __init__(self):
+            self.memory = store
+
+        def handle(self, text, **kw):
+            called.append(text)
+            return SimpleNamespace(reply="嗯。")
+
+    monkeypatch.setattr(bridge.boot, "agents", {"lin": FakeAgent()}, raising=False)
+    out = json.loads(bridge.catch_up_replies())
+
+    assert out["handled"] == 0 and called == []      # 没补答
+    rows = store.con.execute(
+        "SELECT kind, verdict, object_ref FROM decisions WHERE kind='catchup'").fetchall()
+    assert len(rows) == 1                            # 但留了账
+    assert rows[0]["verdict"] == "expired"
+    assert rows[0]["object_ref"] == f"message:{mid}"

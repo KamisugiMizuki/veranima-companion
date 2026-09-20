@@ -290,6 +290,56 @@ def test_followup_expires_then_asks_once(tmp_path):
     assert agent.llm.calls == calls_before  # 不再烧 LLM
 
 
+def _make_roled_agent(db, base, role):
+    """多角色共库场景：role_key 从角色目录名推出（card.source_path）。"""
+    import json
+    from veranima.core.agent import Agent
+    from veranima.core.character import CharacterCard
+    from veranima.core.state import AgentState
+    card_dir = base / "characters" / role
+    card_dir.mkdir(parents=True, exist_ok=True)
+    card_file = card_dir / "character.json"
+    card_file.write_text(json.dumps({"name": role}, ensure_ascii=False), encoding="utf-8")
+    return Agent(
+        card=CharacterCard.from_file(card_file),
+        memory=MemoryStore(db_path=db, config={}, provider=FakeEmbed()),
+        llm=FakeLLM(reply="嗯"),
+        state=AgentState(),
+        config={},
+    )
+
+
+def test_expectation_is_role_scoped(tmp_path):
+    """2026-09-20 R03：期待只归它的角色。
+
+    修前实锤：许眠回一句话就把凛的待回应期待标成 replied=1——凛的期待被别人的
+    对话平账；反过来各角色 tick 还能读到/结算对方的期待（替对方记张力、替对方
+    发追问）。
+    """
+    db = str(tmp_path / "shared.db")
+    lin = _make_roled_agent(db, tmp_path, "lin")
+    xumian = _make_roled_agent(db, tmp_path, "xumian")
+    assert lin.role_key == "lin" and xumian.role_key == "xumian"
+
+    lin.record_proactive_expectation("晚饭吃了吗？", source="ritual", channel="im")
+
+    # 别人的收件箱里没有这条期待（各角色 tick 不能替对方结算/追问）
+    assert xumian.memory.recent_proactive_feedback(limit=10, role_id="xumian") == []
+    assert len(lin.memory.recent_proactive_feedback(limit=10, role_id="lin")) == 1
+
+    # 别的角色回话，不能把这条期待平账
+    xumian.handle("在忙", channel="im")
+    row = lin.memory.recent_proactive_feedback(limit=1, role_id="lin")[0]
+    assert row["responded"] == 0
+    assert row["expectation_status"] == "pending"
+
+    # 本角色回话才闭合
+    lin.handle("吃了", channel="im")
+    row = lin.memory.recent_proactive_feedback(limit=1, role_id="lin")[0]
+    assert row["responded"] == 1
+    assert row["expectation_status"] == "replied"
+
+
 def test_followup_closed_by_user_reply(tmp_path):
     """追问发出后用户回话 → 期待闭合（responded=1），过期结算不再触发。"""
     agent = _make_agent(tmp_path)

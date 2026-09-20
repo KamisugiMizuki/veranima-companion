@@ -193,11 +193,11 @@ class QQAdapter:
                 pass
             # R4_SPEC 4 忽略自愈：用户来消息 → 最近主动反馈标记 responded + 重置忽略
             try:
-                fb = self.agent.memory.recent_proactive_feedback(channel="qq", limit=3)
+                fb = self.agent._recent_feedback(channel="qq", limit=3)
                 pending = [f for f in fb if not f["responded"]]
                 if pending:
                     src = pending[-1]["source"]
-                    self.agent.memory.record_proactive_feedback(source=src, channel="qq", responded=True)
+                    self.agent._feedback_proactive(source=src, channel="qq", responded=True)
                     self.agent.gate.note_responded(src, channel="qq")
             except Exception:
                 pass
@@ -706,7 +706,7 @@ class QQAdapter:
     async def _send_due_meal_reminder_once_async(self, now=None) -> bool:
         import datetime
         now = now or datetime.datetime.now().astimezone()
-        feedback = self.agent.memory.recent_proactive_feedback(source="meal", channel="qq", limit=30)
+        feedback = self.agent._recent_feedback(source="meal", channel="qq", limit=30)
         sent_ids = {str(row.get("candidate_id") or "") for row in feedback}
         due = self.meal_scheduler.due(now=now, sent_ids=sent_ids)
         if not due:
@@ -737,7 +737,7 @@ class QQAdapter:
                 return False
             self.agent.record_proactive_message(text, channel="qq")
             self.agent.gate.commit(candidate)
-            self.agent.memory.record_proactive_feedback(
+            self.agent._feedback_proactive(
                 source="meal", channel="qq", candidate_id=candidate_id,
             )
             return True
@@ -811,7 +811,7 @@ class QQAdapter:
         if special_candidate is not None:
             special_feedback_id = self._qq_feedback_id(special_candidate, current)
             if any(row.get("candidate_id") == special_feedback_id
-                   for row in self.agent.memory.recent_proactive_feedback(channel="qq", limit=100)):
+                   for row in self.agent._recent_feedback(channel="qq", limit=100)):
                 special_candidate = None
         if special_candidate is not None:
             special_decision = self.agent.gate.decide(
@@ -832,7 +832,7 @@ class QQAdapter:
                 if text and sent:
                     self.agent.gate.commit(special_candidate)
                     self.agent.record_proactive_message(text, channel="qq")
-                    self.agent.memory.record_proactive_feedback(
+                    self.agent._feedback_proactive(
                         source=special_candidate.source, channel="qq",
                         candidate_id=special_feedback_id,
                     )
@@ -843,7 +843,7 @@ class QQAdapter:
         candidate = self._qq_candidate(material)
         feedback_id = self._qq_feedback_id(candidate, current)
         if any(row.get("candidate_id") == feedback_id
-               for row in self.agent.memory.recent_proactive_feedback(channel="qq", limit=100)):
+               for row in self.agent._recent_feedback(channel="qq", limit=100)):
             logger.info("qq proactive suppressed: source already used today (%s)", feedback_id)
             return
         decision = self.agent.gate.decide(
@@ -869,7 +869,7 @@ class QQAdapter:
             datetime.datetime.now(datetime.timezone.utc)
             + datetime.timedelta(hours=self.agent.tension.UNANSWERED_REPLY_WINDOW_HOURS)
         ).isoformat(timespec="seconds") if requires_reply else None
-        self.agent.memory.record_proactive_feedback(
+        self.agent._feedback_proactive(
             source=candidate.source, channel="qq",
             candidate_id=self._qq_feedback_id(candidate),
             requires_reply=requires_reply, direct_question=question,
@@ -886,7 +886,8 @@ class QQAdapter:
     def _expire_qq_expectations(self, now) -> None:
         """过期期待逐条原子结算，重启/tick 重复执行也只加一次 TV。"""
         import datetime
-        rows = self.agent.memory.recent_proactive_feedback(channel="qq", limit=100)
+        rows = self.agent._recent_feedback(channel="qq", limit=100,
+                                                          role_id=self.agent.role_key)
         for row in rows:
             if not row.get("requires_reply") or row.get("expectation_status") != "pending":
                 continue
@@ -915,7 +916,7 @@ class QQAdapter:
         question = extract_direct_question(str(rows[-1].get("content") or ""))
         if not question:
             return
-        for row in self.agent.memory.recent_proactive_feedback(channel="qq", limit=100):
+        for row in self.agent._recent_feedback(channel="qq", limit=100):
             if row.get("requires_reply") and row.get("expectation_status") == "pending":
                 return
         try:
@@ -943,7 +944,7 @@ class QQAdapter:
             return False
         event_id = state.open_event_ids[0]
         candidate_id = f"tension-repair:{event_id}"
-        history = self.agent.memory.recent_proactive_feedback(
+        history = self.agent._recent_feedback(
             source="relationship_repair", channel="qq", limit=100,
         )
         if any(row.get("candidate_id") == candidate_id for row in history):
@@ -971,7 +972,7 @@ class QQAdapter:
             return False
         self.agent.record_proactive_message(text, channel="qq")
         self.agent.gate.commit(candidate)
-        self.agent.memory.record_proactive_feedback(
+        self.agent._feedback_proactive(
             source="relationship_repair", channel="qq", candidate_id=candidate_id,
         )
         return True

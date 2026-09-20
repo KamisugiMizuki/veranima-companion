@@ -421,7 +421,7 @@ class PetServer:
             return False
         self._agent.gate.commit(cand)
         try:
-            self._agent.memory.record_proactive_feedback(source="attention", channel="pet")
+            self._agent._feedback_proactive(source="attention", channel="pet")
         except Exception as e:
             logger.debug("feedback record failed: %s", e)
         logger.info("visual: event=%s action=proactive", ev.event_id)
@@ -671,7 +671,7 @@ class PetServer:
                 pending = [f for f in fb if not f["responded"]]
                 if pending:
                     source = pending[-1]["source"]
-                    self._agent.memory.record_proactive_feedback(
+                    self._agent._feedback_proactive(
                         source=source, channel="pet", responded=True)
                     self._agent.gate.note_responded(source, channel="pet")
 

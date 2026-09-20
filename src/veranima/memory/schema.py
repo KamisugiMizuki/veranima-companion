@@ -159,9 +159,11 @@ CREATE TABLE IF NOT EXISTS proactive_feedback (
     responded        INTEGER NOT NULL DEFAULT 0,
     interrupted      INTEGER NOT NULL DEFAULT 0,
     user_sent_within INTEGER,              -- 秒；主动后用户多久来消息（0=无）
-    dismissed        INTEGER NOT NULL DEFAULT 0
+    dismissed        INTEGER NOT NULL DEFAULT 0,
+    role_id          TEXT NOT NULL DEFAULT ''   -- 角色隔离（2026-09-20 R03）：期待只归它的角色
 );
 CREATE INDEX IF NOT EXISTS idx_proactive_feedback_source ON proactive_feedback(source);
+CREATE INDEX IF NOT EXISTS idx_proactive_feedback_role ON proactive_feedback(role_id);
 
 -- Agent 内在状态（依恋度/精力/情绪/计数），单行，跨重启持久化（2026-08-04 续接）
 CREATE TABLE IF NOT EXISTS agent_state (
@@ -473,11 +475,15 @@ def init_db(db_path: str | Path, dim: int = EMBEDDING_DIM, provider=None) -> sql
             ("expires_at", "TEXT"),
             ("expectation_status", "TEXT NOT NULL DEFAULT 'none'"),
             ("followup_status", "TEXT"),  # 追问闭环：NULL/''=未追问, 'asked'=已追问一次
+            # 角色隔离（2026-09-20 R03）：旧行留空串——隔离修复前产生的行不认领
+            # （乱认领=让某角色背别人的待回应），悬空旧行到点自然过期一次。
+            ("role_id", "TEXT NOT NULL DEFAULT ''"),
         ):
             if name not in feedback_cols:
                 con.execute(f"ALTER TABLE proactive_feedback ADD COLUMN {name} {ddl}")
                 logger.info("proactive_feedback migration: added column %s", name)
         con.execute("CREATE INDEX IF NOT EXISTS idx_proactive_feedback_channel ON proactive_feedback(channel)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_proactive_feedback_role ON proactive_feedback(role_id)")
     except Exception as e:
         logger.warning("proactive_feedback migration check failed: %s", e)
     try:

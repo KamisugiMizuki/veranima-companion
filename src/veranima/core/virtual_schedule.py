@@ -13,6 +13,9 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# 欠睡到多少才动次日安排（R06 确定性恢复；低于此值=正常过日子，不压缩）
+_RECOVERY_DEBT_MINUTES = 90
+
 
 class ScheduleTemplateError(ValueError):
     """日程模板不满足运行时契约。"""
@@ -445,9 +448,16 @@ class ScheduleRuntime:
                  "activity_key": block.activity_pool[0], "duration_minutes": block.duration_min}
                 for block in self._offset_blocks()
             ]
+        # 身体限制的确定性面（R06）：欠睡时压缩一个允许缩短的块——与偏移/planner
+        # 已处理的块互斥（同一 rule_id 在 adjustment_map 里会互相覆盖）。
+        _busy = {str(a.get("rule_id")) for a in offset_adjustments}
+        if valid:
+            _busy |= {str(i.get("rule_id")) for i in raw_items if isinstance(i, dict)}
+        recovery_adjustments = self._recovery_adjustments(active_profile, exclude=_busy)
         try:
             plan = self.outline.build_day_plan(
-                when, day_profile=active_profile, adjustments=offset_adjustments or None,
+                when, day_profile=active_profile,
+                adjustments=(offset_adjustments + recovery_adjustments) or None,
                 space_preference=self.space_preference,
             )
         except ScheduleTemplateError as exc:
@@ -471,7 +481,7 @@ class ScheduleRuntime:
                 adjustments=[
                     {**item, "shift_minutes": int(item.get("shift_minutes", 0)) + effective_offset}
                     for item in candidate.get("items", [])
-                ],
+                ] + recovery_adjustments,
                 source="llm_structured_template",
                 space_preference=self.space_preference,
             ) or plan
@@ -846,6 +856,39 @@ class ScheduleRuntime:
         logger.info("schedule catch-up after offline sleep: plan=%s digest_cycle=%s",
                     self._next_day_plan.local_date, cycle)
         return cycle
+
+    def _recovery_adjustments(self, profile_id: str, *, exclude: set[str] | None = None) -> list[dict]:
+        """欠睡的确定性兜底（2026-09-20 设计审计 §5.7.1：身体限制影响后续安排）。
+
+        疲劳影响次日安排不该只靠 LLM 想起来：债务超阈时，把卡里显式允许跳过
+        (deviation_policy.allow_skip) 的一个低优先级非必需块整块让出去。
+        用 skip_optional 而不是「压到最短」：确定性计划的时长本来就是各块的最短
+        时长（无调整=取 duration_min），压时长等于什么都没做——真正能看见的差别
+        是她这一天少了一件事。
+        恢复条件=债务还清（阈值以下自动不再让）；sleep_window 类锚点免疫；
+        已被偏移/planner 处理过的块不重复叠加（adjustment_map 按 rule_id 覆盖）。
+        """
+        if self.state.sleep_debt_minutes < _RECOVERY_DEBT_MINUTES:
+            return []
+        profile = self.outline.day_profiles.get(profile_id)
+        if not isinstance(profile, dict):
+            return []
+        allowed = set(profile.get("allowed_block_ids") or ())
+        taken = set(exclude or ())
+        for block in sorted((b for b in self.outline.blocks if b.id in allowed),
+                            key=lambda b: (b.priority, b.id)):
+            if block.id in taken or block.category == "sleep_window" or block.required:
+                continue                     # 必需块不动（既定职责照做）
+            if not (block.deviation_policy or {}).get("allow_skip"):
+                continue
+            return [{
+                "rule_id": block.id,
+                "operation": "skip_optional",
+                "duration_minutes": block.duration_min,
+                "activity_key": block.activity_pool[0],
+                "reason_code": "sleep_debt",
+            }]
+        return []
 
     def queue_schedule_tweaks(self, tweaks, when: dt.datetime) -> list[dict]:
         """M4：夜眠消化的日程微调过闸，返回真正落库的条目。

@@ -341,7 +341,7 @@ class Agent:
             self.schedule_runtime is not None and self.schedule_runtime.sleeping
         )
         try:
-            self.gate.restore_feedback(self.memory.recent_proactive_feedback(limit=200))
+            self.gate.restore_feedback(self._recent_feedback(limit=200))
         except Exception as e:
             logger.debug("proactive gate restore failed: %s", e)
 
@@ -766,7 +766,7 @@ class Agent:
                 previous_at = previous_at.replace(tzinfo=datetime.timezone.utc)
         except (TypeError, ValueError):
             return ""
-        for feedback in self.memory.recent_proactive_feedback(channel=self.message_channel, limit=20):
+        for feedback in self._recent_feedback(channel=self.message_channel, limit=20):
             try:
                 sent_at = datetime.datetime.fromisoformat(
                     str(feedback.get("sent_at")).replace("Z", "+00:00")
@@ -1036,7 +1036,7 @@ class Agent:
                         # 当轮 prompt 融合成一条；同时标记 sleep_summary 已消费，
                         # 阻断 adapter 旁路重发。
                         self._wake_summary_for_turn = summary
-                        self.memory.record_proactive_feedback(
+                        self._feedback_proactive(
                             source="sleep_summary", channel=self.message_channel,
                             candidate_id=f"sleep_summary:{cycle['id']}")
                         self.memory.log_decision(
@@ -1218,7 +1218,7 @@ class Agent:
             return ""  # 深夜推测=打扰
         day = ref.date().isoformat()
         cid = f"probe:{day}:{bucket}"
-        rows = self.memory.recent_proactive_feedback(source="context_probe", limit=30)
+        rows = self._recent_feedback(source="context_probe", limit=30)
         today = [r for r in rows if str(r.get("candidate_id") or "").startswith(f"probe:{day}")]
         if len(today) >= 2 or any(str(r.get("candidate_id") or "") == cid for r in today):
             return ""
@@ -1233,7 +1233,7 @@ class Agent:
             "evening": "这个点该消停了，今天累不累？",
         }[bucket]
         if not (getattr(self.llm, "is_model_loaded", None) and self.llm.is_model_loaded()):
-            self.memory.record_proactive_feedback(
+            self._feedback_proactive(
                 source="context_probe", channel=self.message_channel, candidate_id=cid)
             return fallback
         try:
@@ -1264,7 +1264,7 @@ class Agent:
             text = ""
         if not text:
             return ""
-        self.memory.record_proactive_feedback(
+        self._feedback_proactive(
             source="context_probe", channel=self.message_channel, candidate_id=cid)
         return text
 
@@ -1298,7 +1298,7 @@ class Agent:
             return ""
         # 每日去重
         day_key = f"sleep_hint:{now.date().isoformat()}"
-        feedback = self.memory.recent_proactive_feedback(source="sleep_hint", limit=30)
+        feedback = self._recent_feedback(source="sleep_hint", limit=30)
         if any(str(r.get("candidate_id") or "") == day_key for r in feedback):
             return ""
         if self.llm is not None and getattr(self.llm, "base_url", ""):
@@ -1310,7 +1310,7 @@ class Agent:
                 )
                 text = (self._short_task(task, max_tokens=128) or "").strip()
                 if text:
-                    self.memory.record_proactive_feedback(
+                    self._feedback_proactive(
                         source="sleep_hint", channel=self.message_channel, candidate_id=day_key)
                     return text
             except Exception as e:
@@ -1416,7 +1416,7 @@ class Agent:
             # 角色就寝，用 (1-ov) 折算等效 diff（每 10% 不重合≈0.5h）
             diff = diff - (1.0 - ov) * 5.0
         day_key = f"adapt:{now.date().isoformat()}"
-        feedback = self.memory.recent_proactive_feedback(source="schedule_adapt", limit=30)
+        feedback = self._recent_feedback(source="schedule_adapt", limit=30)
         if any(str(r.get("candidate_id") or "") == day_key for r in feedback):
             return
         # 差值的 1/4，渐进；单日步长与总量都卡到本卡偏移上限内
@@ -1443,7 +1443,7 @@ class Agent:
             self.role_key or self.card.name, "rhythm_overlap",
             f"{ov:.2f}" if ov is not None else "n/a",
             reason=f"作息偏移 {shift:+d} 分钟", digest=f"diff={diff:.1f}h")
-        self.memory.record_proactive_feedback(
+        self._feedback_proactive(
             source="schedule_adapt", channel=self.message_channel, candidate_id=day_key)
         if self.llm is not None and getattr(self.llm, "base_url", ""):
             try:
@@ -1515,6 +1515,21 @@ class Agent:
             self._persist_state()
             return eid
         return None
+
+    def _recent_feedback(self, **kwargs):
+        """本角色的主动反馈窗口（去重/结算共用）：别人的行不参与判断。"""
+        kwargs.setdefault("role_id", self.role_key)
+        return self.memory.recent_proactive_feedback(**kwargs)
+
+    def _feedback_proactive(self, **kwargs):
+        """主动反馈记账的唯一入口（角色维度）。
+
+        2026-09-20 R03：期待按角色闭合——许眠回一句话不得把凛的待回应期待
+        平账，各角色的 tick 也不得替对方结算张力或发追问。role_key 为空
+        （PC 单角色时代）时落空串，语义等同旧行为。
+        """
+        kwargs.setdefault("role_id", self.role_key)
+        return self.memory.record_proactive_feedback(**kwargs)
 
     def relationship_event_candidate(self) -> dict | None:
         return self.tension.relationship_event_candidate()
@@ -1813,11 +1828,11 @@ class Agent:
         self.tension.decay(now=datetime.datetime.now(datetime.timezone.utc))
         # 用户来消息 → 闭合最近未回期待（responded/replied 幂等，QQ adapter 重复执行无害）
         try:
-            fb = self.memory.recent_proactive_feedback(limit=3)
+            fb = self._recent_feedback(limit=3)
             pending = [f for f in fb if not f["responded"]]
             if pending:
                 src = pending[-1]["source"]
-                self.memory.record_proactive_feedback(source=src, channel=pending[-1].get("channel") or "", responded=True)
+                self._feedback_proactive(source=src, channel=pending[-1].get("channel") or "", responded=True)
                 self.gate.note_responded(src, channel=pending[-1].get("channel") or "")
         except Exception as e:
             logger.debug("close expectation on reply failed: %s", e)
@@ -3434,13 +3449,13 @@ class Agent:
                 return []
             meal_sent_ids = {
                 str(row.get("candidate_id") or "")
-                for row in self.memory.recent_proactive_feedback(source="meal", limit=30)
+                for row in self._recent_feedback(source="meal", limit=30)
             }
             due = self.meals.due(now=now, sent_ids=meal_sent_ids)
             if not due:
                 return []
             meal_name, meal_text, meal_cid = due
-            self.memory.record_proactive_feedback(
+            self._feedback_proactive(
                 source="meal", channel=self.message_channel, candidate_id=meal_cid)
             return [{"source": "meal", "text": meal_text, "meal": meal_name}]
 
@@ -3837,7 +3852,7 @@ class Agent:
             window = float(self.tension.UNANSWERED_REPLY_WINDOW_HOURS)
         except Exception:
             pass
-        self.memory.record_proactive_feedback(
+        self._feedback_proactive(
             source=source, channel=channel, candidate_id=candidate_id or "proactive",
             requires_reply=True, direct_question=question,
             expires_at=(datetime.datetime.now(datetime.timezone.utc)
@@ -3861,7 +3876,7 @@ class Agent:
         if not self._speak_mood_ok():
             return ""  # D3 性格闸：低落的人不追话（期待不过期作废，账还在，明天缓了再问）
         try:
-            rows = self.memory.recent_proactive_feedback(limit=100)
+            rows = self._recent_feedback(limit=100, role_id=self.role_key)
         except Exception:
             return ""
         due = []

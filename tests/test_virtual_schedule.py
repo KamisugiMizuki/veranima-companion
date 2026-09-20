@@ -113,6 +113,55 @@ def test_day_plan_is_stable_and_current_context_uses_timezone(tmp_path):
     assert current.source_anchor["truth_class"] == "virtual_simulation"
 
 
+def _tired_runtime(tmp_path):
+    """一个含「可选软块」的角色目录：欠睡时它该被让出去。"""
+    role_dir = tmp_path / "characters" / "tired"
+    role_dir.mkdir(parents=True)
+    value = template()
+    value["day_profiles"] = {"baseline": {"allowed_block_ids": ["focus", "interest"]}}
+    value["blocks"] = [
+        template()["blocks"][0],
+        {
+            "id": "interest",
+            "category": "role_defined",
+            "activity_pool": ["hobby"],
+            "preferred_window": {"start": "20:00", "end": "23:00"},
+            "duration_minutes": {"min": 30, "max": 120},
+            "required": False,
+            "share_policy": "normal",
+            "interaction_profile": "occupied_brief",
+            "interaction_impact": "none",
+            "deviation_policy": {"allow_skip": True},
+            "priority": 5,
+        },
+    ]
+    (role_dir / "virtual_schedule.json").write_text(json.dumps(value), encoding="utf-8")
+    return ScheduleRuntime(ScheduleOutline.from_role_dir(role_dir))
+
+
+def test_sleep_debt_drops_an_optional_block_next_day(tmp_path):
+    """R06（2026-09-20 设计审计 §5.7.1）：欠睡影响次日安排不该只靠 LLM 想起来。
+
+    债务超阈 → 允许跳过(allow_skip)的非必需块整块让出去（确定性兜底）；
+    债务还清 → 恢复常态（有恢复条件）。必需块与 sleep_window 锚点不动。
+    """
+    from dataclasses import replace
+
+    runtime = _tired_runtime(tmp_path)
+    when = dt.datetime(2026, 9, 5, 3, 0, tzinfo=dt.timezone.utc)
+
+    fresh = [item.rule_id for item in runtime.generate_next_day(when).items]
+    assert fresh == ["focus", "interest"]
+
+    runtime.state = replace(runtime.state, sleep_debt_minutes=120)
+    tired = [item.rule_id for item in runtime.generate_next_day(when).items]
+    assert tired == ["focus"]                     # 软块让出去，必需块照做
+
+    runtime.state = replace(runtime.state, sleep_debt_minutes=0)
+    recovered = [item.rule_id for item in runtime.generate_next_day(when).items]
+    assert recovered == ["focus", "interest"]     # 睡够了就恢复
+
+
 def test_disabled_outline_has_no_plan_or_context(tmp_path):
     outline = ScheduleOutline.from_role_dir(tmp_path / "characters" / "missing")
 

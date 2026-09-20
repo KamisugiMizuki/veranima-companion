@@ -73,3 +73,37 @@ def test_arbitrator_failure_escalation():
     a._now = 1000.0 + 3601 + 1801  # commit 冷却过后
     a.note_failure("idle")
     assert a.request("idle", scene="normal") is True  # 清零后重新从 1 开始
+
+
+# ---------- R13 能力与自我披露边界（2026-09-20 设计审计） ----------
+
+def test_capability_stance_transcribes_instead_of_claiming_experience():
+    """查来的说法当转述，不当亲历；不懂就去问/查，别为接话装懂。"""
+    from veranima.core.prompts import CAPABILITY_STANCE
+
+    assert "转述" in CAPABILITY_STANCE["略知"]
+    assert "查" in CAPABILITY_STANCE["完全不懂"]
+
+
+def test_thread_block_leaves_disclosure_to_the_character():
+    """她自己的事说不说、说多少由她定；用户不接这个话头就放回去。"""
+    from veranima.core.mind import ThreadLedger
+
+    class _Mem:
+        def thread_list(self, role, **kw):
+            return [{"id": 1, "topic": "那组对比还在跑", "intensity": 0.6,
+                     "origin": "schedule", "last_spoken_at": ""}]
+
+    class _Card:
+        name = "lin"
+
+    class _Agent:
+        role_key = "lin"
+        card = _Card()
+        memory = _Mem()
+
+    block = ThreadLedger(_Agent()).prompt_block()
+    assert "由你定" in block
+    assert "不接这个话头" in block
+    assert "编造" in block          # 原有硬约束仍在（不是替换）
+

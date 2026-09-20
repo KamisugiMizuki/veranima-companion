@@ -187,14 +187,32 @@ def start_ticks() -> str:
     return json.dumps({"ok": True})
 
 
+def _trailing_unanswered(agent, role: str, limit: int = 20) -> list[dict]:
+    """本角色会话尾部的未回消息（最后一条 assistant 之后的 user 行，时间序）。
+
+    2026-09-20 R11：补回以「未处理的整批」为单位——只拿最后一条会丢掉同一批里
+    前面几条的上下文（连发三条崩在中间，重放只回最后一条＝答非所问）。
+    """
+    rows = agent.memory.recent_messages(limit=limit, role_id=role)
+    tail: list[dict] = []
+    for row in reversed(rows):
+        if str(row.get("role")) == "assistant":
+            break
+        if str(row.get("role")) == "user":
+            tail.append(row)
+    tail.reverse()
+    return tail
+
+
 def catch_up_replies() -> str:
     """漏回追补（2026-09-04 审计#6）。09-06 苏醒总结旁路删除后成为唯一
     崩溃补回通道：登记前崩=周期还开着，重跑 handle 全流程补回（含总结）；
     登记后崩=总结已落 sleep_cycles（睡眠详情页可见），补回的那轮无总结素材
     ——宁缺勿重播（旁路复读 4~6 次才是当时更大的罪）。会话尾是用户消息且没人回=上轮进程
-    没跑完（闪退/后台被杀/LLM 炸）。boot 后延迟触发一次：
-    只补 2-40 分钟内的（太久=用户早不需要了）；每角色至多一条。
-    走正常 handle() 链=通知/落库/记账全复用。"""
+    没跑完（闪退/后台被杀/LLM 炸）。boot 后延迟触发一次：2-40 分钟内补回，
+    每角色一轮（同批多条合并成一轮喂 LLM，与 chat_batch 同语义）。
+    2026-09-20 R11：超窗不自动补答，但绝不静默吞掉——记一笔可查的账（decisions），
+    导出复盘时能看到这条消息漏在了哪里。走正常 handle() 链=通知/落库/记账全复用。"""
     agents = getattr(boot, "agents", None) or {}
     if not agents:
         agent0 = getattr(boot, "agent", None)
@@ -205,17 +223,31 @@ def catch_up_replies() -> str:
         if agent is None or not role:
             continue
         try:
-            last = agent.memory.last_conversation_turn(role)
-            if not last or last["role"] != "user":
+            tail = _trailing_unanswered(agent, role)
+            if not tail:
                 continue
-            ago = (_dt.datetime.now(_dt.timezone.utc)
-                   - _dt.datetime.fromisoformat(last["created_at"])).total_seconds()
-            if not (120 <= ago <= 2400):
+            last = tail[-1]
+            try:
+                ago = (_dt.datetime.now(_dt.timezone.utc)
+                       - _dt.datetime.fromisoformat(str(last.get("created_at")))).total_seconds()
+            except (TypeError, ValueError):
                 continue
-            log.info("catch-up reply for %s (unanswered %.0fmin)", role, ago / 60)
-            # 复用已落库的那行（chat_batch 落库先于 handle，进程死在中间=库里已有 user 行；
-            # 不传 id 会再落一条重复 user——09-08 导出筛查里的「重复用户消息」同型）
-            agent.handle(last["content"], channel="im",
+            if ago > 2400:
+                agent.memory.log_decision(
+                    role, "catchup", "expired",
+                    reason=f"会话尾 {len(tail)} 条未回，最后一条 {ago / 60:.0f} 分钟前超窗",
+                    object_ref=f"message:{last.get('id')}")
+                continue
+            if ago < 120:
+                continue
+            text = "\n".join(str(r.get("content") or "") for r in tail
+                             if str(r.get("content") or "").strip())
+            if not text:
+                continue
+            log.info("catch-up reply for %s (%d msg, unanswered %.0fmin)", role, len(tail), ago / 60)
+            # 复用已落库的末条 user 行（chat_batch 落库先于 handle，进程死在中间=
+            # 库里已有 user 行；不传 id 会再落一条重复 user——09-08 导出筛查同型）
+            agent.handle(text, channel="im",
                          pre_stored_msg_id=int(last.get("id") or 0) or None)
             n += 1
         except Exception:

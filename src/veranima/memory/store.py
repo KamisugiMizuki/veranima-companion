@@ -1237,11 +1237,18 @@ class MemoryStore:
                                   candidate_id: str = "", sent_at: str | None = None,
                                   requires_reply: bool = False, direct_question: str = "",
                                   expires_at: str | None = None,
-                                  expectation_status: str | None = None) -> None:
-        """记录一次主动消息的反馈（忽略/响应/打断）。"""
+                                  expectation_status: str | None = None,
+                                  role_id: str = "") -> None:
+        """记录一次主动消息的反馈（忽略/响应/打断）。
+
+        期待按角色隔离（2026-09-20 R03）：多角色共库时，一条待回应期待只能被
+        它所属角色的对话闭合——否则「许眠回一句话」会把凛的期待平账，而各角色
+        的 tick 又会互相替对方结算张力、替对方发追问。
+        """
+        role = str(role_id or "")
         if responded and sent_at is None:
-            clauses = ["source=?", "responded=0"]
-            params: list[object] = [source]
+            clauses = ["source=?", "responded=0", "role_id=?"]
+            params: list[object] = [source, role]
             if channel:
                 clauses.append("channel=?")
                 params.append(channel)
@@ -1266,12 +1273,12 @@ class MemoryStore:
         self.con.execute(
             "INSERT INTO proactive_feedback"
             " (sent_at, source, channel, candidate_id, requires_reply, direct_question, expires_at, expectation_status,"
-            " responded, interrupted, user_sent_within, dismissed)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            " responded, interrupted, user_sent_within, dismissed, role_id)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (sent_at or _now(), source, channel or "qq", candidate_id or "",
              int(requires_reply), direct_question or "", expires_at,
              expectation_status or ("pending" if requires_reply else "none"),
-             int(responded), int(interrupted), user_sent_within, int(dismissed)),
+             int(responded), int(interrupted), user_sent_within, int(dismissed), role),
         )
         self.con.commit()
 
@@ -1286,28 +1293,29 @@ class MemoryStore:
         return cur.rowcount == 1
 
     def recent_proactive_feedback(self, source: str | None = None, limit: int = 10,
-                                  channel: str | None = None) -> list[dict]:
-        """最近主动反馈记录（连续忽略判断用）。"""
-        if source and channel:
-            rows = self.con.execute(
-                "SELECT * FROM proactive_feedback WHERE source=? AND channel=? ORDER BY id DESC LIMIT ?",
-                (source, channel, limit),
-            ).fetchall()
-        elif source:
-            rows = self.con.execute(
-                "SELECT * FROM proactive_feedback WHERE source=? ORDER BY id DESC LIMIT ?",
-                (source, limit),
-            ).fetchall()
-        elif channel:
-            rows = self.con.execute(
-                "SELECT * FROM proactive_feedback WHERE channel=? ORDER BY id DESC LIMIT ?",
-                (channel, limit),
-            ).fetchall()
-        else:
-            rows = self.con.execute(
-                "SELECT * FROM proactive_feedback ORDER BY id DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
+                                  channel: str | None = None,
+                                  role_id: str | None = None) -> list[dict]:
+        """最近主动反馈记录（连续忽略判断用）。
+
+        ``role_id`` 非 None 时只回该角色的行——各角色的 tick 只能结算/追问
+        自己的期待（2026-09-20 R03 跨角色污染修复）。
+        """
+        clauses: list[str] = []
+        params: list[object] = []
+        if source:
+            clauses.append("source=?")
+            params.append(source)
+        if channel:
+            clauses.append("channel=?")
+            params.append(channel)
+        if role_id is not None:
+            clauses.append("role_id=?")
+            params.append(str(role_id))
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = self.con.execute(
+            f"SELECT * FROM proactive_feedback{where} ORDER BY id DESC LIMIT ?",
+            (*params, limit),
+        ).fetchall()
         return [dict(r) for r in rows]
 
     def log_decision(self, role_id: str, kind: str, verdict: str, *,
