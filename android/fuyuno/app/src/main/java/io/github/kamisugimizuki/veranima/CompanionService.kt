@@ -32,9 +32,17 @@ class CompanionService : Service() {
                     val bridge = Python.getInstance().getModule("bridge")
                     val r = JSONObject(bridge.callAttr("drain_pending").toString())
                     val msgs = r.getJSONArray("messages")
-                    for (i in 0 until msgs.length()) {
-                        val o = msgs.getJSONObject(i)
-                        notifyProactive(o.getString("text"), o.optString("name"), o.optString("role"))
+                    if (msgs.length() > 0 && !notifyAvailable()) {
+                        // 通知不可用（Android 13+ 权限被拒 / 消息渠道被关）：用户可能
+                        // 根本没看到这条消息 → 让 Python 取消待回应期待（技术失败
+                        // 不进关系账：不结算张力、不追问）。应用内仍以 DB 为准。
+                        bridge.callAttr("note_notify_unavailable")
+                        runCatching { sendBroadcast(Intent(ACTION_PROACTIVE)) }
+                    } else {
+                        for (i in 0 until msgs.length()) {
+                            val o = msgs.getJSONObject(i)
+                            notifyProactive(o.getString("text"), o.optString("name"), o.optString("role"))
+                        }
                     }
                     // 前台应用感知（UsageStats→包名+app名→LLM 判断动作）：仅授权后生效，内部有冷却
                     foregroundApp()?.let { (pkg, label) ->
@@ -108,6 +116,17 @@ class CompanionService : Service() {
 
     private fun mgr(): NotificationManager =
         getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+    /** 主动通知此刻是否可达：权限被关（API 24+）或消息渠道被关（API 26+）都算不可达。 */
+    private fun notifyAvailable(): Boolean {
+        val nm = mgr()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && !nm.areNotificationsEnabled()) return false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val ch = nm.getNotificationChannel(CHANNEL_PROACTIVE) ?: return true
+            if (ch.importance == NotificationManager.IMPORTANCE_NONE) return false
+        }
+        return true
+    }
 
     /** 前台应用 → (包名, app 显示名)（UsageStats；未授权/无前台返回 null）。
      *  动作判断交给 bridge 的 LLM（包名+app 名 → 动作短语），这里不维护映射表。 */

@@ -220,6 +220,7 @@ CREATE TABLE IF NOT EXISTS mind_threads (
     beat_step    INTEGER NOT NULL DEFAULT 0,
     next_beat_at TEXT NOT NULL DEFAULT '',
     last_spoken_at TEXT NOT NULL DEFAULT '',
+    last_note    TEXT NOT NULL DEFAULT '',   -- 最近进展一行（R06：问起时答得出真东西）
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL
 );
@@ -395,6 +396,8 @@ def init_db(db_path: str | Path, dim: int = EMBEDDING_DIM, provider=None) -> sql
         thread_cols = {r["name"] for r in con.execute("PRAGMA table_info(mind_threads)").fetchall()}
         if "last_spoken_at" not in thread_cols:
             con.execute("ALTER TABLE mind_threads ADD COLUMN last_spoken_at TEXT NOT NULL DEFAULT ''")
+        if "last_note" not in thread_cols:   # R06：牵挂最近进展一行
+            con.execute("ALTER TABLE mind_threads ADD COLUMN last_note TEXT NOT NULL DEFAULT ''")
     except Exception as e:
         logger.warning("mind_threads migration check failed: %s", e)
     # M-3 迁移：memories_fts 已建但旧记忆行未索引 → 全量重建（独立表，普通 DELETE/INSERT 安全）
@@ -458,6 +461,9 @@ def init_db(db_path: str | Path, dim: int = EMBEDDING_DIM, provider=None) -> sql
             # （滚动）+ 最近信号时刻；报告到达时取两者定案。共享用户态家族，只走列级写
             ("inferred_woke_at", "TEXT NOT NULL DEFAULT ''"),
             ("last_signal_at", "TEXT NOT NULL DEFAULT ''"),
+            # 用户近况当日态（USER_MOOD_SPEC P2）：日期+偏离级+一句原因+来源角色。
+            # 共享单行家族，只走列级 setter；读侧按日期与角色过滤（§2.3.1）
+            ("user_mood_json", "TEXT NOT NULL DEFAULT ''"),
         ):
             if name not in cols:
                 con.execute(f"ALTER TABLE agent_state ADD COLUMN {name} {ddl}")

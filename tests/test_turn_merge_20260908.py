@@ -192,6 +192,38 @@ def test_catch_up_merges_the_whole_unanswered_batch(bridge, monkeypatch, tmp_pat
     assert len([m for m in store.recent_messages(limit=50) if m["role"] == "user"]) == 3
 
 
+def test_retry_unanswered_resumes_without_duplicate(bridge, monkeypatch, tmp_path):
+    """R11（2026-09-20）：进程没死时本轮失败 → 即时重试复用补回链，不重复入库。
+
+    修前：失败那一轮的 user 消息会一直没人回（补回只在下次启动才跑）。
+    """
+    store = MemoryStore(str(tmp_path / "db.sqlite"), config={}, provider=Embed())
+    ids = [store.store_message("user", t, 0.7, "平静", role_id="lin")
+           for t in ("在吗", "帮我看看这个")]
+    seen = {}
+
+    class FakeAgent:
+        role_key = "lin"
+        message_channel = "im"
+
+        def __init__(self):
+            self.memory = store
+            self.card = CharacterCard(name="凛")
+
+        def handle(self, text, **kw):
+            seen["text"] = text
+            seen.update(kw)
+            return SimpleNamespace(reply="在的。")
+
+    monkeypatch.setattr(bridge, "_agent_for", lambda role: FakeAgent())
+    out = json.loads(bridge.retry_unanswered("lin"))
+
+    assert out["ok"] is True and out["handled"] == 1
+    assert seen["text"] == "在吗\n帮我看看这个"
+    assert seen["pre_stored_msg_id"] == ids[-1]
+    assert len([m for m in store.recent_messages(limit=50) if m["role"] == "user"]) == 2
+
+
 def test_catch_up_over_window_is_recorded_not_silently_dropped(bridge, monkeypatch, tmp_path):
     """超窗不自动补答（太久=用户早不需要），但必须留痕——不得静默吞掉。"""
     from datetime import datetime, timedelta, timezone

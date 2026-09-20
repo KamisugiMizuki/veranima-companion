@@ -22,6 +22,8 @@ _VALID_EMOTIONS = {"none", "happy", "sad", "angry", "anxious"}
 _VALID_TENSION = {"none", "answered", "skipped", "low_investment"}
 _VALID_CONFLICT = {"none", "apology", "violation"}
 _VALID_SLEEP = {"none", "sleeping", "waking"}
+# R09/USER_MOOD_SPEC：偏离级闭集（条件注入；表外值丢弃回 none）
+_VALID_MOOD = {"none", "mild", "low"}
 
 
 @dataclass
@@ -47,6 +49,7 @@ class MessageJudgment:
     thread_candidate: str = ""            # 值得角色持续惦记的事（M1 牵挂；空=无）
     thread_closed: int = 0                # 本句宣告完结的牵挂序号（0=无；对照注入清单）
     thread_ids: tuple = ()                # 送判时的序号→线程 id 快照（tick 重排防错位）
+    user_mood: str = "none"               # 偏离级：none/mild/low（仅命中对照时送判）
     investment_note: str = ""             # 判定理由（日志/调试，不出口）
 
 
@@ -57,7 +60,12 @@ class JudgeConfig:
     history_note_max: int = 120
 
 
-def build_judge_prompt(text: str, prev_assistant: str, open_threads: list | None = None) -> str:
+def build_judge_prompt(text: str, prev_assistant: str, open_threads: list | None = None,
+                       mood_context: str = "") -> str:
+    """mood_context：近况对照命中时追加（对照事实 + 最近原话 + 偏离级要求）。
+
+    未命中 = 空串，送判文本与改造前逐字一致（零噪声、零成本，USER_MOOD_SPEC §2.2）。
+    """
     ctx = f"\n上一条助手消息（可能为空）：{prev_assistant[:120]}" if prev_assistant else ""
     if open_threads:
         lst = "\n".join(f"{i + 1}. {th['topic']}" for i, th in enumerate(open_threads))
@@ -121,6 +129,7 @@ def build_judge_prompt(text: str, prev_assistant: str, open_threads: list | None
         '"health_notes"健康长期注意项/"personality_traits"性格自述；'
         '只填这句话里明确自述的，别脑补，没提到给 {}。\n'
         "判定看语义不看字面；拿不准就选最保守值（none/false/{}）。只输出 JSON。"
+        + (mood_context or "")
     )
 
 
@@ -180,16 +189,22 @@ def _coerce(raw: dict) -> MessageJudgment:
     re_ = raw.get("recall_evidence")
     if isinstance(re_, str):
         j.recall_evidence = re_.strip()[:20]
+    um = str(raw.get("user_mood") or "").strip().lower()
+    j.user_mood = um if um in _VALID_MOOD else "none"
     return j
 
 
 def judge_message(llm, text: str, prev_assistant: str = "",
                   *, config: dict | None = None,
-                  open_threads: list | None = None) -> MessageJudgment | None:
+                  open_threads: list | None = None,
+                  mood_context: str = "", allow_short: bool = False) -> MessageJudgment | None:
     """一次调用产全量判断。返回 None=不可用/不值得判（调用方全量回退规则）。
 
     预筛（控成本非裁决）：<6 字极短消息不送判，但含场景词（要睡了/去忙等）
     例外——这类消息正是闸门信号，等词表兜底会留语义空窗。
+
+    allow_short（R09）：近况对照命中时放行极短消息——短句本身就是信号，
+    不该被成本预筛挡住（USER_MOOD_SPEC §2.2）。
     """
     from .ambient import SCENE_KEYWORDS
     from .agent_keywords import REPORT_HINT_KEYWORDS
@@ -199,13 +214,14 @@ def judge_message(llm, text: str, prev_assistant: str = "",
         return None
     short_hit = (any(kw in key for group in SCENE_KEYWORDS.values() for kw in group)
                  or any(kw in key for kw in REPORT_HINT_KEYWORDS))
-    if len(key) < 6 and not short_hit:
+    if len(key) < 6 and not short_hit and not allow_short:
         return None
     if llm is None or not getattr(llm, "is_model_loaded", lambda: False)():
         return None
     try:
         raw = llm.chat_structured(
-            [{"role": "user", "content": build_judge_prompt(text, prev_assistant, open_threads)}],
+            [{"role": "user", "content": build_judge_prompt(
+                text, prev_assistant, open_threads, mood_context)}],
             temperature=0.1,  # 预算不传=全局上限（12 字段 JSON+reasoning，512 实测被烧空）
         )
         data = json.loads(str(raw).strip().strip("`").removeprefix("json").strip())

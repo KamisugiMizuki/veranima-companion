@@ -89,6 +89,11 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _local_date() -> str:
+    """本地日期（用户近况当日态的过期判据：按本机时区的「今天」）。"""
+    return datetime.now().date().isoformat()
+
+
 def validate_candidate(cand: dict) -> list[str]:
     """候选记忆程序校验（R1_SPEC 1.2）：LLM 不得直接执行 SQL，先过本函数。
 
@@ -685,6 +690,48 @@ class MemoryStore:
         )
         self.con.commit()
 
+    def set_user_mood_state(self, payload: dict | None) -> None:
+        """用户近况当日态列级写（唯一正门）：不碰整行，多 Agent 无覆盖竞态。
+
+        payload={date,level,role,note}；空 dict/None = 清。读侧按本地日期过期。
+        """
+        import json as _json
+        value = _json.dumps(payload or {}, ensure_ascii=False) if payload else ""
+        # 保留行 upsert（只碰这一列 + updated_at，不整行写）：冷库没有 id=1 行时
+        # 单条 UPDATE 会静默写 0 行（当日态明明判出来了却存不进去）
+        self.con.execute(
+            "INSERT INTO agent_state(id, user_mood_json, updated_at) VALUES(1,?,?)"
+            " ON CONFLICT(id) DO UPDATE SET user_mood_json=excluded.user_mood_json,"
+            " updated_at=excluded.updated_at",
+            (value, _now()))
+        self.con.commit()
+
+    def user_mood_state(self, role_id: str = "", today: str = "") -> dict:
+        """读当日用户近况：日期戳不是今天就当没有（零清理逻辑）。
+
+        §2.3.1 角色知情边界：只回**来源角色自己**记下的推断——共享列不能让
+        别的角色突然「知道」用户在另一个会话里的心情。
+        """
+        import json as _json
+        try:
+            row = self.con.execute(
+                "SELECT user_mood_json FROM agent_state WHERE id=1").fetchone()
+        except Exception:
+            return {}
+        if not row or not row["user_mood_json"]:
+            return {}
+        try:
+            data = _json.loads(row["user_mood_json"])
+        except (TypeError, ValueError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        if str(data.get("date") or "") != (today or _local_date()):
+            return {}
+        if role_id and str(data.get("role") or "") != str(role_id):
+            return {}
+        return data
+
     def set_sleep_state(self, asleep: bool, reported_at: str) -> None:
         """用户睡眠态列级写（唯一正门）：不碰整行，多 Agent 无覆盖竞态。"""
         self.con.execute(
@@ -1113,7 +1160,8 @@ class MemoryStore:
     # ---------- 牵挂账本（M1；生命周期纯逻辑在 core/mind.py） ----------
 
     def thread_add(self, role_id: str, topic: str, origin: str, *,
-                   intensity: float = 0.6, next_beat_at: str = "") -> int:
+                   intensity: float = 0.6, next_beat_at: str = "",
+                   last_note: str = "") -> int:
         """同一角色同主题去重：已存在=强度取高刷新，不重复开线。"""
         topic = str(topic or "").strip()[:60]
         if not topic or not role_id:
@@ -1125,15 +1173,17 @@ class MemoryStore:
         if row:
             self.con.execute(
                 "UPDATE mind_threads SET intensity=MAX(intensity,?),"
-                " next_beat_at=COALESCE(NULLIF(?, ''), next_beat_at), updated_at=? WHERE id=?",
-                (max(0.0, min(1.0, intensity)), next_beat_at, ts, row["id"]))
+                " next_beat_at=COALESCE(NULLIF(?, ''), next_beat_at),"
+                " last_note=COALESCE(NULLIF(?, ''), last_note), updated_at=? WHERE id=?",
+                (max(0.0, min(1.0, intensity)), next_beat_at, str(last_note or "")[:80], ts, row["id"]))
             self.con.commit()
             return int(row["id"])
         cur = self.con.execute(
             "INSERT INTO mind_threads(role_id, topic, origin, intensity, status,"
-            " beat_step, next_beat_at, created_at, updated_at)"
-            " VALUES (?,?,?,?, 'open', 0, ?,?,?)",
-            (role_id, topic, origin, max(0.0, min(1.0, intensity)), next_beat_at, ts, ts))
+            " beat_step, next_beat_at, last_note, created_at, updated_at)"
+            " VALUES (?,?,?,?, 'open', 0, ?,?,?,?)",
+            (role_id, topic, origin, max(0.0, min(1.0, intensity)), next_beat_at,
+             str(last_note or "")[:80], ts, ts))
         self.con.commit()
         return int(cur.lastrowid)
 
@@ -1150,7 +1200,8 @@ class MemoryStore:
         return rows
 
     def thread_update(self, thread_id: int, **fields) -> None:
-        cols = [k for k in fields if k in ("intensity", "status", "beat_step", "next_beat_at", "last_spoken_at")]
+        cols = [k for k in fields if k in ("intensity", "status", "beat_step", "next_beat_at",
+                                          "last_spoken_at", "last_note")]
         if not cols:
             return
         sets = ", ".join(f"{c}=?" for c in cols)
@@ -1281,6 +1332,24 @@ class MemoryStore:
              int(responded), int(interrupted), user_sent_within, int(dismissed), role),
         )
         self.con.commit()
+
+    def cancel_pending_expectations(self, role_id: str, *, reason: str = "") -> int:
+        """取消该角色全部待回应期待（2026-09-20 R03：通知不可达/用户明确叫停）。
+
+        cancelled 不结算张力、不触发追问——用户可能根本没看到那条消息，
+        「没等到回应」就不是关系事实。返回取消条数。
+        """
+        cur = self.con.execute(
+            "UPDATE proactive_feedback SET expectation_status='cancelled'"
+            " WHERE role_id=? AND requires_reply=1 AND responded=0"
+            " AND expectation_status='pending'",
+            (str(role_id or ""),))
+        self.con.commit()
+        n = int(cur.rowcount or 0)
+        if n:
+            logger.info("proactive expectations cancelled: role=%s n=%s (%s)",
+                        role_id, n, reason or "通知不可达")
+        return n
 
     def expire_proactive_expectation(self, feedback_id: int) -> bool:
         """将未回复期待原子标记为 expired；重复 tick 不会重复处理。"""

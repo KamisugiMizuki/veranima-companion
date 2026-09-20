@@ -340,6 +340,24 @@ def test_expectation_is_role_scoped(tmp_path):
     assert row["expectation_status"] == "replied"
 
 
+def test_notify_unavailable_cancels_expectations(tmp_path):
+    """R03（2026-09-20）：通知不可达 → 期待取消，不结算张力、不追问。
+
+    用户根本没看到那条消息时，「没等到回应」不是关系事实。
+    """
+    agent = _make_agent(tmp_path)
+    agent.record_proactive_expectation("晚饭吃了吗？", source="ritual", channel="im")
+    row = agent.memory.recent_proactive_feedback(limit=1)[0]
+    past = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=2)).isoformat(timespec="seconds")
+    agent.memory.con.execute("UPDATE proactive_feedback SET expires_at=? WHERE id=?", (past, row["id"]))
+    agent.memory.con.commit()
+
+    assert agent.memory.cancel_pending_expectations(agent.role_key) == 1
+    assert agent.followup_message(now=datetime.datetime.now(datetime.timezone.utc)) == ""
+    assert agent.tension.state.value == 0          # 没结算张力
+    assert agent.memory.recent_proactive_feedback(limit=1)[0]["expectation_status"] == "cancelled"
+
+
 def test_followup_closed_by_user_reply(tmp_path):
     """追问发出后用户回话 → 期待闭合（responded=1），过期结算不再触发。"""
     agent = _make_agent(tmp_path)

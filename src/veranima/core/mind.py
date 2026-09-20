@@ -112,9 +112,14 @@ class ThreadLedger:
         rows = self.top()
         if not rows:
             return ""
-        lines = "; ".join(
-            f"「{r['topic']}」（{'刚挂上' if r['intensity'] >= 0.6 else '已经放了一阵'}）"
-            for r in rows)
+        parts = []
+        for r in rows:
+            line = f"「{r['topic']}」（{'刚挂上' if r['intensity'] >= 0.6 else '已经放了一阵'}）"
+            note = str(r.get("last_note") or "").strip()
+            if note:
+                line += f"，最近：{note}"      # R06：她说得出这条线走到哪了
+            parts.append(line)
+        lines = "; ".join(parts)
         return ("【你心里挂着的事】" + lines + "\n"
                 "这些是你的真实状态：如果顺嘴就自然地带一句你那边的事（不必等对方问），"
                 "不顺嘴就一个字也别提。说不说、说多少由你定，对方不接这个话头就把它放回去。"

@@ -222,6 +222,33 @@ def test_tweak_not_contaminated_by_infeasible_offset():
     assert sup and sup[0]["shift_minutes"] == 30
 
 
+def test_digest_thread_note_lands_and_reaches_prompt(tmp_path):
+    """R06（2026-09-20 设计审计 §5.7.1）：牵挂线带「最近进展」。
+
+    夜眠消化推进一步时顺手写的 note 落进线里 → 送 prompt 时带上，
+    这样「你那个事怎么样了」答得出走到哪了，而不是只能说「还挂着呢」。
+    """
+    llm = FakeLLM("")
+    a = _agent(tmp_path, llm)
+    a.schedule_runtime = _NS(sleeping=False, state=_NS(sleep_cycle_id=""),
+                             missed_digest_cycle="x:2026-09-04",
+                             adjustable_blocks=lambda when: [])
+    _seed(a)
+    tid = a.memory.thread_add(a.threads.role, "在改的稿子", "self", intensity=0.6)
+    llm.raw = json.dumps({
+        "content": "摘要", "portrait": "", "echo": "",
+        "threads": [{"id": tid, "action": "advance", "beat_hours": 48,
+                     "note": "稿子交了，等对方回话"}],
+        "schedule": [],
+    }, ensure_ascii=False)
+
+    assert a.maybe_nightly_digest()["created"] is True
+    row = [r for r in a.memory.thread_list(a.threads.role) if r["id"] == tid][0]
+    assert row["last_note"] == "稿子交了，等对方回话"
+    assert row["beat_step"] == 0                       # 只落进展，步进仍按到点推进
+    assert "最近：稿子交了，等对方回话" in a.threads.prompt_block()
+
+
 def test_digest_runs_once_for_missed_cycle(tmp_path):
     llm = FakeLLM(json.dumps({"content": "摘要", "portrait": "", "echo": "",
                               "threads": [], "schedule": []}, ensure_ascii=False))

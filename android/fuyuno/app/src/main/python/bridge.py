@@ -213,46 +213,94 @@ def catch_up_replies() -> str:
     每角色一轮（同批多条合并成一轮喂 LLM，与 chat_batch 同语义）。
     2026-09-20 R11：超窗不自动补答，但绝不静默吞掉——记一笔可查的账（decisions），
     导出复盘时能看到这条消息漏在了哪里。走正常 handle() 链=通知/落库/记账全复用。"""
-    agents = getattr(boot, "agents", None) or {}
-    if not agents:
-        agent0 = getattr(boot, "agent", None)
-        agents = {agent0.role_key: agent0} if agent0 is not None else {}
-    import datetime as _dt
+    agents = _agents_map()
     n = 0
     for role, agent in agents.items():
         if agent is None or not role:
             continue
         try:
-            tail = _trailing_unanswered(agent, role)
-            if not tail:
-                continue
-            last = tail[-1]
-            try:
-                ago = (_dt.datetime.now(_dt.timezone.utc)
-                       - _dt.datetime.fromisoformat(str(last.get("created_at")))).total_seconds()
-            except (TypeError, ValueError):
-                continue
-            if ago > 2400:
-                agent.memory.log_decision(
-                    role, "catchup", "expired",
-                    reason=f"会话尾 {len(tail)} 条未回，最后一条 {ago / 60:.0f} 分钟前超窗",
-                    object_ref=f"message:{last.get('id')}")
-                continue
-            if ago < 120:
-                continue
-            text = "\n".join(str(r.get("content") or "") for r in tail
-                             if str(r.get("content") or "").strip())
-            if not text:
-                continue
-            log.info("catch-up reply for %s (%d msg, unanswered %.0fmin)", role, len(tail), ago / 60)
-            # 复用已落库的末条 user 行（chat_batch 落库先于 handle，进程死在中间=
-            # 库里已有 user 行；不传 id 会再落一条重复 user——09-08 导出筛查同型）
-            agent.handle(text, channel="im",
-                         pre_stored_msg_id=int(last.get("id") or 0) or None)
-            n += 1
+            n += _resume_unanswered(agent, role, min_age_s=120, max_age_s=2400)
         except Exception:
             log.exception("catch_up failed for %s", role)
     return json.dumps({"ok": True, "handled": n})
+
+
+def retry_unanswered(role: str = "") -> str:
+    """本轮失败后的即时重试（2026-09-20 R11）：同一条补回链，不设最小等待。
+
+    用户刚等过一次失败的那轮，这里立刻把会话尾的未回消息按整批补上；
+    复用已落库的 user 行，绝不重复入库。返回 handled=0 表示没有可补的。
+    """
+    agent = _agent_for(role)
+    if agent is None:
+        return json.dumps({"ok": False, "error": "未初始化"})
+    try:
+        n = _resume_unanswered(agent, agent.role_key, min_age_s=0, max_age_s=3600)
+    except Exception:
+        log.exception("retry_unanswered failed for %s", role)
+        return json.dumps({"ok": False, "error": "retry failed"})
+    return json.dumps({"ok": True, "handled": n})
+
+
+def note_notify_unavailable() -> str:
+    """主动通知此刻不可达（权限被拒/渠道被关）→ 取消待回应期待（R03）。
+
+    用户看不到这条消息时，「没等到回应」不是关系事实：取消=不结算张力、
+    不追问。应用内仍以 DB 为准（消息照样在聊天流里）。
+    """
+    n = 0
+    for role, agent in _agents_map().items():
+        if agent is None or not role:
+            continue
+        try:
+            n += agent.memory.cancel_pending_expectations(role, reason="通知不可达")
+        except Exception:
+            log.exception("cancel expectations failed for %s", role)
+    return json.dumps({"ok": True, "cancelled": n})
+
+
+def _agents_map() -> dict:
+    """{role: agent}：boot.agents 优先，旧单角色结构回退。"""
+    agents = getattr(boot, "agents", None) or {}
+    if agents:
+        return agents
+    agent0 = getattr(boot, "agent", None)
+    return {agent0.role_key: agent0} if agent0 is not None else {}
+
+
+def _resume_unanswered(agent, role: str, *, min_age_s: float, max_age_s: float) -> int:
+    """把会话尾的未回消息按整批补一轮（catch_up 与失败重试共用）。
+
+    返回 1=补了一轮 / 0=没动（无未回 / 太新 / 超窗已记账）。
+    """
+    import datetime as _dt
+    tail = _trailing_unanswered(agent, role)
+    if not tail:
+        return 0
+    last = tail[-1]
+    try:
+        ago = (_dt.datetime.now(_dt.timezone.utc)
+               - _dt.datetime.fromisoformat(str(last.get("created_at")))).total_seconds()
+    except (TypeError, ValueError):
+        return 0
+    if ago > max_age_s:
+        agent.memory.log_decision(
+            role, "catchup", "expired",
+            reason=f"会话尾 {len(tail)} 条未回，最后一条 {ago / 60:.0f} 分钟前超窗",
+            object_ref=f"message:{last.get('id')}")
+        return 0
+    if ago < min_age_s:
+        return 0
+    text = "\n".join(str(r.get("content") or "") for r in tail
+                     if str(r.get("content") or "").strip())
+    if not text:
+        return 0
+    log.info("resume unanswered for %s (%d msg, age %.0fmin)", role, len(tail), ago / 60)
+    # 复用已落库的末条 user 行（chat_batch 落库先于 handle，进程死在中间=
+    # 库里已有 user 行；不传 id 会再落一条重复 user——09-08 导出筛查同型）
+    agent.handle(text, channel="im",
+                 pre_stored_msg_id=int(last.get("id") or 0) or None)
+    return 1
 
 
 def drain_pending() -> str:

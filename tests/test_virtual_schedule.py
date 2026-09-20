@@ -162,6 +162,44 @@ def test_sleep_debt_drops_an_optional_block_next_day(tmp_path):
     assert recovered == ["focus", "interest"]     # 睡够了就恢复
 
 
+def test_third_party_block_from_card_flows_end_to_end(tmp_path):
+    """R06（2026-09-20 设计审计 §5.7.1）：第三人职责不需要引擎新机制。
+
+    「她生活里有别人」= 卡里写一个社交块：照样进日程、进当前上下文（互动受限、
+    不便长聊、不给追问），由 activity_pool 与场所承载。写卡即生效；没写的卡
+    不凭空长出社交圈（设计原文：没有设定则不强造）。
+    """
+    role_dir = tmp_path / "characters" / "social"
+    role_dir.mkdir(parents=True)
+    value = template()
+    value["day_profiles"] = {"baseline": {"allowed_block_ids": ["focus", "family"]}}
+    value["blocks"] = [template()["blocks"][0], {
+        "id": "family",
+        "category": "role_defined",
+        "activity_pool": ["family_dinner"],
+        "preferred_window": {"start": "18:00", "end": "21:00"},
+        "duration_minutes": {"min": 60, "max": 120},
+        "required": True,
+        "priority": 5,
+        "share_policy": "low_pressure",
+        "interaction_profile": "occupied_brief",
+        "interaction_impact": "inconvenient",
+        "deviation_policy": {"allow_skip": False, "allow_shift": True},
+    }]
+    (role_dir / "virtual_schedule.json").write_text(json.dumps(value), encoding="utf-8")
+    runtime = ScheduleRuntime(ScheduleOutline.from_role_dir(role_dir))
+
+    plan = runtime.generate_next_day(dt.datetime(2026, 9, 5, 3, 0, tzinfo=dt.timezone.utc))
+    item = next(i for i in plan.items if i.rule_id == "family")
+    assert item.activity_key == "family_dinner"
+    assert item.interaction_impact == "inconvenient"
+
+    ctx = plan.context_at(item.planned_start)
+    assert ctx.item_id == item.id                       # 她此刻就在这件事里
+    assert ctx.interaction_profile == "occupied_brief"
+    assert ctx.curiosity_allowed is False               # 不在这时候问她自己的事
+
+
 def test_disabled_outline_has_no_plan_or_context(tmp_path):
     outline = ScheduleOutline.from_role_dir(tmp_path / "characters" / "missing")
 

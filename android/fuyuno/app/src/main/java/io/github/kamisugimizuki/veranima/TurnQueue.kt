@@ -132,12 +132,38 @@ object TurnQueue {
             }
             val out = JSONObject(raw)
             if (!out.optBoolean("ok")) {
-                error.value = "chat 失败: ${out.optString("error")}"
                 Log.e("VeranimaTurn", "[$role] chat_batch failed: ${out.optString("error")}")
+                if (retryOnce()) {          // 只重试一次；第二次失败才交给 UI
+                    error.value = ""
+                    revision.value += 1
+                    return
+                }
+                error.value = "chat 失败: ${out.optString("error")}"
                 return
             }
             error.value = ""
             revision.value += 1
+        }
+
+        /**
+         * 本轮失败的即时重试（R11，2026-09-20）：走 bridge.retry_unanswered 补回链——
+         * 会话尾未回消息按整批重跑一次、复用已落库的 user 行，不重复入库。
+         * 之前进程没死的情况下失败=这条消息永远没人回（补回只在下次启动跑）。
+         */
+        private suspend fun retryOnce(): Boolean {
+            delay(3_000)
+            return try {
+                val raw = withContext(Dispatchers.IO) {
+                    Python.getInstance().getModule("bridge")
+                        .callAttr("retry_unanswered", role).toString()
+                }
+                val handled = JSONObject(raw).optInt("handled")
+                Log.i("VeranimaTurn", "[$role] retry handled=$handled")
+                handled > 0
+            } catch (t: Throwable) {
+                Log.e("VeranimaTurn", "[$role] retry failed: ${t.message}")
+                false
+            }
         }
     }
 }

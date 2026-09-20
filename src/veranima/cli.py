@@ -192,7 +192,13 @@ def _replay_cmd(args) -> int:
     con = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
     con.row_factory = sqlite3.Row
     from .tools.replay import load, stats_text, timeline
-    rows = load(con, since=args.since, role=args.role, kind=args.kind)
+    try:
+        rows = load(con, since=args.since, role=args.role, kind=args.kind)
+    except sqlite3.OperationalError as exc:
+        # 老库还没有 decisions 表（09-07 才落账）：给一句人话，不吐 traceback
+        print(f"这个库里没有 decisions 账（{exc}）：换 --db 指导出件，"
+              f"或让核心用这个库跑一次（建表在打开时自动补）", file=sys.stderr)
+        return 1
     print(stats_text(rows) if args.replay_action == "stats" else timeline(rows))
     print(f"\n共 {len(rows)} 条决策（{db.name}）")
     return 0

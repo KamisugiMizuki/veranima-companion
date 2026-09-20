@@ -1583,13 +1583,81 @@ class Agent:
         prev_assistant = next(
             (str(e.get("content") or "") for e in reversed(self._history)
              if e.get("role") == "assistant"), "")
+        cmp = self._mood_compare()          # R09 近况对照（确定性预筛，fail-open）
+        self._mood_cmp = cmp
         j = judge_message(self.llm, key, prev_assistant,
                           config=self.config.get("judgment", {}) or {},
-                          open_threads=self.threads.top())
+                          open_threads=self.threads.top(),
+                          mood_context=cmp.context_block() if cmp.hit else "",
+                          allow_short=cmp.hit)
         self._judgment = j
         self._judgment_for = key
+        self._user_mood_level = str(getattr(j, "user_mood", "") or "")
         self._log_judge_decisions(j, key)
+        if cmp.hit:
+            # 留痕（USER_MOOD_SPEC §3）：命中 + 定性 + 偏离级，可回放
+            self.memory.log_decision(
+                self.role_key or self.card.name, "judge:user_mood",
+                str(getattr(j, "user_mood", "") or "unavailable"),
+                reason=f"对照命中：基线 {cmp.base:.0f} 字、连短 {cmp.run} 条",
+                digest=key[:80])
+        self._apply_user_mood_state(cmp, j, key)
         return j
+
+    def _mood_compare(self):
+        """近况对照（USER_MOOD_SPEC P1）：只看本角色会话，异常一律当未命中。"""
+        from .mood import compare
+        try:
+            role = self.role_key or ""
+            rows = self.memory.recent_messages(limit=120, role_id=role or None)
+            return compare([r for r in rows if str(r.get("role")) == "user"], role_id=role)
+        except Exception:
+            logger.debug("mood compare unavailable", exc_info=True)
+            return compare([])
+
+    @staticmethod
+    def _dt_now():
+        import datetime as _dt
+        return _dt.datetime.now()
+
+    def _apply_user_mood_state(self, cmp, j, text: str) -> None:
+        """当日态（USER_MOOD_SPEC §2.3/§2.3.1）：low 写入；正常消息解除。
+
+        解除不只看 none（短句的 none 不算恢复证据）：他写了条正常长度、判断点
+        也没读出负面，才算「解释/恢复了」。
+        """
+        from .mood import is_normal_message
+        role = self.role_key or self.card.name
+        level = str(getattr(j, "user_mood", "") or "none")
+        try:
+            if level == "low":
+                self.memory.set_user_mood_state({
+                    "date": self._dt_now().date().isoformat(), "level": "low", "role": role,
+                    "note": (str(getattr(j, "investment_note", "") or "")
+                             or "近况偏离")[:60]})
+            elif (is_normal_message(text)
+                  and str(getattr(j, "emotion", "none") or "none") in ("none", "happy")
+                  and self.memory.user_mood_state(role_id=role)):
+                self.memory.set_user_mood_state(None)
+        except Exception:
+            logger.debug("user mood state write failed", exc_info=True)
+
+    def _user_mood_block(self) -> str:
+        """回复软约束（USER_MOOD_SPEC §2.3）：本轮判出或当日态在场且为 low 时附加。
+
+        只进附加块（不进 system 前缀），形态同「场景偏好·忙碌」。
+        """
+        try:
+            role = self.role_key or self.card.name
+            level = str(getattr(self, "_user_mood_level", "") or "")
+            if level != "low":
+                level = str(self.memory.user_mood_state(role_id=role).get("level") or "")
+        except Exception:
+            return ""
+        if level != "low":
+            return ""
+        return ("【场景偏好·他这几天不太顺】他现在的状态偏沉。回得短一点、别热闹、"
+                "别追问、也不要点破你注意到了什么——语气自然收着就行，不要写成安慰话。")
 
     def _log_judge_decisions(self, j, user_text: str) -> None:
         """HARNESS Q3 裁决（09-07）：只存有后果的六类裁决进 decisions——回放面
@@ -1972,6 +2040,9 @@ class Agent:
             self.promises.to_prompt_block(query_hint=query_hint),
             self._affect_block(),
         ]
+        _mood_blk = self._user_mood_block()   # R09：他这几天偏沉 → 语气自然收着
+        if _mood_blk:
+            extra_blocks.append(_mood_blk)
         try:
             self.threads.tick(interaction_now)   # 开口前先推进状态（纯算术零成本）
             _tb = self.threads.prompt_block()
@@ -3060,7 +3131,8 @@ class Agent:
                            for r in open_rows)
             task += (
                 f"\n你心里现在挂着这些事：{tl}。睡前消化一遍：想通的放下(drop)、"
-                "有新动向的推进(advance 并写 beat_hours=几小时后再惦记，24-72 常见)、"
+                "有新动向的推进(advance 并写 beat_hours=几小时后再惦记，24-72 常见；"
+                "note 写一行这件事现在走到哪了，≤30 字，给自己看的备忘，问起时你答得上来)、"
                 "从今天的材料里冒出新的心事(new，带 20 字内的 topic)。"
                 "没有要动的就不写。只写列出的 id，不许发明 id。\n"
                 '"threads":[{"id":1,"action":"advance","beat_hours":24,"note":"一句话依据"}]\n'
@@ -3244,7 +3316,8 @@ class Agent:
                 if len(topic) < 6:
                     continue
                 self.threads.agent.memory.thread_add(
-                    self.threads.role, topic[:60], "self", intensity=0.5)
+                    self.threads.role, topic[:60], "self", intensity=0.5,
+                    last_note=note)          # R06：这条线从哪起步，问起时答得出
                 applied.append({"id": 0, "action": "new", "note": "nightly new: " + note,
                                 "topic": topic[:60]})
                 continue
@@ -3264,7 +3337,8 @@ class Agent:
                     bh = 24.0
                 nxt = (_dt.datetime.now() + _dt.timedelta(hours=bh)).isoformat(timespec="seconds")
                 self.threads.agent.memory.thread_update(
-                    tid, intensity=min(1.0, float(row["intensity"]) + 0.1), next_beat_at=nxt)
+                    tid, intensity=min(1.0, float(row["intensity"]) + 0.1), next_beat_at=nxt,
+                    **({"last_note": note} if note else {}))   # R06：进展落线（空 note 不动旧值）
             applied.append({"id": tid, "action": action, "note": note,
                             "topic": str(row["topic"])[:60]})
         return applied
@@ -3628,6 +3702,21 @@ class Agent:
             logger.debug("ritual user-active check failed: %s", e)
         return True
 
+    def _weave_mood_note(self) -> str:
+        """织文带用户状态（USER_MOOD_SPEC §2.3）：当日态 low 时语气收敛。
+
+        不挡发（「随心发言」拍板在先），只是把状态读进织文上下文——同「饭点
+        改写带最近消息」的既有做法；不点破。
+        """
+        try:
+            role = self.role_key or self.card.name
+            if str(self.memory.user_mood_state(role_id=role).get("level") or "") != "low":
+                return ""
+        except Exception:
+            return ""
+        return ("\n（另：他最近状态偏沉。这是背景、不是素材——语气收着，别热闹、"
+                "别追问、别出主意，也不要提他的情绪。）")
+
     def _weave_ritual(self, texts: list[str], sources: list[str] | None = None) -> str:
         """把多条到期素材织成一条语义连续的主动消息（2026-09-01 用户裁决 v2）。
 
@@ -3660,6 +3749,7 @@ class Agent:
               "句子长短不限——短句塞不下就用长句，或者几条语义连贯的短句接着发，"
               "说全、说顺比说短重要。消息本身之外只允许 SKIP 行。"
         )
+        task += self._weave_mood_note()
         woven = ""
         # 素材多条→思考量更大：首试默认预算，被截断则加倍重试一次（仍败=拼接回退）
         for budget in (None, 2048):

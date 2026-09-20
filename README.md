@@ -1,28 +1,32 @@
 # Veranima Companion
 
-Veranima 是一个以 **QQ 私聊为主要收发端** 的人格化 AI 陪伴系统。角色、长期记忆、关系状态、虚拟日程、主动性和任务协作由同一个 Python Agent 管理；Electron 桌宠负责角色形象、TTS、设置、日志和状态展示，也保留次要聊天窗口，但不作为主要通讯通道。
+Veranima 是一个人格化 AI 陪伴系统。角色、长期记忆、关系状态、虚拟日程、主动性和任务协作由同一个 Python Agent 管理，两个前端共用这份状态：
 
-> 当前项目面向 Windows 10/11。仓库不包含 API key、运行数据库、用户图片、模型权重、语音训练素材或本地私有语料。
+- **Windows 端**：Electron 桌宠（角色形象、TTS、设置、日志、状态展示与次要聊天窗口）；可选 QQ 私聊通道（NapCatQQ，`qq.enabled` 默认关闭）；
+- **安卓端**：`android/fuyuno/` 单体 App（Chaquopy 内嵌同一套 core），聊天 / 动态 / 设置三 tab，与 Windows 端共用备份通道。
+
+> 仓库不包含 API key、运行数据库、用户图片、模型权重、语音训练素材或本地私有语料。
 
 ## 当前能力
 
 | 模块 | 已实现行为 |
 |---|---|
-| QQ 主通讯 | NapCatQQ OneBot v11 反向 WebSocket；白名单 1v1 私聊；普通对话、主动消息、日程通知和任务状态均以 QQ 为主 |
+| QQ 通道（Windows 可选） | NapCatQQ OneBot v11 反向 WebSocket；白名单 1v1 私聊；`qq.enabled` 默认关闭；开启时日程状态通知由它发送 |
 | 桌宠 | Electron 透明置顶形象、立绘、TTS、拖拽、设置、日志、视觉注意力和次要聊天窗口；不会重复发送 QQ 日程通知 |
-| 角色卡 | Character Card V3；内置 `yuki`、`zima`；人格核心、语气、立绘、声音和角色目录日程模板 |
-| 长期记忆 | SQLite + FTS5 + sqlite-vec + 本地 bge-m3；五层记忆、版本链、时间线、衰减、整理、审核收件箱和 Context Brief |
-| 人格与关系 | PAD、依恋度、PersonaBrief、ResponsePlan、Imprint、冲突跟踪、关系张力和修复过程 |
+| 角色卡 | Character Card V3；角色目录 `characters/lin`（凛）、`characters/xumian`（许眠），`yuki`、`zima` 为历史卡；人格核心、语气、立绘、声音和角色目录日程模板；`roles list/switch/export/import` 切换与打包 |
+| 长期记忆 | SQLite + FTS5 + 本地 embedding（`memory_embedding` 归一化向量 + numpy 精确召回，sqlite-vec 已退役；安卓端可换远程向量服务）；五层记忆、版本链、双时间线、衰减、整理、审核收件箱和 Context Brief |
+| 人格与关系 | PAD、依恋度、PersonaBrief、ResponsePlan、Imprint、冲突跟踪、关系张力和修复过程；用户画像（`data/usermodel.json`，13 键 + 锁定）与羁绊快照 |
 | 虚拟日程 | 每角色 `virtual_schedule.json`、昼夜节律、结构化次日计划、睡眠/唤醒、grace period、睡眠债务、schedule offset 回正、effective span、日终自传归档、主动分享和用户信息缺口 |
 | 虚拟空间 | 每角色有限生活范围、地点池、活动环境、DayRoute、transition 时间占用、CurrentScene、空间事件、离线 reconcile、地点选择策略和 QQ 地点问答；复杂路线全局时间重排与真实 QQ/Electron 双端验收仍未完成 |
 | 联网日历 | Nager.Date 公共节假日 JSON API；按年缓存；失败时回退本地工作日/周末；不包含中国官方调休工作日规则 |
 | 图片与表情 | QQ/桌宠图片安全校验；QQ 表情候选审核、用户 scope 隔离、TTL、停用/删除、概率和发送间隔；动图不进入静态库 |
 | 主动消息 | QQ/pet 使用独立 Gate、冷却和每日额度；角色 sleeping 时统一阻断主动消息；日程状态通知只由 QQ 发送 |
-| 联网搜索 | 本地 SearXNG；显式、时效和未知实体搜索；EvidencePack、来源质量、冲突提示、缓存和正文补充 |
-| 语音 | SenseVoiceSmall STT；GPT-SoVITS TTS；桌宠语音链与 QQ 文字链共享语义 Agent |
+| 联网搜索 | **默认关闭**（`search.enabled`）；Windows 端接本地 SearXNG，安卓端接博查 API（`search.provider`）；EvidencePack、来源质量、冲突提示、缓存和正文补充 |
+| 语音（Windows 端） | SenseVoiceSmall STT；GPT-SoVITS TTS（按需启动/释放显存）；桌宠语音链与文字链共享语义 Agent；安卓端不含 TTS/STT |
 | Style Learning | 本地语料清洗、弱标注、审核、聚合 StyleBrief；原文和产物留在 ignored 目录 |
 | 共同创作 | Project/Scene/Decision/Artifact/Thread；证据确认后形成共同经历 |
 | 外部任务 | 可选 Hermes Agent 执行后端；陪伴语义仍归 Veranima；默认关闭写代码任务，隔离探针通过后才允许 |
+| 安卓端 | `android/fuyuno`：Chaquopy 单体 APK（含 core 与 bridge）、聊天 / 动态 / 设置三 tab、前台应用感知、主动消息通知与气泡、用户画像与记忆库详情页、备份导出导入；不含 TTS/STT 与 R5 后端 |
 
 ## 架构
 
@@ -77,19 +81,24 @@ llm:
   model: "模型名"
   api_key: ""
 
-character_card: "characters/yuki/character.json"
+character_card: "config/character.json"     # 运行时卡；角色目录设计稿在 characters/
 
 memory:
-  embedding_model: "local:data/models/bge-m3"
+  embedding_model: "local:data/models/bge-m3"   # 安卓端可用 memory.embedding_base_url/api_key 覆盖为远程向量
+
+search:
+  enabled: false                              # 默认关闭；开启后 Windows 走本地 SearXNG、安卓走博查 API
 
 qq:
-  enabled: true
+  enabled: false                              # Windows 端 QQ 通道，默认关闭
   allowed_qq: [你的QQ号]
 ```
 
-API key 只写入本地配置或桌宠设置页。角色可切换为 `characters/zima/character.json`。
+API key 只写入本地配置或桌宠设置页。角色用 `roles list` 查看、`roles switch <名>` 切换。
 
-## QQ 主通讯
+## QQ 通道（Windows 可选）
+
+`qq.enabled: true` 时，核心启动会连带拉起 QQ adapter；关闭时桌宠与安卓端照常工作。
 
 1. 启动并登录 NapCatQQ。
 2. 在 NapCat 配置反向 WebSocket 客户端：
@@ -101,7 +110,7 @@ ws://127.0.0.1:8099/ws
 3. 启动完整桌宠入口。核心会按 `qq.enabled` 自动挂载 QQ adapter：
 
 ```text
-双击 run_pet.vbs
+双击 run_pet.bat（或 run_pet.vbs）
 ```
 
 开发调试：
@@ -137,8 +146,8 @@ unset PYTHONPATH
 每个角色拥有独立模板：
 
 ```text
-characters/yuki/virtual_schedule.json
-characters/zima/virtual_schedule.json
+characters/lin/virtual_schedule.json
+characters/xumian/virtual_schedule.json
 ```
 
 当前实现包括：
@@ -200,7 +209,9 @@ unset PYTHONPATH
 子命令：
 
 ```text
-roles   多角色管理
+roles   多角色管理（list / switch / export / import）
+backup  记忆备份：共享记忆+学习状态 → 单 zip（跨 Windows/安卓）
+replay  HARNESS 决策回放：decisions 账 → 可读事件流
 task    R5 任务管道
 create  共同创作
 style   离线文风语料
@@ -209,10 +220,13 @@ style   离线文风语料
 示例：
 
 ```bash
+unset PYTHONPATH
 .venv/Scripts/python.exe -m veranima.cli roles list
-.venv/Scripts/python.exe -m veranima.cli roles switch yuki
-.venv/Scripts/python.exe -m veranima.cli roles export yuki yuki.charpkg
-.venv/Scripts/python.exe -m veranima.cli roles import yuki.charpkg
+.venv/Scripts/python.exe -m veranima.cli roles switch xumian
+.venv/Scripts/python.exe -m veranima.cli roles export xumian xumian.charpkg --no-portraits
+.venv/Scripts/python.exe -m veranima.cli roles import xumian.charpkg
+.venv/Scripts/python.exe -m veranima.cli backup export
+.venv/Scripts/python.exe -m veranima.cli replay decisions --db exports/<导出件>.db --since 2026-09-01
 ```
 
 ## 验证
@@ -224,10 +238,10 @@ unset PYTHONPATH
 .venv/Scripts/python.exe -m pytest tests/ -q
 ```
 
-当前实测：
+当前实测（2026-09-20）：
 
 ```text
-934 passed, 1 warning
+1303 passed, 1 warning
 ```
 
 Node 语法检查：
@@ -236,6 +250,14 @@ Node 语法检查：
 "C:/Program Files/nodejs/node.exe" --check pet/main.js
 "C:/Program Files/nodejs/node.exe" --check pet/preload.js
 "C:/Program Files/nodejs/node.exe" --check pet/settings-renderer.js
+"C:/Program Files/nodejs/node.exe" --check pet/chat-renderer.js
+```
+
+安卓端构建（Chaquopy 单体 APK）：
+
+```bash
+cd android/fuyuno
+JAVA_HOME=D:/Android-sdk/jdk-17.0.20.1+1 D:/Android-sdk/gradle-8.13/bin/gradle.bat :app:assembleDebug
 ```
 
 真实远程 API 验收：
@@ -267,14 +289,14 @@ unset PYTHONPATH
 
 ## 设计与状态文档
 
-- `docs/roadmap/DESIGN.md`
-- `docs/virtual_life/VIRTUAL_SCHEDULE_SPEC.md`
-- `docs/virtual_life/VIRTUAL_SPACE_SPEC.md`
-- `docs/memory/MEMORY_SPEC.md`
-- `docs/persona/PERSONA_LOOP_SPEC.md`
-- `docs/proactive/QQ_PROACTIVE_SPEC.md`
-- `docs/images/IMAGE_STICKER_LIFECYCLE_SPEC.md`
-- `docs/hermes/HERMES_AGENT_INTEGRATION_SPEC.md`
+完整地图见 [`docs/README.md`](docs/README.md)（按模块组织的全部契约与审计文档）。入口：
+
+- `docs/roadmap/DESIGN.md` — 总纲（人物中心四变量 + 拟真五维 + R0–R5 分期）
+- `docs/roadmap/audits/REALISM_DESIGN_AUDIT.md` — 真人感设计审计（活文档：发现 + 落码记录）
+- `docs/memory/MEMORY_SPEC.md`、`docs/persona/PERSONA_LOOP_SPEC.md`、`docs/mind/MIND_LOOP_SPEC.md`
+- `docs/virtual_life/VIRTUAL_SCHEDULE_SPEC.md`、`VIRTUAL_SPACE_SPEC.md`、`VIRTUAL_GEOGRAPHY_SPEC.md`
+- `docs/android/ANDROID_SCOPE_SPEC.md`、`docs/android/TURN_MERGE_SPEC.md`、`docs/moments/MOMENTS_MULTIROLE_SPEC.md`
+- `docs/hermes/HERMES_AGENT_INTEGRATION_SPEC.md`、`docs/harness/HARNESS_SPEC.md`
 
 README 的“已实现”只表示代码存在且有行为测试；Electron、NapCat、TTS、STT 和外部服务仍需各自的真实运行环境。
 
