@@ -302,9 +302,14 @@ cancel/error → 停 timer/audio/queue，保留最后可读文字
 ```text
 pet/theme.css
 pet/chat.css
-pet/gui-state.js       # 窄：状态归一化/文案/广播，不放业务
-pet/reply-presenter.js # 主窗 segment/音频/立绘协调
+pet/gui-state.js       # 窄：状态归一化/文案/广播，不放业务（未拆——职责在 pet/renderer.js）
+pet/reply-presenter.js # 主窗 segment/音频/立绘协调（未拆——职责在 pet/main.js）
 ```
+
+> 实现状态（2026-09-20 R16 核验）：**这两个 JS 没有拆出来**——相应职责落在现有的
+> `pet/renderer.js`（主窗渲染/状态文案）与 `pet/main.js`（音频与窗口协调）、
+> `pet/chat-renderer.js`（聊天窗）。`pet/theme.css` 与 `pet/chat.css` 已在用。
+> 本图保留为「将来要拆时的边界」；要拆再按它动手，不拆也不影响行为。
 
 不要引入 bundler。实施顺序：
 

@@ -32,11 +32,17 @@ class CompanionService : Service() {
                     val bridge = Python.getInstance().getModule("bridge")
                     val r = JSONObject(bridge.callAttr("drain_pending").toString())
                     val msgs = r.getJSONArray("messages")
+                    // 主动投放决策日志（R03 排查用：看得出「排到几条、通知可不可达、走哪支」）
+                    android.util.Log.i("VeranimaNotify",
+                        "drain=${msgs.length()} available=${notifyAvailable()}")
                     if (msgs.length() > 0 && !notifyAvailable()) {
+                        android.util.Log.i("VeranimaNotify",
+                            "通知不可达：${msgs.length()} 条待发 → 取消待回应期待（不结算张力）")
                         // 通知不可用（Android 13+ 权限被拒 / 消息渠道被关）：用户可能
                         // 根本没看到这条消息 → 让 Python 取消待回应期待（技术失败
                         // 不进关系账：不结算张力、不追问）。应用内仍以 DB 为准。
-                        bridge.callAttr("note_notify_unavailable")
+                        val res = bridge.callAttr("note_notify_unavailable").toString()
+                        android.util.Log.i("VeranimaNotify", "取消待回应期待: $res")
                         runCatching { sendBroadcast(Intent(ACTION_PROACTIVE)) }
                     } else {
                         for (i in 0 until msgs.length()) {
@@ -117,9 +123,16 @@ class CompanionService : Service() {
     private fun mgr(): NotificationManager =
         getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
-    /** 主动通知此刻是否可达：权限被关（API 24+）或消息渠道被关（API 26+）都算不可达。 */
+    /** 主动通知此刻是否可达：权限被关（API 24+）或消息渠道被关（API 26+）都算不可达。
+     *
+     * 必须用 androidx 的 NotificationManagerCompat —— 系统 NotificationManager
+     * .areNotificationsEnabled() 在 appops POST_NOTIFICATION=ignore 时仍返回 true
+     * （2026-09-20 MuMu 实锤：关闭通知后 drain 日志 available=true，消息照样发不出去），
+     * compat 版会同时查 appop → 那种「用户把通知关了」的实况才拦得住。
+     */
     private fun notifyAvailable(): Boolean {
         val nm = mgr()
+        if (!androidx.core.app.NotificationManagerCompat.from(this).areNotificationsEnabled()) return false
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && !nm.areNotificationsEnabled()) return false
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val ch = nm.getNotificationChannel(CHANNEL_PROACTIVE) ?: return true

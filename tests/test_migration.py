@@ -85,6 +85,35 @@ def test_stale_dim_vectors_skipped_not_crash(tmp_path):
     assert rec and all(e.id != 999 for e in rec)
 
 
+def test_init_db_survives_old_proactive_feedback_without_role_id(tmp_path):
+    """迁移回归（2026-09-20 MuMu 实锤）：老库的 proactive_feedback 没有 role_id 列。
+
+    SCHEMA 脚本先于迁移执行，曾在那儿建 role_id 索引 → 老库整个 init_db 抛
+    「no such column: role_id」= App 起不来。索引现在只留迁移块（补列之后）。
+    """
+    path = str(tmp_path / "old.db")
+    con = sqlite3.connect(path)
+    con.execute(
+        """CREATE TABLE proactive_feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, sent_at TEXT NOT NULL, source TEXT NOT NULL,
+            channel TEXT NOT NULL DEFAULT 'qq', candidate_id TEXT NOT NULL DEFAULT '',
+            requires_reply INTEGER NOT NULL DEFAULT 0, direct_question TEXT NOT NULL DEFAULT '',
+            expires_at TEXT, expectation_status TEXT NOT NULL DEFAULT 'none',
+            responded INTEGER NOT NULL DEFAULT 0, interrupted INTEGER NOT NULL DEFAULT 0,
+            user_sent_within INTEGER, dismissed INTEGER NOT NULL DEFAULT 0)""")
+    con.execute("INSERT INTO proactive_feedback(sent_at, source) VALUES ('2026-09-01T00:00:00','meal')")
+    con.commit()
+    con.close()
+
+    mem = MemoryStore(db_path=path, config={}, provider=FakeEmbed())
+
+    cols = {r["name"] for r in mem.con.execute("PRAGMA table_info(proactive_feedback)").fetchall()}
+    assert "role_id" in cols
+    idx = {r["name"] for r in mem.con.execute("PRAGMA index_list(proactive_feedback)").fetchall()}
+    assert "idx_proactive_feedback_role" in idx
+    assert mem.con.execute("SELECT COUNT(*) FROM proactive_feedback").fetchone()[0] == 1
+
+
 def test_unit_blob_is_normalized():
     import math
     b = unit_blob([3.0, 4.0])

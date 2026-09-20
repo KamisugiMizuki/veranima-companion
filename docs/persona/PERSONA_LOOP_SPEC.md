@@ -786,7 +786,7 @@ scheduled tick
   → optional ProactiveCandidate → ProactiveGate
 ```
 
-禁止反向依赖：`MemoryStore` 不导入 `Agent`/LLM；`core/learning.py` 不修改人格模型；`reflection.py` 不直接发送消息；`prompt.py` 不写数据库。
+禁止反向依赖：`MemoryStore` 不导入 `Agent`/LLM；`core/learning.py` 不修改人格模型；`reflection.py` 不直接发送消息；`core/prompts.py` 不写数据库。
 
 ### 最小新增目标文件
 
@@ -798,7 +798,7 @@ src/veranima/core/reflection.py     # 低频触发、反思候选、程序校验
 仅在独立表迁移时新增：
 
 ```text
-src/veranima/memory/persona_store.py
+src/veranima/memory/persona_store.py   # 未建：人格状态现寄在 agent_state.relationship（见状态持久化节）
 ```
 
 不要新增通用工作流引擎、事件总线、人格插件框架或独立向量库。

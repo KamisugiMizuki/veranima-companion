@@ -163,7 +163,9 @@ CREATE TABLE IF NOT EXISTS proactive_feedback (
     role_id          TEXT NOT NULL DEFAULT ''   -- 角色隔离（2026-09-20 R03）：期待只归它的角色
 );
 CREATE INDEX IF NOT EXISTS idx_proactive_feedback_source ON proactive_feedback(source);
-CREATE INDEX IF NOT EXISTS idx_proactive_feedback_role ON proactive_feedback(role_id);
+-- role_id 的索引不在这里建：老库的 proactive_feedback 没有这一列，而本脚本先于迁移执行
+-- → CREATE INDEX(role_id) 会让整个 init_db 抛「no such column」（2026-09-20 MuMu 实锤）。
+-- 正确位置=下面的 proactive_feedback 迁移块（补列之后，新老库都走）。
 
 -- Agent 内在状态（依恋度/精力/情绪/计数），单行，跨重启持久化（2026-08-04 续接）
 CREATE TABLE IF NOT EXISTS agent_state (
