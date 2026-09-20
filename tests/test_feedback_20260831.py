@@ -905,10 +905,10 @@ def test_thread_lifecycle(tmp_path):
     assert mem.thread_list("xumian", open_only=False)[0]["status"] == "done"
 
 def test_thread_dedup_like_topics(tmp_path):
-    """同主题（前 12 字 LIKE）不开第二条，强度取高。"""
+    """同主题的措辞变化不开第二条，强度取高。"""
     a, mem = _moment_agent(tmp_path / "th2")
-    id1 = a.threads.from_user("训练结果还没出，一直悬着", intensity=0.5)
-    id2 = a.threads.from_user("训练结果还没出，一直悬着", intensity=0.8)
+    id1 = a.threads.from_user("考研复习要开始了，十二月底考试", intensity=0.5)
+    id2 = a.threads.from_user("考研复习，十二月底考试", intensity=0.8)
     assert id1 == id2 and len(mem.thread_list("xumian")) == 1
     assert float(mem.thread_list("xumian")[0]["intensity"]) == 0.8
 
@@ -925,6 +925,12 @@ def test_thread_prompt_block_and_material(tmp_path):
     assert a.threads.ritual_material() is None     # 同线重复取材被 12h 窗口挡
     # 跨实例仍挡（09-08 实机实锤：进程内存态在安卓端被杀即丢，同条裸发 5 次）
     assert a.threads.__class__(a).ritual_material() is None
+    # 时间过去也不复读；只有真实新进展会解除冷却。
+    future = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=3)
+    assert a.threads.ritual_material(future) is None
+    tid = mem.thread_list("xumian")[0]["id"]
+    mem.thread_update(tid, last_note="日期确认了")
+    assert a.threads.ritual_material(future) is not None
 
 def test_thread_spoken_third_person_fix(tmp_path):
     """存量画像键迁移值带第三人称（「用户正在赶毕设改稿」）→ 出口纠正为「你」。
@@ -961,3 +967,17 @@ def test_thread_closure_by_judgment(tmp_path):
     assert a.threads.ritual_material() is None          # 不再自发提起
     a.threads.close_by_index(5, ids)                    # 越界序号=零行为
     assert float(mem.thread_list("xumian")[0]["intensity"]) == 0.3
+
+
+def test_long_silence_tapers_rituals_to_one_per_day(tmp_path):
+    """用户超过一天没回后，饭点/问候/牵挂不再按槽位连续打卡。"""
+    a, mem = _moment_agent(tmp_path / "silence-taper")
+    now = datetime.datetime.now().astimezone().replace(second=0, microsecond=0)
+    old = now - datetime.timedelta(hours=30)
+    mid = mem.store_message("user", "先忙一阵", role_id="xumian")
+    mem.con.execute("UPDATE messages SET created_at=? WHERE id=?", (old.isoformat(), mid))
+    mem.con.commit()
+    a._last_proactive_sent_at = (now - datetime.timedelta(hours=23)).isoformat()
+    assert not a._ritual_send_open(now)
+    a._last_proactive_sent_at = (now - datetime.timedelta(hours=25)).isoformat()
+    assert a._ritual_send_open(now)

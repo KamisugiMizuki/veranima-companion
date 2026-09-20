@@ -699,7 +699,8 @@ class Agent:
         return (
             "【消息时间规则】历史消息和当前消息正文前的方括号时间是发送时间，格式为 YYYY-MM-DD HH:MM:SS。"
             "判断刚才、今天、昨天、是否跨夜或间隔多久时，优先依据这些时间；"
-            "凌晨/早上/中午/晚上/深夜这类时段词同样必须按时间戳选，一次回复里不得自相矛盾；"
+            "涉及当前时刻时必须依据完整日期和时分，不要把时间粗略改写成‘傍晚’‘晚上’等固定时段；"
+            "没有日落、天气或环境传感器数据时，不要据此声称窗外天色或环境；"
             "不要仅凭晚安、睡觉或早安推断已经跨日，时间没有跨日就按连续对话处理；"
             "这些方括号时间是内部上下文标记，不要复制到回复正文。\n"
             "【事实边界】你只可以把你确实知道的事（用户提过/画像记录）当既定事实说。"
@@ -1211,13 +1212,12 @@ class Agent:
                 return ""
         except Exception:
             return ""
-        # 时段桶 + 当日次数（≤2）
-        bucket = ("morning" if 6 <= ref.hour < 11 else "noon" if ref.hour < 15
-                  else "evening" if 15 <= ref.hour < 23 else "night")
-        if bucket == "night":
+        # 只把深夜作为免扰边界；其余文案使用精确本地时刻，不猜固定时段。
+        if ref.hour < 6:
             return ""  # 深夜推测=打扰
         day = ref.date().isoformat()
-        cid = f"probe:{day}:{bucket}"
+        clock = ref.strftime("%H:%M")
+        cid = f"probe:{day}:{clock}"
         rows = self._recent_feedback(source="context_probe", limit=30)
         today = [r for r in rows if str(r.get("candidate_id") or "").startswith(f"probe:{day}")]
         if len(today) >= 2 or any(str(r.get("candidate_id") or "") == cid for r in today):
@@ -1227,11 +1227,7 @@ class Agent:
             if row.get("role") == "user":
                 last_text = str(row.get("content") or "")[:60]
                 break
-        fallback = {
-            "morning": "这个点你应该已经忙起来了，昨晚那事儿还压着吗？",
-            "noon": "到下午了，你上午那摊子事收尾没？",
-            "evening": "这个点该消停了，今天累不累？",
-        }[bucket]
+        fallback = f"现在是{self._precise_local_clock(ref)}，你这会儿还在忙吗？"
         if not (getattr(self.llm, "is_model_loaded", None) and self.llm.is_model_loaded()):
             self._feedback_proactive(
                 source="context_probe", channel=self.message_channel, candidate_id=cid)
@@ -1250,7 +1246,7 @@ class Agent:
                     my_side = f"你这边正在{({'wake_routine':'梳洗准备一天','focused_practice':'忙自己的事','personal_interest_a':'摸自己的爱好','personal_interest_b':'摸自己的爱好','quiet_rest':'歇着'}.get(act, '做着手头的东西'))}" \
                               + (f"（在{place}）" if place else "") + "。"
             task = (
-                f"已经 {gap_h:.0f} 小时没收到用户消息了，现在是{('上午' if bucket == 'morning' else '中午前后' if bucket == 'noon' else '傍晚')}。"
+                f"已经 {gap_h:.0f} 小时没收到用户消息了，当前本地时间是{self._precise_local_clock(ref)}。"
                 + (f"TA 上次说过：「{last_text}」。" if last_text else "")
                 + my_side
                 + "猜一猜 TA 此刻大概在做什么/状态怎么样，用你的口吻发一条消息："
@@ -1267,6 +1263,12 @@ class Agent:
         self._feedback_proactive(
             source="context_probe", channel=self.message_channel, candidate_id=cid)
         return text
+
+    @staticmethod
+    def _precise_local_clock(value: datetime.datetime) -> str:
+        """返回可直接注入 prompt 的本地日期、星期和时刻；不推断天色。"""
+        weekdays = "周一 周二 周三 周四 周五 周六 周日".split()
+        return f"{value:%Y-%m-%d %H:%M} {weekdays[value.weekday()]}"
 
     def _missing_sleep_report_hint(self, now=None) -> str:
         """用户有睡眠报告史但最近 26h 无任何睡眠/苏醒报告 → 一句轻提示/吐槽。
@@ -1403,11 +1405,8 @@ class Agent:
         disengage = float(cfg.get("rhythm_disengage_above", 0.65))
         now = now or datetime.datetime.now(datetime.timezone.utc)
         if ov is not None:
-            if ov >= engage:  # 重合够（含滞后带）：不动；账照记（D4 看得见为什么没动）
-                self.memory.log_decision(
-                    self.role_key or self.card.name, "rhythm_overlap",
-                    f"{ov:.2f}", reason="重合充足不动（滞后带内同）",
-                    digest=f"engage={engage} disengage={disengage}")
+            if ov >= engage:  # 重合够（含滞后带）：不动
+                # 运行时每分钟都可能调用这里；不把“无变化”写成逐分钟审计噪声。
                 return
         elif abs(diff) < 2.0:
             return  # 无睡眠数据且单点差小，不动
@@ -3686,7 +3685,8 @@ class Agent:
 
     def _ritual_send_open(self, now=None) -> bool:
         """待织池的发送闸：合并窗口开 + 最近 5 分钟没有用户消息（刚聊完不插话，
-        2026-08-31「醒了」三连发教训）。不满足=素材继续攒池，下一 tick 再判。"""
+        2026-08-31「醒了」三连发教训）。用户超过 24h 没回后，关系型主动降为
+        每 24h 至多一次；角色自己的睡醒/睡前公告不走本闸。不满足=素材继续攒池。"""
         if not self.proactive_merge_open(now):
             return False
         try:
@@ -3696,7 +3696,16 @@ class Agent:
                         str(row.get("created_at")).replace("Z", "+00:00")))
                     ref = (now if isinstance(now, datetime.datetime)
                            else datetime.datetime.fromtimestamp(now or time.time()))
-                    return abs((self._naive_local(ref) - seen).total_seconds()) >= 5 * 60
+                    silence = abs((self._naive_local(ref) - seen).total_seconds())
+                    if silence < 5 * 60:
+                        return False
+                    if silence >= 24 * 3600:
+                        last = str(getattr(self, "_last_proactive_sent_at", "") or "")
+                        if last:
+                            sent = self._naive_local(datetime.datetime.fromisoformat(last))
+                            if abs((self._naive_local(ref) - sent).total_seconds()) < 24 * 3600:
+                                return False
+                    return True
                 break
         except Exception as e:
             logger.debug("ritual user-active check failed: %s", e)

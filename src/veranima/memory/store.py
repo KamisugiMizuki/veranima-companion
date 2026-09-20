@@ -1166,9 +1166,11 @@ class MemoryStore:
         topic = str(topic or "").strip()[:60]
         if not topic or not role_id:
             return 0
+        # ponytail: 中文短主题只取前 4 字做同线归并；升级到分词/向量聚类前，
+        # 先避免同一件事因措辞变化变成多条永不结束的主动线。
         row = self.con.execute(
             "SELECT id, intensity FROM mind_threads WHERE role_id=? AND status='open' "
-            "AND topic LIKE ?", (role_id, f"%{topic[:12]}%")).fetchone()
+            "AND topic LIKE ?", (role_id, f"%{topic[:4]}%")).fetchone()
         ts = _now()
         if row:
             self.con.execute(
@@ -1204,6 +1206,11 @@ class MemoryStore:
                                           "last_spoken_at", "last_note")]
         if not cols:
             return
+        # 新进展是唯一值得再次主动提起的信号；纯强度衰减/步点推进不解除冷却。
+        if fields.get("last_note"):
+            fields = {**fields, "last_spoken_at": ""}
+            if "last_spoken_at" not in cols:
+                cols.append("last_spoken_at")
         sets = ", ".join(f"{c}=?" for c in cols)
         self.con.execute(
             f"UPDATE mind_threads SET {sets}, updated_at=? WHERE id=?",

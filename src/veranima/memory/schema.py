@@ -340,7 +340,10 @@ def migrate_vec0(con: sqlite3.Connection) -> int:
         con.enable_load_extension(True)
         import sqlite_vec
         sqlite_vec.load(con)
-        rows = con.execute("SELECT memory_id, embedding FROM memory_vec").fetchall()
+        rows = con.execute(
+            "SELECT v.memory_id, v.embedding FROM memory_vec v "
+            "JOIN memories m ON m.id=v.memory_id"
+        ).fetchall()
     except Exception as e:
         logger.warning("vec0 migration skipped (%s); embeddings re-forge via backup import", e)
         return 0
@@ -355,6 +358,7 @@ def migrate_vec0(con: sqlite3.Connection) -> int:
         )
         copied += 1
     con.execute("DROP TABLE memory_vec")
+    con.execute("DELETE FROM memory_embedding WHERE memory_id NOT IN (SELECT id FROM memories)")
     _drop_vec0_shadows(con)
     con.commit()
     logger.info("migrated %d vec0 embeddings to memory_embedding", copied)

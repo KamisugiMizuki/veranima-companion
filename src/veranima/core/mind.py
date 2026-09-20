@@ -137,18 +137,17 @@ class ThreadLedger:
     def ritual_material(self, now: dt.datetime | None = None) -> dict | None:
         """待织池自我发起源（M1 核心）：TA 心里有事想说——与 context_probe
         （猜你在干嘛）对称的那个「说我自己」。强度 ≥0.45 的 top 牵挂，
-        同一条同剧本步 12h 内不重复（说过了，除非剧本又推进）。"""
+        同一条只主动说一次；夜眠消化写入真实新进展时，store 会清掉冷却，才允许再提。"""
         rows = [r for r in self.agent.memory.thread_list(self.role)
                 if float(r["intensity"]) >= 0.45]
         if not rows:
             return None
         pick = rows[0]
         now = now or dt.datetime.now(dt.timezone.utc)
-        # 同线 12h 不重复：落库而非进程内存（安卓端进程被系统回收即丢，
-        # 09-08 实机实锤同一条牵挂 12h 内裸发 5 次）。
+        # 同线无新进展不复读：落库而非进程内存（安卓端进程被系统回收即丢）。
         now_n = _naive(now.isoformat()) or now.replace(tzinfo=None)
         last = _naive(pick.get("last_spoken_at") or "")
-        if last and (now_n - last).total_seconds() < 12 * 3600:
+        if last:
             return None
         self.agent.memory.thread_update(int(pick["id"]),
                                         last_spoken_at=now_n.isoformat(timespec="seconds"))

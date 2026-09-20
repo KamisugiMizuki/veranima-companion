@@ -44,6 +44,7 @@ def _make_old_vec0_db(path: str):
     )
     vec = FakeEmbed().embed(["我特别喜欢下雨天"])[0]
     con.execute("INSERT INTO memory_vec(memory_id, embedding) VALUES (?,?)", (1, json.dumps(vec)))
+    con.execute("INSERT INTO memory_vec(memory_id, embedding) VALUES (?,?)", (999, json.dumps(vec)))
     con.commit()
     con.close()
 
@@ -61,6 +62,7 @@ def test_vec0_migrated_to_blob_table(tmp_path):
     # 向量重存为归一化 blob（8 维 float32 = 32 字节）
     r = m.con.execute("SELECT embedding FROM memory_embedding WHERE memory_id=1").fetchone()
     assert r and len(bytes(r[0])) == 32
+    assert m.con.execute("SELECT COUNT(*) FROM memory_embedding").fetchone()[0] == 1
     # 检索可用（走 blob KNN 路径）
     rec = m.recall("我喜欢的天气", top_k=3, layer="semantic")
     assert len(rec) >= 1 and rec[0].content == "我特别喜欢下雨天"
