@@ -25,7 +25,13 @@ def _time_text(value: str | dt.datetime | None) -> str:
 
 
 def derive_band(value: float, previous: str = "calm", repair_turns: int = 0) -> str:
-    """Map TV to a hysteretic expression band."""
+    """Map TV to a hysteretic expression band.
+
+    迟滞只由数值区间提供（进入阈值高、退出阈值低）。``repair_turns`` 保留为
+    观察信息，不再作为退出闸门——2026-09-20 设计修订：恢复可以来自事实纠错、
+    有效互动或时间冷却，不要求用户完成互动配额；无新负向证据且数值归零时，
+    表达档必须退出 repair/high（旧行为会让冷档永久停留，衰减到 0 也不解锁）。
+    """
     value = max(0.0, min(100.0, float(value)))
     previous = previous if previous in BANDS else "calm"
     order = {name: i for i, name in enumerate(BANDS)}
@@ -35,10 +41,6 @@ def derive_band(value: float, previous: str = "calm", repair_turns: int = 0) -> 
     while index < len(BANDS) - 1 and value >= enters[BANDS[index + 1]]:
         index += 1
     while index > 0 and value <= exits[BANDS[index]]:
-        if BANDS[index] == "high" and repair_turns < 5:
-            break
-        if BANDS[index] == "repair" and repair_turns < 2:
-            break
         index -= 1
     return BANDS[index]
 
@@ -56,6 +58,8 @@ class RelationalTensionState:
     explicit_pause: bool = False
     proactive_suppressed: bool = False
     open_event_ids: list[str] = field(default_factory=list)
+    # 已撤销事件（2026-09-20 事实纠正）：撤销后不再计入效果账，重启也不复活
+    revoked_keys: list[str] = field(default_factory=list)
     last_cause: str = ""
     version: int = 1
 
@@ -72,6 +76,7 @@ class RelationalTensionState:
             "explicit_pause": bool(self.explicit_pause),
             "proactive_suppressed": bool(self.proactive_suppressed),
             "open_event_ids": list(self.open_event_ids),
+            "revoked_keys": list(self.revoked_keys[-50:]),
             "last_cause": self.last_cause,
             "version": int(self.version),
         }
@@ -92,6 +97,7 @@ class RelationalTensionState:
             explicit_pause=bool(data.get("explicit_pause", False)),
             proactive_suppressed=bool(data.get("proactive_suppressed", False)),
             open_event_ids=[str(x) for x in (data.get("open_event_ids") or []) if x],
+            revoked_keys=[str(x) for x in (data.get("revoked_keys") or []) if x][-50:],
             last_cause=str(data.get("last_cause") or ""),
             version=max(1, int(data.get("version", 1))),
         )
@@ -165,6 +171,8 @@ class RelationalTension:
         self.ABANDONMENT_WINDOW_MINUTES = float(cfg.get("abandonment_window_minutes", 60))
         self.state = state or RelationalTensionState()
         self._event_keys = set(event_keys or ())
+        # dedupe_key → 当时生效的增量（撤销用；撤销过的不入册）
+        self._event_effects: dict[str, float] = {}
         self._negative_day = ""
         self._negative_total = 0.0
         self._positive_day = ""
@@ -180,11 +188,18 @@ class RelationalTension:
     def restore(self, state: dict | None, event_meta: list[dict] | None = None,
                 *, now=None) -> None:
         self.state = RelationalTensionState.from_dict(state)
-        self._event_keys = {
-            str(meta.get("dedupe_key"))
-            for meta in (event_meta or [])
-            if isinstance(meta, dict) and meta.get("dedupe_key")
-        }
+        revoked = set(self.state.revoked_keys)
+        self._event_keys = set()
+        self._event_effects = {}
+        for meta in (event_meta or []):
+            if not isinstance(meta, dict):
+                continue
+            key = str(meta.get("dedupe_key") or "")
+            if not key:
+                continue
+            self._event_keys.add(key)          # 撤销过的 key 同样不再重放
+            if key not in revoked:
+                self._event_effects[key] = float(meta.get("effective_delta", 0.0) or 0.0)
         now_dt = _parse_time(now) or dt.datetime.now(dt.timezone.utc)
         self._negative_day = now_dt.date().isoformat()
         self._positive_day = self._negative_day
@@ -263,6 +278,7 @@ class RelationalTension:
             self.state.consecutive_repair_turns += 1
             self.state.positive_turns_since_peak += 1
         self.state.version += 1
+        self._event_effects[dedupe_key] = effective
         if event_type in {"unanswered_proactive", "conversation_abandoned",
                           "question_skipped", "terse_streak"}:
             if event.event_id not in self.state.open_event_ids:
@@ -306,6 +322,27 @@ class RelationalTension:
             self.state.positive_turns_since_peak += 1
         else:
             self.state.consecutive_repair_turns = 0
+
+    def revoke_latest_open_event(self, *, reason: str = "") -> str | None:
+        """事实纠正（用户澄清/否认）：撤销最近一条仍挂账的负向事件。
+
+        2026-09-20 设计修订：误判撤销是纠错不是赔偿——直接反向应用该事件当时
+        产生的有效增量并摘除挂账，不经过 apply_event，因此不消耗正向每日额度、
+        也不要求用户完成修复互动。返回被撤销的 dedupe_key（None=无可撤销）。
+        """
+        if not self.enabled or not self.state.open_event_ids:
+            return None
+        event_id = str(self.state.open_event_ids[-1])
+        key = event_id[len("tension-"):] if event_id.startswith("tension-") else event_id
+        delta = self._event_effects.pop(key, None)
+        self.state.open_event_ids = [x for x in self.state.open_event_ids if x != event_id]
+        self.state.revoked_keys = ([*self.state.revoked_keys, key])[-50:]
+        if delta is not None:
+            self.state.value = max(0.0, min(self.MAX_VALUE, self.state.value - max(0.0, delta)))
+        self.state.band = derive_band(self.state.value, self.state.band)
+        self.state.last_cause = reason or "确认是误会：撤销了一次未成立的扣减"
+        self.state.version += 1
+        return key
 
     def clear_open_event(self, event_id: str, resolved_by: str = "repair") -> None:
         self.state.open_event_ids = [x for x in self.state.open_event_ids if x != event_id]

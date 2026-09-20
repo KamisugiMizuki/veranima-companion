@@ -1472,6 +1472,50 @@ class Agent:
             self._persist_state()
         return result
 
+    # 用户澄清里表示「你误读了我」的说法（2026-09-20 设计修订：事实纠正通道）。
+    # 单纯道歉（"对不起"）走冲突推进，不算纠错——除非同时否认了被误读的事实。
+    _MISREAD_TOKENS = ("误会", "不是那个意思", "没那个意思", "理解错", "想多了",
+                       "搞错", "开玩笑的", "别当真")
+    # "变差"的维度判定：慢变量下降，或冲突压力上升——修复事件（压力下降、
+    # 信任上升）不在此列，否则一句澄清会把刚修好的关系也一起撤掉
+    _WORSENED_DIMS = ("trust", "familiarity", "intimacy", "reciprocity", "safety")
+    # 误判撤销只回看最近这段时间的负向事件：更早的事已沉淀成历史，
+    # 不该被日后一句「开玩笑的」翻出来改账
+    _REVOCABLE_WINDOW_DAYS = 7
+
+    def _is_misread_correction(self, text: str) -> bool:
+        t = (text or "").strip()
+        return bool(t) and any(tok in t for tok in self._MISREAD_TOKENS)
+
+    def _revoke_last_negative_relationship_event(self) -> str | None:
+        """撤销最近一条产生负向影响的关系事件（与事实纠正同批，只撤一条）。"""
+        from .persona import revoke_relationship_event
+        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
+            days=self._REVOCABLE_WINDOW_DAYS)
+        for entry in reversed(list(self.relationship.applied_events or [])):
+            deltas = entry.get("deltas") or {}
+            try:
+                worsened = (any(float(deltas.get(d, 0) or 0) < 0 for d in self._WORSENED_DIMS)
+                            or float(deltas.get("conflict_tension", 0) or 0) > 0)
+            except (TypeError, ValueError):
+                continue
+            eid = str(entry.get("id") or "")
+            if not worsened or not eid:
+                continue
+            try:
+                at = datetime.datetime.fromisoformat(str(entry.get("at") or "").replace("Z", "+00:00"))
+                if at.tzinfo is None:
+                    at = at.replace(tzinfo=datetime.timezone.utc)
+            except (TypeError, ValueError):
+                continue
+            if at < cutoff:
+                return None   # 最近一条负向事件已在窗口外：不动账
+            self.relationship = revoke_relationship_event(
+                self.relationship, eid, reason="用户澄清：撤销未成立的负向关系事件")
+            self._persist_state()
+            return eid
+        return None
+
     def relationship_event_candidate(self) -> dict | None:
         return self.tension.relationship_event_candidate()
 
@@ -1792,20 +1836,35 @@ class Agent:
             action = note_conflict_from_user_text(
                 self._conflicts, user_text,
                 getattr(judgment, "conflict", None) if judgment else None)
+            # 事实纠正优先于情绪推进（2026-09-20 设计修订）：用户否认被误读时，
+            # 未成立的扣减直接撤销——纠错不是赔偿，不消耗额度、不要求刷修复互动。
+            if self._is_misread_correction(user_text):
+                if self.tension.revoke_latest_open_event(reason="用户澄清：撤销未成立的扣减"):
+                    logger.info("tension event revoked by user correction")
+                    self._persist_state()
+                if self._revoke_last_negative_relationship_event():
+                    logger.info("relationship event revoked by user correction")
             if action == "violation":
+                # 事件 id 带日期：同一天反复表达越界只记一次（防叠乘），
+                # 次日再发生是独立事件——固定 id "violation" 在幂等账本下
+                # 会把人一生中的第二次越界永久吞掉
+                day = (now or datetime.datetime.now()).date().isoformat()
                 self.relationship = apply_relationship_event(
-                    self.relationship, {"type": "user_violation", "cause": "用户表达越界反感", "event_id": "violation"}
+                    self.relationship, {"type": "user_violation", "cause": "用户表达越界反感",
+                                        "event_id": f"user_violation:{day}"}
                 )
             elif action == "clarify":
-                repaired = False
+                closed_id = ""
                 for c in self._conflicts.open_conflicts():
                     if c.get("clarify_count", 0) >= 2 and c["status"] == "clarifying":
                         self._conflicts.repair(c["id"])
                         self._conflicts.close(c["id"])
-                        repaired = True
-                if repaired:
+                        closed_id = closed_id or str(c["id"])
+                if closed_id:
+                    # 每次冲突闭合各记一次（固定 id "repair" 会吞掉之后的修复）
                     self.relationship = apply_relationship_event(
-                        self.relationship, {"type": "conflict_repaired", "cause": "用户澄清后关系修复", "event_id": "repair"}
+                        self.relationship, {"type": "conflict_repaired", "cause": "用户澄清后关系修复",
+                                            "event_id": f"conflict_repaired:{closed_id}"}
                     )
         except Exception as e:
             logger.warning("conflict detection failed (non-blocking): %s", e)

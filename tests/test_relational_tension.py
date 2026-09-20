@@ -61,7 +61,58 @@ def test_band_hysteresis():
     assert derive_band(20, "guarded") == "guarded"
     assert derive_band(15, "guarded") == "calm"
     assert derive_band(81, "calm") == "high"
-    assert derive_band(65, "high") == "high"
+    assert derive_band(90, "high") == "high"
+    # 2026-09-20 设计修订：退出只看数值（迟滞），不再要求修复轮次；
+    # 旧行为下 high 需要 5 轮有效修复，数值衰减到 0 也停在冷档
+    assert derive_band(65, "high") == "repair"
+    assert derive_band(0, "high") == "calm"
+
+
+def test_high_band_recovers_by_time_alone():
+    """无新负向证据时，时间冷却必须能降档（用户不需要刷修复互动）。"""
+    tension = RelationalTension(RelationalTensionState(
+        value=90, band="high", last_decay_at=at(0).isoformat()))
+
+    tension.decay(now=at(0) + dt.timedelta(hours=12))
+    assert tension.state.value == 80
+    assert tension.state.band == "high"          # 迟滞区间内仍算高
+
+    tension.decay(now=at(0) + dt.timedelta(hours=48))
+    assert tension.state.value == 50
+    assert tension.state.band == "repair"
+
+    tension.decay(now=at(0) + dt.timedelta(hours=72))
+    assert tension.state.value == 30
+    assert tension.state.band == "guarded"       # 继续自然降温，逐档退出
+
+
+def test_revoke_latest_open_event_reverses_deduction():
+    """事实纠正：撤销未成立的扣减，摘除挂账，不消耗正向每日额度。"""
+    tension = RelationalTension()
+    tension.apply_event(event_type="unanswered_proactive", channel="im", base_delta=10,
+                        reason="未回复", dedupe_key="proactive-unanswered:7", occurred_at=at(0))
+    assert tension.state.value == 10 and tension.state.open_event_ids
+
+    key = tension.revoke_latest_open_event(reason="用户澄清：那是误会")
+
+    assert key == "proactive-unanswered:7"
+    assert tension.state.value == 0
+    assert tension.state.open_event_ids == []
+    assert tension.state.revoked_keys == ["proactive-unanswered:7"]
+
+
+def test_revoke_survives_restart_without_double_reversal():
+    tension = RelationalTension()
+    result = tension.apply_event(event_type="unanswered_proactive", channel="im", base_delta=10,
+                                 reason="未回复", dedupe_key="k1", occurred_at=at(0))
+    tension.revoke_latest_open_event()
+
+    restored = RelationalTension()
+    restored.restore(tension.snapshot(), [result.event.to_meta()], now=at(1))
+
+    assert restored.state.value == 0
+    assert restored.revoke_latest_open_event() is None   # 已撤销：第二次不会倒扣
+    assert restored.state.value == 0
 
 
 def test_snapshot_restore_keeps_tension_state():

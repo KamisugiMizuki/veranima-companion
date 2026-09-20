@@ -8,6 +8,7 @@ from veranima.core.persona import (
     apply_emotion_event,
     apply_relationship_event,
     derive_relationship_stage,
+    revoke_relationship_event,
 )
 
 
@@ -140,3 +141,37 @@ def test_agent_plain_chat_does_not_bump_relationship(tmp_path):
     a.handle("今天天气不错")
     after = a.relationship.to_dict()
     assert before == after
+
+
+# ---------- 事件账本：幂等与撤销（2026-09-20 设计修订） ----------
+
+def test_non_adjacent_replay_is_idempotent():
+    """同一事件即使中间夹了别的事件，重放也不累加（旧行为只记最后一个 id）。"""
+    m = RelationshipModel()
+    m = apply_relationship_event(m, {"type": "user_confirm", "cause": "a", "event_id": "e1"})
+    m = apply_relationship_event(m, {"type": "user_confirm", "cause": "b", "event_id": "e2"})
+    trust = m.trust
+    m = apply_relationship_event(m, {"type": "user_confirm", "cause": "a", "event_id": "e1"})
+    assert m.trust == pytest.approx(trust)
+
+
+def test_revoke_relationship_event_reverses_actual_deltas():
+    """撤销按实际生效量回滚（含边界裁剪），且已撤销事件不会复活。"""
+    m = RelationshipModel(safety=0.8, conflict_tension=0.2)
+    m2 = apply_relationship_event(m, {"type": "user_violation", "cause": "被误读成越界",
+                                      "event_id": "evt-misread"})
+    assert m2.safety < 0.8 and m2.conflict_tension > 0.2
+
+    m3 = revoke_relationship_event(m2, "evt-misread", reason="用户澄清")
+    assert m3.safety == pytest.approx(0.8)
+    assert m3.conflict_tension == pytest.approx(0.2)
+
+    m4 = apply_relationship_event(m3, {"type": "user_violation", "cause": "重放",
+                                       "event_id": "evt-misread"})
+    assert m4.to_dict() == m3.to_dict()
+
+
+def test_stage_keeps_familiarity_after_trust_drop():
+    """熟悉史不等于信任：争执掉信任后退回「从未认识」是假的。"""
+    assert derive_relationship_stage(RelationshipModel(familiarity=0.9, trust=0.2)) == "熟悉"
+    assert derive_relationship_stage(RelationshipModel()) == "初识"

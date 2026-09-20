@@ -1,6 +1,6 @@
 # 伴侣连续性增强设计
 
-> 状态：方案稿，尚未进入实现。
+> 状态：历史增量方案，不能作为当前实现清单。牵挂、驱力、夜眠与日程写回以 `docs/mind/MIND_LOOP_SPEC.md` 为所属规范；用户近况判断以 `docs/mind/USER_MOOD_SPEC.md` 为准；关系与边界以 `PERSONA_LOOP_SPEC.md`、`RELATIONAL_TENSION_SPEC.md` 为准。本文未被所属规范吸收的建议仍是候选，不自动进入实现。
 > 日期：2026-08-29
 > 范围：关系连续性、共同经历、主动关怀、虚拟生活和 QQ/桌宠一致性。
 >

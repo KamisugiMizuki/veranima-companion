@@ -642,8 +642,15 @@ def test_moment_publish_dedupe(tmp_path):
     assert id1 > 0 and id2 == 0
     assert len(mem.moments_recent_texts("xumian")) == 1
 
-def test_moment_gate_and_tick(tmp_path):
-    """发布链：素材→闸→入库；同 tick 幂等；开关关掉即停发。"""
+def test_moment_gate_and_tick(tmp_path, monkeypatch):
+    """发布链：素材→闸→入库；同 tick 幂等；开关关掉即停发。
+
+    时钟纪律（2026-09-20 修）：tick 的 now 是固定时钟，但落库时间戳走
+    store._now()（真实时钟）——不冻住它，moments_count_today(固定日期) 永远
+    查不到今天这条，测试会在真实时钟上假红（stash 对照证实非功能回归）。
+    """
+    monkeypatch.setattr("veranima.memory.store._now",
+                        lambda: _MOMENT_NOW.isoformat(timespec="seconds"))
     a, mem = _moment_agent(tmp_path)
     now = _MOMENT_NOW
     n1 = a.moments.tick(now=now)

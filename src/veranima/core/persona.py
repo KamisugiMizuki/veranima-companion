@@ -310,6 +310,10 @@ def extract_shared_meaning_candidates(text: str, message_id: int) -> list[Person
 REL_NORMAL_DELTA = 0.05
 REL_MAJOR_DELTA = 0.12
 
+# 可撤销/可裁剪的数值维度（列表类副作用如 shared_projects 是事实记录，不参与撤销）
+REL_DIMS = ("trust", "familiarity", "intimacy", "reciprocity", "safety",
+            "conflict_tension", "repair_progress")
+
 # 事件类型 → 维度影响（正值=上升，负值=下降；major=重大事件允许 0.12）
 RELATIONSHIP_EVENTS: dict[str, dict] = {
     "user_confirm":       {"trust": +0.05, "familiarity": +0.05, "cause_desc": "用户明确确认理解"},
@@ -327,7 +331,9 @@ STAGE_THRESHOLDS = (
     ("长期共同体", lambda m: m.intimacy >= 0.85 and m.safety >= 0.85 and m.reciprocity >= 0.8 and m.trust >= 0.9),
     ("亲密伙伴",   lambda m: m.intimacy >= 0.8 and m.safety >= 0.8 and m.reciprocity >= 0.7 and m.trust >= 0.8),
     ("信任",       lambda m: m.trust >= 0.72 and m.familiarity >= 0.7 and m.safety >= 0.7),
-    ("熟悉",       lambda m: m.trust >= 0.55 and m.familiarity >= 0.55),
+    # 熟悉史不等于信任：2026-09-20 修订——争执掉信任时不能退回「从未认识」，
+    # 所以「熟悉」只认 familiarity；trust/conflict 由消费方另行读取（brief 已带）
+    ("熟悉",       lambda m: m.familiarity >= 0.55),
 )
 
 
@@ -347,6 +353,10 @@ class RelationshipModel:
     open_relational_threads: list[str] = field(default_factory=list)
     last_meaningful_event_id: str = ""
     updated_at: str = ""
+    # 事件账本（2026-09-20 设计修订）：记录每个事件真正生效的增量——
+    # ① 幂等按事件 id 判定（非相邻重放也不累加）；② 事实纠正时按实际量撤销
+    applied_events: list[dict] = field(default_factory=list)
+    revoked_event_ids: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         import datetime
@@ -360,6 +370,8 @@ class RelationshipModel:
             "open_relational_threads": list(self.open_relational_threads),
             "last_meaningful_event_id": self.last_meaningful_event_id,
             "updated_at": self.updated_at,
+            "applied_events": [dict(e) for e in self.applied_events][-50:],
+            "revoked_event_ids": list(self.revoked_event_ids)[-50:],
         }
 
     @classmethod
@@ -379,6 +391,9 @@ class RelationshipModel:
             open_relational_threads=list(data.get("open_relational_threads") or []),
             last_meaningful_event_id=str(data.get("last_meaningful_event_id") or ""),
             updated_at=str(data.get("updated_at") or ""),
+            applied_events=[dict(e) for e in (data.get("applied_events") or [])
+                            if isinstance(e, dict)][-50:],
+            revoked_event_ids=[str(x) for x in (data.get("revoked_event_ids") or []) if x][-50:],
         )
 
     @classmethod
@@ -417,9 +432,13 @@ def apply_relationship_event(model: RelationshipModel, event: dict) -> Relations
     if etype not in RELATIONSHIP_EVENTS and not event.get("delta"):
         logger.warning("relationship: 未知事件类型 %r（忽略）", etype)
         return model
-    eid = event.get("event_id")
-    if eid and eid == model.last_meaningful_event_id:
-        return model  # 幂等：同事件不重放
+    eid = str(event.get("event_id") or "") or None
+    if eid:
+        if eid in model.revoked_event_ids:
+            logger.info("relationship: 事件 %s 已被撤销，忽略重放", eid)
+            return model
+        if any(str(e.get("id")) == eid for e in model.applied_events):
+            return model  # 幂等：同一事件不重放（非相邻重放同样成立）
     delta = dict(event.get("delta") or {})
     for dim, d in (RELATIONSHIP_EVENTS.get(etype) or {}).items():
         if dim != "cause_desc":
@@ -427,20 +446,62 @@ def apply_relationship_event(model: RelationshipModel, event: dict) -> Relations
     # 重大事件（major_event / delta 显式提供）允许 0.12，其余 0.05
     limit = REL_MAJOR_DELTA if (etype == "major_event" or event.get("delta")) else REL_NORMAL_DELTA
     out = model.to_dict()
+    applied_steps: dict[str, float] = {}
     for dim, d in delta.items():
-        if dim not in ("trust", "familiarity", "intimacy", "reciprocity", "safety",
-                       "conflict_tension", "repair_progress"):
+        if dim not in REL_DIMS:
             continue
         step = max(-limit, min(limit, float(d)))
-        out[dim] = max(0.0, min(1.0, getattr(model, dim) + step))
+        before = float(getattr(model, dim))
+        after = max(0.0, min(1.0, before + step))
+        applied_steps[dim] = round(after - before, 4)   # 实际生效量（含边界裁剪）
+        out[dim] = after
     if etype == "shared_project_done":
         cause = event.get("cause", "")
         if cause and cause not in out["shared_projects"]:
             out["shared_projects"] = out["shared_projects"] + [cause]
+    out["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
     if eid:
         out["last_meaningful_event_id"] = eid
-    out["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+        ledger = [e for e in (out.get("applied_events") or []) if str(e.get("id")) != eid]
+        ledger.append({"id": eid, "deltas": applied_steps, "at": out["updated_at"]})
+        out["applied_events"] = ledger[-50:]
     logger.info("relationship event: %s (%s)", etype, event.get("cause", ""))
+    return RelationshipModel.from_dict(out)
+
+
+def revoke_relationship_event(model: RelationshipModel, event_id: str, *,
+                              reason: str = "") -> RelationshipModel:
+    """事实纠正：撤销一条已应用关系事件的派生影响（2026-09-20 设计修订）。
+
+    - 按账本里记录的实际生效量反向应用（不是按事件类型的名义增量）
+    - 事件 id 进撤销名单：重放不会再次生效，重启不复活
+    - 纠错不是赔偿：不消耗任何额度、不要求用户完成修复互动
+    - 列表类副作用（shared_projects 等）不撤销——那是事实记录，不是扣分
+    """
+    eid = str(event_id or "")
+    if not eid:
+        return model
+    entry = next((e for e in model.applied_events if str(e.get("id")) == eid), None)
+    if entry is None:
+        return model
+    out = model.to_dict()
+    reversed_dims: list[str] = []
+    for dim, d in (entry.get("deltas") or {}).items():
+        if dim not in REL_DIMS:
+            continue
+        try:
+            step = float(d)
+        except (TypeError, ValueError):
+            continue
+        current = float(out.get(dim, 0.5))
+        out[dim] = max(0.0, min(1.0, current - step))
+        reversed_dims.append(dim)
+    out["applied_events"] = [e for e in model.applied_events
+                             if str(e.get("id")) != eid][-50:]
+    out["revoked_event_ids"] = ([*model.revoked_event_ids, eid])[-50:]
+    out["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    logger.info("relationship event revoked: %s (%s) dims=%s",
+                eid, reason or "事实纠正", ",".join(reversed_dims))
     return RelationshipModel.from_dict(out)
 
 

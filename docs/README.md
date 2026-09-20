@@ -27,6 +27,10 @@
 | `newly_added/` | 灵感暂存 | design_append.md（用户随手记的功能点子常驻模板，评估后并入 DESIGN.md） |
 | `for_users/` | 人读文档 | 设计视角三档（A 一页纸 / B 结构图 / C 契约）+ 项目思维导图 HTML |
 
+### 审计报告
+
+- [`roadmap/audits/REALISM_DESIGN_AUDIT.md`](roadmap/audits/REALISM_DESIGN_AUDIT.md)：真人感设计审计、用户视角破绽、设计修订记录与尚待实现的行为缺口。
+
 ## 阅读顺序建议
 
 1. `roadmap/DESIGN.md` —— 产品定位、四变量、R0–R5 是什么

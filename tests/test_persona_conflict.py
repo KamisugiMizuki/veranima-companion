@@ -101,3 +101,53 @@ def test_agent_closed_conflict_does_not_punish(tmp_path):
     a._conflicts.open("c1", cause="已修复", evidence_ids=[1])
     a._conflicts.close("c1")
     assert a.persona_proactive_blocked("shared_meaning") is False
+
+
+# ---------- 事实纠正通道（2026-09-20 设计修订） ----------
+
+def test_agent_user_clarification_revokes_open_tension(tmp_path):
+    """「你误会了」= 纠错：未成立的扣减撤销，不用等用户刷修复互动。"""
+    a = _agent(tmp_path)
+    a._apply_tension_event(event_type="unanswered_proactive", channel="im", base_delta=10,
+                           reason="未回复", dedupe_key="proactive-unanswered:1")
+    assert a.tension.state.value == 10
+
+    a.handle("你误会了，我不是那个意思")
+
+    assert a.tension.state.value == 0
+    assert a.tension.state.open_event_ids == []
+
+
+def test_agent_plain_apology_does_not_revoke(tmp_path):
+    """单纯道歉=认了这件事，不是误读——撤销通道不得变成「道歉免罚」。"""
+    a = _agent(tmp_path)
+    a._apply_tension_event(event_type="unanswered_proactive", channel="im", base_delta=10,
+                           reason="未回复", dedupe_key="proactive-unanswered:2")
+    a.handle("对不起")
+    assert a.tension.state.value == 10
+    assert a.tension.state.open_event_ids
+
+
+def test_clarification_does_not_revoke_a_repair(tmp_path):
+    """刚修好的关系不能被下一句澄清连带撤掉（修复事件不是"负向事件"）。"""
+    a = _agent(tmp_path)
+    a.relationship = apply_relationship_event(
+        a.relationship, {"type": "conflict_repaired", "cause": "冲突修复", "event_id": "r1"})
+    trust = a.relationship.trust
+    a.handle("开玩笑的，别往心里去")
+    assert a.relationship.trust == pytest.approx(trust)
+    assert a.relationship.revoked_event_ids == []
+
+
+def test_agent_user_correction_revokes_negative_relationship_event(tmp_path):
+    a = _agent(tmp_path)
+    a.handle("你太过分了")
+    assert any(float(v) < 0
+               for e in a.relationship.applied_events
+               for v in (e.get("deltas") or {}).values())
+    safety = a.relationship.safety
+
+    a.handle("别当真，我开玩笑的")
+
+    assert a.relationship.safety > safety
+    assert a.relationship.revoked_event_ids
